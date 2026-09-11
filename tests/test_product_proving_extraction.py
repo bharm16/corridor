@@ -32,18 +32,6 @@ def stub_client(*, events=()):
     )
 
 
-@pytest.fixture
-def project(session):
-    value = Project(
-        slug="product-proving-extraction",
-        name="Product Proving Extraction",
-        is_synthetic=True,
-    )
-    session.add(value)
-    session.flush([value])
-    return value
-
-
 def _document(session, project, *, doc_type="minutes", name="source.pdf"):
     document = Document(
         project_id=project.id,

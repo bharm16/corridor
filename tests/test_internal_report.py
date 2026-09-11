@@ -77,12 +77,8 @@ def client_without_session(session):
 
 
 @pytest.fixture
-def project(session):
-    project = Project(slug="internal-report-test", name="Internal Report Test", is_synthetic=True)
-    session.add(project)
-    session.flush()
-    seed_membership(session, project, TEST_PRINCIPAL)
-    return project
+def project(member_project):
+    return member_project(TEST_PRINCIPAL)
 
 
 def _document(session, project, *, filename, text, page_no=1):

@@ -33,14 +33,6 @@ from corridor.web.dependency_view import (
 )
 
 
-@pytest.fixture
-def project(session):
-    row = Project(slug="dependency-view", name="Dependency View", is_synthetic=True)
-    session.add(row)
-    session.flush()
-    return row
-
-
 def _dependency(session, project, ref_code="DEP-VIEW-1"):
     row = Dependency(
         project_id=project.id,

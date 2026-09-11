@@ -26,7 +26,6 @@ from corridor.models import (
     Document,
     ExternalOrg,
     Milestone,
-    Project,
 )
 from corridor.presentation import exception_name, label
 from corridor.principals import HumanPrincipal
@@ -44,7 +43,6 @@ from corridor.web.ui_primitives import (
     promised_after_required,
 )
 
-from access_support import seed_membership
 
 TEST_PRINCIPAL = HumanPrincipal("local:test-reviewer")
 
@@ -412,12 +410,8 @@ def client(session):
 
 
 @pytest.fixture
-def project(session):
-    p = Project(slug="ui-primitives", name="UI Primitives", is_synthetic=True)
-    session.add(p)
-    session.flush()
-    seed_membership(session, p, TEST_PRINCIPAL)
-    return p
+def project(member_project):
+    return member_project(TEST_PRINCIPAL)
 
 
 def _autofocused(markup: str) -> list[dict[str, str]]:

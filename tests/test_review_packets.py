@@ -48,7 +48,6 @@ from corridor.models import (
     DeltaFollowUpPlan,
     DeltaFollowUpPlanEvidence,
     DeltaRecordDecision,
-    DeltaReviewPacketChild,
     DeltaReviewPacketReceipt,
     DeltaReviewPacketSupport,
     Fact,
@@ -68,6 +67,7 @@ from corridor.db_roles import RECORD_DECISION_ROLE
 from harness_support import adopt_baseline_facts, as_role
 from source_capture_support import Rendition
 from delta_supersession_support import record_delta_supersession
+from record_counts import nothing_written
 from corridor.review_packets import (
     APPLY,
     EDIT_AND_APPLY,
@@ -98,18 +98,6 @@ RETURNS_AT = datetime(2026, 9, 17, 15, 0, tzinfo=timezone.utc)
 SUBJECT = "Utility Conflicts!7"
 SOURCE_REVISION = "rev-1"
 RULE_VERSION = "packetizer-v1"
-
-
-@pytest.fixture
-def project(session: Session) -> Project:
-    row = Project(
-        slug=f"review-packet-{uuid4().hex[:8]}",
-        name="Review Packet",
-        is_synthetic=True,
-    )
-    session.add(row)
-    session.flush()
-    return row
 
 
 def _rendition(session: Session, project: Project, name: str) -> Rendition:
@@ -234,30 +222,6 @@ def _revision_count(session: Session, project: Project) -> int:
     )
 
 
-def _spine_counts(session: Session, project: Project) -> dict[str, int]:
-    """The append-only watermarks a refused act must leave exactly as they were."""
-
-    return {
-        table.__name__: int(
-            session.scalar(
-                select(func.count())
-                .select_from(table)
-                .where(table.project_id == project.id)
-            )
-        )
-        for table in (
-            ProjectRecordRevision,
-            FactDecision,
-            DeltaDisposition,
-            DeltaRecordDecision,
-            DeltaDeferral,
-            DeltaFollowUpPlan,
-            DeltaReviewPacketReceipt,
-            DeltaReviewPacketChild,
-        )
-    }
-
-
 # --- All or nothing: one bad child refuses the whole act ------------------
 
 
@@ -283,20 +247,20 @@ def test_a_stale_child_refuses_the_whole_packet_and_writes_nothing(
         accepted_value="1250+00",
         proposed_value="1260+00",
     )
-    before = _spine_counts(session, project)
-
-    # The coordinator's reading is one revision behind on station_from only.
-    result = resolve_review_packet(
-        session,
-        _packet(
-            project,
-            (
-                _apply_child(stale_delta, first_incoming, first_support),
-                _apply_child(healthy_delta, second_incoming, second_support),
+    # The coordinator's reading is one revision behind on station_from only,
+    # and nothing at all is written, including for the child that was fine.
+    with nothing_written(session, project.id):
+        result = resolve_review_packet(
+            session,
+            _packet(
+                project,
+                (
+                    _apply_child(stale_delta, first_incoming, first_support),
+                    _apply_child(healthy_delta, second_incoming, second_support),
+                ),
+                observed_accepted_revision_id=baseline - 1,
             ),
-            observed_accepted_revision_id=baseline - 1,
-        ),
-    )
+        )
 
     assert result.status == REFUSED
     assert [refusal.reason for refusal in result.refusals] == [
@@ -305,8 +269,6 @@ def test_a_stale_child_refuses_the_whole_packet_and_writes_nothing(
     assert result.refusals[0].status == STALE
     assert result.refusals[0].current_accepted_revision_id == baseline
     assert result.receipt_id is None and result.revision_id is None
-    # Nothing at all was written, including for the child that was fine.
-    assert _spine_counts(session, project) == before
     # And the coordinator's own selections come back untouched.
     assert result.preserved_selections == tuple(
         (
@@ -330,17 +292,15 @@ def test_a_superseded_child_refuses_the_whole_packet(
         prior_delta_id=superseded.id,
         superseding_delta_id=newer.id,
     )
-    before = _spine_counts(session, project)
-
-    result = resolve_review_packet(
-        session,
-        _packet(project, (_apply_child(superseded, incoming, support),)),
-    )
+    with nothing_written(session, project.id):
+        result = resolve_review_packet(
+            session,
+            _packet(project, (_apply_child(superseded, incoming, support),)),
+        )
 
     assert result.status == REFUSED
     assert result.refusals[0].reason == "superseded_delta"
     assert result.refusals[0].delta_status == "superseded"
-    assert _spine_counts(session, project) == before
 
 
 def test_a_cross_project_child_refuses_the_whole_packet(
@@ -358,44 +318,42 @@ def test_a_cross_project_child_refuses_the_whole_packet(
     support = _support(session, project, incoming, segment)
     mine = _delta(session, project)
     theirs = _delta(session, other)
-    before = _spine_counts(session, project)
-
-    result = resolve_review_packet(
-        session,
-        _packet(
-            project,
-            (
-                _apply_child(mine, incoming, support),
-                PacketChildRequest(
-                    delta_id=theirs.id,
-                    outcome=KEEP_CURRENT,
-                    observed_source_revision=theirs.source_revision,
+    with nothing_written(session, project.id, other.id):
+        result = resolve_review_packet(
+            session,
+            _packet(
+                project,
+                (
+                    _apply_child(mine, incoming, support),
+                    PacketChildRequest(
+                        delta_id=theirs.id,
+                        outcome=KEEP_CURRENT,
+                        observed_source_revision=theirs.source_revision,
+                    ),
                 ),
             ),
-        ),
-    )
+        )
 
     assert result.status == REFUSED
     assert result.refusals[0].reason == "cross_project_delta"
-    assert _spine_counts(session, project) == before
 
     # A child that names no delta at all refuses on the same rule.
-    missing = resolve_review_packet(
-        session,
-        _packet(
-            project,
-            (
-                PacketChildRequest(
-                    delta_id=theirs.id + 10_000,
-                    outcome=KEEP_CURRENT,
-                    observed_source_revision=SOURCE_REVISION,
+    with nothing_written(session, project.id, other.id):
+        missing = resolve_review_packet(
+            session,
+            _packet(
+                project,
+                (
+                    PacketChildRequest(
+                        delta_id=theirs.id + 10_000,
+                        outcome=KEEP_CURRENT,
+                        observed_source_revision=SOURCE_REVISION,
+                    ),
                 ),
             ),
-        ),
-    )
+        )
     assert missing.status == REFUSED
     assert missing.refusals[0].reason == "cross_project_delta"
-    assert _spine_counts(session, project) == before
 
 
 def test_a_child_read_against_another_source_version_refuses_the_packet(
@@ -407,19 +365,17 @@ def test_a_child_read_against_another_source_version_refuses_the_packet(
     incoming, segment = rendition.capture(fact_type="station_from", value="1200+00")
     support = _support(session, project, incoming, segment)
     delta = _delta(session, project, source_revision="rev-7")
-    before = _spine_counts(session, project)
-
-    result = resolve_review_packet(
-        session,
-        _packet(
-            project,
-            (_apply_child(delta, incoming, support, observed_source_revision="rev-6"),),
-        ),
-    )
+    with nothing_written(session, project.id):
+        result = resolve_review_packet(
+            session,
+            _packet(
+                project,
+                (_apply_child(delta, incoming, support, observed_source_revision="rev-6"),),
+            ),
+        )
 
     assert result.status == REFUSED
     assert result.refusals[0].reason == "source_version_mismatch"
-    assert _spine_counts(session, project) == before
 
 
 def test_a_child_without_named_support_refuses_the_whole_packet(
@@ -437,28 +393,26 @@ def test_a_child_without_named_support_refuses_the_whole_packet(
         accepted_value="1250+00",
         proposed_value="1260+00",
     )
-    before = _spine_counts(session, project)
-
-    result = resolve_review_packet(
-        session,
-        _packet(
-            project,
-            (
-                _apply_child(first, good, good_support),
-                PacketChildRequest(
-                    delta_id=second.id,
-                    outcome=APPLY,
-                    observed_source_revision=second.source_revision,
-                    record_effects=(RecordEffect(fact_id=unsupported.id),),
+    with nothing_written(session, project.id):
+        result = resolve_review_packet(
+            session,
+            _packet(
+                project,
+                (
+                    _apply_child(first, good, good_support),
+                    PacketChildRequest(
+                        delta_id=second.id,
+                        outcome=APPLY,
+                        observed_source_revision=second.source_revision,
+                        record_effects=(RecordEffect(fact_id=unsupported.id),),
+                    ),
                 ),
             ),
-        ),
-    )
+        )
 
     assert result.status == REFUSED
     assert result.refusals[0].status == UNSUPPORTED
     assert result.refusals[0].reason == "missing_support"
-    assert _spine_counts(session, project) == before
 
 
 def test_an_already_resolved_child_refuses_the_whole_packet(
@@ -484,25 +438,23 @@ def test_an_already_resolved_child_refuses_the_whole_packet(
         ).status
         == RESOLVED
     )
-    before = _spine_counts(session, project)
-
-    result = resolve_review_packet(
-        session,
-        _packet(
-            project,
-            (
-                PacketChildRequest(
-                    delta_id=resolved.id,
-                    outcome=KEEP_CURRENT,
-                    observed_source_revision=resolved.source_revision,
+    with nothing_written(session, project.id):
+        result = resolve_review_packet(
+            session,
+            _packet(
+                project,
+                (
+                    PacketChildRequest(
+                        delta_id=resolved.id,
+                        outcome=KEEP_CURRENT,
+                        observed_source_revision=resolved.source_revision,
+                    ),
                 ),
             ),
-        ),
-    )
+        )
 
     assert result.status == REFUSED
     assert result.refusals[0].reason == "already_resolved"
-    assert _spine_counts(session, project) == before
 
 
 def test_a_packet_names_its_exact_ordered_child_set(
@@ -768,29 +720,27 @@ def test_an_edit_child_of_unsupported_free_text_refuses_the_whole_packet(
         accepted_value="crossing",
         proposed_value="parallel",
     )
-    before = _spine_counts(session, project)
-
-    result = resolve_review_packet(
-        session,
-        _packet(
-            project,
-            (
-                _apply_child(healthy, incoming, support),
-                PacketChildRequest(
-                    delta_id=typed.id,
-                    outcome=EDIT_AND_APPLY,
-                    observed_source_revision=typed.source_revision,
-                    edit_basis=FreeText("skewed crossing"),
-                    support_assessment_ids=(support.id,),
+    with nothing_written(session, project.id):
+        result = resolve_review_packet(
+            session,
+            _packet(
+                project,
+                (
+                    _apply_child(healthy, incoming, support),
+                    PacketChildRequest(
+                        delta_id=typed.id,
+                        outcome=EDIT_AND_APPLY,
+                        observed_source_revision=typed.source_revision,
+                        edit_basis=FreeText("skewed crossing"),
+                        support_assessment_ids=(support.id,),
+                    ),
                 ),
             ),
-        ),
-    )
+        )
 
     assert result.status == REFUSED
     assert result.refusals[0].status == CONSTRAINED_EDIT
     assert result.refusals[0].reason == "unsupported_free_text"
-    assert _spine_counts(session, project) == before
 
 
 def test_free_text_on_an_external_fact_returns_the_coordination_question(
@@ -810,30 +760,28 @@ def test_free_text_on_an_external_fact_returns_the_coordination_question(
         accepted_value="City Water",
         proposed_value="Regional Water",
     )
-    before = _spine_counts(session, project)
-
-    result = resolve_review_packet(
-        session,
-        _packet(
-            project,
-            (
-                PacketChildRequest(
-                    delta_id=delta.id,
-                    outcome=EDIT_AND_APPLY,
-                    observed_source_revision=delta.source_revision,
-                    edit_basis=FreeText("Regional Water Authority"),
-                    support_assessment_ids=(support.id,),
-                    organization_change_kind="correction",
+    with nothing_written(session, project.id):
+        result = resolve_review_packet(
+            session,
+            _packet(
+                project,
+                (
+                    PacketChildRequest(
+                        delta_id=delta.id,
+                        outcome=EDIT_AND_APPLY,
+                        observed_source_revision=delta.source_revision,
+                        edit_basis=FreeText("Regional Water Authority"),
+                        support_assessment_ids=(support.id,),
+                        organization_change_kind="correction",
+                    ),
                 ),
             ),
-        ),
-    )
+        )
 
     assert result.status == REFUSED
     assert result.refusals[0].status == COORDINATION_NEEDED
     assert result.refusals[0].reason == "external_fact_needs_coordination"
     assert "Regional Water Authority" in result.refusals[0].open_question
-    assert _spine_counts(session, project) == before
     # The proposed value stays unaccepted and the delta stays open, so the
     # coordinator can resubmit the same packet with this one child answered
     # as Needs coordination.
@@ -940,27 +888,25 @@ def test_needs_coordination_without_a_responsible_party_refuses_the_packet(
     session: Session, project: Project
 ) -> None:
     delta = _delta(session, project)
-    before = _spine_counts(session, project)
-
-    result = resolve_review_packet(
-        session,
-        _packet(
-            project,
-            (
-                PacketChildRequest(
-                    delta_id=delta.id,
-                    outcome=NEEDS_COORDINATION,
-                    observed_source_revision=delta.source_revision,
-                    coordination=CoordinationRequest(question="Who owns this line?"),
+    with nothing_written(session, project.id):
+        result = resolve_review_packet(
+            session,
+            _packet(
+                project,
+                (
+                    PacketChildRequest(
+                        delta_id=delta.id,
+                        outcome=NEEDS_COORDINATION,
+                        observed_source_revision=delta.source_revision,
+                        coordination=CoordinationRequest(question="Who owns this line?"),
+                    ),
                 ),
             ),
-        ),
-    )
+        )
 
     assert result.status == REFUSED
     assert result.refusals[0].reason == "missing_responsible_party"
     assert result.refusals[0].open_question == "Who owns this line?"
-    assert _spine_counts(session, project) == before
 
 
 # --- Mixed packets --------------------------------------------------------

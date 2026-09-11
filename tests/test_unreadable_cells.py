@@ -21,7 +21,6 @@ from corridor.db import engine
 from corridor.models import (
     DocPage,
     Document,
-    Project,
     UnreadableCellReadingStep,
 )
 from corridor.principals import HumanPrincipal
@@ -54,18 +53,6 @@ from corridor.unreadable_cell_admission import (
 )
 
 RECORDER = HumanPrincipal("local:unreadable-cell-test")
-
-
-@pytest.fixture
-def project(session):
-    project = Project(
-        slug="unreadable-cell-test",
-        name="Unreadable Cell Test",
-        is_synthetic=True,
-    )
-    session.add(project)
-    session.flush()
-    return project
 
 
 def _declare(session, project, **overrides):

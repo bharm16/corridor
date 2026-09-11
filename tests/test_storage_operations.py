@@ -20,7 +20,7 @@ import pytest
 from sqlalchemy import select
 
 from corridor.config import settings
-from corridor.models import ProcessingArtifact, Project
+from corridor.models import ProcessingArtifact
 from corridor.object_storage import (
     ObjectConflict,
     content_key,
@@ -64,14 +64,6 @@ def backend(request, tmp_path, monkeypatch):
         monkeypatch.setattr(settings, "storage_s3_bucket", bucket)
         monkeypatch.setattr(settings, "storage_s3_prefix", "customer-a")
         yield "s3"
-
-
-@pytest.fixture
-def project(session):
-    row = Project(slug=f"storage-{uuid4().hex[:8]}", name="Storage", is_synthetic=True)
-    session.add(row)
-    session.flush()
-    return row
 
 
 def _render(tmp_path: Path, name: str = "page-1.png", body: bytes = b"rendered page") -> Path:

@@ -1,7 +1,8 @@
 """What the shared test-harness seam promises the 170 modules that use it.
 
 The rollback-scoped ``session`` fixture, the synthetic ``project`` inside it,
-and the record-decision role context manager were each copied into every
+that project with the membership a project surface requires, and the
+record-decision role context manager were each copied into every
 database test module by hand. Once one definition serves all of them, the
 properties the copies asserted only by construction need somewhere to be
 asserted on purpose: that a write never survives its test, that a project
@@ -20,6 +21,7 @@ from sqlalchemy.orm import Session
 import conftest as harness
 from harness_support import adopt_baseline_facts, as_role, move_accepted_value
 
+from corridor import access
 from corridor.db import capability_engine
 from corridor.db_roles import DATABASE_ROLE_NAMES, RECORD_DECISION_ROLE
 from corridor.fact_decisions import record_human_fact_decision
@@ -29,6 +31,7 @@ from corridor.models import (
     ExtractionRun,
     Fact,
     Project,
+    ProjectRosterEntry,
 )
 from corridor.principals import HumanPrincipal
 
@@ -91,6 +94,43 @@ def test_every_synthetic_project_carries_a_fresh_slug(session, project):
     assert project.slug != second.slug
     assert second.id is not None and second.id != project.id
     assert session.get(Project, second.id) is second
+
+
+def test_the_member_project_fixture_seeds_the_membership_the_access_gate_wants(
+    session, member_project
+):
+    """The 17 copies of this fixture existed only for the roster entry."""
+    principal = HumanPrincipal(f"local:harness-member-{uuid4().hex[:8]}")
+    built = member_project(principal, designations=[access.COORDINATION])
+    entry = session.scalars(
+        select(ProjectRosterEntry).where(
+            ProjectRosterEntry.project_id == built.id,
+            ProjectRosterEntry.principal_subject == principal.subject,
+        )
+    ).one()
+    assert entry.active and entry.can_coordinate
+    assert not entry.is_technical_operator
+
+
+def test_every_member_project_carries_a_fresh_slug(session, member_project):
+    """Two member projects in one session never collide on the unique slug."""
+    principal = HumanPrincipal(f"local:harness-member-{uuid4().hex[:8]}")
+    first, second = member_project(principal), member_project(principal)
+    assert first.slug.startswith("project-") and second.slug.startswith("project-")
+    assert first.slug != second.slug and first.id != second.id
+
+
+def test_a_named_isolation_level_is_the_one_the_transaction_actually_runs_at():
+    """The two modules that copied this fixture wanted this setting, not the body."""
+    default = harness.rollback_scoped_session
+    with default() as scoped:
+        assert scoped.scalar(text("show transaction_isolation")) == "read committed"
+    for level, reported in (
+        ("REPEATABLE READ", "repeatable read"),
+        ("SERIALIZABLE", "serializable"),
+    ):
+        with default(isolation_level=level) as scoped:
+            assert scoped.scalar(text("show transaction_isolation")) == reported
 
 
 def test_the_role_context_manager_borrows_and_returns_the_role(session):

@@ -73,14 +73,8 @@ def client(session, adapter_box):
 
 
 @pytest.fixture
-def project(session):
-    row = Project(slug="failure-diagnosis", name="Failure Diagnosis", is_synthetic=True)
-    session.add(row)
-    session.flush()
-    seed_membership(
-        session, row, OPERATOR, designations=(access.TECHNICAL_OPERATIONS,)
-    )
-    return row
+def project(member_project):
+    return member_project(OPERATOR, designations=(access.TECHNICAL_OPERATIONS,))
 
 
 def _document(session, project, *, filename="matrix.pdf", sha="a" * 64):

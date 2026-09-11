@@ -58,14 +58,6 @@ def _run_id(run):
     return run.id if hasattr(run, "id") else run
 
 
-@pytest.fixture
-def project(session):
-    p = Project(slug="run-lineage-test", name="Run Lineage Test", is_synthetic=True)
-    session.add(p)
-    session.flush()
-    return p
-
-
 def add_matrix(session, project, name, sha):
     doc = Document(
         project_id=project.id,

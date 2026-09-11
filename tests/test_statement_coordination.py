@@ -57,7 +57,6 @@ from corridor.models import (
 from corridor.milestones import import_csv
 from corridor.models import DependencyEventTiming
 from corridor.principals import HumanPrincipal
-from access_support import seed_membership
 from corridor.schedule_linking import flow_through_revisions, resolve_link
 from corridor.statement_lifecycle import (
     current_lineage_statement,
@@ -109,6 +108,8 @@ from corridor.presentation import GuidedSaveOffer
 from corridor.web.app import app, get_human_principal, get_session
 from corridor.web.statement_forms import supporting_statement_evidence
 
+from proposal_support import proposal
+
 
 RECORDER = HumanPrincipal("local:statement-coordinator")
 _PAGE_IMAGE_BYTES = base64.b64decode(
@@ -117,16 +118,8 @@ _PAGE_IMAGE_BYTES = base64.b64decode(
 
 
 @pytest.fixture
-def project(session):
-    project = Project(
-        slug="guided-statement-coordination-test",
-        name="Guided statement coordination test",
-        is_synthetic=True,
-    )
-    session.add(project)
-    session.flush()
-    seed_membership(session, project, RECORDER)
-    return project
+def project(member_project):
+    return member_project(RECORDER)
 
 
 @pytest.fixture
@@ -183,21 +176,14 @@ def _candidate(
     quote: str,
     fields: dict[str, str],
 ) -> Candidate:
-    candidate = Candidate(
-        project_id=project.id,
+    candidate = proposal(
+        document,
         kind="event",
-        payload_json={"kind": "event", "fields": fields, "citations": [{
-            "document_id": document.id,
-            "page": 1,
-            "quote": quote,
-            "verified": True,
-        }]},
-        source_document_id=document.id,
-        source_pages=[1],
+        fields=fields,
+        quote=quote,
         confidence=0.9,
         prompt_version="guided-statement-test",
         model="test-model",
-        citations_verified=True,
     )
     run = record_extraction_run(
         session,

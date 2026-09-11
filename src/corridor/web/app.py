@@ -16,13 +16,13 @@ as unavailable rather than faked.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, replace
+from dataclasses import replace
 import json
 import secrets
 from datetime import date, datetime, time, timezone
 from pathlib import Path
 from collections.abc import Iterable
-from typing import Any, Callable, Literal, Mapping, Sequence
+from typing import Any, Callable, Literal
 from urllib.parse import parse_qs, quote, urlsplit
 
 from fastapi import (
@@ -50,7 +50,6 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 from starlette.requests import Request
 
-from corridor import audit
 from corridor import refusals
 from corridor import email_intake
 from corridor import notifications
@@ -73,10 +72,6 @@ from corridor.adjudicate import (
     edit_candidate,
     merge_candidate,
     reject_candidate,
-)
-from corridor.candidate_statement_facts import (
-    CandidateStatementFacts,
-    prepare_candidate_statement_facts,
 )
 from corridor.db import WebSession, WorkerSession
 from corridor.web.customer_routing import (
@@ -137,7 +132,6 @@ from corridor.models import (
     ProposedDelta,
     RESOLUTION_STRATEGIES,
     AssignmentNotification,
-    AuditLog,
     Candidate,
     CandidateDisposition,
     CommitmentLineage,
@@ -149,16 +143,13 @@ from corridor.models import (
     DependencyEventScopeDecision,
     DocPage,
     Document,
-    EventAdmissionOutcome,
     EvidenceLink,
     ExternalOrg,
     FollowUpPlanReceipt,
     Milestone,
     MilestoneRegistration,
     Project,
-    ProjectRosterEntry,
     StatementCoordinationReceipt,
-    StatementCoordinationReversal,
     CoordinationSummaryRequest,
     ProductionRunExplanationConfiguration,
     ProductionRunExplanationRequest,
@@ -288,14 +279,12 @@ from corridor.locator_validation import (
 )
 from corridor.presentation import (
     attention_reason_sentence,
-    authority_gap_label,
     documentation_review_label,
     documentation_state_label,
     field_label,
     input_reference_label,
     label,
     provenance_label,
-    read_guided_save_offer,
     resolution_strategy_label,
     source_passage_check_label,
     statement_type_label,
@@ -326,11 +315,7 @@ from corridor.organization_identity import (
 )
 from corridor.work_decisions import (
     FOLLOW_UP_NEXT_ACTION_CHOICES,
-    UNKNOWN_DUE_DATE_REASONS,
-    CANCELLATION_REASONS,
     CoordinationSubject,
-    DEFERRAL_REASONS,
-    NO_FOLLOW_UP_REASONS,
     FollowUpPlanDraft,
     FollowUpPlanPredecessors,
     StaleFollowUpPlan,
@@ -381,9 +366,7 @@ from corridor.due_work import (
 )
 from corridor.project_lock import lock_project
 from corridor.statement_coordination import (
-    AdmittedStatementCoordination,
     CLOSURE_TARGET_GAP,
-    STATEMENT_NEXT_ACTION_CHOICES,
     StaleStatementCoordination,
     StatementCoordinationRefusal,
     StatementScopeCorrection,
@@ -398,23 +381,15 @@ from corridor.statement_coordination import (
     keep_statement_unresolved,
     mark_statement_not_relevant,
     pending_candidate_authority_gap,
-    pending_statement_authority_gap,
     read_admitted_statement_coordination,
     restore_statement_not_relevant,
     set_admitted_statement_next_action,
     undo_statement_coordination,
 )
 from corridor.statement_lifecycle import (
-    current_candidate_disposition,
     current_lineage_statement,
 )
-from corridor.statement_scope_match import (
-    ScopeMatchCandidate,
-    read_statement_scope_match_card,
-    scope_match_card_data,
-)
 from corridor.evidence_investigator_shadow import observe_shadow_review
-from corridor.statement_suggestions import read_statement_suggestions
 from corridor.packet_review import (
     LEAVE_OPEN,
     FocusedAnswer,
@@ -468,13 +443,15 @@ from corridor.review_packets import (
 )
 from corridor.work_list import build_work_list
 from corridor.web.statement_forms import (
-    CANDIDATE_EVIDENCE_UNAVAILABLE,
-    candidate_statement_evidence_view,
     optional_form_date,
     required_positive_form_id,
     statement_coordination_draft,
     statement_fact_correction_draft,
     statement_scope_from_form,
+)
+from corridor.web.statement_view import (
+    active_statement_coordination_receipt,
+    read_statement_coordination,
 )
 
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
@@ -1646,7 +1623,7 @@ def correct_statement_screen(
     """Show one supported scope or fact correction for the current statement."""
     project = _project(session, slug, principal)
     candidate = _project_statement_candidate(session, project, candidate_id)
-    receipt = _active_statement_coordination_receipt(session, candidate.id)
+    receipt = active_statement_coordination_receipt(session, candidate.id)
     event: DependencyEvent | None
     scope_decision: DependencyEventScopeDecision | None
     if receipt is not None:
@@ -1879,348 +1856,6 @@ def _project_statement_candidate(
     return candidate
 
 
-def _active_statement_coordination_receipt(
-    session: Session, candidate_id: int
-) -> StatementCoordinationReceipt | None:
-    return session.scalar(
-        select(StatementCoordinationReceipt)
-        .outerjoin(
-            StatementCoordinationReversal,
-            StatementCoordinationReversal.receipt_id
-            == StatementCoordinationReceipt.id,
-        )
-        .where(
-            StatementCoordinationReceipt.candidate_id == candidate_id,
-            StatementCoordinationReversal.id.is_(None),
-        )
-        .order_by(StatementCoordinationReceipt.id.desc())
-        .limit(1)
-    )
-
-
-# The two statement coordination screens. Which one a request lands on is a
-# fact about the record, so the reading below names it (`QueueView` does the
-# same for `queue.html` and `empty.html`).
-ADMITTED_TEMPLATE = "statement_admitted_coordinate.html"
-PROPOSED_TEMPLATE = "statement_coordinate.html"
-
-
-@dataclass(frozen=True, slots=True)
-class StatementCoordinationView:
-    """One statement coordination request's reading, and the screen it is for.
-
-    `statement_coordinate.html` required thirty names that nothing declared,
-    and they were assembled as a thirty-one key dict literal at the end of a
-    two-hundred-and-ten line handler body: eight inline ORM queries, a
-    suggestion-rank sort, a `ScopeMatchCandidate` projection, and a second
-    projection of the Constraint rows written inside the literal itself. What
-    a caller had to know in order to render the screen was discoverable only
-    by reading that body, and the environment's default `Undefined` renders a
-    missing scalar or a missing sequence as nothing at all, so a dropped key
-    produced a blank section rather than a failure.
-
-    The fields below are those two templates' interface, in the shape
-    `corridor.web.queue_view`, `corridor.web.dependency_view`,
-    `corridor.web.operations_view`, `corridor.web.follow_up_view` and
-    `corridor.web.issue_section` already use for their screens: one frozen
-    reading, carrying the template it is for, with no decision of its own. A
-    field only one screen prints defaults to the empty reading of its kind, so
-    the other screen's `{% set %}` prelude binds a real value rather than the
-    environment's `Undefined`.
-
-    `AdmittedStatementCoordination` already declares everything the residual
-    screen prints about the accepted Commitment, so it is carried whole rather
-    than flattened into loose names beside it.
-    """
-
-    project: Project
-    candidate: Candidate
-    template: str
-
-    # --- the residual coordination screen ---------------------------------
-    admitted: AdmittedStatementCoordination | None = None
-    plan_unknown_date_reasons: Sequence[str] = ()
-    plan_no_follow_up_reasons: Sequence[str] = ()
-    plan_cancellation_reasons: Sequence[str] = ()
-    plan_deferral_reasons: Sequence[str] = ()
-
-    # --- the proposed statement screen ------------------------------------
-    candidate_fields: Mapping[str, Any] | None = None
-    candidate_party: str = ""
-    candidate_affected_party_id: int | None = None
-    candidate_stated_party: str = ""
-    candidate_stated_party_id: int | None = None
-    candidate_description: str = ""
-    candidate_event_date: str = ""
-    candidate_timing: Mapping[str, str | bool] | None = None
-    guided_save_available: bool = False
-    guided_save_refusal: str | None = None
-    next_action_choices: Sequence[str] = ()
-    scope_match_card: Any = None
-    candidate_evidence: Sequence[Any] = ()
-    candidate_evidence_available: bool = False
-    candidate_evidence_unavailable_message: str = CANDIDATE_EVIDENCE_UNAVAILABLE
-    statement_suggestions: Sequence[Any] = ()
-    dependencies: Sequence[Mapping[str, Any]] = ()
-    roster: Sequence[ProjectRosterEntry] = ()
-    parties: Sequence[ExternalOrg] = ()
-    milestones: Sequence[Milestone] = ()
-    receipt: StatementCoordinationReceipt | None = None
-    event: Any = None
-    line: CommitmentLineage | None = None
-    not_relevant: CandidateDisposition | None = None
-    history: Sequence[Mapping[str, Any]] = ()
-    pending_authority_gap: Any = None
-    pending_authority_gap_label: str | None = None
-    unresolved_acknowledgment: AuditLog | None = None
-
-
-def _read_statement_coordination(
-    session: Session, *, project: Project, candidate: Candidate
-) -> StatementCoordinationView:
-    """Read one statement coordination request: which screen, and its facts.
-
-    Nothing here decides anything about the record.
-    `read_admitted_statement_coordination` owns whether a statement is already
-    in the record and what one residual decision it still needs;
-    `prepare_candidate_statement_facts` owns what the source supports;
-    `statement_scope_match` owns the narrowed-set card;
-    `read_guided_save_offer` owns whether the guided Save is offered, as one
-    value with its own refusal sentence (ADR-0039); `statement_suggestions`
-    owns which similarities may order the Constraint list and never preselects
-    one. This reads each once and arranges the answers.
-    """
-
-    admitted = read_admitted_statement_coordination(
-        session, project.id, candidate.id
-    )
-    if admitted is not None:
-        return StatementCoordinationView(
-            project=project,
-            candidate=candidate,
-            template=ADMITTED_TEMPLATE,
-            admitted=admitted,
-            plan_unknown_date_reasons=sorted(UNKNOWN_DUE_DATE_REASONS),
-            plan_no_follow_up_reasons=sorted(NO_FOLLOW_UP_REASONS),
-            plan_cancellation_reasons=sorted(CANCELLATION_REASONS),
-            plan_deferral_reasons=sorted(DEFERRAL_REASONS),
-        )
-    receipt = (
-        _active_statement_coordination_receipt(session, candidate.id)
-        if candidate.state == "accepted"
-        else None
-    )
-    event = (
-        current_lineage_statement(session, receipt.commitment_lineage_id)
-        if receipt
-        else None
-    )
-    line = (
-        session.get(CommitmentLineage, receipt.commitment_lineage_id)
-        if receipt
-        else None
-    )
-    candidate_facts = prepare_candidate_statement_facts(session, candidate)
-    statement_suggestions = (
-        read_statement_suggestions(session, project.id, candidate.id)
-        if candidate.state == "pending" and candidate.citations_verified
-        else ()
-    )
-    candidate_evidence = candidate_statement_evidence_view(candidate_facts)
-    candidate_evidence_available = candidate_facts.evidence_is_reviewable
-    dependencies = _ordered_scope_dependencies(
-        session, project, statement_suggestions
-    )
-    roster = session.scalars(
-        select(ProjectRosterEntry)
-        .where(
-            ProjectRosterEntry.project_id == project.id,
-            ProjectRosterEntry.active.is_(True),
-        )
-        .order_by(ProjectRosterEntry.display_name)
-    ).all()
-    parties = list(
-        session.scalars(select(ExternalOrg).order_by(ExternalOrg.name)).all()
-    )
-    milestones = session.scalars(
-        select(Milestone)
-        .where(Milestone.project_id == project.id)
-        .order_by(Milestone.code)
-    ).all()
-    fields = candidate_facts.fields
-    candidate_affected_party_id = (
-        candidate_facts.affected_party.visible_external_org_id
-    )
-    candidate_timing = _candidate_statement_timing_view(candidate_facts)
-    guided_save_offer = read_guided_save_offer(
-        evidence_available=candidate_evidence_available,
-        timing_available=bool(candidate_timing["available"]),
-        roster_available=bool(roster),
-    )
-    disposition = current_candidate_disposition(session, candidate.id)
-    not_relevant = (
-        disposition
-        if candidate.state == "rejected"
-        and disposition is not None
-        and disposition.disposition == "not_relevant"
-        else None
-    )
-    pending_authority_gap = pending_statement_authority_gap(
-        session,
-        project.id,
-        candidate.id,
-    )
-    unresolved_acknowledgment = session.scalar(
-        select(AuditLog)
-        .where(
-            AuditLog.entity_type == audit.CANDIDATE,
-            AuditLog.entity_id == candidate.id,
-            AuditLog.action == audit.KEEP_STATEMENT_UNRESOLVED,
-        )
-        .order_by(AuditLog.id.desc())
-        .limit(1)
-    )
-    return StatementCoordinationView(
-        project=project,
-        candidate=candidate,
-        template=PROPOSED_TEMPLATE,
-        candidate_fields=fields,
-        candidate_party=candidate_facts.affected_party.wording,
-        candidate_affected_party_id=candidate_affected_party_id,
-        candidate_stated_party=candidate_facts.stated_party.wording,
-        candidate_stated_party_id=(
-            candidate_facts.stated_party.visible_external_org_id
-        ),
-        candidate_description=str(fields.get("description") or ""),
-        candidate_event_date=str(fields.get("event_date") or ""),
-        candidate_timing=candidate_timing,
-        # One value for the offer (ADR-0039): the template renders it and
-        # adds no condition of its own.
-        guided_save_available=guided_save_offer.available,
-        guided_save_refusal=guided_save_offer.refusal,
-        next_action_choices=STATEMENT_NEXT_ACTION_CHOICES,
-        scope_match_card=_statement_scope_match_card(
-            session,
-            candidate,
-            dependencies=dependencies,
-            candidate_affected_party_id=candidate_affected_party_id,
-        ),
-        candidate_evidence=candidate_evidence,
-        candidate_evidence_available=candidate_evidence_available,
-        statement_suggestions=statement_suggestions,
-        dependencies=[
-            {
-                "id": dependency.id,
-                "ref_code": dependency.ref_code,
-                "source_ref": dependency.source_ref,
-                "title": dependency.title,
-                "location_desc": dependency.location_desc,
-                "station_from": dependency.station_from,
-                "station_to": dependency.station_to,
-                "external_org_id": dependency.external_org_id,
-                "external_org_name": (
-                    external_org_name or "Organization not identified"
-                ),
-            }
-            for dependency, external_org_name in dependencies
-        ],
-        roster=roster,
-        parties=parties,
-        milestones=milestones,
-        receipt=receipt,
-        event=event,
-        line=line,
-        not_relevant=not_relevant,
-        history=_statement_coordination_history(session, candidate.id),
-        pending_authority_gap=pending_authority_gap,
-        pending_authority_gap_label=(
-            authority_gap_label(pending_authority_gap.code)
-            if pending_authority_gap is not None
-            else None
-        ),
-        unresolved_acknowledgment=unresolved_acknowledgment,
-    )
-
-
-def _ordered_scope_dependencies(
-    session: Session, project: Project, suggestions: Sequence[Any]
-) -> list[tuple[Dependency, str | None]]:
-    """This project's open Constraints, in the order the choices are offered.
-
-    Suggestions may reorder the choice list; they never preselect an entry,
-    and a protected or ineligible statement keeps the plain ref-code order.
-    """
-    rows = session.execute(
-        select(Dependency, ExternalOrg.name)
-        .outerjoin(ExternalOrg, ExternalOrg.id == Dependency.external_org_id)
-        .where(
-            Dependency.project_id == project.id,
-            Dependency.dismissed_at.is_(None),
-        )
-        .order_by(Dependency.ref_code)
-    ).all()
-    suggestion_rank = {
-        suggestion.dependency_id: rank
-        for rank, suggestion in enumerate(suggestions)
-    }
-    return sorted(
-        rows,
-        key=lambda row: (
-            suggestion_rank.get(row[0].id, len(suggestion_rank)),
-            row[0].ref_code,
-        ),
-    )
-
-
-def _statement_scope_match_card(
-    session: Session,
-    candidate: Candidate,
-    *,
-    dependencies: Sequence[tuple[Dependency, str | None]],
-    candidate_affected_party_id: int | None,
-):
-    """The narrowed-set card, or nothing.
-
-    It renders only what the matcher's own abstention receipt recorded (#370,
-    ADR-0054). This screen re-derives nothing: no recorded ambiguous
-    abstention, no card, and the ordinary explicit scope choices remain the
-    only way to record scope.
-    """
-    scope_abstention = session.scalar(
-        select(EventAdmissionOutcome)
-        .where(
-            EventAdmissionOutcome.candidate_id == candidate.id,
-            EventAdmissionOutcome.outcome == "abstained",
-        )
-        .order_by(EventAdmissionOutcome.id.desc())
-        .limit(1)
-    )
-    scope_card_data = (
-        scope_match_card_data(scope_abstention.eligibility_json)
-        if scope_abstention is not None
-        else None
-    )
-    if scope_card_data is None:
-        return None
-    return read_statement_scope_match_card(
-        scope_card_data,
-        tuple(
-            ScopeMatchCandidate(
-                dependency_id=dependency.id,
-                ref_code=dependency.ref_code,
-                source_ref=dependency.source_ref,
-                title=dependency.title,
-                location=dependency.location_desc,
-                station_from=dependency.station_from,
-                station_to=dependency.station_to,
-            )
-            for dependency, _external_org_name in dependencies
-            if candidate_affected_party_id is not None
-            and dependency.external_org_id == candidate_affected_party_id
-        ),
-    )
-
-
 def _statement_coordination_screen(
     request: Request,
     session: Session,
@@ -2236,7 +1871,7 @@ def _statement_coordination_screen(
     refusal sentence a write path just raised, which is this route's own and
     not a fact about the record.
     """
-    reading = _read_statement_coordination(
+    reading = read_statement_coordination(
         session, project=project, candidate=candidate
     )
     return TEMPLATES.TemplateResponse(
@@ -2245,103 +1880,6 @@ def _statement_coordination_screen(
         {"project": project, "reading": reading, "error": error},
         status_code=status_code,
     )
-
-
-def _candidate_statement_timing_view(
-    facts: CandidateStatementFacts,
-) -> dict[str, str | bool]:
-    """Expose supported Candidate timing read-only; never ask for transcription."""
-    timing = facts.new_timing.visible_timing
-    return {
-        "available": facts.new_timing.is_visible,
-        "text": timing.text if timing is not None else "",
-        "precision": timing.precision if timing is not None else "",
-        "start_date": (
-            timing.start_date.isoformat()
-            if timing is not None and timing.start_date is not None
-            else ""
-        ),
-        "end_date": (
-            timing.end_date.isoformat()
-            if timing is not None and timing.end_date is not None
-            else ""
-        ),
-    }
-
-
-def _statement_coordination_history(session: Session, candidate_id: int) -> tuple[dict, ...]:
-    """Render durable lifecycle acts in plain time order without hiding reversals."""
-    receipts = session.scalars(
-        select(StatementCoordinationReceipt)
-        .where(StatementCoordinationReceipt.candidate_id == candidate_id)
-        .order_by(StatementCoordinationReceipt.id)
-    ).all()
-    dispositions = session.scalars(
-        select(CandidateDisposition)
-        .where(CandidateDisposition.candidate_id == candidate_id)
-        .order_by(CandidateDisposition.id)
-    ).all()
-    reversals = session.scalars(
-        select(StatementCoordinationReversal)
-        .where(StatementCoordinationReversal.candidate_id == candidate_id)
-        .order_by(StatementCoordinationReversal.id)
-    ).all()
-    unresolved = session.scalars(
-        select(AuditLog)
-        .where(
-            AuditLog.entity_type == audit.CANDIDATE,
-            AuditLog.entity_id == candidate_id,
-            AuditLog.action == audit.KEEP_STATEMENT_UNRESOLVED,
-        )
-        .order_by(AuditLog.id)
-    ).all()
-    rows = [
-        {
-            "created_at": receipt.created_at,
-            "label": "Saved statement and Follow-up plan",
-            "detail": f"grouping receipt {receipt.id}",
-        }
-        for receipt in receipts
-    ]
-    rows.extend(
-        {
-            "created_at": disposition.created_at,
-            "label": (
-                "Not added to project record"
-                if disposition.disposition == "not_relevant"
-                else "Recorded proposed statement"
-            ),
-            "detail": disposition.reason.replace("_", " ") if disposition.reason else "",
-        }
-        for disposition in dispositions
-    )
-    rows.extend(
-        {
-            "created_at": reversal.created_at,
-            "label": (
-                "Undid guided Save"
-                if reversal.receipt_id is not None
-                else "Restored extracted statement"
-            ),
-            "detail": (
-                f"grouping receipt {reversal.receipt_id}"
-                if reversal.receipt_id is not None
-                else f"disposition {reversal.candidate_disposition_id}"
-            ),
-        }
-        for reversal in reversals
-    )
-    rows.extend(
-        {
-            "created_at": entry.ts,
-            "label": "Recorded unresolved authority gap",
-            "detail": authority_gap_label(
-                str((entry.after_json or {}).get("authority_gap") or "")
-            ),
-        }
-        for entry in unresolved
-    )
-    return tuple(sorted(rows, key=lambda row: (row["created_at"], row["label"])))
 
 
 def _safe_next(candidate: str) -> str:

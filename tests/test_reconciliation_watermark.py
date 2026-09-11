@@ -31,14 +31,6 @@ WATERMARKS = [
 STAMP = datetime(2026, 9, 10, 12, 0, tzinfo=timezone.utc)
 
 
-@pytest.fixture
-def project(session):
-    p = Project(slug=f"wm-{uuid4().hex}", name="Watermark", is_synthetic=True)
-    session.add(p)
-    session.flush()
-    return p
-
-
 class CountingPass:
     """A stand-in pass body that records each run and returns a receipt."""
 

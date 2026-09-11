@@ -190,14 +190,6 @@ def store(tmp_path, monkeypatch):
     return tmp_path / "files"
 
 
-@pytest.fixture
-def project(session):
-    p = Project(slug=f"loc-{uuid4().hex[:8]}", name="Location Test", is_synthetic=True)
-    session.add(p)
-    session.flush()
-    return p
-
-
 def _scope(project_id: int, *, sealed: bool = False, index_url: str = INDEX_URL,
            hosts: frozenset[str] = frozenset({HOST}),
            adapter_identity: str = "http-index-v1",

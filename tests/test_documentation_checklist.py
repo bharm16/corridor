@@ -40,14 +40,6 @@ from corridor.work_decisions import (
 REVIEWER = HumanPrincipal("local:checklist-reviewer")
 
 
-@pytest.fixture
-def project(session):
-    project = Project(slug="checklist", name="Checklist", is_synthetic=True)
-    session.add(project)
-    session.flush()
-    return project
-
-
 def _document(session, project, *, name: str, text: str) -> Document:
     document = Document(
         project_id=project.id,

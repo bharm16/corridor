@@ -17,13 +17,14 @@ from sqlalchemy.exc import IntegrityError
 from corridor import audit
 from corridor.adjudicate import accept_candidate, edit_candidate
 from corridor.db import Session
-from corridor.extraction_runs import (
-    declare_active_run,
-    record_extraction_run,
-)
 from corridor.exceptions import evaluate as evaluate_exceptions
 from corridor.ledger import mark_satisfies
 from committed_scenario_support import delete_committed_project
+from supersession_support import (
+    SupersededChain,
+    active_run,
+    superseded_chain,
+)
 
 from corridor.models import (
     Assertion,
@@ -53,6 +54,8 @@ from corridor.supersession_review import (
     ordinary_candidate_for_update,
     reconfirm_operative_support,
 )
+
+from proposal_support import proposal
 
 
 REVIEWER = HumanPrincipal("local:supersession-reviewer")
@@ -148,45 +151,25 @@ def _candidate(
     }
     if baseline is not None:
         fields["baseline"] = baseline
-    return Candidate(
-        project_id=project.id,
-        kind="dependency",
-        payload_json={
-            "kind": "dependency",
-            "fields": fields,
-            "citations": [
-                {
-                    "document_id": document.id,
-                    "page": 1,
-                    "quote": row_quote,
-                    "verified": True,
-                }
-            ],
-        },
-        source_document_id=document.id,
-        source_pages=[1],
-        confidence=1.0,
+    return proposal(
+        document,
+        fields=fields,
+        quote=row_quote,
         prompt_version="matrix-v1",
         model="test-model",
-        citations_verified=True,
     )
 
 
 def _completed_run(session, document: Document, *candidates: Candidate):
-    run = record_extraction_run(
+    return active_run(
         session,
         document,
+        *candidates,
+        principal=REVIEWER,
         prompt_version="matrix-v1",
-        candidate_count=len(candidates),
-        page_errors=0,
-        candidates=candidates,
         model="test-model",
         schema_version="candidate-v1",
-        allow_unsealed_legacy=True,
     )
-    declare_active_run(session, document.id, run.id, principal=REVIEWER)
-    session.flush()
-    return run
 
 
 def _register_external_org(session, name: str = "AT&T") -> None:
@@ -213,7 +196,9 @@ def _superseded_dependency(
     candidate_baseline: str | None = None,
     duplicate_predecessor_citation: bool = False,
     include_unrelated_predecessor: bool = False,
-):
+) -> SupersededChain:
+    """One accepted predecessor row, superseded by a revision nothing has read."""
+
     project = Project(
         slug=slug,
         name="Supersession Review Test",
@@ -222,60 +207,39 @@ def _superseded_dependency(
     session.add(project)
     session.flush()
     _register_external_org(session)
-    predecessor = _document(
-        session,
-        project,
-        registry_id="REV-A",
-        sha="a",
-        filename="revision-a.pdf",
-        text=" ".join(
-            item
-            for item in ("FOC1-1 AT&T Telecom 100+00", candidate_baseline)
-            if item
-        ),
+    row_text = " ".join(
+        item
+        for item in ("FOC1-1 AT&T Telecom 100+00", candidate_baseline)
+        if item
     )
-    successor = _document(
+    chain = superseded_chain(
         session,
         project,
-        registry_id="REV-B",
-        sha="b",
-        filename="revision-b.pdf",
-        text=" ".join(
-            item
-            for item in ("FOC1-1 AT&T Telecom 100+00", candidate_baseline)
-            if item
-        ),
-    )
-    index = _document(
-        session,
-        project,
-        registry_id="INDEX",
-        sha="c",
-        filename="index.pdf",
-        text="REV-A superseded by REV-B on 2026-08-01",
+        principal=REVIEWER,
+        predecessor_text=row_text,
+        successor_text=row_text,
+        register=False,
     )
 
     predecessor_candidate = _candidate(
-        project, predecessor, baseline=candidate_baseline
+        project, chain.predecessor, baseline=candidate_baseline
     )
     if duplicate_predecessor_citation:
         payload = dict(predecessor_candidate.payload_json)
         [citation] = payload["citations"]
         payload["citations"] = [dict(citation), dict(citation)]
         predecessor_candidate.payload_json = payload
-    unrelated_predecessor_candidate = None
     predecessor_candidates = [predecessor_candidate]
     if include_unrelated_predecessor:
-        unrelated_predecessor_candidate = _candidate(
-            project,
-            predecessor,
-            utility_id="FOC9-9",
-            station_from="900+00",
+        predecessor_candidates.append(
+            _candidate(
+                project,
+                chain.predecessor,
+                utility_id="FOC9-9",
+                station_from="900+00",
+            )
         )
-        predecessor_candidates.append(unrelated_predecessor_candidate)
-    predecessor_run = _completed_run(
-        session, predecessor, *predecessor_candidates
-    )
+    chain = chain.extracted(chain.predecessor, *predecessor_candidates)
     if edit_predecessor:
         edited_fields = dict(predecessor_candidate.payload_json["fields"])
         edited_fields["station_from"] = "100+25"
@@ -285,48 +249,9 @@ def _superseded_dependency(
             edited_fields,
             principal=REVIEWER,
         )
-    dependency = accept_candidate(
-        session, predecessor_candidate, principal=REVIEWER
-    )
-    old_evidence = session.scalars(
-        select(EvidenceLink).where(
-            EvidenceLink.dependency_id == dependency.id
-        ).order_by(EvidenceLink.id)
-    ).first()
-    assert old_evidence is not None
-    if satisfying:
-        mark_satisfies(
-            session,
-            dependency.id,
-            old_evidence.id,
-            principal=REVIEWER,
-        )
-    register_supersessions(
-        session,
-        [
-            SupersessionDeclaration(
-                predecessor_registry_id="REV-A",
-                successor_registry_id="REV-B",
-                replacement_date=date(2026, 8, 1),
-                source_registry_id="INDEX",
-                source_page=1,
-            )
-        ],
-        project_id=project.id,
-    )
-    session.flush()
-    return {
-        "project": project,
-        "predecessor": predecessor,
-        "successor": successor,
-        "predecessor_candidate": predecessor_candidate,
-        "unrelated_predecessor_candidate": (
-            unrelated_predecessor_candidate
-        ),
-        "predecessor_run": predecessor_run,
-        "dependency": dependency,
-        "old_evidence": old_evidence,
-    }
+    chain = chain.accepted(predecessor_candidate, satisfying=satisfying)
+    chain.register()
+    return chain
 
 
 def _reconfirm_first_revision(
@@ -338,8 +263,8 @@ def _reconfirm_first_revision(
     existing_successor_evidence = None
     if current_readiness_before:
         existing_successor_evidence = EvidenceLink(
-            dependency_id=scenario["dependency"].id,
-            document_id=scenario["successor"].id,
+            dependency_id=scenario.dependency.id,
+            document_id=scenario.successor.id,
             page_no=1,
             quote="FOC1-1 AT&T Telecom 100+00",
             verified=True,
@@ -348,31 +273,31 @@ def _reconfirm_first_revision(
         session.flush([existing_successor_evidence])
         mark_satisfies(
             session,
-            scenario["dependency"].id,
+            scenario.dependency.id,
             existing_successor_evidence.id,
             principal=REVIEWER,
         )
 
     middle_candidate = _candidate(
-        scenario["project"], scenario["successor"]
+        scenario.project, scenario.successor
     )
     middle_run = _completed_run(
-        session, scenario["successor"], middle_candidate
+        session, scenario.successor, middle_candidate
     )
     comparison = create_revision_comparison(
         session,
-        predecessor_extraction_run_id=scenario["predecessor_run"].id,
+        predecessor_extraction_run_id=scenario.predecessor_run.id,
         successor_extraction_run_id=middle_run.id,
         matcher_version="revision-correspondence-v2-first",
     )
     [review] = build_reviewer_worklist(
-        session, scenario["project"].id
+        session, scenario.project.id
     ).reconfirmation
     middle_evidence = reconfirm_operative_support(
         session,
-        project_id=scenario["project"].id,
-        dependency_id=scenario["dependency"].id,
-        predecessor_document_id=scenario["predecessor"].id,
+        project_id=scenario.project.id,
+        dependency_id=scenario.dependency.id,
+        predecessor_document_id=scenario.predecessor.id,
         successor_candidate_id=middle_candidate.id,
         comparison_id=comparison.id,
         finding_id=review.finding_id,
@@ -382,14 +307,14 @@ def _reconfirm_first_revision(
     receipt = session.scalar(
         select(AuditLog).where(
             AuditLog.entity_type == "dependency",
-            AuditLog.entity_id == scenario["dependency"].id,
+            AuditLog.entity_id == scenario.dependency.id,
             AuditLog.action == "reconfirm_operative_support",
         )
     )
     assert receipt is not None
     durable_receipt = session.get(ReconfirmationReceipt, receipt.id)
     assert durable_receipt is not None
-    assert durable_receipt.dependency_id == scenario["dependency"].id
+    assert durable_receipt.dependency_id == scenario.dependency.id
     assert durable_receipt.successor_candidate_id == middle_candidate.id
     assert durable_receipt.before_json == receipt.before_json
     assert durable_receipt.after_json == receipt.after_json
@@ -406,7 +331,7 @@ def _reconfirm_first_revision(
 def _prepare_terminal_revision(session, scenario, first):
     terminal = _document(
         session,
-        scenario["project"],
+        scenario.project,
         registry_id="REV-C",
         sha="e",
         filename="revision-c.pdf",
@@ -423,9 +348,9 @@ def _prepare_terminal_revision(session, scenario, first):
                 source_page=1,
             )
         ],
-        project_id=scenario["project"].id,
+        project_id=scenario.project.id,
     )
-    terminal_candidate = _candidate(scenario["project"], terminal)
+    terminal_candidate = _candidate(scenario.project, terminal)
     terminal_run = _completed_run(session, terminal, terminal_candidate)
     comparison = create_revision_comparison(
         session,
@@ -453,17 +378,17 @@ def test_registry_work_exists_before_extraction_or_comparison(session):
     scenario = _superseded_dependency(session)
 
     worklist = build_reviewer_worklist(
-        session, scenario["project"].id
+        session, scenario.project.id
     )
 
     assert worklist.reconfirmation == ()
     assert len(worklist.ordinary) == 1
     [review] = worklist.ordinary
-    assert review.dependency_id == scenario["dependency"].id
-    assert review.predecessor_document_id == scenario["predecessor"].id
-    assert review.successor_document_id == scenario["successor"].id
+    assert review.dependency_id == scenario.dependency.id
+    assert review.predecessor_document_id == scenario.predecessor.id
+    assert review.successor_document_id == scenario.successor.id
     assert review.predecessor_candidate_ids == (
-        scenario["predecessor_candidate"].id,
+        scenario.predecessor_proposal.id,
     )
     assert review.successor_candidate_ids == ()
     assert review.status == "awaiting_extraction"
@@ -478,22 +403,21 @@ def test_registry_work_exists_before_extraction_or_comparison(session):
 
 def test_a_durable_failed_attempt_is_not_awaiting_extraction(session):
     scenario = _superseded_dependency(session)
-    record_extraction_run(
+    active_run(
         session,
-        scenario["successor"],
-        prompt_version="matrix-v1",
-        candidate_count=0,
-        page_errors=1,
+        scenario.successor,
+        principal=REVIEWER,
+        active=False,
         outcome="failed",
+        page_errors=1,
+        error_detail="page could not be read",
+        prompt_version="matrix-v1",
         model="test-model",
         schema_version="candidate-v1",
-        error_detail="page could not be read",
-        allow_unsealed_legacy=True,
     )
-    session.flush()
 
     [review] = build_reviewer_worklist(
-        session, scenario["project"].id
+        session, scenario.project.id
     ).ordinary
 
     assert review.status == "extraction_failed"
@@ -504,12 +428,12 @@ def test_a_durable_failed_attempt_is_not_awaiting_extraction(session):
 def test_completed_successor_run_waits_for_comparison_before_reconfirmation(session):
     scenario = _superseded_dependency(session)
     successor_candidate = _candidate(
-        scenario["project"], scenario["successor"]
+        scenario.project, scenario.successor
     )
-    _completed_run(session, scenario["successor"], successor_candidate)
+    _completed_run(session, scenario.successor, successor_candidate)
 
     [review] = build_reviewer_worklist(
-        session, scenario["project"].id
+        session, scenario.project.id
     ).ordinary
 
     assert review.status == "awaiting_comparison"
@@ -520,38 +444,36 @@ def test_completed_successor_run_waits_for_comparison_before_reconfirmation(sess
 def test_completed_but_inactive_successor_run_fails_closed(session):
     scenario = _superseded_dependency(session)
     successor_candidate = _candidate(
-        scenario["project"], scenario["successor"]
+        scenario.project, scenario.successor
     )
-    record_extraction_run(
+    active_run(
         session,
-        scenario["successor"],
+        scenario.successor,
+        successor_candidate,
+        principal=REVIEWER,
+        active=False,
         prompt_version="matrix-v1",
-        candidate_count=1,
-        page_errors=0,
-        candidates=(successor_candidate,),
         model="test-model",
         schema_version="candidate-v1",
-        allow_unsealed_legacy=True,
     )
     # A later failure must not turn the completed receipt into "latest
     # failed" policy. Neither receipt is operative until a human declares
     # an Active Run.
-    record_extraction_run(
+    active_run(
         session,
-        scenario["successor"],
-        prompt_version="matrix-v1-retry",
-        candidate_count=0,
-        page_errors=1,
+        scenario.successor,
+        principal=REVIEWER,
+        active=False,
         outcome="failed",
+        page_errors=1,
+        error_detail="retry failed",
+        prompt_version="matrix-v1-retry",
         model="test-model",
         schema_version="candidate-v1",
-        error_detail="retry failed",
-        allow_unsealed_legacy=True,
     )
-    session.flush()
 
     [review] = build_reviewer_worklist(
-        session, scenario["project"].id
+        session, scenario.project.id
     ).ordinary
 
     assert review.status == "awaiting_active_run"
@@ -562,17 +484,17 @@ def test_completed_but_inactive_successor_run_fails_closed(session):
 def test_unchanged_exact_match_routes_only_to_reconfirmation(session):
     scenario = _superseded_dependency(session)
     successor_candidate = _candidate(
-        scenario["project"], scenario["successor"]
+        scenario.project, scenario.successor
     )
-    successor_run = _completed_run(session, scenario["successor"], successor_candidate)
+    successor_run = _completed_run(session, scenario.successor, successor_candidate)
     comparison = create_revision_comparison(
         session,
-        predecessor_extraction_run_id=scenario["predecessor_run"].id,
+        predecessor_extraction_run_id=scenario.predecessor_run.id,
         successor_extraction_run_id=successor_run.id,
         matcher_version="revision-correspondence-v2",
     )
 
-    worklist = build_reviewer_worklist(session, scenario["project"].id)
+    worklist = build_reviewer_worklist(session, scenario.project.id)
 
     assert worklist.ordinary == ()
     assert len(worklist.reconfirmation) == 1
@@ -584,7 +506,7 @@ def test_unchanged_exact_match_routes_only_to_reconfirmation(session):
 
     assert ordinary_candidate_for_update(
         session,
-        scenario["project"].id,
+        scenario.project.id,
         successor_candidate.id,
     ) is None
 
@@ -597,7 +519,7 @@ def test_legacy_admission_without_an_attributable_principal_stays_ordinary(
     admission = session.scalar(
         select(AuditLog).where(
             AuditLog.entity_type == "dependency",
-            AuditLog.entity_id == scenario["dependency"].id,
+            AuditLog.entity_id == scenario.dependency.id,
             AuditLog.action == "accept_candidate",
         )
     )
@@ -605,30 +527,30 @@ def test_legacy_admission_without_an_attributable_principal_stays_ordinary(
     admission.actor = "legacy-import"
     admission.human_principal = stored_principal
     successor_candidate = _candidate(
-        scenario["project"], scenario["successor"]
+        scenario.project, scenario.successor
     )
     successor_run = _completed_run(
-        session, scenario["successor"], successor_candidate
+        session, scenario.successor, successor_candidate
     )
     create_revision_comparison(
         session,
-        predecessor_extraction_run_id=scenario["predecessor_run"].id,
+        predecessor_extraction_run_id=scenario.predecessor_run.id,
         successor_extraction_run_id=successor_run.id,
         matcher_version="revision-correspondence-v2",
     )
 
-    worklist = build_reviewer_worklist(session, scenario["project"].id)
+    worklist = build_reviewer_worklist(session, scenario.project.id)
 
     assert worklist.reconfirmation == ()
     dependency_review = next(
         review
         for review in worklist.ordinary
-        if review.dependency_id == scenario["dependency"].id
+        if review.dependency_id == scenario.dependency.id
     )
     assert dependency_review.reason == "admission_not_attributable"
     assert ordinary_candidate_for_update(
         session,
-        scenario["project"].id,
+        scenario.project.id,
         successor_candidate.id,
     ).id == successor_candidate.id
 
@@ -636,25 +558,25 @@ def test_legacy_admission_without_an_attributable_principal_stays_ordinary(
 def test_multiple_exact_comparison_receipts_never_choose_the_latest(session):
     scenario = _superseded_dependency(session)
     successor_candidate = _candidate(
-        scenario["project"], scenario["successor"]
+        scenario.project, scenario.successor
     )
     successor_run = _completed_run(
-        session, scenario["successor"], successor_candidate
+        session, scenario.successor, successor_candidate
     )
     first = create_revision_comparison(
         session,
-        predecessor_extraction_run_id=scenario["predecessor_run"].id,
+        predecessor_extraction_run_id=scenario.predecessor_run.id,
         successor_extraction_run_id=successor_run.id,
         matcher_version="revision-correspondence-v2",
     )
     second = create_revision_comparison(
         session,
-        predecessor_extraction_run_id=scenario["predecessor_run"].id,
+        predecessor_extraction_run_id=scenario.predecessor_run.id,
         successor_extraction_run_id=successor_run.id,
         matcher_version="revision-correspondence-v2-review",
     )
 
-    worklist = build_reviewer_worklist(session, scenario["project"].id)
+    worklist = build_reviewer_worklist(session, scenario.project.id)
 
     assert worklist.reconfirmation == ()
     [review] = worklist.ordinary
@@ -667,19 +589,19 @@ def test_multiple_exact_comparison_receipts_never_choose_the_latest(session):
 def test_changed_and_unlinked_current_candidates_stay_ordinary(session):
     scenario = _superseded_dependency(session)
     changed = _candidate(
-        scenario["project"],
-        scenario["successor"],
+        scenario.project,
+        scenario.successor,
         station_from="101+00",
     )
-    successor_run = _completed_run(session, scenario["successor"], changed)
+    successor_run = _completed_run(session, scenario.successor, changed)
     create_revision_comparison(
         session,
-        predecessor_extraction_run_id=scenario["predecessor_run"].id,
+        predecessor_extraction_run_id=scenario.predecessor_run.id,
         successor_extraction_run_id=successor_run.id,
         matcher_version="revision-correspondence-v2",
     )
 
-    worklist = build_reviewer_worklist(session, scenario["project"].id)
+    worklist = build_reviewer_worklist(session, scenario.project.id)
 
     assert worklist.reconfirmation == ()
     assert any(
@@ -688,7 +610,7 @@ def test_changed_and_unlinked_current_candidates_stay_ordinary(session):
     )
     assert ordinary_candidate_for_update(
         session,
-        scenario["project"].id,
+        scenario.project.id,
         changed.id,
     ).id == changed.id
 
@@ -700,7 +622,7 @@ def test_fan_in_successor_candidate_is_globally_ordinary(
     scenario = _superseded_dependency(session)
     other_predecessor = _document(
         session,
-        scenario["project"],
+        scenario.project,
         registry_id="REV-X",
         sha="f",
         filename="revision-x.pdf",
@@ -710,7 +632,7 @@ def test_fan_in_successor_candidate_is_globally_ordinary(
             else "FOC1-1 AT&T Telecom 100+00"
         ),
     )
-    other_candidate = _candidate(scenario["project"], other_predecessor)
+    other_candidate = _candidate(scenario.project, other_predecessor)
     if second_match_state == "changed":
         payload = dict(other_candidate.payload_json)
         fields = dict(payload["fields"])
@@ -744,18 +666,18 @@ def test_fan_in_successor_candidate_is_globally_ordinary(
                 source_page=1,
             )
         ],
-        project_id=scenario["project"].id,
+        project_id=scenario.project.id,
     )
 
     successor_candidate = _candidate(
-        scenario["project"], scenario["successor"]
+        scenario.project, scenario.successor
     )
     successor_run = _completed_run(
-        session, scenario["successor"], successor_candidate
+        session, scenario.successor, successor_candidate
     )
     first_comparison = create_revision_comparison(
         session,
-        predecessor_extraction_run_id=scenario["predecessor_run"].id,
+        predecessor_extraction_run_id=scenario.predecessor_run.id,
         successor_extraction_run_id=successor_run.id,
         matcher_version="revision-correspondence-v2-a",
     )
@@ -774,18 +696,18 @@ def test_fan_in_successor_candidate_is_globally_ordinary(
     assert first_finding.state == "unchanged"
     assert second_finding.state == second_match_state
 
-    worklist = build_reviewer_worklist(session, scenario["project"].id)
+    worklist = build_reviewer_worklist(session, scenario.project.id)
 
     assert worklist.reconfirmation == ()
     collision_reviews = tuple(
         item
         for item in worklist.ordinary
         if item.dependency_id
-        in {scenario["dependency"].id, other_dependency.id}
+        in {scenario.dependency.id, other_dependency.id}
     )
     assert len(collision_reviews) == 2
     assert {item.dependency_id for item in collision_reviews} == {
-        scenario["dependency"].id,
+        scenario.dependency.id,
         other_dependency.id,
     }
     assert {
@@ -797,7 +719,7 @@ def test_fan_in_successor_candidate_is_globally_ordinary(
     ) == 1
     assert ordinary_candidate_for_update(
         session,
-        scenario["project"].id,
+        scenario.project.id,
         successor_candidate.id,
     ).id == successor_candidate.id
 
@@ -818,13 +740,13 @@ def test_fan_in_collision_survives_a_corrupt_admission(
     scenario = _superseded_dependency(session)
     other_predecessor = _document(
         session,
-        scenario["project"],
+        scenario.project,
         registry_id="REV-X",
         sha="f",
         filename="revision-x.pdf",
         text="FOC1-1 AT&T Telecom 100+00",
     )
-    other_candidate = _candidate(scenario["project"], other_predecessor)
+    other_candidate = _candidate(scenario.project, other_predecessor)
     other_run = _completed_run(session, other_predecessor, other_candidate)
     other_dependency = accept_candidate(
         session, other_candidate, principal=REVIEWER
@@ -873,18 +795,18 @@ def test_fan_in_collision_survives_a_corrupt_admission(
                 source_page=1,
             )
         ],
-        project_id=scenario["project"].id,
+        project_id=scenario.project.id,
     )
 
     successor_candidate = _candidate(
-        scenario["project"], scenario["successor"]
+        scenario.project, scenario.successor
     )
     successor_run = _completed_run(
-        session, scenario["successor"], successor_candidate
+        session, scenario.successor, successor_candidate
     )
     first_comparison = create_revision_comparison(
         session,
-        predecessor_extraction_run_id=scenario["predecessor_run"].id,
+        predecessor_extraction_run_id=scenario.predecessor_run.id,
         successor_extraction_run_id=successor_run.id,
         matcher_version="revision-correspondence-v2-a",
     )
@@ -907,14 +829,14 @@ def test_fan_in_collision_survives_a_corrupt_admission(
         ).findings
     ] == ["unchanged"]
 
-    worklist = build_reviewer_worklist(session, scenario["project"].id)
+    worklist = build_reviewer_worklist(session, scenario.project.id)
 
     assert worklist.reconfirmation == ()
     affected = tuple(
         item
         for item in worklist.ordinary
         if item.dependency_id
-        in {scenario["dependency"].id, other_dependency.id}
+        in {scenario.dependency.id, other_dependency.id}
     )
     assert len(affected) == 2
     assert {item.reason for item in affected} == {
@@ -926,7 +848,7 @@ def test_fan_in_collision_survives_a_corrupt_admission(
     ) == 1
     assert ordinary_candidate_for_update(
         session,
-        scenario["project"].id,
+        scenario.project.id,
         successor_candidate.id,
     ).id == successor_candidate.id
 
@@ -934,25 +856,25 @@ def test_fan_in_collision_survives_a_corrupt_admission(
 def test_fan_in_collision_survives_a_corrupt_prior_reconfirmation(session):
     scenario = _superseded_dependency(session)
     middle_candidate = _candidate(
-        scenario["project"], scenario["successor"]
+        scenario.project, scenario.successor
     )
     middle_run = _completed_run(
-        session, scenario["successor"], middle_candidate
+        session, scenario.successor, middle_candidate
     )
     first_comparison = create_revision_comparison(
         session,
-        predecessor_extraction_run_id=scenario["predecessor_run"].id,
+        predecessor_extraction_run_id=scenario.predecessor_run.id,
         successor_extraction_run_id=middle_run.id,
         matcher_version="revision-correspondence-v2-a",
     )
     [first_review] = build_reviewer_worklist(
-        session, scenario["project"].id
+        session, scenario.project.id
     ).reconfirmation
     reconfirm_operative_support(
         session,
-        project_id=scenario["project"].id,
-        dependency_id=scenario["dependency"].id,
-        predecessor_document_id=scenario["predecessor"].id,
+        project_id=scenario.project.id,
+        dependency_id=scenario.dependency.id,
+        predecessor_document_id=scenario.predecessor.id,
         successor_candidate_id=middle_candidate.id,
         comparison_id=first_comparison.id,
         finding_id=first_review.finding_id,
@@ -962,7 +884,7 @@ def test_fan_in_collision_survives_a_corrupt_prior_reconfirmation(session):
     prior_reconfirmation = session.scalar(
         select(AuditLog).where(
             AuditLog.entity_type == "dependency",
-            AuditLog.entity_id == scenario["dependency"].id,
+            AuditLog.entity_id == scenario.dependency.id,
             AuditLog.action == "reconfirm_operative_support",
         )
     )
@@ -973,7 +895,7 @@ def test_fan_in_collision_survives_a_corrupt_prior_reconfirmation(session):
 
     terminal = _document(
         session,
-        scenario["project"],
+        scenario.project,
         registry_id="REV-C",
         sha="e",
         filename="revision-c.pdf",
@@ -981,13 +903,13 @@ def test_fan_in_collision_survives_a_corrupt_prior_reconfirmation(session):
     )
     other_predecessor = _document(
         session,
-        scenario["project"],
+        scenario.project,
         registry_id="REV-X",
         sha="f",
         filename="revision-x.pdf",
         text="FOC1-1 AT&T Telecom 100+00",
     )
-    other_candidate = _candidate(scenario["project"], other_predecessor)
+    other_candidate = _candidate(scenario.project, other_predecessor)
     other_run = _completed_run(session, other_predecessor, other_candidate)
     other_dependency = accept_candidate(
         session, other_candidate, principal=REVIEWER
@@ -1022,9 +944,9 @@ def test_fan_in_collision_survives_a_corrupt_prior_reconfirmation(session):
                 source_page=1,
             ),
         ],
-        project_id=scenario["project"].id,
+        project_id=scenario.project.id,
     )
-    terminal_candidate = _candidate(scenario["project"], terminal)
+    terminal_candidate = _candidate(scenario.project, terminal)
     terminal_run = _completed_run(session, terminal, terminal_candidate)
     create_revision_comparison(
         session,
@@ -1039,14 +961,14 @@ def test_fan_in_collision_survives_a_corrupt_prior_reconfirmation(session):
         matcher_version="revision-correspondence-v2-x",
     )
 
-    worklist = build_reviewer_worklist(session, scenario["project"].id)
+    worklist = build_reviewer_worklist(session, scenario.project.id)
 
     assert worklist.reconfirmation == ()
     affected = tuple(
         item
         for item in worklist.ordinary
         if item.dependency_id
-        in {scenario["dependency"].id, other_dependency.id}
+        in {scenario.dependency.id, other_dependency.id}
     )
     assert len(affected) == 2
     assert {item.reason for item in affected} == {
@@ -1058,7 +980,7 @@ def test_fan_in_collision_survives_a_corrupt_prior_reconfirmation(session):
     ) == 1
     assert ordinary_candidate_for_update(
         session,
-        scenario["project"].id,
+        scenario.project.id,
         terminal_candidate.id,
     ).id == terminal_candidate.id
 
@@ -1072,30 +994,16 @@ def test_corrupt_admission_does_not_reserve_unrelated_comparison_rows(session):
     session.add(project)
     session.flush()
     _register_external_org(session)
-    predecessor = _document(
+    chain = superseded_chain(
         session,
         project,
-        registry_id="REV-A",
-        sha="a",
-        filename="multi-a.pdf",
-        text="FOC1-1 AT&T Telecom 100+00\nFOC2-2 AT&T Telecom 200+00",
+        principal=REVIEWER,
+        predecessor_text="FOC1-1 AT&T Telecom 100+00\nFOC2-2 AT&T Telecom 200+00",
+        successor_text="FOC1-1 AT&T Telecom 100+00\nFOC2-2 AT&T Telecom 200+00",
+        register=False,
     )
-    successor = _document(
-        session,
-        project,
-        registry_id="REV-B",
-        sha="b",
-        filename="multi-b.pdf",
-        text="FOC1-1 AT&T Telecom 100+00\nFOC2-2 AT&T Telecom 200+00",
-    )
-    _document(
-        session,
-        project,
-        registry_id="INDEX",
-        sha="c",
-        filename="multi-index.pdf",
-        text="REV-A superseded by REV-B on 2026-08-01",
-    )
+    predecessor = chain.predecessor
+    successor = chain.successor
     first_predecessor = _candidate(project, predecessor)
     second_predecessor = _candidate(
         project,
@@ -1128,19 +1036,7 @@ def test_corrupt_admission_does_not_reserve_unrelated_comparison_rows(session):
             evidence.id,
             principal=REVIEWER,
         )
-    register_supersessions(
-        session,
-        [
-            SupersessionDeclaration(
-                predecessor_registry_id="REV-A",
-                successor_registry_id="REV-B",
-                replacement_date=date(2026, 8, 1),
-                source_registry_id="INDEX",
-                source_page=1,
-            )
-        ],
-        project_id=project.id,
-    )
+    chain.register()
     first_successor = _candidate(project, successor)
     second_successor = _candidate(
         project,
@@ -1196,18 +1092,18 @@ def test_corrupt_admission_does_not_reserve_unrelated_comparison_rows(session):
 def test_ambiguous_match_stays_only_in_ordinary_adjudication(session):
     scenario = _superseded_dependency(session, candidate_baseline="IH 69")
     successor_candidate = _candidate(
-        scenario["project"],
-        scenario["successor"],
+        scenario.project,
+        scenario.successor,
         utility_id="FOC9-9",
         station_from="101+50",
         baseline="IH 69",
     )
     successor_run = _completed_run(
-        session, scenario["successor"], successor_candidate
+        session, scenario.successor, successor_candidate
     )
     comparison = create_revision_comparison(
         session,
-        predecessor_extraction_run_id=scenario["predecessor_run"].id,
+        predecessor_extraction_run_id=scenario.predecessor_run.id,
         successor_extraction_run_id=successor_run.id,
         matcher_version="revision-correspondence-v2",
     )
@@ -1216,7 +1112,7 @@ def test_ambiguous_match_stays_only_in_ordinary_adjudication(session):
         for finding in read_revision_comparison(session, comparison.id).findings
     }
 
-    worklist = build_reviewer_worklist(session, scenario["project"].id)
+    worklist = build_reviewer_worklist(session, scenario.project.id)
 
     assert states == {"ambiguous"}
     assert worklist.reconfirmation == ()
@@ -1227,16 +1123,16 @@ def test_ambiguous_match_stays_only_in_ordinary_adjudication(session):
 
 def test_dropped_predecessor_is_dependency_only_ordinary_work(session):
     scenario = _superseded_dependency(session)
-    successor_run = _completed_run(session, scenario["successor"])
+    successor_run = _completed_run(session, scenario.successor)
     comparison = create_revision_comparison(
         session,
-        predecessor_extraction_run_id=scenario["predecessor_run"].id,
+        predecessor_extraction_run_id=scenario.predecessor_run.id,
         successor_extraction_run_id=successor_run.id,
         matcher_version="revision-correspondence-v2",
     )
     [finding] = read_revision_comparison(session, comparison.id).findings
 
-    worklist = build_reviewer_worklist(session, scenario["project"].id)
+    worklist = build_reviewer_worklist(session, scenario.project.id)
 
     assert finding.state == "dropped"
     assert worklist.reconfirmation == ()
@@ -1248,23 +1144,23 @@ def test_dropped_predecessor_is_dependency_only_ordinary_work(session):
 def test_successor_unmatched_row_remains_ordinary_candidate_work(session):
     scenario = _superseded_dependency(session)
     successor_candidate = _candidate(
-        scenario["project"],
-        scenario["successor"],
+        scenario.project,
+        scenario.successor,
         utility_id="FOC9-999",
         station_from="",
     )
     successor_run = _completed_run(
-        session, scenario["successor"], successor_candidate
+        session, scenario.successor, successor_candidate
     )
     comparison = create_revision_comparison(
         session,
-        predecessor_extraction_run_id=scenario["predecessor_run"].id,
+        predecessor_extraction_run_id=scenario.predecessor_run.id,
         successor_extraction_run_id=successor_run.id,
         matcher_version="revision-correspondence-v2",
     )
     findings = read_revision_comparison(session, comparison.id).findings
 
-    worklist = build_reviewer_worklist(session, scenario["project"].id)
+    worklist = build_reviewer_worklist(session, scenario.project.id)
 
     assert "unmatched" in {finding.state for finding in findings}
     assert worklist.reconfirmation == ()
@@ -1300,33 +1196,33 @@ def test_an_ordinary_current_candidate_without_supersession_is_listed(session):
 def test_reconfirmation_moves_support_without_revising_the_dependency(session):
     scenario = _superseded_dependency(session)
     successor_candidate = _candidate(
-        scenario["project"], scenario["successor"]
+        scenario.project, scenario.successor
     )
-    successor_run = _completed_run(session, scenario["successor"], successor_candidate)
+    successor_run = _completed_run(session, scenario.successor, successor_candidate)
     comparison = create_revision_comparison(
         session,
-        predecessor_extraction_run_id=scenario["predecessor_run"].id,
+        predecessor_extraction_run_id=scenario.predecessor_run.id,
         successor_extraction_run_id=successor_run.id,
         matcher_version="revision-correspondence-v2",
     )
     [review] = build_reviewer_worklist(
-        session, scenario["project"].id
+        session, scenario.project.id
     ).reconfirmation
-    original_title = scenario["dependency"].title
+    original_title = scenario.dependency.title
     original_state = successor_candidate.state
     original_assertions = tuple(
         session.scalars(
             select(Assertion)
-            .where(Assertion.dependency_id == scenario["dependency"].id)
+            .where(Assertion.dependency_id == scenario.dependency.id)
             .order_by(Assertion.id)
         ).all()
     )
 
     new_evidence = reconfirm_operative_support(
         session,
-        project_id=scenario["project"].id,
-        dependency_id=scenario["dependency"].id,
-        predecessor_document_id=scenario["predecessor"].id,
+        project_id=scenario.project.id,
+        dependency_id=scenario.dependency.id,
+        predecessor_document_id=scenario.predecessor.id,
         successor_candidate_id=successor_candidate.id,
         comparison_id=comparison.id,
         finding_id=review.finding_id,
@@ -1335,40 +1231,40 @@ def test_reconfirmation_moves_support_without_revising_the_dependency(session):
     )
 
     session.flush()
-    refreshed = build_reviewer_worklist(session, scenario["project"].id)
+    refreshed = build_reviewer_worklist(session, scenario.project.id)
     assert refreshed.reconfirmation == ()
     assert refreshed.ordinary == ()
 
     evidence = tuple(
         session.scalars(
             select(EvidenceLink)
-            .where(EvidenceLink.dependency_id == scenario["dependency"].id)
+            .where(EvidenceLink.dependency_id == scenario.dependency.id)
             .order_by(EvidenceLink.id)
         ).all()
     )
     assert {link.document_id for link in evidence} == {
-        scenario["predecessor"].id,
-        scenario["successor"].id,
+        scenario.predecessor.id,
+        scenario.successor.id,
     }
-    assert new_evidence.document_id == scenario["successor"].id
+    assert new_evidence.document_id == scenario.successor.id
     assert _has_direct_readiness(session, new_evidence)
-    session.refresh(scenario["old_evidence"])
-    assert _has_direct_readiness(session, scenario["old_evidence"])
-    assert session.get(Project, scenario["project"].id) is not None
-    assert scenario["dependency"].title == original_title
+    session.refresh(scenario.old_evidence)
+    assert _has_direct_readiness(session, scenario.old_evidence)
+    assert session.get(Project, scenario.project.id) is not None
+    assert scenario.dependency.title == original_title
     assert successor_candidate.state == original_state == "pending"
     assert tuple(
         session.scalars(
             select(Assertion)
-            .where(Assertion.dependency_id == scenario["dependency"].id)
+            .where(Assertion.dependency_id == scenario.dependency.id)
             .order_by(Assertion.id)
         ).all()
     ) == original_assertions
 
     rules = {
         exception.rule
-        for exception in evaluate_exceptions(session, scenario["project"].id)
-        if exception.dependency_id == scenario["dependency"].id
+        for exception in evaluate_exceptions(session, scenario.project.id)
+        if exception.dependency_id == scenario.dependency.id
     }
     assert "SUPERSEDED_CITATION" not in rules
 
@@ -1376,7 +1272,7 @@ def test_reconfirmation_moves_support_without_revising_the_dependency(session):
         select(AuditLog)
         .where(
             AuditLog.entity_type == "dependency",
-            AuditLog.entity_id == scenario["dependency"].id,
+            AuditLog.entity_id == scenario.dependency.id,
             AuditLog.action == "reconfirm_operative_support",
         )
         .order_by(AuditLog.id.desc())
@@ -1388,12 +1284,12 @@ def test_reconfirmation_moves_support_without_revising_the_dependency(session):
     assert entry.after_json["scope_fingerprint"] == [
         list(item) for item in review.scope_fingerprint
     ]
-    assert entry.after_json["predecessor_candidate_id"] == scenario[
-        "predecessor_candidate"
-    ].id
+    assert entry.after_json["predecessor_candidate_id"] == (
+        scenario.predecessor_proposal.id
+    )
     durable_receipt = session.get(ReconfirmationReceipt, entry.id)
     assert durable_receipt is not None
-    assert durable_receipt.dependency_id == scenario["dependency"].id
+    assert durable_receipt.dependency_id == scenario.dependency.id
     assert durable_receipt.successor_candidate_id == successor_candidate.id
     assert durable_receipt.before_json == entry.before_json
     assert durable_receipt.after_json == entry.after_json
@@ -1409,9 +1305,9 @@ def test_reconfirmation_moves_support_without_revising_the_dependency(session):
     with pytest.raises(ReconfirmationUnavailable):
         reconfirm_operative_support(
             session,
-            project_id=scenario["project"].id,
-            dependency_id=scenario["dependency"].id,
-            predecessor_document_id=scenario["predecessor"].id,
+            project_id=scenario.project.id,
+            dependency_id=scenario.dependency.id,
+            predecessor_document_id=scenario.predecessor.id,
             successor_candidate_id=successor_candidate.id,
             comparison_id=comparison.id,
             finding_id=review.finding_id,
@@ -1424,41 +1320,41 @@ def test_reconfirmation_moves_support_without_revising_the_dependency(session):
 def test_exact_reconfirmation_can_continue_across_sequential_revisions(session):
     scenario = _superseded_dependency(session)
     middle_candidate = _candidate(
-        scenario["project"], scenario["successor"]
+        scenario.project, scenario.successor
     )
     middle_run = _completed_run(
-        session, scenario["successor"], middle_candidate
+        session, scenario.successor, middle_candidate
     )
     first_comparison = create_revision_comparison(
         session,
-        predecessor_extraction_run_id=scenario["predecessor_run"].id,
+        predecessor_extraction_run_id=scenario.predecessor_run.id,
         successor_extraction_run_id=middle_run.id,
         matcher_version="revision-correspondence-v2",
     )
     [first_review] = build_reviewer_worklist(
-        session, scenario["project"].id
+        session, scenario.project.id
     ).reconfirmation
 
     middle_evidence = reconfirm_operative_support(
         session,
-        project_id=scenario["project"].id,
-        dependency_id=scenario["dependency"].id,
-        predecessor_document_id=scenario["predecessor"].id,
+        project_id=scenario.project.id,
+        dependency_id=scenario.dependency.id,
+        predecessor_document_id=scenario.predecessor.id,
         successor_candidate_id=middle_candidate.id,
         comparison_id=first_comparison.id,
         finding_id=first_review.finding_id,
         scope_fingerprint=first_review.scope_fingerprint,
         principal=REVIEWER,
     )
-    assert middle_evidence.document_id == scenario["successor"].id
+    assert middle_evidence.document_id == scenario.successor.id
     assert middle_evidence.verified is True
     assert _has_direct_readiness(session, middle_evidence)
-    session.refresh(scenario["old_evidence"])
-    assert _has_direct_readiness(session, scenario["old_evidence"])
+    session.refresh(scenario.old_evidence)
+    assert _has_direct_readiness(session, scenario.old_evidence)
 
     terminal = _document(
         session,
-        scenario["project"],
+        scenario.project,
         registry_id="REV-C",
         sha="e",
         filename="revision-c.pdf",
@@ -1475,9 +1371,9 @@ def test_exact_reconfirmation_can_continue_across_sequential_revisions(session):
                 source_page=1,
             )
         ],
-        project_id=scenario["project"].id,
+        project_id=scenario.project.id,
     )
-    terminal_candidate = _candidate(scenario["project"], terminal)
+    terminal_candidate = _candidate(scenario.project, terminal)
     terminal_run = _completed_run(session, terminal, terminal_candidate)
     second_comparison = create_revision_comparison(
         session,
@@ -1486,19 +1382,19 @@ def test_exact_reconfirmation_can_continue_across_sequential_revisions(session):
         matcher_version="revision-correspondence-v2",
     )
 
-    worklist = build_reviewer_worklist(session, scenario["project"].id)
+    worklist = build_reviewer_worklist(session, scenario.project.id)
 
     assert worklist.ordinary == ()
     [second_review] = worklist.reconfirmation
-    assert second_review.predecessor_document_id == scenario["successor"].id
+    assert second_review.predecessor_document_id == scenario.successor.id
     assert second_review.predecessor_candidate_ids == (middle_candidate.id,)
     assert second_review.successor_document_id == terminal.id
     assert second_review.successor_candidate_ids == (terminal_candidate.id,)
     terminal_evidence = reconfirm_operative_support(
         session,
-        project_id=scenario["project"].id,
-        dependency_id=scenario["dependency"].id,
-        predecessor_document_id=scenario["successor"].id,
+        project_id=scenario.project.id,
+        dependency_id=scenario.dependency.id,
+        predecessor_document_id=scenario.successor.id,
         successor_candidate_id=terminal_candidate.id,
         comparison_id=second_comparison.id,
         finding_id=second_review.finding_id,
@@ -1511,11 +1407,11 @@ def test_exact_reconfirmation_can_continue_across_sequential_revisions(session):
     assert terminal_evidence.quote == "FOC1-1 AT&T Telecom 100+00"
     assert terminal_evidence.verified is True
     assert _has_direct_readiness(session, terminal_evidence)
-    session.refresh(scenario["old_evidence"])
+    session.refresh(scenario.old_evidence)
     session.refresh(middle_evidence)
-    assert _has_direct_readiness(session, scenario["old_evidence"])
+    assert _has_direct_readiness(session, scenario.old_evidence)
     assert _has_direct_readiness(session, middle_evidence)
-    final_worklist = build_reviewer_worklist(session, scenario["project"].id)
+    final_worklist = build_reviewer_worklist(session, scenario.project.id)
     assert final_worklist.reconfirmation == ()
     assert final_worklist.ordinary == ()
 
@@ -1524,7 +1420,7 @@ def test_exact_reconfirmation_can_continue_across_sequential_revisions(session):
             select(AuditLog)
             .where(
                 AuditLog.entity_type == "dependency",
-                AuditLog.entity_id == scenario["dependency"].id,
+                AuditLog.entity_id == scenario.dependency.id,
                 AuditLog.action == "reconfirm_operative_support",
             )
             .order_by(AuditLog.id)
@@ -1534,9 +1430,9 @@ def test_exact_reconfirmation_can_continue_across_sequential_revisions(session):
     assert all(
         entry.human_principal == REVIEWER.subject for entry in reconfirmations
     )
-    assert reconfirmations[0].after_json["predecessor_candidate_id"] == scenario[
-        "predecessor_candidate"
-    ].id
+    assert reconfirmations[0].after_json["predecessor_candidate_id"] == (
+        scenario.predecessor_proposal.id
+    )
     assert reconfirmations[0].after_json["successor_candidate_id"] == (
         middle_candidate.id
     )
@@ -1547,8 +1443,8 @@ def test_exact_reconfirmation_can_continue_across_sequential_revisions(session):
         terminal_candidate.id
     )
     support_transfers = audit.support_transfer_records_for_dependencies(
-        session, (scenario["dependency"].id,)
-    )[scenario["dependency"].id]
+        session, (scenario.dependency.id,)
+    )[scenario.dependency.id]
     assert [record.action for record in support_transfers] == [
         audit.RECONFIRM_OPERATIVE_SUPPORT,
         audit.RECONFIRM_OPERATIVE_SUPPORT,
@@ -1562,13 +1458,13 @@ def test_legacy_reconfirmation_lineage_rejects_a_forward_audit_pointer(session):
         session, scenario, first
     )
     [second_review] = build_reviewer_worklist(
-        session, scenario["project"].id
+        session, scenario.project.id
     ).reconfirmation
     reconfirm_operative_support(
         session,
-        project_id=scenario["project"].id,
-        dependency_id=scenario["dependency"].id,
-        predecessor_document_id=scenario["successor"].id,
+        project_id=scenario.project.id,
+        dependency_id=scenario.dependency.id,
+        predecessor_document_id=scenario.successor.id,
         successor_candidate_id=terminal_candidate.id,
         comparison_id=second_comparison.id,
         finding_id=second_review.finding_id,
@@ -1580,7 +1476,7 @@ def test_legacy_reconfirmation_lineage_rejects_a_forward_audit_pointer(session):
             select(AuditLog)
             .where(
                 AuditLog.entity_type == "dependency",
-                AuditLog.entity_id == scenario["dependency"].id,
+                AuditLog.entity_id == scenario.dependency.id,
                 AuditLog.action == "reconfirm_operative_support",
             )
             .order_by(AuditLog.id)
@@ -1613,7 +1509,7 @@ def test_legacy_reconfirmation_lineage_rejects_a_forward_audit_pointer(session):
 
     final = _document(
         session,
-        scenario["project"],
+        scenario.project,
         registry_id="REV-D",
         sha="f",
         filename="revision-d.pdf",
@@ -1630,13 +1526,13 @@ def test_legacy_reconfirmation_lineage_rejects_a_forward_audit_pointer(session):
                 source_page=1,
             )
         ],
-        project_id=scenario["project"].id,
+        project_id=scenario.project.id,
     )
     terminal_run = session.get(
         ExtractionRun, second_comparison.successor_extraction_run_id
     )
     assert terminal_run is not None
-    final_candidate = _candidate(scenario["project"], final)
+    final_candidate = _candidate(scenario.project, final)
     final_run = _completed_run(session, final, final_candidate)
     create_revision_comparison(
         session,
@@ -1645,13 +1541,13 @@ def test_legacy_reconfirmation_lineage_rejects_a_forward_audit_pointer(session):
         matcher_version="revision-correspondence-v2-forward-audit",
     )
 
-    worklist = build_reviewer_worklist(session, scenario["project"].id)
+    worklist = build_reviewer_worklist(session, scenario.project.id)
 
     assert worklist.reconfirmation == ()
     review = next(
         item
         for item in worklist.ordinary
-        if item.dependency_id == scenario["dependency"].id
+        if item.dependency_id == scenario.dependency.id
     )
     assert review.predecessor_document_id == terminal.id
     assert review.successor_candidate_ids == (final_candidate.id,)
@@ -1663,19 +1559,19 @@ def test_later_attributable_source_readiness_toggle_preserves_lineage(session):
     first = _reconfirm_first_revision(session, scenario)
     assert mark_satisfies(
         session,
-        scenario["dependency"].id,
-        scenario["old_evidence"].id,
+        scenario.dependency.id,
+        scenario.old_evidence.id,
         principal=REVIEWER,
     ) is False
     terminal, terminal_candidate, comparison = _prepare_terminal_revision(
         session, scenario, first
     )
 
-    worklist = build_reviewer_worklist(session, scenario["project"].id)
+    worklist = build_reviewer_worklist(session, scenario.project.id)
 
     assert worklist.ordinary == ()
     [review] = worklist.reconfirmation
-    assert review.predecessor_document_id == scenario["successor"].id
+    assert review.predecessor_document_id == scenario.successor.id
     assert {
         (scope.role, scope.evidence.evidence_link_id)
         for scope in review.superseded_scopes
@@ -1685,9 +1581,9 @@ def test_later_attributable_source_readiness_toggle_preserves_lineage(session):
     }
     reconfirm_operative_support(
         session,
-        project_id=scenario["project"].id,
-        dependency_id=scenario["dependency"].id,
-        predecessor_document_id=scenario["successor"].id,
+        project_id=scenario.project.id,
+        dependency_id=scenario.dependency.id,
+        predecessor_document_id=scenario.successor.id,
         successor_candidate_id=terminal_candidate.id,
         comparison_id=comparison.id,
         finding_id=review.finding_id,
@@ -1703,13 +1599,13 @@ def test_later_attributable_readiness_addition_expands_next_scope(session):
     assert not _has_direct_readiness(session, first["middle_evidence"])
     assert mark_satisfies(
         session,
-        scenario["dependency"].id,
+        scenario.dependency.id,
         first["middle_evidence"].id,
         principal=REVIEWER,
     ) is True
     _prepare_terminal_revision(session, scenario, first)
 
-    worklist = build_reviewer_worklist(session, scenario["project"].id)
+    worklist = build_reviewer_worklist(session, scenario.project.id)
 
     assert worklist.ordinary == ()
     [review] = worklist.reconfirmation
@@ -1724,19 +1620,19 @@ def test_later_attributable_readiness_lapse_allows_publication_only(session):
     first = _reconfirm_first_revision(session, scenario)
     assert mark_satisfies(
         session,
-        scenario["dependency"].id,
+        scenario.dependency.id,
         first["middle_evidence"].id,
         principal=REVIEWER,
     ) is True
     assert mark_satisfies(
         session,
-        scenario["dependency"].id,
+        scenario.dependency.id,
         first["middle_evidence"].id,
         principal=REVIEWER,
     ) is False
     _prepare_terminal_revision(session, scenario, first)
 
-    worklist = build_reviewer_worklist(session, scenario["project"].id)
+    worklist = build_reviewer_worklist(session, scenario.project.id)
 
     assert worklist.ordinary == ()
     [review] = worklist.reconfirmation
@@ -1748,17 +1644,17 @@ def test_later_attributable_readiness_lapse_allows_publication_only(session):
 def test_later_readiness_lapse_does_not_resurrect_transferred_source(session):
     scenario = _superseded_dependency(session)
     first = _reconfirm_first_revision(session, scenario)
-    assert _has_direct_readiness(session, scenario["old_evidence"])
+    assert _has_direct_readiness(session, scenario.old_evidence)
     assert _has_direct_readiness(session, first["middle_evidence"])
     assert mark_satisfies(
         session,
-        scenario["dependency"].id,
+        scenario.dependency.id,
         first["middle_evidence"].id,
         principal=REVIEWER,
     ) is False
     _prepare_terminal_revision(session, scenario, first)
 
-    worklist = build_reviewer_worklist(session, scenario["project"].id)
+    worklist = build_reviewer_worklist(session, scenario.project.id)
 
     assert worklist.ordinary == ()
     [review] = worklist.reconfirmation
@@ -1772,8 +1668,8 @@ def test_preexisting_successor_readiness_lapse_remains_a_historical_tombstone(
 ):
     scenario = _superseded_dependency(session)
     successor_readiness = EvidenceLink(
-        dependency_id=scenario["dependency"].id,
-        document_id=scenario["successor"].id,
+        dependency_id=scenario.dependency.id,
+        document_id=scenario.successor.id,
         page_no=1,
         quote="FOC1-1 AT&T Telecom 100+00",
         verified=True,
@@ -1782,13 +1678,13 @@ def test_preexisting_successor_readiness_lapse_remains_a_historical_tombstone(
     session.flush([successor_readiness])
     assert mark_satisfies(
         session,
-        scenario["dependency"].id,
+        scenario.dependency.id,
         successor_readiness.id,
         principal=REVIEWER,
     ) is True
     assert mark_satisfies(
         session,
-        scenario["dependency"].id,
+        scenario.dependency.id,
         successor_readiness.id,
         principal=REVIEWER,
     ) is False
@@ -1800,7 +1696,7 @@ def test_preexisting_successor_readiness_lapse_remains_a_historical_tombstone(
         for scope in first["receipt"].before_json["operative_scopes"]
     ] == ["publication"]
     _prepare_terminal_revision(session, scenario, first)
-    worklist = build_reviewer_worklist(session, scenario["project"].id)
+    worklist = build_reviewer_worklist(session, scenario.project.id)
     assert worklist.ordinary == ()
     [review] = worklist.reconfirmation
     assert [scope.role for scope in review.superseded_scopes] == [
@@ -1811,8 +1707,8 @@ def test_preexisting_successor_readiness_lapse_remains_a_historical_tombstone(
 def test_corrupt_readiness_history_cannot_restore_an_older_true_scope(session):
     scenario = _superseded_dependency(session)
     successor_readiness = EvidenceLink(
-        dependency_id=scenario["dependency"].id,
-        document_id=scenario["successor"].id,
+        dependency_id=scenario.dependency.id,
+        document_id=scenario.successor.id,
         page_no=1,
         quote="FOC1-1 AT&T Telecom 100+00",
         verified=True,
@@ -1821,13 +1717,13 @@ def test_corrupt_readiness_history_cannot_restore_an_older_true_scope(session):
     session.flush([successor_readiness])
     mark_satisfies(
         session,
-        scenario["dependency"].id,
+        scenario.dependency.id,
         successor_readiness.id,
         principal=REVIEWER,
     )
     mark_satisfies(
         session,
-        scenario["dependency"].id,
+        scenario.dependency.id,
         successor_readiness.id,
         principal=REVIEWER,
     )
@@ -1838,7 +1734,7 @@ def test_corrupt_readiness_history_cannot_restore_an_older_true_scope(session):
                 select(AuditLog)
                 .where(
                     AuditLog.entity_type == "dependency",
-                    AuditLog.entity_id == scenario["dependency"].id,
+                    AuditLog.entity_id == scenario.dependency.id,
                     AuditLog.action == "mark_satisfies_requirement",
                 )
                 .order_by(AuditLog.id)
@@ -1850,19 +1746,19 @@ def test_corrupt_readiness_history_cannot_restore_an_older_true_scope(session):
     session.flush([lapse])
 
     successor_candidate = _candidate(
-        scenario["project"], scenario["successor"]
+        scenario.project, scenario.successor
     )
     successor_run = _completed_run(
-        session, scenario["successor"], successor_candidate
+        session, scenario.successor, successor_candidate
     )
     create_revision_comparison(
         session,
-        predecessor_extraction_run_id=scenario["predecessor_run"].id,
+        predecessor_extraction_run_id=scenario.predecessor_run.id,
         successor_extraction_run_id=successor_run.id,
         matcher_version="revision-correspondence-v2-corrupt-readiness",
     )
 
-    worklist = build_reviewer_worklist(session, scenario["project"].id)
+    worklist = build_reviewer_worklist(session, scenario.project.id)
 
     assert worklist.reconfirmation == ()
     [review] = worklist.ordinary
@@ -1876,10 +1772,10 @@ def test_corrupt_readiness_history_cannot_restore_an_older_true_scope(session):
 
 def test_unaudited_readiness_flag_cannot_be_transferred(session):
     scenario = _superseded_dependency(session, satisfying=False)
-    _set_direct_readiness(session, scenario["old_evidence"], True)
+    _set_direct_readiness(session, scenario.old_evidence, True)
     current_publication = EvidenceLink(
-        dependency_id=scenario["dependency"].id,
-        document_id=scenario["successor"].id,
+        dependency_id=scenario.dependency.id,
+        document_id=scenario.successor.id,
         page_no=1,
         quote="FOC1-1 AT&T Telecom 100+00",
         verified=True,
@@ -1888,24 +1784,24 @@ def test_unaudited_readiness_flag_cannot_be_transferred(session):
     session.flush([current_publication])
     designate_publication_support(
         session,
-        scenario["dependency"].id,
+        scenario.dependency.id,
         current_publication.id,
         principal=REVIEWER,
     )
     successor_candidate = _candidate(
-        scenario["project"], scenario["successor"]
+        scenario.project, scenario.successor
     )
     successor_run = _completed_run(
-        session, scenario["successor"], successor_candidate
+        session, scenario.successor, successor_candidate
     )
     create_revision_comparison(
         session,
-        predecessor_extraction_run_id=scenario["predecessor_run"].id,
+        predecessor_extraction_run_id=scenario.predecessor_run.id,
         successor_extraction_run_id=successor_run.id,
         matcher_version="revision-correspondence-v2-unaudited-readiness",
     )
 
-    worklist = build_reviewer_worklist(session, scenario["project"].id)
+    worklist = build_reviewer_worklist(session, scenario.project.id)
 
     assert worklist.reconfirmation == ()
     [review] = worklist.ordinary
@@ -1920,21 +1816,21 @@ def test_unaudited_readiness_lapse_cannot_offer_publication_only_reconfirmation(
     session,
 ):
     scenario = _superseded_dependency(session)
-    _set_direct_readiness(session, scenario["old_evidence"], False)
+    _set_direct_readiness(session, scenario.old_evidence, False)
     successor_candidate = _candidate(
-        scenario["project"], scenario["successor"]
+        scenario.project, scenario.successor
     )
     successor_run = _completed_run(
-        session, scenario["successor"], successor_candidate
+        session, scenario.successor, successor_candidate
     )
     create_revision_comparison(
         session,
-        predecessor_extraction_run_id=scenario["predecessor_run"].id,
+        predecessor_extraction_run_id=scenario.predecessor_run.id,
         successor_extraction_run_id=successor_run.id,
         matcher_version="revision-correspondence-v2-unaudited-lapse",
     )
 
-    worklist = build_reviewer_worklist(session, scenario["project"].id)
+    worklist = build_reviewer_worklist(session, scenario.project.id)
 
     assert worklist.reconfirmation == ()
     [review] = worklist.ordinary
@@ -1948,7 +1844,7 @@ def test_unaudited_readiness_lapse_cannot_offer_publication_only_reconfirmation(
         for scope in review.superseded_scopes
         if scope.role == "readiness"
     )
-    assert readiness_scope.evidence.evidence_link_id == scenario["old_evidence"].id
+    assert readiness_scope.evidence.evidence_link_id == scenario.old_evidence.id
     readiness_evidence = session.get(
         EvidenceLink, readiness_scope.evidence.evidence_link_id
     )
@@ -1962,14 +1858,14 @@ def test_later_publication_scope_addition_expands_next_scope(session):
     first = _reconfirm_first_revision(session, scenario)
     designate_publication_support(
         session,
-        scenario["dependency"].id,
+        scenario.dependency.id,
         first["middle_evidence"].id,
         field_name="station_from",
         principal=REVIEWER,
     )
     _prepare_terminal_revision(session, scenario, first)
 
-    worklist = build_reviewer_worklist(session, scenario["project"].id)
+    worklist = build_reviewer_worklist(session, scenario.project.id)
 
     assert worklist.ordinary == ()
     [review] = worklist.reconfirmation
@@ -1995,7 +1891,7 @@ def test_historical_frontier_omits_stale_readiness_when_successor_was_ready(
     } == {"publication"}
     _prepare_terminal_revision(session, scenario, first)
 
-    worklist = build_reviewer_worklist(session, scenario["project"].id)
+    worklist = build_reviewer_worklist(session, scenario.project.id)
 
     assert worklist.ordinary == ()
     [review] = worklist.reconfirmation
@@ -2014,25 +1910,25 @@ def test_historical_frontier_omits_stale_readiness_when_successor_was_ready(
 def test_malformed_prior_reconfirmation_principal_breaks_sequential_lineage(session):
     scenario = _superseded_dependency(session)
     middle_candidate = _candidate(
-        scenario["project"], scenario["successor"]
+        scenario.project, scenario.successor
     )
     middle_run = _completed_run(
-        session, scenario["successor"], middle_candidate
+        session, scenario.successor, middle_candidate
     )
     first_comparison = create_revision_comparison(
         session,
-        predecessor_extraction_run_id=scenario["predecessor_run"].id,
+        predecessor_extraction_run_id=scenario.predecessor_run.id,
         successor_extraction_run_id=middle_run.id,
         matcher_version="revision-correspondence-v2",
     )
     [first_review] = build_reviewer_worklist(
-        session, scenario["project"].id
+        session, scenario.project.id
     ).reconfirmation
     reconfirm_operative_support(
         session,
-        project_id=scenario["project"].id,
-        dependency_id=scenario["dependency"].id,
-        predecessor_document_id=scenario["predecessor"].id,
+        project_id=scenario.project.id,
+        dependency_id=scenario.dependency.id,
+        predecessor_document_id=scenario.predecessor.id,
         successor_candidate_id=middle_candidate.id,
         comparison_id=first_comparison.id,
         finding_id=first_review.finding_id,
@@ -2042,7 +1938,7 @@ def test_malformed_prior_reconfirmation_principal_breaks_sequential_lineage(sess
     prior_reconfirmation = session.scalar(
         select(AuditLog).where(
             AuditLog.entity_type == "dependency",
-            AuditLog.entity_id == scenario["dependency"].id,
+            AuditLog.entity_id == scenario.dependency.id,
             AuditLog.action == "reconfirm_operative_support",
         )
     )
@@ -2051,7 +1947,7 @@ def test_malformed_prior_reconfirmation_principal_breaks_sequential_lineage(sess
 
     terminal = _document(
         session,
-        scenario["project"],
+        scenario.project,
         registry_id="REV-C",
         sha="e",
         filename="revision-c.pdf",
@@ -2068,9 +1964,9 @@ def test_malformed_prior_reconfirmation_principal_breaks_sequential_lineage(sess
                 source_page=1,
             )
         ],
-        project_id=scenario["project"].id,
+        project_id=scenario.project.id,
     )
-    terminal_candidate = _candidate(scenario["project"], terminal)
+    terminal_candidate = _candidate(scenario.project, terminal)
     terminal_run = _completed_run(session, terminal, terminal_candidate)
     create_revision_comparison(
         session,
@@ -2079,19 +1975,19 @@ def test_malformed_prior_reconfirmation_principal_breaks_sequential_lineage(sess
         matcher_version="revision-correspondence-v2",
     )
 
-    worklist = build_reviewer_worklist(session, scenario["project"].id)
+    worklist = build_reviewer_worklist(session, scenario.project.id)
 
     assert worklist.reconfirmation == ()
     dependency_review = next(
         review
         for review in worklist.ordinary
-        if review.dependency_id == scenario["dependency"].id
+        if review.dependency_id == scenario.dependency.id
     )
-    assert dependency_review.predecessor_document_id == scenario["successor"].id
+    assert dependency_review.predecessor_document_id == scenario.successor.id
     assert dependency_review.reason == "admission_not_attributable"
     assert ordinary_candidate_for_update(
         session,
-        scenario["project"].id,
+        scenario.project.id,
         terminal_candidate.id,
     ).id == terminal_candidate.id
 
@@ -2117,25 +2013,25 @@ def test_tampered_reconfirmation_transfer_receipt_breaks_sequential_lineage(
 ):
     scenario = _superseded_dependency(session)
     middle_candidate = _candidate(
-        scenario["project"], scenario["successor"]
+        scenario.project, scenario.successor
     )
     middle_run = _completed_run(
-        session, scenario["successor"], middle_candidate
+        session, scenario.successor, middle_candidate
     )
     first_comparison = create_revision_comparison(
         session,
-        predecessor_extraction_run_id=scenario["predecessor_run"].id,
+        predecessor_extraction_run_id=scenario.predecessor_run.id,
         successor_extraction_run_id=middle_run.id,
         matcher_version="revision-correspondence-v2",
     )
     [first_review] = build_reviewer_worklist(
-        session, scenario["project"].id
+        session, scenario.project.id
     ).reconfirmation
     reconfirm_operative_support(
         session,
-        project_id=scenario["project"].id,
-        dependency_id=scenario["dependency"].id,
-        predecessor_document_id=scenario["predecessor"].id,
+        project_id=scenario.project.id,
+        dependency_id=scenario.dependency.id,
+        predecessor_document_id=scenario.predecessor.id,
         successor_candidate_id=middle_candidate.id,
         comparison_id=first_comparison.id,
         finding_id=first_review.finding_id,
@@ -2145,7 +2041,7 @@ def test_tampered_reconfirmation_transfer_receipt_breaks_sequential_lineage(
     prior_reconfirmation = session.scalar(
         select(AuditLog).where(
             AuditLog.entity_type == "dependency",
-            AuditLog.entity_id == scenario["dependency"].id,
+            AuditLog.entity_id == scenario.dependency.id,
             AuditLog.action == "reconfirm_operative_support",
         )
     )
@@ -2161,7 +2057,7 @@ def test_tampered_reconfirmation_transfer_receipt_breaks_sequential_lineage(
             tampered_receipt_field: [],
         }
     elif tampered_receipt_field == "lapsed_readiness_source_evidence":
-        _set_direct_readiness(session, scenario["old_evidence"], False)
+        _set_direct_readiness(session, scenario.old_evidence, False)
     elif tampered_receipt_field in {
         "omitted_readiness_scope",
         "omitted_readiness_scope_after_lapse",
@@ -2197,13 +2093,13 @@ def test_tampered_reconfirmation_transfer_receipt_breaks_sequential_lineage(
         ):
             mark_satisfies(
                 session,
-                scenario["dependency"].id,
-                scenario["old_evidence"].id,
+                scenario.dependency.id,
+                scenario.old_evidence.id,
                 principal=REVIEWER,
             )
             mark_satisfies(
                 session,
-                scenario["dependency"].id,
+                scenario.dependency.id,
                 prior_reconfirmation.after_json["new_evidence_link_id"],
                 principal=REVIEWER,
             )
@@ -2215,15 +2111,15 @@ def test_tampered_reconfirmation_transfer_receipt_breaks_sequential_lineage(
                 session,
                 slug=f"foreign-receipt-source-{uuid4()}",
             )
-            source_evidence_id = other["old_evidence"].id
+            source_evidence_id = other.old_evidence.id
         elif tampered_receipt_field == "wrong_document_source_evidence":
             source_evidence_id = prior_reconfirmation.after_json[
                 "new_evidence_link_id"
             ]
         else:
             source_evidence = EvidenceLink(
-                dependency_id=scenario["dependency"].id,
-                document_id=scenario["predecessor"].id,
+                dependency_id=scenario.dependency.id,
+                document_id=scenario.predecessor.id,
                 page_no=1,
                 quote=(
                     "not the immutable predecessor citation"
@@ -2261,7 +2157,7 @@ def test_tampered_reconfirmation_transfer_receipt_breaks_sequential_lineage(
 
     terminal = _document(
         session,
-        scenario["project"],
+        scenario.project,
         registry_id="REV-C",
         sha="e",
         filename="revision-c.pdf",
@@ -2278,9 +2174,9 @@ def test_tampered_reconfirmation_transfer_receipt_breaks_sequential_lineage(
                 source_page=1,
             )
         ],
-        project_id=scenario["project"].id,
+        project_id=scenario.project.id,
     )
-    terminal_candidate = _candidate(scenario["project"], terminal)
+    terminal_candidate = _candidate(scenario.project, terminal)
     terminal_run = _completed_run(session, terminal, terminal_candidate)
     second_comparison = create_revision_comparison(
         session,
@@ -2293,14 +2189,14 @@ def test_tampered_reconfirmation_transfer_receipt_breaks_sequential_lineage(
     ).findings
     assert second_finding.state == "unchanged"
 
-    worklist = build_reviewer_worklist(session, scenario["project"].id)
+    worklist = build_reviewer_worklist(session, scenario.project.id)
 
     assert worklist.reconfirmation == ()
     later_review = next(
         item
         for item in worklist.ordinary
-        if item.dependency_id == scenario["dependency"].id
-        and item.predecessor_document_id == scenario["successor"].id
+        if item.dependency_id == scenario.dependency.id
+        and item.predecessor_document_id == scenario.successor.id
     )
     assert later_review.reason == "reconfirmation_history_corrupt"
     assert later_review.successor_candidate_ids == (terminal_candidate.id,)
@@ -2310,7 +2206,7 @@ def test_tampered_reconfirmation_transfer_receipt_breaks_sequential_lineage(
     ) == 1
     assert ordinary_candidate_for_update(
         session,
-        scenario["project"].id,
+        scenario.project.id,
         terminal_candidate.id,
     ).id == terminal_candidate.id
     evidence_before = tuple(
@@ -2330,7 +2226,7 @@ def test_tampered_reconfirmation_transfer_receipt_breaks_sequential_lineage(
                     DependencyEvidenceSufficiency.scope_link_id.is_(None),
                 ),
             )
-            .where(EvidenceLink.dependency_id == scenario["dependency"].id)
+            .where(EvidenceLink.dependency_id == scenario.dependency.id)
             .order_by(EvidenceLink.id)
         ).all()
     )
@@ -2342,7 +2238,7 @@ def test_tampered_reconfirmation_transfer_receipt_breaks_sequential_lineage(
                 OperativeSupport.role,
                 OperativeSupport.field_name,
             )
-            .where(OperativeSupport.dependency_id == scenario["dependency"].id)
+            .where(OperativeSupport.dependency_id == scenario.dependency.id)
             .order_by(OperativeSupport.id)
         ).all()
     )
@@ -2351,7 +2247,7 @@ def test_tampered_reconfirmation_transfer_receipt_breaks_sequential_lineage(
             select(AuditLog.id)
             .where(
                 AuditLog.entity_type == "dependency",
-                AuditLog.entity_id == scenario["dependency"].id,
+                AuditLog.entity_id == scenario.dependency.id,
             )
             .order_by(AuditLog.id)
         ).all()
@@ -2363,9 +2259,9 @@ def test_tampered_reconfirmation_transfer_receipt_breaks_sequential_lineage(
     ):
         reconfirm_operative_support(
             session,
-            project_id=scenario["project"].id,
-            dependency_id=scenario["dependency"].id,
-            predecessor_document_id=scenario["successor"].id,
+            project_id=scenario.project.id,
+            dependency_id=scenario.dependency.id,
+            predecessor_document_id=scenario.successor.id,
             successor_candidate_id=terminal_candidate.id,
             comparison_id=second_comparison.id,
             finding_id=second_finding.id,
@@ -2390,7 +2286,7 @@ def test_tampered_reconfirmation_transfer_receipt_breaks_sequential_lineage(
                     DependencyEvidenceSufficiency.scope_link_id.is_(None),
                 ),
             )
-            .where(EvidenceLink.dependency_id == scenario["dependency"].id)
+            .where(EvidenceLink.dependency_id == scenario.dependency.id)
             .order_by(EvidenceLink.id)
         ).all()
     ) == evidence_before
@@ -2402,7 +2298,7 @@ def test_tampered_reconfirmation_transfer_receipt_breaks_sequential_lineage(
                 OperativeSupport.role,
                 OperativeSupport.field_name,
             )
-            .where(OperativeSupport.dependency_id == scenario["dependency"].id)
+            .where(OperativeSupport.dependency_id == scenario.dependency.id)
             .order_by(OperativeSupport.id)
         ).all()
     ) == support_before
@@ -2411,7 +2307,7 @@ def test_tampered_reconfirmation_transfer_receipt_breaks_sequential_lineage(
             select(AuditLog.id)
             .where(
                 AuditLog.entity_type == "dependency",
-                AuditLog.entity_id == scenario["dependency"].id,
+                AuditLog.entity_id == scenario.dependency.id,
             )
             .order_by(AuditLog.id)
         ).all()
@@ -2424,8 +2320,8 @@ def test_duplicate_publication_owner_corrupts_a_reconfirmation_receipt(session):
     scenario = _superseded_dependency(session)
     first = _reconfirm_first_revision(session, scenario)
     duplicate_source = EvidenceLink(
-        dependency_id=scenario["dependency"].id,
-        document_id=scenario["predecessor"].id,
+        dependency_id=scenario.dependency.id,
+        document_id=scenario.predecessor.id,
         page_no=1,
         quote="FOC1-1 AT&T Telecom 100+00",
         verified=True,
@@ -2475,13 +2371,13 @@ def test_duplicate_publication_owner_corrupts_a_reconfirmation_receipt(session):
     }
     _prepare_terminal_revision(session, scenario, first)
 
-    worklist = build_reviewer_worklist(session, scenario["project"].id)
+    worklist = build_reviewer_worklist(session, scenario.project.id)
 
     assert worklist.reconfirmation == ()
     review = next(
         item
         for item in worklist.ordinary
-        if item.dependency_id == scenario["dependency"].id
+        if item.dependency_id == scenario.dependency.id
     )
     assert review.reason == "reconfirmation_history_corrupt"
 
@@ -2504,25 +2400,25 @@ def test_reconfirmed_successor_is_not_reused_by_later_supersession_work(
 ):
     scenario = _superseded_dependency(session)
     successor_candidate = _candidate(
-        scenario["project"], scenario["successor"]
+        scenario.project, scenario.successor
     )
     successor_run = _completed_run(
-        session, scenario["successor"], successor_candidate
+        session, scenario.successor, successor_candidate
     )
     first_comparison = create_revision_comparison(
         session,
-        predecessor_extraction_run_id=scenario["predecessor_run"].id,
+        predecessor_extraction_run_id=scenario.predecessor_run.id,
         successor_extraction_run_id=successor_run.id,
         matcher_version="revision-correspondence-v2-a",
     )
     [first_review] = build_reviewer_worklist(
-        session, scenario["project"].id
+        session, scenario.project.id
     ).reconfirmation
     reconfirm_operative_support(
         session,
-        project_id=scenario["project"].id,
-        dependency_id=scenario["dependency"].id,
-        predecessor_document_id=scenario["predecessor"].id,
+        project_id=scenario.project.id,
+        dependency_id=scenario.dependency.id,
+        predecessor_document_id=scenario.predecessor.id,
         successor_candidate_id=successor_candidate.id,
         comparison_id=first_comparison.id,
         finding_id=first_review.finding_id,
@@ -2534,7 +2430,7 @@ def test_reconfirmed_successor_is_not_reused_by_later_supersession_work(
             select(AuditLog.id)
             .where(
                 AuditLog.entity_type == "dependency",
-                AuditLog.entity_id == scenario["dependency"].id,
+                AuditLog.entity_id == scenario.dependency.id,
                 AuditLog.action == "reconfirm_operative_support",
             )
             .order_by(AuditLog.id)
@@ -2586,13 +2482,13 @@ def test_reconfirmed_successor_is_not_reused_by_later_supersession_work(
 
     later_predecessor = _document(
         session,
-        scenario["project"],
+        scenario.project,
         registry_id="REV-X",
         sha="f",
         filename="revision-x.pdf",
         text="FOC1-1 AT&T Telecom 100+00",
     )
-    later_candidate = _candidate(scenario["project"], later_predecessor)
+    later_candidate = _candidate(scenario.project, later_predecessor)
     later_run = _completed_run(session, later_predecessor, later_candidate)
     later_dependency = accept_candidate(
         session, later_candidate, principal=REVIEWER
@@ -2620,7 +2516,7 @@ def test_reconfirmed_successor_is_not_reused_by_later_supersession_work(
                 source_page=1,
             )
         ],
-        project_id=scenario["project"].id,
+        project_id=scenario.project.id,
     )
     second_comparison = create_revision_comparison(
         session,
@@ -2633,7 +2529,7 @@ def test_reconfirmed_successor_is_not_reused_by_later_supersession_work(
     ).findings
     assert second_finding.state == "unchanged"
 
-    worklist = build_reviewer_worklist(session, scenario["project"].id)
+    worklist = build_reviewer_worklist(session, scenario.project.id)
 
     assert worklist.reconfirmation == ()
     later_review = next(
@@ -2645,7 +2541,7 @@ def test_reconfirmed_successor_is_not_reused_by_later_supersession_work(
     assert later_review.successor_candidate_ids == ()
     assert ordinary_candidate_for_update(
         session,
-        scenario["project"].id,
+        scenario.project.id,
         successor_candidate.id,
     ) is None
     assert successor_candidate.state == "pending"
@@ -2655,7 +2551,7 @@ def test_reconfirmed_successor_is_not_reused_by_later_supersession_work(
             select(AuditLog.id)
             .where(
                 AuditLog.entity_type == "dependency",
-                AuditLog.entity_id == scenario["dependency"].id,
+                AuditLog.entity_id == scenario.dependency.id,
                 AuditLog.action == "reconfirm_operative_support",
             )
             .order_by(AuditLog.id)
@@ -2686,23 +2582,23 @@ def test_reconfirmation_recovery_does_not_hide_an_unrelated_candidate(
         session, include_unrelated_predecessor=True
     )
     successor_candidate = _candidate(
-        scenario["project"], scenario["successor"]
+        scenario.project, scenario.successor
     )
     unrelated_candidate = _candidate(
-        scenario["project"],
-        scenario["successor"],
+        scenario.project,
+        scenario.successor,
         utility_id="FOC9-9",
         station_from="900+00",
     )
     successor_run = _completed_run(
         session,
-        scenario["successor"],
+        scenario.successor,
         successor_candidate,
         unrelated_candidate,
     )
     comparison = create_revision_comparison(
         session,
-        predecessor_extraction_run_id=scenario["predecessor_run"].id,
+        predecessor_extraction_run_id=scenario.predecessor_run.id,
         successor_extraction_run_id=successor_run.id,
         matcher_version="revision-correspondence-v2-recovery",
     )
@@ -2718,14 +2614,14 @@ def test_reconfirmation_recovery_does_not_hide_an_unrelated_candidate(
         if finding.successor_candidate_ids == [unrelated_candidate.id]
     )
     [review] = build_reviewer_worklist(
-        session, scenario["project"].id
+        session, scenario.project.id
     ).reconfirmation
     assert review.finding_id == matched_finding.id
     reconfirm_operative_support(
         session,
-        project_id=scenario["project"].id,
-        dependency_id=scenario["dependency"].id,
-        predecessor_document_id=scenario["predecessor"].id,
+        project_id=scenario.project.id,
+        dependency_id=scenario.dependency.id,
+        predecessor_document_id=scenario.predecessor.id,
         successor_candidate_id=successor_candidate.id,
         comparison_id=comparison.id,
         finding_id=matched_finding.id,
@@ -2735,7 +2631,7 @@ def test_reconfirmation_recovery_does_not_hide_an_unrelated_candidate(
     receipt = session.scalar(
         select(AuditLog).where(
             AuditLog.entity_type == "dependency",
-            AuditLog.entity_id == scenario["dependency"].id,
+            AuditLog.entity_id == scenario.dependency.id,
             AuditLog.action == "reconfirm_operative_support",
         )
     )
@@ -2755,14 +2651,14 @@ def test_reconfirmation_recovery_does_not_hide_an_unrelated_candidate(
             slug=f"receipt-reverse-lookup-{uuid4().hex}",
         )
         reverse_lookup_candidate = _candidate(
-            other["project"], other["successor"]
+            other.project, other.successor
         )
         _completed_run(
             session,
-            other["successor"],
+            other.successor,
             reverse_lookup_candidate,
         )
-        receipt.entity_id = other["dependency"].id
+        receipt.entity_id = other.dependency.id
     if identity_corruption in {
         "wrong_stored_successor",
         "wrong_stored_and_finding",
@@ -2786,8 +2682,8 @@ def test_reconfirmation_recovery_does_not_hide_an_unrelated_candidate(
         "wrong_stored_finding_and_new_evidence",
     }:
         unrelated_evidence = EvidenceLink(
-            dependency_id=scenario["dependency"].id,
-            document_id=scenario["successor"].id,
+            dependency_id=scenario.dependency.id,
+            document_id=scenario.successor.id,
             page_no=1,
             quote="FOC9-9 AT&T Telecom 900+00",
             verified=True,
@@ -2804,7 +2700,7 @@ def test_reconfirmation_recovery_does_not_hide_an_unrelated_candidate(
         receipt.after_json = after
     session.flush()
 
-    worklist = build_reviewer_worklist(session, scenario["project"].id)
+    worklist = build_reviewer_worklist(session, scenario.project.id)
     ordinary_ids = tuple(
         candidate_id
         for item in worklist.ordinary
@@ -2815,12 +2711,12 @@ def test_reconfirmation_recovery_does_not_hide_an_unrelated_candidate(
     assert successor_candidate.id not in ordinary_ids
     assert ordinary_candidate_for_update(
         session,
-        scenario["project"].id,
+        scenario.project.id,
         unrelated_candidate.id,
     ).id == unrelated_candidate.id
     assert ordinary_candidate_for_update(
         session,
-        scenario["project"].id,
+        scenario.project.id,
         successor_candidate.id,
     ) is None
     if reverse_lookup_candidate is not None:
@@ -2834,19 +2730,19 @@ def test_reconfirmation_recovery_does_not_hide_an_unrelated_candidate(
 def test_human_edited_predecessor_fields_refuse_the_unchanged_shortcut(session):
     scenario = _superseded_dependency(session, edit_predecessor=True)
     successor_candidate = _candidate(
-        scenario["project"], scenario["successor"]
+        scenario.project, scenario.successor
     )
     successor_run = _completed_run(
-        session, scenario["successor"], successor_candidate
+        session, scenario.successor, successor_candidate
     )
     comparison = create_revision_comparison(
         session,
-        predecessor_extraction_run_id=scenario["predecessor_run"].id,
+        predecessor_extraction_run_id=scenario.predecessor_run.id,
         successor_extraction_run_id=successor_run.id,
         matcher_version="revision-correspondence-v2",
     )
 
-    worklist = build_reviewer_worklist(session, scenario["project"].id)
+    worklist = build_reviewer_worklist(session, scenario.project.id)
 
     assert worklist.reconfirmation == ()
     [review] = worklist.ordinary
@@ -2855,9 +2751,9 @@ def test_human_edited_predecessor_fields_refuse_the_unchanged_shortcut(session):
     with pytest.raises(ReconfirmationUnavailable):
         reconfirm_operative_support(
             session,
-            project_id=scenario["project"].id,
-            dependency_id=scenario["dependency"].id,
-            predecessor_document_id=scenario["predecessor"].id,
+            project_id=scenario.project.id,
+            dependency_id=scenario.dependency.id,
+            predecessor_document_id=scenario.predecessor.id,
             successor_candidate_id=successor_candidate.id,
             comparison_id=comparison.id,
             finding_id=review.finding_id,
@@ -2881,18 +2777,18 @@ def test_every_moved_predecessor_scope_has_one_immutable_candidate_citation(
         ),
     )
     if provenance_case == "unlinked_scope":
-        scenario["predecessor"].pages = 2
+        scenario.predecessor.pages = 2
         session.add(
             DocPage(
-                document_id=scenario["predecessor"].id,
+                document_id=scenario.predecessor.id,
                 page_no=2,
                 text="Separate verified predecessor support",
                 image_path="/tmp/revision-a-page-2.png",
             )
         )
         unrelated_support = EvidenceLink(
-            dependency_id=scenario["dependency"].id,
-            document_id=scenario["predecessor"].id,
+            dependency_id=scenario.dependency.id,
+            document_id=scenario.predecessor.id,
             page_no=2,
             quote="Separate verified predecessor support",
             verified=True,
@@ -2901,39 +2797,39 @@ def test_every_moved_predecessor_scope_has_one_immutable_candidate_citation(
         session.flush()
         designate_publication_support(
             session,
-            scenario["dependency"].id,
+            scenario.dependency.id,
             unrelated_support.id,
             field_name="station_to",
             principal=REVIEWER,
         )
 
     successor_candidate = _candidate(
-        scenario["project"], scenario["successor"]
+        scenario.project, scenario.successor
     )
     successor_run = _completed_run(
-        session, scenario["successor"], successor_candidate
+        session, scenario.successor, successor_candidate
     )
     comparison = create_revision_comparison(
         session,
-        predecessor_extraction_run_id=scenario["predecessor_run"].id,
+        predecessor_extraction_run_id=scenario.predecessor_run.id,
         successor_extraction_run_id=successor_run.id,
         matcher_version="revision-correspondence-v2",
     )
 
-    worklist = build_reviewer_worklist(session, scenario["project"].id)
+    worklist = build_reviewer_worklist(session, scenario.project.id)
 
     assert worklist.reconfirmation == ()
     review = next(
         item
         for item in worklist.ordinary
-        if item.dependency_id == scenario["dependency"].id
+        if item.dependency_id == scenario.dependency.id
     )
     assert review.reason == "predecessor_support_provenance_unsafe"
     assert review.finding_id is not None
     evidence_before = tuple(
         session.scalars(
             select(EvidenceLink.id)
-            .where(EvidenceLink.dependency_id == scenario["dependency"].id)
+            .where(EvidenceLink.dependency_id == scenario.dependency.id)
             .order_by(EvidenceLink.id)
         ).all()
     )
@@ -2941,7 +2837,7 @@ def test_every_moved_predecessor_scope_has_one_immutable_candidate_citation(
         session.scalars(
             select(OperativeSupport.id)
             .where(
-                OperativeSupport.dependency_id == scenario["dependency"].id
+                OperativeSupport.dependency_id == scenario.dependency.id
             )
             .order_by(OperativeSupport.id)
         ).all()
@@ -2951,7 +2847,7 @@ def test_every_moved_predecessor_scope_has_one_immutable_candidate_citation(
             select(AuditLog.id)
             .where(
                 AuditLog.entity_type == "dependency",
-                AuditLog.entity_id == scenario["dependency"].id,
+                AuditLog.entity_id == scenario.dependency.id,
             )
             .order_by(AuditLog.id)
         ).all()
@@ -2963,9 +2859,9 @@ def test_every_moved_predecessor_scope_has_one_immutable_candidate_citation(
     ):
         reconfirm_operative_support(
             session,
-            project_id=scenario["project"].id,
-            dependency_id=scenario["dependency"].id,
-            predecessor_document_id=scenario["predecessor"].id,
+            project_id=scenario.project.id,
+            dependency_id=scenario.dependency.id,
+            predecessor_document_id=scenario.predecessor.id,
             successor_candidate_id=successor_candidate.id,
             comparison_id=comparison.id,
             finding_id=review.finding_id,
@@ -2976,7 +2872,7 @@ def test_every_moved_predecessor_scope_has_one_immutable_candidate_citation(
     assert tuple(
         session.scalars(
             select(EvidenceLink.id)
-            .where(EvidenceLink.dependency_id == scenario["dependency"].id)
+            .where(EvidenceLink.dependency_id == scenario.dependency.id)
             .order_by(EvidenceLink.id)
         ).all()
     ) == evidence_before
@@ -2984,7 +2880,7 @@ def test_every_moved_predecessor_scope_has_one_immutable_candidate_citation(
         session.scalars(
             select(OperativeSupport.id)
             .where(
-                OperativeSupport.dependency_id == scenario["dependency"].id
+                OperativeSupport.dependency_id == scenario.dependency.id
             )
             .order_by(OperativeSupport.id)
         ).all()
@@ -2994,7 +2890,7 @@ def test_every_moved_predecessor_scope_has_one_immutable_candidate_citation(
             select(AuditLog.id)
             .where(
                 AuditLog.entity_type == "dependency",
-                AuditLog.entity_id == scenario["dependency"].id,
+                AuditLog.entity_id == scenario.dependency.id,
             )
             .order_by(AuditLog.id)
         ).all()
@@ -3004,19 +2900,19 @@ def test_every_moved_predecessor_scope_has_one_immutable_candidate_citation(
 def test_live_successor_drift_after_comparison_refuses_with_zero_writes(session):
     scenario = _superseded_dependency(session)
     successor_candidate = _candidate(
-        scenario["project"], scenario["successor"]
+        scenario.project, scenario.successor
     )
     successor_run = _completed_run(
-        session, scenario["successor"], successor_candidate
+        session, scenario.successor, successor_candidate
     )
     comparison = create_revision_comparison(
         session,
-        predecessor_extraction_run_id=scenario["predecessor_run"].id,
+        predecessor_extraction_run_id=scenario.predecessor_run.id,
         successor_extraction_run_id=successor_run.id,
         matcher_version="revision-correspondence-v2",
     )
     [safe_review] = build_reviewer_worklist(
-        session, scenario["project"].id
+        session, scenario.project.id
     ).reconfirmation
     changed_payload = dict(successor_candidate.payload_json)
     changed_fields = dict(changed_payload["fields"])
@@ -3025,7 +2921,7 @@ def test_live_successor_drift_after_comparison_refuses_with_zero_writes(session)
     successor_candidate.payload_json = changed_payload
     session.flush()
 
-    worklist = build_reviewer_worklist(session, scenario["project"].id)
+    worklist = build_reviewer_worklist(session, scenario.project.id)
 
     assert worklist.reconfirmation == ()
     assert any(
@@ -3036,9 +2932,9 @@ def test_live_successor_drift_after_comparison_refuses_with_zero_writes(session)
     with pytest.raises(ReconfirmationUnavailable):
         reconfirm_operative_support(
             session,
-            project_id=scenario["project"].id,
-            dependency_id=scenario["dependency"].id,
-            predecessor_document_id=scenario["predecessor"].id,
+            project_id=scenario.project.id,
+            dependency_id=scenario.dependency.id,
+            predecessor_document_id=scenario.predecessor.id,
             successor_candidate_id=successor_candidate.id,
             comparison_id=comparison.id,
             finding_id=safe_review.finding_id,
@@ -3051,19 +2947,19 @@ def test_live_successor_drift_after_comparison_refuses_with_zero_writes(session)
 def test_locked_rederivation_discards_a_stale_identity_map(session):
     scenario = _superseded_dependency(session)
     successor_candidate = _candidate(
-        scenario["project"], scenario["successor"]
+        scenario.project, scenario.successor
     )
     successor_run = _completed_run(
-        session, scenario["successor"], successor_candidate
+        session, scenario.successor, successor_candidate
     )
     comparison = create_revision_comparison(
         session,
-        predecessor_extraction_run_id=scenario["predecessor_run"].id,
+        predecessor_extraction_run_id=scenario.predecessor_run.id,
         successor_extraction_run_id=successor_run.id,
         matcher_version="revision-correspondence-v2",
     )
     [safe_review] = build_reviewer_worklist(
-        session, scenario["project"].id
+        session, scenario.project.id
     ).reconfirmation
     stale_payload = successor_candidate.payload_json
     changed_payload = dict(stale_payload)
@@ -3085,9 +2981,9 @@ def test_locked_rederivation_discards_a_stale_identity_map(session):
     with pytest.raises(ReconfirmationUnavailable):
         reconfirm_operative_support(
             session,
-            project_id=scenario["project"].id,
-            dependency_id=scenario["dependency"].id,
-            predecessor_document_id=scenario["predecessor"].id,
+            project_id=scenario.project.id,
+            dependency_id=scenario.dependency.id,
+            predecessor_document_id=scenario.predecessor.id,
             successor_candidate_id=successor_candidate.id,
             comparison_id=comparison.id,
             finding_id=safe_review.finding_id,
@@ -3105,24 +3001,24 @@ def test_cross_session_support_change_refuses_a_stale_reconfirmation_without_wri
             slug=f"supersession-review-race-{uuid4().hex}",
         )
         successor_candidate = _candidate(
-            scenario["project"], scenario["successor"]
+            scenario.project, scenario.successor
         )
         successor_run = _completed_run(
-            setup, scenario["successor"], successor_candidate
+            setup, scenario.successor, successor_candidate
         )
         comparison = create_revision_comparison(
             setup,
-            predecessor_extraction_run_id=scenario["predecessor_run"].id,
+            predecessor_extraction_run_id=scenario.predecessor_run.id,
             successor_extraction_run_id=successor_run.id,
             matcher_version="revision-correspondence-v2",
         )
-        project_id = scenario["project"].id
-        dependency_id = scenario["dependency"].id
-        predecessor_document_id = scenario["predecessor"].id
-        successor_document_id = scenario["successor"].id
+        project_id = scenario.project.id
+        dependency_id = scenario.dependency.id
+        predecessor_document_id = scenario.predecessor.id
+        successor_document_id = scenario.successor.id
         successor_candidate_id = successor_candidate.id
         comparison_id = comparison.id
-        old_evidence_id = scenario["old_evidence"].id
+        old_evidence_id = scenario.old_evidence.id
         setup.commit()
 
     stale_reviewer = Session()
@@ -3247,23 +3143,23 @@ def test_scope_fingerprint_refuses_cross_session_scope_drift_without_writes():
             slug=f"supersession-review-scope-race-{uuid4().hex}",
         )
         successor_candidate = _candidate(
-            scenario["project"], scenario["successor"]
+            scenario.project, scenario.successor
         )
         successor_run = _completed_run(
-            setup, scenario["successor"], successor_candidate
+            setup, scenario.successor, successor_candidate
         )
         comparison = create_revision_comparison(
             setup,
-            predecessor_extraction_run_id=scenario["predecessor_run"].id,
+            predecessor_extraction_run_id=scenario.predecessor_run.id,
             successor_extraction_run_id=successor_run.id,
             matcher_version="revision-correspondence-v2",
         )
-        project_id = scenario["project"].id
-        dependency_id = scenario["dependency"].id
-        predecessor_document_id = scenario["predecessor"].id
+        project_id = scenario.project.id
+        dependency_id = scenario.dependency.id
+        predecessor_document_id = scenario.predecessor.id
         successor_candidate_id = successor_candidate.id
         comparison_id = comparison.id
-        old_evidence_id = scenario["old_evidence"].id
+        old_evidence_id = scenario.old_evidence.id
         setup.commit()
 
     stale_reviewer = Session()
@@ -3420,13 +3316,13 @@ def test_scope_fingerprint_refuses_cross_session_scope_drift_without_writes():
 def test_multiple_successor_citations_never_offer_one_key_reconfirmation(session):
     scenario = _superseded_dependency(session)
     successor_candidate = _candidate(
-        scenario["project"], scenario["successor"]
+        scenario.project, scenario.successor
     )
     payload = dict(successor_candidate.payload_json)
     payload["citations"] = [
         *payload["citations"],
         {
-            "document_id": scenario["successor"].id,
+            "document_id": scenario.successor.id,
             "page": 1,
             "quote": "FOC1-1 AT&T Telecom 100+00",
             "verified": True,
@@ -3434,16 +3330,16 @@ def test_multiple_successor_citations_never_offer_one_key_reconfirmation(session
     ]
     successor_candidate.payload_json = payload
     successor_run = _completed_run(
-        session, scenario["successor"], successor_candidate
+        session, scenario.successor, successor_candidate
     )
     create_revision_comparison(
         session,
-        predecessor_extraction_run_id=scenario["predecessor_run"].id,
+        predecessor_extraction_run_id=scenario.predecessor_run.id,
         successor_extraction_run_id=successor_run.id,
         matcher_version="revision-correspondence-v2",
     )
 
-    worklist = build_reviewer_worklist(session, scenario["project"].id)
+    worklist = build_reviewer_worklist(session, scenario.project.id)
 
     assert worklist.reconfirmation == ()
     assert any(
@@ -3456,32 +3352,32 @@ def test_reconfirmation_moves_every_publication_scope_in_one_transaction(session
     scenario = _superseded_dependency(session)
     designate_publication_support(
         session,
-        scenario["dependency"].id,
-        scenario["old_evidence"].id,
+        scenario.dependency.id,
+        scenario.old_evidence.id,
         field_name="station_from",
         principal=REVIEWER,
     )
     successor_candidate = _candidate(
-        scenario["project"], scenario["successor"]
+        scenario.project, scenario.successor
     )
     successor_run = _completed_run(
-        session, scenario["successor"], successor_candidate
+        session, scenario.successor, successor_candidate
     )
     comparison = create_revision_comparison(
         session,
-        predecessor_extraction_run_id=scenario["predecessor_run"].id,
+        predecessor_extraction_run_id=scenario.predecessor_run.id,
         successor_extraction_run_id=successor_run.id,
         matcher_version="revision-correspondence-v2",
     )
     [review] = build_reviewer_worklist(
-        session, scenario["project"].id
+        session, scenario.project.id
     ).reconfirmation
 
     new_evidence = reconfirm_operative_support(
         session,
-        project_id=scenario["project"].id,
-        dependency_id=scenario["dependency"].id,
-        predecessor_document_id=scenario["predecessor"].id,
+        project_id=scenario.project.id,
+        dependency_id=scenario.dependency.id,
+        predecessor_document_id=scenario.predecessor.id,
         successor_candidate_id=successor_candidate.id,
         comparison_id=comparison.id,
         finding_id=review.finding_id,
@@ -3492,7 +3388,7 @@ def test_reconfirmation_moves_every_publication_scope_in_one_transaction(session
     designations = tuple(
         session.scalars(
             select(OperativeSupport)
-            .where(OperativeSupport.dependency_id == scenario["dependency"].id)
+            .where(OperativeSupport.dependency_id == scenario.dependency.id)
             .order_by(OperativeSupport.id)
         ).all()
     )
@@ -3507,7 +3403,7 @@ def test_reconfirmation_refuses_to_move_only_one_of_two_stale_documents(session)
     scenario = _superseded_dependency(session)
     other_predecessor = _document(
         session,
-        scenario["project"],
+        scenario.project,
         registry_id="REV-X",
         sha="f",
         filename="revision-x.pdf",
@@ -3515,14 +3411,14 @@ def test_reconfirmation_refuses_to_move_only_one_of_two_stale_documents(session)
     )
     _document(
         session,
-        scenario["project"],
+        scenario.project,
         registry_id="REV-Y",
         sha="g",
         filename="revision-y.pdf",
         text="FOC1-1 AT&T Telecom 100+00",
     )
     other_evidence = EvidenceLink(
-        dependency_id=scenario["dependency"].id,
+        dependency_id=scenario.dependency.id,
         document_id=other_predecessor.id,
         page_no=1,
         quote="FOC1-1 AT&T Telecom 100+00",
@@ -3532,14 +3428,14 @@ def test_reconfirmation_refuses_to_move_only_one_of_two_stale_documents(session)
     session.flush()
     designate_publication_support(
         session,
-        scenario["dependency"].id,
+        scenario.dependency.id,
         other_evidence.id,
         field_name="station_to",
         principal=REVIEWER,
     )
     mark_satisfies(
         session,
-        scenario["dependency"].id,
+        scenario.dependency.id,
         other_evidence.id,
         principal=REVIEWER,
     )
@@ -3554,42 +3450,42 @@ def test_reconfirmation_refuses_to_move_only_one_of_two_stale_documents(session)
                 source_page=1,
             )
         ],
-        project_id=scenario["project"].id,
+        project_id=scenario.project.id,
     )
     successor_candidate = _candidate(
-        scenario["project"], scenario["successor"]
+        scenario.project, scenario.successor
     )
     successor_run = _completed_run(
-        session, scenario["successor"], successor_candidate
+        session, scenario.successor, successor_candidate
     )
     comparison = create_revision_comparison(
         session,
-        predecessor_extraction_run_id=scenario["predecessor_run"].id,
+        predecessor_extraction_run_id=scenario.predecessor_run.id,
         successor_extraction_run_id=successor_run.id,
         matcher_version="revision-correspondence-v2",
     )
 
-    worklist = build_reviewer_worklist(session, scenario["project"].id)
+    worklist = build_reviewer_worklist(session, scenario.project.id)
 
     assert worklist.reconfirmation == ()
     assert {
         review.predecessor_document_id
         for review in worklist.ordinary
-        if review.dependency_id == scenario["dependency"].id
-    } == {scenario["predecessor"].id, other_predecessor.id}
+        if review.dependency_id == scenario.dependency.id
+    } == {scenario.predecessor.id, other_predecessor.id}
     selected = next(
         review
         for review in worklist.ordinary
-        if review.predecessor_document_id == scenario["predecessor"].id
+        if review.predecessor_document_id == scenario.predecessor.id
     )
     assert selected.reason == "partial_scope_transfer"
     before = len(session.scalars(select(EvidenceLink)).all())
     with pytest.raises(ReconfirmationUnavailable):
         reconfirm_operative_support(
             session,
-            project_id=scenario["project"].id,
-            dependency_id=scenario["dependency"].id,
-            predecessor_document_id=scenario["predecessor"].id,
+            project_id=scenario.project.id,
+            dependency_id=scenario.dependency.id,
+            predecessor_document_id=scenario.predecessor.id,
             successor_candidate_id=successor_candidate.id,
             comparison_id=comparison.id,
             finding_id=selected.finding_id,
@@ -3597,35 +3493,35 @@ def test_reconfirmation_refuses_to_move_only_one_of_two_stale_documents(session)
             principal=REVIEWER,
         )
     assert len(session.scalars(select(EvidenceLink)).all()) == before
-    session.refresh(scenario["old_evidence"])
+    session.refresh(scenario.old_evidence)
     session.refresh(other_evidence)
-    assert _has_direct_readiness(session, scenario["old_evidence"])
+    assert _has_direct_readiness(session, scenario.old_evidence)
     assert _has_direct_readiness(session, other_evidence)
 
 
 def test_reconfirmation_does_not_invent_readiness(session):
     scenario = _superseded_dependency(session, satisfying=False)
     successor_candidate = _candidate(
-        scenario["project"], scenario["successor"]
+        scenario.project, scenario.successor
     )
     successor_run = _completed_run(
-        session, scenario["successor"], successor_candidate
+        session, scenario.successor, successor_candidate
     )
     comparison = create_revision_comparison(
         session,
-        predecessor_extraction_run_id=scenario["predecessor_run"].id,
+        predecessor_extraction_run_id=scenario.predecessor_run.id,
         successor_extraction_run_id=successor_run.id,
         matcher_version="revision-correspondence-v2",
     )
     [review] = build_reviewer_worklist(
-        session, scenario["project"].id
+        session, scenario.project.id
     ).reconfirmation
 
     new_evidence = reconfirm_operative_support(
         session,
-        project_id=scenario["project"].id,
-        dependency_id=scenario["dependency"].id,
-        predecessor_document_id=scenario["predecessor"].id,
+        project_id=scenario.project.id,
+        dependency_id=scenario.dependency.id,
+        predecessor_document_id=scenario.predecessor.id,
         successor_candidate_id=successor_candidate.id,
         comparison_id=comparison.id,
         finding_id=review.finding_id,
@@ -3640,7 +3536,7 @@ def test_multi_hop_chain_refuses_an_intermediate_successor(session):
     scenario = _superseded_dependency(session)
     terminal = _document(
         session,
-        scenario["project"],
+        scenario.project,
         registry_id="REV-C",
         sha="e",
         filename="revision-c.pdf",
@@ -3657,11 +3553,11 @@ def test_multi_hop_chain_refuses_an_intermediate_successor(session):
                 source_page=1,
             )
         ],
-        project_id=scenario["project"].id,
+        project_id=scenario.project.id,
     )
 
     [review] = build_reviewer_worklist(
-        session, scenario["project"].id
+        session, scenario.project.id
     ).ordinary
 
     assert terminal.superseded_by is None

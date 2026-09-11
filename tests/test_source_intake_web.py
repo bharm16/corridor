@@ -65,12 +65,8 @@ def client_without_session(session):
 
 
 @pytest.fixture
-def project(session):
-    p = Project(slug=f"web-intake-{uuid4().hex[:8]}", name="Web Intake", is_synthetic=True)
-    session.add(p)
-    session.flush()
-    seed_membership(session, p, TEST_PRINCIPAL)
-    return p
+def project(member_project):
+    return member_project(TEST_PRINCIPAL)
 
 
 def _fingerprint(project, body, doc_type, filename):

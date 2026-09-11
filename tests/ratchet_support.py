@@ -302,6 +302,7 @@ def assert_reviewed_relocations(
     *,
     consumers: Mapping[str, Sequence[str]],
     source_root: str,
+    census: str | None = None,
     repository: Path = REPO_ROOT,
 ) -> frozenset[tuple[str, str]]:
     """The `(class, module)` pairs a reviewed extraction may add, and no others.
@@ -329,6 +330,14 @@ def assert_reviewed_relocations(
       reviewed extraction, so a module that already consumes a legacy class
       cannot be a destination.
 
+    * **the destination was not already a consumer.** At the merge base the
+      census did not list it for these classes. This is what spends the
+      permission, and it is deliberately the one check that does not read the
+      source reading: a declaration whose source is left as a delegating stub
+      goes on satisfying every check above it forever, because an annotation
+      counts as naming the dependency but never counts as running it. Asking
+      the census instead is indifferent to what the source became.
+
     None of that says the reading still *means* what it meant. This reads
     imported and referenced class names; it cannot see project scoping,
     filters, ordering, missing-data behavior, or where authorization is
@@ -336,10 +345,10 @@ def assert_reviewed_relocations(
     and by focused behavior tests, and this guard is no evidence about it
     whatsoever.
 
-    The permission is spent by the merge that uses it. At the next merge base
-    the source reading no longer holds the dependency, so the first check stops
-    passing and the declaration has to be deleted; from then on the destination
-    is an ordinary consumer, counted like every other. None of this is
+    The permission is spent by the merge that uses it: the destination joins
+    the recorded census, so at the next merge base the last check refuses the
+    declaration and it has to be deleted. From then on the destination is an
+    ordinary consumer, counted like every other. None of this is
     progress: ADR-0081 stage 4 exits when no reader imports a legacy table
     module, and a relocation leaves the census one name longer than it found
     it. The census goes on reporting that.
@@ -353,6 +362,7 @@ def assert_reviewed_relocations(
     if base is None:
         return frozenset()
 
+    landed = recorded_at_merge_base(census, repository=repository) if census else None
     legacy = set(consumers)
     authorized: set[tuple[str, str]] = set()
     transferred: dict[str, set[str]] = {}
@@ -378,6 +388,18 @@ def assert_reviewed_relocations(
             "destination; a spent declaration is not reusable"
         )
         moved.add(reading)
+
+        if landed is not None:
+            already = sorted(
+                name
+                for name in models
+                if relocation.destination in set(landed.get(name, ()))
+            )
+            assert not already, (
+                f"{relocation}: at the merge base {relocation.destination} "
+                f"already consumes {', '.join(already)}. This relocation has "
+                "landed and the declaration is spent -- delete it"
+            )
 
         defined, before, _ = _named_in(
             _git(

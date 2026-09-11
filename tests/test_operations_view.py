@@ -9,10 +9,9 @@ the two can no longer disagree quietly.
 
 from hashlib import sha256
 
-import pytest
 
 from corridor.extraction_runs import declare_active_run, record_extraction_run
-from corridor.models import Document, Project, RecordInclusionRequest
+from corridor.models import Document, RecordInclusionRequest
 from corridor.principals import HumanPrincipal
 from corridor.production_run_explanation import (
     competing_production_runs,
@@ -23,14 +22,6 @@ from corridor.record_inclusion import record_inclusion_pending
 from corridor.web.operations_view import operations_view
 
 OPERATOR = HumanPrincipal("local:operations")
-
-
-@pytest.fixture
-def project(session):
-    row = Project(slug="operations-view", name="Operations View", is_synthetic=True)
-    session.add(row)
-    session.flush()
-    return row
 
 
 def _document(session, project, filename):
