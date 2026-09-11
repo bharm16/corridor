@@ -1581,6 +1581,97 @@ def test_every_project_scoped_table_is_covered_by_the_committed_scenario_cleanup
     )
 
 
+# Reading several row counts before an act and the same counts after it is
+# asserting that the act wrote nothing; `record_counts` names that invariant
+# and derives its table set. These read one chosen family on purpose, because
+# the act they perform succeeds and writes rows elsewhere by design, so
+# "nothing changed" would be false where "nothing of this family changed" is
+# the claim. Each says which act, and what it legitimately writes.
+COUNTS_ONE_FAMILY_ACROSS_AN_ACT_THAT_WRITES = {
+    "test_delta_generation_runtime._accepted_counts": (
+        "delta generation appends Proposed Deltas; the accepted record is what "
+        "must not move"
+    ),
+    "test_dependency_admission.test_exact_reextraction_replay_is_idempotent_and_changes_no_ledger_rows": (
+        "the replay records a second Extraction Run and its proposals; the "
+        "ledger is what must not move"
+    ),
+    "test_due_work._domain_counts": (
+        "the due-work run appends its own occurrence and receipt; the domain "
+        "rows are what must not move"
+    ),
+    "test_fact_materialization.test_a_hostile_model_response_enters_no_segment_and_no_fact": (
+        "the counts are absolute zeroes, not a before-and-after; a relative "
+        "reading would be the weaker claim"
+    ),
+}
+
+_COUNTS_ROWS = "select_from"
+
+
+def _row_count_subjects(node: ast.AST) -> list[str]:
+    """Every model or table named in a `select(func.count()).select_from(X)`."""
+
+    return [
+        ast.unparse(argument)
+        for call in ast.walk(node)
+        if isinstance(call, ast.Call)
+        and getattr(call.func, "attr", None) == _COUNTS_ROWS
+        for argument in call.args
+    ]
+
+
+def test_the_refused_act_wrote_nothing_is_read_from_one_derived_table_set():
+    """One reading of "the act left the record exactly as it was" (#846).
+
+    The invariant was asserted twenty-seven times and named nowhere. Ten
+    modules wrapped it in a private helper and each helper chose its own
+    tables: three, five, five, five, six, seven and eight, out of the two
+    hundred and eight a project can hold. A refusal test that reads five
+    tables passes while the write it forbids lands in the other two hundred
+    and three, and the module that chose five had no way to know.
+
+    So this rule is about the choosing. A function that counts rows of two
+    different tables is taking that reading by hand: either it counts each
+    once across one act, which is the before-and-after idiom, or it is a
+    helper that exists to be called twice. Both reach
+    `record_counts.project_record_counts`, which counts the set
+    `committed_scenario_support` derives from the schema.
+    """
+
+    seam = TEST_ROOT / "record_counts.py"
+    guard = Path(__file__).resolve()
+    hand_read = {}
+    for path in _module_paths(TEST_ROOT):
+        if path == seam or path.resolve() == guard:
+            continue
+        for node in read_python(path).nodes:
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            subjects = _row_count_subjects(node)
+            distinct = set(subjects)
+            if len(distinct) < 2:
+                continue
+            repeated = any(subjects.count(name) >= 2 for name in distinct)
+            if node.name.startswith("test_") and not repeated:
+                continue
+            hand_read[f"{path.stem}.{node.name}"] = node.lineno
+
+    unclassified = sorted(
+        set(hand_read) - set(COUNTS_ONE_FAMILY_ACROSS_AN_ACT_THAT_WRITES)
+    )
+    assert unclassified == [], (
+        "these read a hand-picked set of row counts across an act; call "
+        "record_counts.nothing_written or record_counts.project_record_counts, "
+        "or say in test_architecture.py which family the act legitimately "
+        f"writes: {[(name, hand_read[name]) for name in unclassified]}"
+    )
+    stale = sorted(set(COUNTS_ONE_FAMILY_ACROSS_AN_ACT_THAT_WRITES) - set(hand_read))
+    assert stale == [], (
+        f"these no longer read a hand-picked set of row counts: {stale}"
+    )
+
+
 def test_only_the_storage_interface_builds_a_path_into_the_content_store():
     """Every content-addressed artifact goes through `corridor.object_storage` (#487).
 

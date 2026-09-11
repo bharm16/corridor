@@ -38,12 +38,10 @@ from corridor.models import (
     Document,
     EvidenceLink,
     EvidenceInvestigationCandidateReviewStart,
-    ExternalReportArtifact,
     ExternalOrg,
     OrganizationIdentityReceipt,
     Project,
     ProjectRosterEntry,
-    ReportRun,
     WorkDecision,
 )
 from corridor.operative_support import designate_publication_support
@@ -63,7 +61,7 @@ from corridor.work_decisions import (
     current_next_action_decision,
 )
 from access_support import seed_membership
-from record_counts import nothing_written
+from record_counts import nothing_written, project_record_counts
 
 TEST_PRINCIPAL = HumanPrincipal("local:test-reviewer")
 PLAN_ACTION = FOLLOW_UP_NEXT_ACTION_CHOICES[0]
@@ -1949,35 +1947,27 @@ def test_edit_accepting_with_every_field_box_cleared_is_refused(
     to name it by. Evidence for nothing, at 303 back to the queue.
     """
     candidate = make_candidate(session, project, document)
-    before_dependencies = session.scalar(select(func.count()).select_from(Dependency))
-    before_assertions = session.scalar(select(func.count()).select_from(Assertion))
-    before_evidence = session.scalar(select(func.count()).select_from(EvidenceLink))
 
-    response = client.post(
-        f"/candidates/{candidate.id}/edit-accept",
-        data={"slug": project.slug, **form_fields},
-        follow_redirects=False,
-    )
-
-    assert response.status_code == 400
-    assert candidate.state == "pending"
     # On the Ledger, not on the payload. `edit_accept` is one act: the edit
     # is written and flushed before acceptance refuses it, and the route's
     # session never commits on that path, so production takes the whole
     # thing back. These tests share the caller's session, which cannot
-    # tell a flush-then-rollback from a never-write — so they assert the
-    # thing both harnesses agree on.
-    assert (
-        session.scalar(select(func.count()).select_from(Dependency))
-        == before_dependencies
-    )
-    assert (
-        session.scalar(select(func.count()).select_from(Assertion)) == before_assertions
-    )
-    assert (
-        session.scalar(select(func.count()).select_from(EvidenceLink))
-        == before_evidence
-    )
+    # tell a flush-then-rollback from a never-write — so the edit's own two
+    # receipts are excused by name, and the rest of the project's tables,
+    # which the flush must not have reached at all, are not.
+    with nothing_written(
+        session,
+        project.id,
+        apart_from={"audit_log", "extraction_measurement_case_states"},
+    ):
+        response = client.post(
+            f"/candidates/{candidate.id}/edit-accept",
+            data={"slug": project.slug, **form_fields},
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 400
+    assert candidate.state == "pending"
 
 
 def test_an_edit_is_audited_against_the_original_extraction(
@@ -3533,11 +3523,7 @@ def test_rehearsal_cohort_exposes_record_evidence_and_exact_return(
     )
     dependency_id = int(accepted.headers["location"].rsplit("coordinate=", 1)[1])
     lane = f"/queue/{project.slug}?lane=rehearsal&cohort_receipt_id={receipt.id}"
-    before_audit = session.scalar(select(func.count()).select_from(AuditLog))
-    before_work_decisions = session.scalar(
-        select(func.count()).select_from(WorkDecision)
-    )
-    before_reports = session.scalar(select(func.count()).select_from(ReportRun))
+    before = project_record_counts(session, project.id)
     before_candidate_state = member.state
 
     coordination = client.get(lane).text
@@ -3554,12 +3540,7 @@ def test_rehearsal_cohort_exposes_record_evidence_and_exact_return(
     returned = client.get(return_url).text
     assert "Recorded" in returned
     assert 'name="internal_owner_roster_entry_id"' in returned
-    assert session.scalar(select(func.count()).select_from(AuditLog)) == before_audit
-    assert (
-        session.scalar(select(func.count()).select_from(WorkDecision))
-        == before_work_decisions
-    )
-    assert session.scalar(select(func.count()).select_from(ReportRun)) == before_reports
+    assert project_record_counts(session, project.id) == before
     session.refresh(member)
     assert member.state == before_candidate_state
 
@@ -3653,12 +3634,7 @@ def test_rehearsal_coordination_opens_the_existing_report_workspace_in_a_new_tab
         follow_redirects=False,
     )
     lane = f"/queue/{project.slug}?lane=rehearsal&cohort_receipt_id={receipt.id}"
-    before_artifacts = session.scalar(
-        select(func.count()).select_from(ExternalReportArtifact)
-    )
-    before_reports = session.scalar(select(func.count()).select_from(ReportRun))
-    before_decisions = session.scalar(select(func.count()).select_from(WorkDecision))
-    before_audit = session.scalar(select(func.count()).select_from(AuditLog))
+    before = project_record_counts(session, project.id)
     before_state = member.state
 
     page = client.get(lane).text
@@ -3670,16 +3646,12 @@ def test_rehearsal_coordination_opens_the_existing_report_workspace_in_a_new_tab
     workspace = client.get(f"/reports/{project.slug}")
     assert workspace.status_code == 200
     assert "Prepare fixed PDF for review" in workspace.text
-    assert (
-        session.scalar(select(func.count()).select_from(ExternalReportArtifact))
-        == before_artifacts
-    )
-    assert session.scalar(select(func.count()).select_from(ReportRun)) == before_reports
-    assert (
-        session.scalar(select(func.count()).select_from(WorkDecision))
-        == before_decisions
-    )
-    assert session.scalar(select(func.count()).select_from(AuditLog)) == before_audit + 1
+    # Opening the workspace records that a person reached the route, and
+    # nothing else the project holds moves at all.
+    assert project_record_counts(session, project.id) == {
+        **before,
+        "audit_log": before["audit_log"] + 1,
+    }
     request_receipt = session.scalar(
         select(AuditLog)
         .where(
