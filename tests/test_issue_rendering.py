@@ -64,6 +64,7 @@ from corridor.native_follow_up_reading import (
 )
 from corridor.presentation import accepted_record_exception_name, exception_name
 from corridor.operating_mode import adopt_project_baseline
+from corridor.operations_repair import correct_captured_reading
 from corridor.principals import HumanPrincipal
 from corridor.proposed_deltas import (
     ExistingSubjectTarget,
@@ -71,6 +72,7 @@ from corridor.proposed_deltas import (
     create_proposed_delta_group,
     record_delta_deferral,
 )
+from capture_correction_support import CORRECTED_AT, Misread, WORKER_IDENTITY
 from harness_support import adopt_baseline_facts
 from source_capture_support import Rendition
 from delta_supersession_support import record_delta_supersession
@@ -179,6 +181,21 @@ def _adopt(session: Session, project: Project, facts, key: str) -> int:
 
     project_id = project.id
     revision_id = adopt_baseline_facts(session, project, *facts, key=key)
+    _declare_adopted(session, project_id, revision_id, key)
+    return revision_id
+
+
+def _declare_adopted(
+    session: Session, project_id: int, revision_id: int, key: str
+) -> None:
+    """Move the project into the only operating mode these surfaces answer for.
+
+    Separate from ``_adopt`` because a scenario built by another module's
+    support already holds its accepted baseline and needs this half alone: the
+    change summary and the weekly report are spine-native surfaces and
+    ``bind_issue_reading`` refuses a legacy project (ADR-0084).
+    """
+
     adopt_project_baseline(
         session,
         project_id=project_id,
@@ -189,7 +206,6 @@ def _adopt(session: Session, project: Project, facts, key: str) -> int:
         idempotency_key=f"adopt:{key}",
         revision_id=revision_id,
     )
-    return revision_id
 
 
 def _delta(
@@ -879,6 +895,71 @@ def test_a_delta_raised_against_a_moved_accepted_value_reads_as_stale(
         for excluded in artifacts.change_summary.unaccepted_deltas
     }
     assert states[stale.id] == "stale"
+
+
+def test_a_correction_retired_proposal_is_named_by_no_state_word_at_all(
+    session, member_project
+):
+    """A withdrawn comparison leaves the disclosure instead of joining it (ADR-0101).
+
+    The four states above are the ones an unaccepted proposal can still be
+    disclosed under.  A proposal Corridor retired because it had misread the
+    source is none of them: nobody deferred it, nobody kept the current value,
+    and no newer revision replaced it, so ``_unaccepted_deltas`` excludes it at
+    the query and this issue names it nowhere.
+
+    **Which module owns which half.**  The retirement itself, and the Review
+    list's side of this same absence, belong to
+    ``tests/test_capture_correction_retirement.py``: that a correction writes
+    no zero-difference delta, no disposition and no supersession, and that the
+    retired proposal is gone from ``read_open_deltas``.  This module owns the
+    other reader, the prepared issue's change summary, and only that.  The
+    scenario itself is built from ``capture_correction_support`` rather than
+    copied, so both readers are answering about one retirement (#952).
+    """
+
+    # One principal both reports the misreading and performs the correction:
+    # ``member_project`` seeds every designation, and which designation each
+    # act needs is the correction command's own test rather than this one's.
+    project = member_project(ALICE)
+    misread = Misread(session, project)
+    _declare_adopted(session, project.id, misread.revision_id, "misread-baseline")
+    # The issue is prepared after the correction was performed, which is the
+    # only ordering in which a reader could expect to be told about it.
+    prepared = CORRECTED_AT + timedelta(hours=1)
+
+    def disclosed() -> dict[int, str]:
+        """Every unaccepted proposal this issue discloses, and its state word."""
+
+        artifacts = read_issue_artifacts(
+            session,
+            _bind(
+                session,
+                project,
+                misread.revision_id,
+                source_cutoff=prepared,
+                prepared_at=prepared,
+            ),
+        )
+        return {
+            excluded.delta_id: excluded.state
+            for excluded in artifacts.change_summary.unaccepted_deltas
+        }
+
+    # Before the correction this is an ordinary open proposal the issue does
+    # disclose, so its later absence is the exclusion and not an empty fixture.
+    assert disclosed() == {misread.delta.id: "open"}
+
+    outcome = correct_captured_reading(
+        session,
+        request_id=int(misread.report().id),
+        principal=ALICE,
+        performed_at=CORRECTED_AT,
+        executed_by=WORKER_IDENTITY,
+    )
+    assert outcome.retired
+
+    assert disclosed() == {}
 
 
 # --- The weekly Coordination Report ---------------------------------------
