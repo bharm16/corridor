@@ -1720,6 +1720,12 @@ def _validate_handler_result(contract: HandlerContract, result: dict[str, Any]) 
             "unreadable",
             "quarantined",
             "held_out",
+            # `held_unread` joined it with the read act's hold check: a held
+            # document is selected for reading and then skipped, so without
+            # this it would be absent from `parsed`, from the failures and
+            # from `held_out` alike. Temporary, with the check it reports
+            # (#919).
+            "held_unread",
             "processing_failures",
             "reconciled",
             "admitted",

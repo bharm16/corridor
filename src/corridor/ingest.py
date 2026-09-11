@@ -332,6 +332,10 @@ def ingest_document(
         # the register already prints as "waiting for the processing pass",
         # and that pass now really does take it: `_parse_landed_documents`
         # selects exactly this state (`corridor.project_processing`).
+        # One document it selects and does not read: a held one, which that
+        # act skips rather than opening while #919 is unfinished. The register
+        # reads the hold before `pending` for the same reason, so such a
+        # document never prints the sentence above.
         return document
 
     token_dir = Path(images_dir) / sha256

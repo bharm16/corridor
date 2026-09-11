@@ -37,6 +37,7 @@ from corridor.models import (
     Dependency,
     DocPage,
     Document,
+    DocumentQuarantine,
     ExternalOrg,
     ExtractionRun,
     Project,
@@ -622,12 +623,18 @@ def _project_with_org(factory, prefix: str) -> int:
     return project_id
 
 
-def _confirm_upload(session, project_id: int, filename: str, body: bytes | None = None):
+def _confirm_upload(
+    session,
+    project_id: int,
+    filename: str,
+    body: bytes | None = None,
+    doc_type: str = "matrix",
+):
     """The web confirmation's own act: register, do not read (#893)."""
 
     project = session.get(Project, project_id)
     staged = validate_and_stage(_matrix_pdf() if body is None else body, filename)
-    preview = preview_intake(session, project, staged, "matrix")
+    preview = preview_intake(session, project, staged, doc_type)
     return confirm_intake(
         session,
         project=project,
@@ -652,6 +659,27 @@ def _run_one_pass(factory, project_id, select_route, now):
     )
 
 
+def _page_and_segment_counts(session, document_id) -> tuple[int, int]:
+    """The rows a read writes, asked of one document rather than of a project."""
+
+    return (
+        int(
+            session.scalar(
+                select(func.count())
+                .select_from(DocPage)
+                .where(DocPage.document_id == document_id)
+            )
+        ),
+        int(
+            session.scalar(
+                select(func.count())
+                .select_from(SourceSegment)
+                .where(SourceSegment.document_id == document_id)
+            )
+        ),
+    )
+
+
 def _document_state(factory, project_id) -> tuple[str, int, int, int]:
     """Parse status, page count, ``doc_pages`` rows and ``source_segments`` rows."""
 
@@ -659,17 +687,8 @@ def _document_state(factory, project_id) -> tuple[str, int, int, int]:
         document = verify.scalars(
             select(Document).where(Document.project_id == project_id)
         ).one()
-        pages = verify.scalar(
-            select(func.count())
-            .select_from(DocPage)
-            .where(DocPage.document_id == document.id)
-        )
-        segments = verify.scalar(
-            select(func.count())
-            .select_from(SourceSegment)
-            .where(SourceSegment.document_id == document.id)
-        )
-        return document.parse_status, document.pages, int(pages), int(segments)
+        pages, segments = _page_and_segment_counts(verify, document.id)
+        return document.parse_status, document.pages, pages, segments
 
 
 def test_committed_upload_is_processed_by_the_standing_pass(
@@ -877,6 +896,127 @@ def test_an_unreadable_source_fails_visibly_instead_of_waiting_for_ever(
         assert register.rows[0].state_words == (
             "Failed to parse — the file could not be read"
         )
+
+
+def test_a_held_upload_is_skipped_by_the_pass_and_reported_rather_than_lost(
+    runtime_database, tmp_path, monkeypatch
+):
+    """A hold recorded in the same request stops the read act opening the bytes.
+
+    `schedule` is an accepted kind on the confirmation route, and registration
+    records the unmodeled-sequencing hold in that same transaction, so the
+    document commits `pending` *and* held. The read act selects on `pending`,
+    so before the gate was consulted it rendered a file the one rich-processing
+    gate refuses — see #919 for why the record cannot yet say which stage a
+    hold forbids, and the module docstring for why skipping it is the
+    conservative reading rather than a finding about the file.
+
+    Three things have to be true at once, which is why they are one test: the
+    held file is not opened, an ordinary sibling in the same pass still is, and
+    the held one is reported rather than silently missing from every count.
+    """
+
+    _stage_store(tmp_path, monkeypatch)
+    factory = runtime_database.session_factory
+    now = datetime(2026, 8, 29, 7, 0, tzinfo=timezone.utc)
+    project_id = _project_with_org(factory, "held")
+
+    with factory() as uploading:
+        held = _confirm_upload(
+            uploading,
+            project_id,
+            "sequencing.pdf",
+            body=_matrix_pdf("Sequencing"),
+            doc_type="schedule",
+        )
+        ordinary = _confirm_upload(
+            uploading, project_id, "ordinary.pdf", body=_matrix_pdf("Ordinary")
+        )
+        uploading.commit()
+
+    # The state the person's request left behind: both registered and unread,
+    # and one of them already held.
+    with factory() as verify:
+        assert verify.get(Document, held.document_id).parse_status == "pending"
+        assert verify.get(DocumentQuarantine, held.document_id) is not None
+
+    _declare_processing(factory, project_id, now)
+    select_route, calls = _scripted_route({"ordinary.pdf": "FOC1-1"})
+    result = _run_one_pass(factory, project_id, select_route, now)
+
+    assert result.execution_outcome == "completed", result.error_code
+    # One read, one hold, and the hold is not this pass's failure.
+    assert result.handler_result["parsed"] == 1
+    assert result.handler_result["held_unread"] == 1
+    assert result.handler_result["health"] == "healthy"
+    assert calls["count"] == 1
+
+    with factory() as verify:
+        # Nothing opened the held file: no status flip, no pages, no segments.
+        still_held = verify.get(Document, held.document_id)
+        assert still_held.parse_status == "pending"
+        assert still_held.pages == 0
+        assert _page_and_segment_counts(verify, held.document_id) == (0, 0)
+        # The ordinary sibling was read in the same pass.
+        read = verify.get(Document, ordinary.document_id)
+        assert read.parse_status == "parsed"
+        pages, segments = _page_and_segment_counts(verify, ordinary.document_id)
+        assert pages == 1 and segments > 0
+        # And the register does not tell a coordinator to wait for a pass that
+        # will skip it. The recorded reason is the record's own words; nothing
+        # here says the file is dangerous.
+        register = source_register.read_source_register(
+            verify, project_id=project_id
+        )
+        rows = {row.document_id: row for row in register.rows}
+        assert rows[held.document_id].state == "held_unmodeled"
+        assert rows[held.document_id].state_words == (
+            "Held — its content is deliberately not read"
+        )
+        assert "work sequencing is not modeled" in (
+            rows[held.document_id].recorded_reason
+        )
+        # Its sibling went the whole way in the same pass.
+        assert rows[ordinary.document_id].state == "processed"
+
+
+def test_a_held_document_stays_held_over_a_second_pass(
+    runtime_database, tmp_path, monkeypatch
+):
+    """Skipping is not a retry, and repeating it never becomes a read (#919).
+
+    The document the pass skipped is still `pending`, so the next pass selects
+    it again. What must not happen is the skip quietly wearing off — and what
+    must not happen either is the second pass losing it, which is how a held
+    source becomes an invisible permanent pending state.
+    """
+
+    _stage_store(tmp_path, monkeypatch)
+    factory = runtime_database.session_factory
+    first_at = datetime(2026, 8, 29, 7, 0, tzinfo=timezone.utc)
+    second_at = datetime(2026, 8, 29, 8, 0, tzinfo=timezone.utc)
+    project_id = _project_with_org(factory, "stillheld")
+
+    with factory() as uploading:
+        held = _confirm_upload(
+            uploading, project_id, "sequencing.pdf", doc_type="schedule"
+        )
+        uploading.commit()
+
+    _declare_processing(factory, project_id, first_at)
+    select_route, calls = _scripted_route({})
+
+    first = _run_one_pass(factory, project_id, select_route, first_at)
+    second = _run_one_pass(factory, project_id, select_route, second_at)
+
+    assert first.handler_result["held_unread"] == 1
+    assert second.handler_result["held_unread"] == 1
+    assert (first.handler_result["parsed"], second.handler_result["parsed"]) == (0, 0)
+    assert calls["count"] == 0
+    with factory() as verify:
+        document = verify.get(Document, held.document_id)
+        assert document.parse_status == "pending"
+        assert _page_and_segment_counts(verify, held.document_id) == (0, 0)
 
 
 def test_nothing_is_visible_to_another_connection_before_the_confirm_commits(
