@@ -64,11 +64,15 @@ a person carrying it.
 reported as it.** The rehearsal of the customer journey on public documents —
 the acceptance harness (#848) and the core journey scenario (#849) — proves
 that a person can sign in, supply a baseline, adopt, review, prepare, approve
-and download. It runs on manual upload on purpose, so that proving the journey
-does not wait on a partner's mail system. A manual-upload run is reported as a
-manual-upload run: it is not connector coverage, not automated capture, and not
-evidence for the coverage or latency criteria, because no part of it observes a
-source arriving on its own.
+and download. It is a **local integration rehearsal using the production
+database role and the enforced web boundary**, on a synthetic project and a
+disposable database, and it is reported in those words: it is not a
+deployment, not AWS routing, and not operational proof. It runs on manual
+upload on purpose, so that proving the journey does not wait on a partner's
+mail system. A manual-upload run is reported as a manual-upload run: it is not
+connector coverage, not automated capture, and not evidence for the coverage
+or latency criteria, because no part of it observes a source arriving on its
+own.
 
 **If the first commercial scope turns out to be manual-upload only**, this
 contract's automation and coverage claims are amended before the first partner

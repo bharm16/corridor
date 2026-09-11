@@ -6,16 +6,41 @@ approved package and coming back for the next cycle* at the other. Every step
 between them is written out below in the order the audit wrote it, and the
 walk now runs all of them.
 
-**The environment is the deployment's, not a test's.** The application answers
-on the enforced live-pilot boundary, reading as the real ``corridor_web``
-login against a migrated database of this run's own, with committed
-transactions -- because the journey spans an HTTP act, a background worker
-that renders outside any transaction, and a later HTTP act that reads what the
-worker committed. Identity is the real magic-link flow: nothing overrides
-``get_human_principal``, so every request below is authorized by a cookie a
-consumed link established, and every unsafe request has to carry the token the
-page gave it. The two declared seams are the ones the audit allows: a
-controlled clock, and a mail delivery that records instead of sending.
+**What a passing run is evidence of, in the words it may be reported in: a
+local integration rehearsal using the production database role and the
+enforced web boundary.** That is a real and useful thing and it is not a
+deployment. The project is synthetic, the database is a disposable one this
+run provisions, the requests go through ``TestClient`` in this process, and
+the session is a substituted connection. Nothing here exercises AWS routing,
+a deployment, or an operational environment, and a run of it may not be
+reported as having done so.
+
+What it *does* exercise is the part a test usually replaces. The application
+answers on the enforced live-pilot boundary, reading as the real
+``corridor_web`` login rather than as the schema owner the rest of the suite
+reads as, over committed transactions -- because the journey spans an HTTP
+act, a background worker that renders outside any transaction, and a later
+HTTP act that reads what the worker committed. Identity is the real magic-link
+flow: nothing overrides ``get_human_principal``, so every request below is
+authorized by a cookie a consumed link established, and every unsafe request
+has to carry the token the page gave it.
+
+**Three seams are declared, and there are no others.** A controlled clock, so
+no step races the wall clock. A mail delivery that records instead of sending,
+so a sign-in link is captured. And one test-only extraction fault, declared
+cell by cell in ``MISREAD_CELLS`` and installed on the later-revision capture
+alone, so that the two source-grounded correction outcomes are reached by
+correcting a capture that is genuinely wrong rather than by a workbook whose
+own values have been shifted. The declaration is the point: a seam nobody
+wrote down is a gap this exercise silently stops detecting.
+
+**One thing this arrangement still does not prove, carried forward from
+#827.** Reading as the real ``corridor_web`` role makes the database grants
+real; it says nothing about how a request reaches the application. An
+unactivated customer reaching the limited onboarding routes through the
+production router -- the environment binding, the host and customer resolution
+in ``corridor.web.customer_routing`` -- is a pre-activation reachability
+question this walk does not answer and must not be read as answering.
 
 **What is deliberately still here.** ``tests/test_issue_path_end_to_end.py``
 proves the inner segment -- confirmed coverage to authorized package -- and it
@@ -27,12 +52,12 @@ proof that segment works at all. #849 is where the two become one walk.
 ticket #849 was blocked by has merged, so a step that does not pass is no
 longer a ticket outstanding -- it is a defect in something that was delivered,
 and marking it expected-to-fail would file it under a ticket that is closed.
-The first run of this file as the deployed web login found four such defects,
-each invisible to the tests that own its seam because those tests replace the
-identity, the session, or both, and all four are fixed:
+The first run of this file as the production web login found four such
+defects, each invisible to the tests that own its seam because those tests
+replace the identity, the session, or both, and all four are fixed:
 
-1. ``POST /projects/{slug}/baseline/prepare`` answered 500 on an enforcing
-   deployment, twice over. The adoption guard counted legacy ``dependencies``
+1. ``POST /projects/{slug}/baseline/prepare`` answered 500 with the boundary
+   enforced, twice over. The adoption guard counted legacy ``dependencies``
    rows the boundary revokes from ``corridor_web``, and it now asks the
    record-decision role's ``project_accepted_record_decision_count`` command
    for both halves of that count instead (#933). And the bounded read
@@ -53,19 +78,30 @@ identity, the session, or both, and all four are fixed:
    long as the request that made it, and ``tests/test_architecture.py`` fails
    if a web surface declares a partition and does not keep it (#935, #936).
 
-**What the walk found, and what fixing it changed here.** The first run of
+**What the walk found, and why the Review steps now count.** The first run of
 this file also found that a project configured with these standing schedules
 had *two* producers of Proposed Deltas over one delivery, and both ran: the
 later-revision comparison, which names the registered source family, and
 ``delta_generation``'s own pass, which named the document. So this revision's
-three changed rows arrived as six proposals in two Delta Groups over the same
-document and the same source revision, and every conflict below read as "two
-retained sources disagree" when one file had arrived. That is fixed (#937):
-the generic pass leaves a delivery somebody declared a source revision for to
-the producer that owns it. The Review steps below therefore decide one batched
-item of three changes rather than three manufactured disagreements of two, and
-they say which Utility Conflict each one means rather than taking whichever
-item or child came first.
+changed rows arrived as twice as many proposals in two Delta Groups over the
+same document and the same source revision, and every conflict below read as
+"two retained sources disagree" when one file had arrived. That is fixed
+(#937): the generic pass leaves a delivery somebody declared a source revision
+for to the producer that owns it.
+
+The version of this walk that found it accommodated it -- it opened whatever
+items Review listed and expected several children -- and finished green while
+the product was telling the coordinator something untrue about their own data.
+So every Review step now asserts both numbers through ``review_offers``: how
+many changes Review offers to answer, worked out from the workbook and the
+declared fault rather than written down, and how many distinct source
+revisions it names behind them, which is one because one file arrived. The
+second assertion also names the family, so the fallback #937 reached --
+``document:<id>`` beside the registered source -- fails the walk by name
+rather than as an obscure shape error further down. The other half of that
+contract, which is that a genuine disagreement between two independent sources
+must still read as one, belongs to the producers rather than to the journey
+and lives in ``tests/test_delta_generation_runtime.py``.
 
 **How to read a run.** The report prints one sentence per step. ``-rP`` is what
 shows it on a passing run -- xdist keeps a worker's output to itself otherwise
@@ -79,6 +115,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
+from hashlib import sha256
 import html
 import os
 from pathlib import Path
@@ -94,7 +131,13 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session as OrmSession
 from sqlalchemy.pool import NullPool
 
-from corridor import access, capture_correction, processing_holds, source_register
+from corridor import (
+    access,
+    capture_correction,
+    later_revision,
+    processing_holds,
+    source_register,
+)
 from corridor.capture_correction_retirement import (
     CORRECTED_READING,
     NO_CHANGE,
@@ -116,6 +159,7 @@ from corridor.due_work import (
     enqueue_due_work,
     run_due_work_once,
 )
+from corridor.field_mapping_manifest import FIELD_MAPPING_IDENTITY
 from corridor.models import (
     DocPage,
     Document,
@@ -133,6 +177,8 @@ from corridor.onboarding_authorization import (
     record_onboarding_grant,
 )
 from corridor.operating_mode import ADOPTED_BASELINE, project_operating_mode
+from corridor.proposed_delta_comparison import accepted_values
+from corridor.review_packet_reading import read_open_deltas
 from corridor.source_revision_declaration import COMPLETE_ENUMERATION, REPLACES
 from corridor.principals import HumanPrincipal
 from corridor.web import auth
@@ -149,7 +195,7 @@ from journey_harness import (
     Step,
     run_scenario,
 )
-from later_revision_support import BASELINE_ROWS, workbook_bytes
+from later_revision_support import BASELINE_ROWS, HEADINGS, workbook_bytes
 
 
 PROVISIONER = HumanPrincipal("local:provisioner")
@@ -161,7 +207,7 @@ COORDINATOR_EMAIL = "coordinator@example.test"
 RELEASER_EMAIL = "releaser@example.test"
 OPERATOR_EMAIL = "operations@example.test"
 
-# The deployed web login's own credential, read the way every other
+# The production web login's own credential, read the way every other
 # real-login test reads it.
 WEB_PASSWORD = os.environ.get("CORRIDOR_WEB_DB_PASSWORD") or "corridor_web"
 
@@ -197,42 +243,128 @@ FOURTH_CONFLICT = [
 #: The customer's own record, as this journey's project adopts it.
 JOURNEY_BASELINE_ROWS = [*BASELINE_ROWS, FOURTH_CONFLICT]
 
-#: The later revision the customer sends, and the one thing wrong with it.
-#:
-#: The size column on this sheet is a row out: every conflict's size sits on
-#: the row below its own. That is one ordinary spreadsheet fault, and it is
-#: what makes both of ADR-0101's source-grounded outcomes reachable through
-#: the product rather than only in a fixture, because a correction re-reads
-#: the passage the coordinator points at and each conflict's real size is a
-#: retained passage of this same revision:
-#:
-#:   UC-1  12 in -> 16 in   the change decided in Review, and undone
-#:   UC-2   8 in -> 10 in   corrected to the 8 in below it: matches the record
-#:   UC-3   4 in ->  8 in   corrected to the 6 in below it: still differs
-#:   UC-4   6 in            unchanged, and the passage UC-3 is corrected to
-#:
-#: Three changed rows is the smallest this journey can walk on: one change is
-#: decided in Review, and a coordinator who had to settle a change before they
-#: could say Corridor read it wrong would have no way to report one at all. A
-#: burst of them belongs to the ticket that batches one (#527).
+#: The later revision the customer sends. **Every value on this sheet is the
+#: customer's own and every one of them is true**: each conflict's size sits on
+#: that conflict's own row, UC-1's really moved to 16 in and UC-3's to 10 in,
+#: and UC-2 and UC-4 are unchanged. Nothing here is shifted, mistyped or
+#: disputed, which is the whole point -- the source is unambiguous, so what a
+#: correction step below is about can only be Corridor's reading of it.
 LATER_ROWS = [
     [*BASELINE_ROWS[0][:3], "16 in", *BASELINE_ROWS[0][4:]],
-    [*BASELINE_ROWS[1][:3], "10 in", *BASELINE_ROWS[1][4:]],
-    [*BASELINE_ROWS[2][:3], "8 in", *BASELINE_ROWS[2][4:]],
+    [*BASELINE_ROWS[1]],
+    [*BASELINE_ROWS[2][:3], "10 in", *BASELINE_ROWS[2][4:]],
     FOURTH_CONFLICT,
 ]
 
-#: The three conflicts whose size that revision changes, named as Review names
+#: The three conflicts Review must offer changes for, named as Review names
 #: them on the one item that holds all three (#937). A step says which conflict
 #: it means, because "the first change listed" moves whenever an earlier step
-#: decides one, and because the correction steps below turn on the values a
-#: particular row holds: `DATED_CONFLICT` is the one whose accepted size the
-#: sheet still states a row further down, so re-reading it establishes no
-#: change, and `REREAD_CONFLICT` is the one whose corrected reading is a size
-#: the record has never held.
+#: decides one, and because the correction steps turn on which conflict a
+#: particular reading is about.
 APPLIED_CONFLICT = "Utility Conflicts!3"
 DATED_CONFLICT = "Utility Conflicts!4"
 REREAD_CONFLICT = "Utility Conflicts!5"
+
+#: The field the declared fault below misreads, and the field every correction
+#: step is about.
+MISREAD_FIELD = "size"
+
+#: Where this sheet's sizes sit: column D, from row 3 down, one row per
+#: conflict. The declared fault and the expectation below are both written in
+#: these terms rather than in row offsets nobody can check against the file.
+SIZE_COLUMN = chr(ord("A") + HEADINGS.index("Size"))
+FIRST_DATA_ROW = 3
+
+#: **The third declared seam: one test-only extraction fault, declared cell by
+#: cell.** ADR-0101's two source-grounded outcomes are both about a capture
+#: that is wrong at the source, and a journey that reaches them has to contain
+#: a capture that really is wrong at the source. The version of this file that
+#: shipped with #849 produced one by shifting the workbook's size column a row
+#: and treating the next row's value as the intended correction, and a
+#: maintainer review was right that this proved something else: a retained
+#: workbook that itself contains shifted values is a source-data correction or
+#: a disputed mapping, and "another cell in the same document holds a plausible
+#: number" never establishes that the cell describes *this* Utility Conflict.
+#:
+#: So the fault is injected where a fault of this kind actually lives -- in the
+#: reading -- and is declared here rather than smuggled into the data. For each
+#: cell below, this run's capture of ``size`` seals the words on the right
+#: while citing the passage on the left, whose retained text is the words in
+#: the middle. Everything else is the deployment's: the bytes, the Source
+#: Segments, the citation the Fact carries, the value support recorded against
+#: it, the authorization on the report, the correction command and every
+#: decision. The passage a coordinator then points at is the conflict's *own*
+#: cell, so the correction is grounded in a passage that describes the same
+#: Utility Conflict rather than in a neighbour that happens to read plausibly.
+#:
+#:   UC-2  cell D4 says  8 in, captured as 16 in -> corrected: matches record
+#:   UC-3  cell D5 says 10 in, captured as  6 in -> corrected: still differs
+MISREAD_CELLS: dict[tuple[str, str, str], str] = {
+    ("Utility Conflicts", "D4", "8 in"): "16 in",
+    ("Utility Conflicts", "D5", "10 in"): "6 in",
+}
+
+
+def _sizes(rows) -> dict[str, str]:
+    """One workbook's sizes, keyed by the conflict each row becomes."""
+
+    size = HEADINGS.index("Size")
+    return {
+        f"Utility Conflicts!{row}": values[size]
+        for row, values in enumerate(rows, start=FIRST_DATA_ROW)
+    }
+
+
+#: What the accepted baseline holds, and what the revision truly states. Read
+#: off the two workbooks, so a step names the record's own words rather than a
+#: literal that can drift away from the fixture it describes.
+BASELINE_HOLDS = _sizes(JOURNEY_BASELINE_ROWS)
+REVISION_STATES = _sizes(LATER_ROWS)
+
+#: What each misread conflict's own size cell retains, and what this run's
+#: capture recorded instead, keyed by the conflict the cell belongs to.
+SOURCE_SAYS = {
+    f"Utility Conflicts!{cell[len(SIZE_COLUMN):]}": says
+    for _sheet, cell, says in MISREAD_CELLS
+}
+CAPTURED_INSTEAD = {
+    f"Utility Conflicts!{cell[len(SIZE_COLUMN):]}": words
+    for (_sheet, cell, _says), words in MISREAD_CELLS.items()
+}
+
+#: What Review must offer for this revision, and nothing more: a conflict
+#: reaches Review when what this run *captures* for its size is not what the
+#: baseline accepted, and what it captures is the revision's own value unless a
+#: declared misread replaced it. Worked out here rather than written down, so
+#: changing either the workbook or the declared fault moves the expectation
+#: with it -- UC-1 because the revision truly changed it, UC-2 and UC-3 because
+#: the fault misread them.
+PROPOSED_CONFLICTS = tuple(
+    conflict
+    for conflict, stated in REVISION_STATES.items()
+    if CAPTURED_INSTEAD.get(conflict, stated) != BASELINE_HOLDS[conflict]
+)
+
+
+#: And how many retained sources those changes came from. One workbook was
+#: delivered, so Review may name exactly one source revision behind all of
+#: them; two would be #937 back again, telling a coordinator their own data
+#: disagrees with itself when one file arrived.
+SOURCES_DELIVERED = 1
+
+#: And what that one source is called. The family is the registered source the
+#: delivery was declared under, so this is also the name of the thing #937 got
+#: wrong: the generic pass, having no registration to go on, named the document
+#: instead, and ``document:<id>`` beside the registered family is exactly what
+#: two retained sources disagreeing is made of.
+REGISTERED_SOURCE_FAMILY = f"ucm_workbook:{FIELD_MAPPING_IDENTITY}"
+
+
+def size_cell_of(conflict: str) -> str:
+    """The cell this conflict's own size sits in, on this sheet."""
+
+    return f"{SIZE_COLUMN}{conflict.rsplit('!', 1)[1]}"
+
 
 #: And next cycle's, so the second reporting cycle reads a revision rather
 #: than the same bytes twice.
@@ -241,6 +373,51 @@ SECOND_LATER_ROWS = [
     *BASELINE_ROWS[1:],
     FOURTH_CONFLICT,
 ]
+
+# --- the declared extraction fault ------------------------------------------
+
+
+class _MisreadPassage:
+    """The retained passage, wearing the words this run's fault reads off it.
+
+    The materializer certifies a passage against its own stored digest before
+    it will seal a value from it, which is exactly right and is why the fault
+    is declared at this seam rather than by editing a row: the Source Segment
+    in the database is not touched, and this stands in for it for the length of
+    one capture. Every other attribute -- the identity the value support is
+    recorded against above all -- is the real passage's.
+    """
+
+    def __init__(self, segment, words: str) -> None:
+        self._segment = segment
+        self.exact_text = words
+        self.content_sha256 = sha256(words.encode("utf-8")).hexdigest()
+
+    def __getattr__(self, name):
+        return getattr(self._segment, name)
+
+
+def misreading_materializer(real, applied: list[tuple[str, str, str]]):
+    """``later_revision``'s materializer, with the declared fault in it.
+
+    For a declared cell whose retained text is still the text the declaration
+    names, the capture seals the wrong words while citing the right passage;
+    for every other cell this is the deployment's own materializer, untouched.
+    Each application is recorded so a step can assert the seam actually fired
+    -- a fault that silently stopped applying would leave the walk asserting
+    correctness it never exercised.
+    """
+
+    def materialize(session, fact_type, segment):
+        key = (segment.sheet_name, segment.cell_range, segment.exact_text)
+        words = MISREAD_CELLS.get(key)
+        if words is None or fact_type != MISREAD_FIELD:
+            return real(session, fact_type, segment)
+        applied.append(key)
+        return real(session, fact_type, _MisreadPassage(segment, words))
+
+    return materialize
+
 
 # --- the journey's own context ---------------------------------------------
 
@@ -420,7 +597,7 @@ def declaration_on(body: str, *, revision_identity: str) -> dict[str, str]:
 def run_the_worker(journey: Journey) -> list[str]:
     """Publish what is due and work every occurrence until none is left.
 
-    The deployed worker, not a shortcut around it: the standing project
+    The production worker, not a shortcut around it: the standing project
     processing and delta generation this project is configured for are what
     turn a registered revision into changes a coordinator can review, and a
     journey that reached into the database for them would be proving its own
@@ -521,6 +698,119 @@ def the_change_for(body: str, subject: str) -> str:
     raise AssertionError(
         f"this item offers no change for {subject}; it offers "
         f"{[text for _, text in offered_changes(body)]}"
+    )
+
+
+_ANSWER_DELTA = re.compile(
+    r'<input[^>]*type="hidden"[^>]*name="answer_delta"[^>]*value="(?P<id>[^"]*)"'
+)
+#: A source revision as every Review surface prints it: the family the delivery
+#: was declared under, a space, then the exact revision, which is the delivered
+#: file's own digest. The batch names it in its own fact list and on its
+#: controls; an item keyed by a disagreement names one per source beside each
+#: value. Reading it out of the markup rather than out of the database is the
+#: point -- the question is what the coordinator was told.
+_SOURCE_REVISION = re.compile(
+    r'[^\s<>"]+ (?<![0-9a-f])[0-9a-f]{64}(?![0-9a-f])'
+)
+
+
+@dataclass(frozen=True)
+class ReviewSays:
+    """Every change Review offers to answer, and every source behind them."""
+
+    changes: tuple[str, ...]
+    sources: frozenset[str]
+
+
+def changes_offered_on(body: str) -> tuple[str, ...]:
+    """Every change this opened item offers to answer, whatever shape it is.
+
+    A source revision's batch offers its changes as checkboxes on one decision
+    form; an item keyed by a disagreement, or one held out of a batch, answers
+    each change on its own and names them in hidden fields instead. Reading
+    both matters: if a second producer over one delivery ever came back, the
+    reading would change *shape* as well as size, and a reader that knew only
+    the batch would fail on the shape without ever reporting the count.
+    """
+
+    return tuple(
+        [found.group("id") for found in _CHOICE.finditer(body)]
+        + _ANSWER_DELTA.findall(body)
+    )
+
+
+def what_review_says(journey: Journey) -> ReviewSays:
+    """Open the whole reading, item by item, and read both numbers off it.
+
+    Off the pages a coordinator reads rather than out of the database, because
+    what #937 broke was what the product *told* them: one file had arrived and
+    every conflict read as two retained sources disagreeing. So the changes are
+    the ones Review offers to answer and the sources are the ones it names
+    behind them, and a second producer shows up here as a second source rather
+    than as an obscure failure several steps later.
+    """
+
+    review = journey.client.get(f"/review/{journey.slug}", follow_redirects=False)
+    assert review.status_code == 200, review.text
+    links = re.findall(
+        rf'href="(/review/{re.escape(journey.slug)}\?item=[^"]+)"', review.text
+    )
+    changes: list[str] = []
+    sources = set(_SOURCE_REVISION.findall(prose(review.text)))
+    for link in links:
+        opened = journey.client.get(html.unescape(link), follow_redirects=False)
+        assert opened.status_code == 200, opened.text
+        sources.update(_SOURCE_REVISION.findall(prose(opened.text)))
+        changes.extend(changes_offered_on(opened.text))
+    return ReviewSays(tuple(changes), frozenset(sources))
+
+
+def review_offers(journey: Journey, expected: int, *, because: str) -> ReviewSays:
+    """Assert what Review says about this revision, and hand it back.
+
+    Two numbers, both of them Review's own, at every step that touches it.
+    ``expected`` is how many changes are still open at this point in the walk;
+    the number of sources is always ``SOURCES_DELIVERED``, because one file
+    arrived. The second is the one #937 was about, and it is asserted even
+    where the first would pass on its own: a walk that only counted rows
+    finishes happily while the product tells a coordinator that two of their
+    sources disagree about data that came out of one workbook.
+    """
+
+    says = what_review_says(journey)
+    # The sources first, because they are the diagnosis and the count is the
+    # symptom: a regression that doubles a delivery shows up as both, and the
+    # failure a reader gets should be the one that says which delivery and
+    # which producer.
+    assert len(says.sources) == SOURCES_DELIVERED, (
+        f"one workbook was delivered and Review attributes these changes to "
+        f"{len(says.sources)} retained source revisions, so a conflict here "
+        f"reads as sources disagreeing when one file arrived (#937): "
+        f"{sorted(says.sources)}"
+    )
+    assert all(
+        source.startswith(f"{REGISTERED_SOURCE_FAMILY} ") for source in says.sources
+    ), (
+        "Review names a source revision that is not the registered source "
+        "family this delivery was declared under, which is what a second "
+        f"producer naming the document looks like (#937): {sorted(says.sources)}"
+    )
+    assert len(says.changes) == expected, (
+        f"Review offers {len(says.changes)} changes to answer and {because} "
+        f"means {expected}: {says.changes}"
+    )
+    return says
+
+
+def offered_conflicts(body: str) -> tuple[str, ...]:
+    """Which of the expected Utility Conflicts this item offers a change for."""
+
+    offered = offered_changes(body)
+    return tuple(
+        conflict
+        for conflict in PROPOSED_CONFLICTS
+        if any(text.startswith(conflict) for _, text in offered)
     )
 
 
@@ -655,8 +945,8 @@ def step_operations_resolves_mechanics(journey: Journey) -> None:
     )
 
     assert prepared.status_code == 201, (
-        "the supplied workbook cannot be read for adoption on an enforcing "
-        f"deployment: the route answered {prepared.status_code}. "
+        "the supplied workbook cannot be read for adoption under the enforced "
+        f"boundary: the route answered {prepared.status_code}. "
         f"What the route answered: {prepared.text[:300]}"
     )
     readable = prose(prepared.text)
@@ -758,6 +1048,15 @@ def step_submit_a_later_revision(journey: Journey) -> None:
         "the registered revision was never compared with the accepted record, "
         "so nothing it proposes can reach Review"
     )
+    # And the declared fault fired on both of the cells it names. A seam that
+    # quietly stopped applying -- because a fixture row moved, say -- would
+    # leave every correction step below asserting a correctness it no longer
+    # exercised, and passing.
+    assert set(journey.carried["misread"]) == set(MISREAD_CELLS), (
+        "the declared extraction fault did not apply to the cells it names, "
+        "so nothing below reports a capture that is actually wrong: "
+        f"{sorted(journey.carried['misread'])}"
+    )
 
 
 def step_see_receipt_and_processing_state(journey: Journey) -> None:
@@ -847,6 +1146,11 @@ def step_a_held_source_is_not_read_and_says_so(journey: Journey) -> None:
 
 
 def step_inspect_exact_source_context(journey: Journey) -> None:
+    review_offers(
+        journey,
+        len(PROPOSED_CONFLICTS),
+        because="one delivery of one registered source proposed changes for",
+    )
     opened = open_the_item(journey)
     link = re.search(
         rf'href="(/sources/{re.escape(journey.slug)}/passage/\d+)"', opened
@@ -870,18 +1174,31 @@ def step_review_routine_changes(journey: Journey) -> None:
     two open, because the steps below are about a change still waiting: a page
     that decided everything here would have nothing left to correct or to
     date.
+
+    The count and the source are asserted before anything is decided, and both
+    are the point rather than a precondition. #937 made one delivery's changes
+    arrive twice under two lineages, and a walk that merely opened whatever
+    Review listed finished green while every one of these conflicts read to the
+    coordinator as two retained sources disagreeing.
     """
 
-    opened = open_the_item(journey)
-    assert len(offered_changes(opened)) == 3, (
-        "one delivery changed three rows and this item does not hold three "
-        f"changes: {offered_changes(opened)}"
+    review_offers(
+        journey,
+        len(PROPOSED_CONFLICTS),
+        because="this revision's capture disagrees with the record about",
     )
+    opened = open_the_item(journey)
+    assert offered_conflicts(opened) == PROPOSED_CONFLICTS, (
+        "this item does not offer a change for each Utility Conflict the "
+        f"revision's capture disagrees about: {offered_changes(opened)}"
+    )
+    journey.carried["sizes_before_apply"] = accepted_sizes(journey)
+    journey.carried["applied_delta"] = the_change_for(opened, APPLIED_CONFLICT)
     saved = journey.client.post(
         f"/review/{journey.slug}",
         data=decision_fields(
             opened,
-            decide=[the_change_for(opened, APPLIED_CONFLICT)],
+            decide=[journey.carried["applied_delta"]],
             outcome="apply",
         ),
         follow_redirects=False,
@@ -895,6 +1212,22 @@ def step_review_routine_changes(journey: Journey) -> None:
         f"back from. What it says: {prose(saved.text)[:500]}"
     )
     journey.carried["receipt_url"] = receipt.group(1)
+    # Apply means the record now holds what the revision states for that one
+    # conflict, and nothing else moved.
+    applied = accepted_sizes(journey)
+    assert applied[APPLIED_CONFLICT] == REVISION_STATES[APPLIED_CONFLICT], (
+        "Apply recorded a receipt and the accepted size is not what the "
+        f"revision states: {applied[APPLIED_CONFLICT]!r}"
+    )
+    assert {
+        conflict: size
+        for conflict, size in applied.items()
+        if conflict != APPLIED_CONFLICT
+    } == {
+        conflict: size
+        for conflict, size in journey.carried["sizes_before_apply"].items()
+        if conflict != APPLIED_CONFLICT
+    }, "deciding one selected change moved an accepted value it was not about"
 
 
 _CORRECTION_FORM = re.compile(
@@ -942,7 +1275,7 @@ def passages_for(body: str, delta_id: str) -> list[tuple[str, str]]:
 
 
 def find_the_passage(
-    journey: Journey, *, item_key: str, delta_id: str, words: str
+    journey: Journey, *, item_key: str, delta_id: str, cell: str, words: str
 ) -> tuple[str, str]:
     """Search this source for the passage a capture should have been read from.
 
@@ -950,6 +1283,12 @@ def find_the_passage(
     because the passages a report may name are the ones the product offers:
     the window it opens on is the cited passage's neighbourhood, and a
     coordinator who believes the value is somewhere else looks for it.
+
+    The passage this returns has to be the one at ``cell`` -- the Utility
+    Conflict's *own* size cell -- and the picker has to offer exactly one
+    reading it. A numeric cell elsewhere in the same file that happens to read
+    plausibly says nothing about this conflict, and a step that took whichever
+    match came first would be quietly asserting that it does.
     """
 
     found = journey.client.get(
@@ -958,20 +1297,22 @@ def find_the_passage(
         follow_redirects=False,
     )
     assert found.status_code == 200, found.text
+    wanted = f"sheet Utility Conflicts, cell {cell}: {words}"
     offered = [
-        (segment_id, label)
+        segment_id
         for segment_id, label in passages_for(found.text, delta_id)
-        if label.endswith(f": {words}")
+        if label == wanted
     ]
-    assert offered, (
-        f"searching this source for {words!r} offered no passage saying it: "
-        f"{passages_for(found.text, delta_id)}"
+    assert len(offered) == 1, (
+        f"searching this source for {words!r} offered {len(offered)} passages "
+        f"reading {wanted!r}, and this report names one Utility Conflict's own "
+        f"cell: {passages_for(found.text, delta_id)}"
     )
-    return found.text, offered[0][0]
+    return found.text, offered[0]
 
 
 def report_the_extraction_error(
-    journey: Journey, *, delta_id: str, words: str, interpretation: str
+    journey: Journey, *, delta_id: str, cell: str, words: str, interpretation: str
 ) -> int:
     """Say that one capture was read from the wrong passage of its source.
 
@@ -983,7 +1324,7 @@ def report_the_extraction_error(
     opened = open_the_item(journey)
     item_key = decision_hidden_fields(opened)["item_key"]
     searched, passage_id = find_the_passage(
-        journey, item_key=item_key, delta_id=delta_id, words=words
+        journey, item_key=item_key, delta_id=delta_id, cell=cell, words=words
     )
     report = correction_form_for(searched, delta_id)
     assert report is not None, (
@@ -1038,35 +1379,65 @@ def operations_corrects_the_capture(journey: Journey, request_id: int):
 
 
 def step_report_an_extraction_error(journey: Journey) -> None:
-    """The coordinator says one capture was read from the wrong passage.
+    """The coordinator says one capture is wrong about the passage it cites.
 
-    The passage they name is the size cell one row down, which is the shift
-    this revision really has: every size on the sheet is a row out. Reporting
-    it settles nothing and decides nothing -- what the record holds is
-    untouched, and the change stays theirs to decide.
+    They read the cell the change is shown against, and it does not say what
+    Corridor recorded: the passage this conflict's size was read from retains
+    the customer's own words, and the capture seals different ones. So the
+    passage they name is this conflict's *own* cell, which is the only cell in
+    this file that is evidence about this conflict at all.
+
+    Reporting it settles nothing and decides nothing -- what the record holds
+    is untouched, and the change stays theirs to decide.
     """
 
+    review_offers(
+        journey,
+        len(PROPOSED_CONFLICTS) - 1,
+        because="one change was applied in Review and the rest stay open, "
+        "which leaves",
+    )
     opened = open_the_item(journey)
     assert capture_correction.CORRECTION_CONTROL in prose(opened), (
         "there is no way to say a capture is wrong at the source, so a wrong "
         "extraction can only be worked around"
     )
-    # The conflict this is about is the one whose accepted size the sheet
-    # still states, one row down from where it was read.
+    # The conflict this is about is the one whose own cell still states the
+    # accepted size, so re-reading it establishes that nothing changed.
     dated = the_change_for(opened, DATED_CONFLICT)
     journey.carried["dated_delta"] = dated
     journey.carried["no_change_report"] = report_the_extraction_error(
         journey,
         delta_id=dated,
-        words="8 in",
+        cell=size_cell_of(DATED_CONFLICT),
+        words=SOURCE_SAYS[DATED_CONFLICT],
         interpretation=(
-            "the size column on this sheet is a row out: this conflict's size "
-            "is the cell below the one that was read, and it still says 8 in"
+            f"this conflict's size cell says {SOURCE_SAYS[DATED_CONFLICT]} and "
+            f"Corridor recorded {CAPTURED_INSTEAD[DATED_CONFLICT]} from it"
         ),
     )
 
 
 def step_undo_one_decision(journey: Journey) -> None:
+    """Take back exactly the decision the receipt records.
+
+    What the customer gets back is the accepted value, and that is what is
+    checked: the size this walk applied is the one the baseline held again.
+
+    What they do *not* get back is the change as something still to answer,
+    and that is deliberate rather than incidental. ``reverse_review_packet``
+    "never deletes and never cascades": it appends one compensating revision
+    restoring each predecessor decision the packet superseded, and leaves the
+    decision it compensated standing in history. So the delta this walk applied
+    stays *resolved* and Review offers one change fewer afterwards; deciding
+    that subject again is a later delta resolved by a later attributable
+    decision (#519), not this one reopened.
+
+    The walk reads that standing back rather than inferring it from the count,
+    because "one fewer change" has several possible causes and only one of them
+    is this contract.
+    """
+
     receipt = journey.client.get(
         journey.carried["receipt_url"], follow_redirects=False
     )
@@ -1082,6 +1453,29 @@ def step_undo_one_decision(journey: Journey) -> None:
     assert undone.status_code == 200, undone.text
     assert "This decision was undone" in prose(undone.text), (
         f"the undo did not report itself: {prose(undone.text)[:400]}"
+    )
+    assert accepted_sizes(journey) == journey.carried["sizes_before_apply"], (
+        "the decision was reported as undone and the accepted record does not "
+        "hold what it held before the decision"
+    )
+    with journey.factory() as reading:
+        standings = read_open_deltas(
+            reading,
+            project_id=journey.carried["project_id"],
+            as_of=journey.clock.now(),
+        )
+    settled = {standing.delta_id for standing in standings.resolved}
+    assert int(journey.carried["applied_delta"]) in settled, (
+        "the undone decision no longer stands in the delta's history, and the "
+        "command's contract is that Undo compensates the record without "
+        "deleting the decision: "
+        f"{[(one.delta_id, one.standing) for one in standings.standings]}"
+    )
+    review_offers(
+        journey,
+        len(PROPOSED_CONFLICTS) - 1,
+        because="the compensated decision still stands in the delta's own "
+        "history and is not offered again, which leaves",
     )
 
 
@@ -1106,6 +1500,25 @@ def record_revisions(journey: Journey) -> int:
         )
 
 
+def accepted_sizes(journey: Journey) -> dict[str, object]:
+    """The accepted size of every Utility Conflict, read straight off the record.
+
+    Counting Project Record revisions is a statement *about* the record rather
+    than of it: a path that wrote no revision certainly changed no accepted
+    value, but a reader told only the count has to take the values on trust.
+    The correction steps below check both, before and after, so "nothing the
+    record holds changed" is checked against the things it holds.
+    """
+
+    with journey.factory() as reading:
+        values = accepted_values(reading, journey.carried["project_id"])
+    return {
+        subject: value
+        for (subject, fact_type), value in values.items()
+        if fact_type == MISREAD_FIELD
+    }
+
+
 def record_rows(journey: Journey) -> str:
     """The Record view, which is where a change's whole standing is printed."""
 
@@ -1126,25 +1539,37 @@ def step_a_corrected_capture_that_still_differs_replaces_the_proposal(
     one, because the cause is a correction.
     """
 
-    # The next conflict down, where the same fault puts the real size on a row
-    # whose value the record has never held.
+    review_offers(
+        journey,
+        len(PROPOSED_CONFLICTS) - 1,
+        because="one change was decided and its decision compensated "
+        "rather than deleted, which leaves",
+    )
+    # The other misread conflict: its own cell says a size the record has
+    # never held, so correcting the capture leaves a real difference behind.
     opened = open_the_item(journey)
     report = report_the_extraction_error(
         journey,
         delta_id=the_change_for(opened, REREAD_CONFLICT),
-        words="6 in",
+        cell=size_cell_of(REREAD_CONFLICT),
+        words=SOURCE_SAYS[REREAD_CONFLICT],
         interpretation=(
-            "the size column on this sheet is a row out: this conflict's size "
-            "is the cell below the one that was read, and it says 6 in"
+            f"this conflict's size cell says {SOURCE_SAYS[REREAD_CONFLICT]} and "
+            f"Corridor recorded {CAPTURED_INSTEAD[REREAD_CONFLICT]} from it"
         ),
     )
 
+    before = accepted_sizes(journey)
     outcome = operations_corrects_the_capture(journey, report)
 
     assert outcome.outcome == STILL_DIFFERS, outcome
     assert outcome.retired, (
         "a corrected capture established a different reading and the proposal "
         "it made obsolete is still in Review"
+    )
+    assert accepted_sizes(journey) == before, (
+        "correcting a capture moved an accepted value; this path proposes a "
+        "corrected reading and decides nothing"
     )
 
     readable = record_rows(journey)
@@ -1170,9 +1595,17 @@ def step_a_corrected_capture_that_still_differs_replaces_the_proposal(
         "the corrected proposal is not a change this item offers to answer, "
         "so nobody can decide what the corrected reading established"
     )
-    assert "6 in" in prose(corrected), (
+    assert SOURCE_SAYS[REREAD_CONFLICT] in prose(corrected), (
         "the corrected proposal does not state the words of the passage it "
         f"was re-read from. What the item says: {prose(corrected)[:700]}"
+    )
+    # And the reading is still one revision's: retiring a change and raising
+    # its replacement moves neither number away from what one delivery of one
+    # registered source can account for.
+    review_offers(
+        journey,
+        len(PROPOSED_CONFLICTS) - 1,
+        because="a retired proposal was replaced one for one, which leaves",
     )
 
 
@@ -1189,6 +1622,11 @@ def step_a_deferred_proposal_is_retired_by_a_corrected_capture(
     change left Review rather than instead of it (ADR-0101).
     """
 
+    review_offers(
+        journey,
+        len(PROPOSED_CONFLICTS) - 1,
+        because="nothing has been settled since the replacement, which leaves",
+    )
     deferred = journey.carried["dated_delta"]
     opened = open_the_item(journey)
     assert deferred in ordered_deltas(opened), (
@@ -1215,6 +1653,12 @@ def step_a_deferred_proposal_is_retired_by_a_corrected_capture(
         f"{prose(saved.text)[-1500:]}"
     )
     before = record_revisions(journey)
+    before_sizes = accepted_sizes(journey)
+    assert before_sizes[DATED_CONFLICT] == SOURCE_SAYS[DATED_CONFLICT], (
+        "this step is about a corrected reading that matches the accepted "
+        "record, and the record does not hold what this conflict's own cell "
+        f"says: {before_sizes[DATED_CONFLICT]!r}"
+    )
 
     outcome = operations_corrects_the_capture(
         journey, journey.carried["no_change_report"]
@@ -1229,6 +1673,10 @@ def step_a_deferred_proposal_is_retired_by_a_corrected_capture(
         "correcting a capture wrote a Project Record revision, and this path "
         "never changes an accepted value"
     )
+    assert accepted_sizes(journey) == before_sizes, (
+        "an accepted size moved across a correction that established no "
+        "change; the revision count said nothing moved and the values did"
+    )
 
     readable = record_rows(journey)
     assert CORRECTED_READING in readable, readable[:700]
@@ -1239,6 +1687,12 @@ def step_a_deferred_proposal_is_retired_by_a_corrected_capture(
     assert f"Deferred until {RETURN_DATE.isoformat()}." in readable, (
         "the dated return the coordinator recorded did not survive the "
         f"retirement of the change it was about: {readable[:900]}"
+    )
+    review_offers(
+        journey,
+        len(PROPOSED_CONFLICTS) - 2,
+        because="one change stays settled after its Undo and one was "
+        "dated and then retired, which leaves",
     )
 
 
@@ -1277,7 +1731,7 @@ def step_prepare_the_issue(journey: Journey) -> None:
 
 
 def step_worker_prepares_the_candidate(journey: Journey) -> None:
-    """The deployed worker claims the request and prepares the candidate.
+    """The production worker claims the request and prepares the candidate.
 
     It runs every occurrence that is due rather than one, because by now this
     project has three standing schedules and the deployment does not get to
@@ -1304,7 +1758,7 @@ def step_worker_prepares_the_candidate(journey: Journey) -> None:
             prepared = result
     assert prepared is not None, (
         "the confirmed request was never published as an occurrence, so no "
-        "deployed worker would ever run it"
+        "production worker would ever run it"
     )
     assert prepared.handler_result["outcome"] == "prepared", prepared.handler_result
     journey.carried["candidate_id"] = int(prepared.handler_result["candidate_id"])
@@ -1518,7 +1972,7 @@ CORE_JOURNEY_STEPS: tuple[Step, ...] = (
     ),
     Step(
         name="worker_prepares_the_candidate",
-        sentence="The deployed worker claims the request and prepares the candidate",
+        sentence="The production worker claims the request and prepares the candidate",
         owner="#690",
         run=step_worker_prepares_the_candidate,
     ),
@@ -1555,7 +2009,7 @@ CORE_JOURNEY_STEPS: tuple[Step, ...] = (
 )
 
 
-# --- the environment: the deployment's, with two declared seams -------------
+# --- the environment: the production role and boundary, three seams --------
 
 
 def _web_url(database_name: str) -> str:
@@ -1654,7 +2108,7 @@ def provisioned_project(runtime_database):
             issued_by_actor=OPERATIONS_ACTOR,
             recorded_by_actor=OPERATIONS_ACTOR,
         )
-        # The four standing schedules a deployed project runs on, configured
+        # The four standing schedules a provisioned project runs on, configured
         # through the same `configure_due_work` a deployment configures them
         # through. Provisioning a project is what turns them on; a journey
         # that switched one on midway would be arranging its own runtime
@@ -1691,16 +2145,24 @@ def provisioned_project(runtime_database):
 def journey(
     runtime_database, provisioned_project, journey_store, tmp_path, monkeypatch
 ):
-    """The application on the enforced boundary, as the real web login.
+    """The application on the enforced web boundary, as the real web login.
 
-    Two overrides and no more. ``get_session`` binds the request to the
-    deployed ``corridor_web`` capability rather than to the schema owner the
-    rest of the suite reads as, which is what makes the revoke real for every
-    request below. The mail sender records. Identity, authorization, the
-    domain commands, the dispatch and the worker are the deployment's.
+    ``get_session`` binds the request to the production ``corridor_web``
+    capability rather than to the schema owner the rest of the suite reads as,
+    which is what makes the revoke real for every request below. The mail
+    sender records. The third and last seam is the declared extraction fault
+    ``MISREAD_CELLS`` describes, installed on the later-revision capture alone.
+    Identity, authorization, the domain commands, the dispatch and the worker
+    are the deployment's.
     """
 
     monkeypatch.setattr(settings, "live_pilot_web_boundary", True)
+    misread: list[tuple[str, str, str]] = []
+    monkeypatch.setattr(
+        later_revision,
+        "materialize_segment_value",
+        misreading_materializer(later_revision.materialize_segment_value, misread),
+    )
     web_engine = create_engine(
         _web_url(runtime_database.name), poolclass=NullPool, future=True
     )
@@ -1726,6 +2188,7 @@ def journey(
             factory=runtime_database.session_factory,
             slug=provisioned_project,
             workbook=workbook,
+            carried={"misread": misread},
         )
     app.dependency_overrides.clear()
     web_engine.dispose()
@@ -1810,24 +2273,45 @@ def test_every_actionable_state_has_an_action_or_an_accountable_handoff():
     )
 
 
-def test_a_matrix_row_with_no_route_is_a_step_still_waiting_on_its_ticket():
-    """An empty route cell is work, and the scenario has to agree it is.
+def test_a_matrix_row_with_no_entry_point_is_a_step_still_waiting_on_its_ticket():
+    """A row naming nothing that performs it is work, and the scenario agrees.
 
-    This is what stops the matrix from becoming a wish: a row may claim a
-    route the product does not serve only while the step that exercises it is
-    marked as waiting, and the ticket is written on both.
+    This is what stops the matrix from becoming a wish: a row may name no way
+    to perform its act only while the step that exercises it is marked as
+    waiting, and the ticket is written on both. An approved staff procedure is
+    a way to perform it -- the next test is what holds a procedure row to being
+    one somebody could actually run.
     """
 
     waiting = {step.name for step in CORE_JOURNEY_STEPS if step.expected_to_fail}
     contradictions = [
         row
-        for row in journey_matrix.CORE_JOURNEY
-        if not row.route.strip() and row.scenario not in waiting
+        for row in journey_matrix.rows_without_an_entry_point()
+        if row.scenario not in waiting
     ]
     assert not contradictions, "\n".join(
-        f"\"{row.action}\" has no route, and its step {row.scenario!r} is not "
-        f"marked as waiting on {row.owner}"
+        f"\"{row.action}\" names neither a route nor a procedure, and its step "
+        f"{row.scenario!r} is not marked as waiting on {row.owner}"
         for row in contradictions
+    )
+
+
+def test_every_operations_procedure_row_is_one_somebody_could_run():
+    """The other half of the vocabulary, which is what keeps it honest.
+
+    A runbook step is not automatically a product gap, and saying so is the
+    point of the ``procedure`` cell. An undocumented Python call, a SQL repair
+    or a missing route wearing a runbook's clothes *is* a gap, and it would
+    otherwise enter the inventory wearing the same cell. So a procedure row
+    names the command, the retained input it is given, the receipt it leaves in
+    the record and where the customer reads the outcome, or it is refused here.
+    """
+
+    incomplete = journey_matrix.undocumented_procedures()
+    assert not incomplete, "\n".join(
+        f"\"{row.action}\" ({row.scenario}) is declared an operations "
+        f"procedure and is missing {what}"
+        for row, what in incomplete
     )
 
 

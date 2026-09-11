@@ -16,8 +16,9 @@ retrieved are bytes that exist. So the inventory is declared here and the
 scenarios in ``tests/test_core_journey_acceptance.py`` are run against it: each
 row names the step that exercises it, and the checks below refuse a row that
 claims a route nothing serves, an actionable state with neither an action nor a
-handoff, an approved output nothing retrieves, or a workflow with only half a
-production path.
+handoff, an approved output nothing retrieves, a workflow with only half a
+production path, or a staff procedure nobody could run, attribute or read the
+outcome of.
 
 **The words are the product's own.** Roles are the four designations
 ``corridor.access`` declares, spelled as the product spells them; actions are
@@ -26,9 +27,28 @@ print. Nothing here coins a customer-facing term: a term this inventory needed
 and did not have would be a question for the maintainer under the terminology
 procedure in ``docs/agents/domain.md``, not a name invented in a test.
 
-**A row with no route is a row for a step the product cannot do yet**, and it
-says which ticket owes it. That is the point of committing the inventory before
-the tickets land: the empty cells are the work, and they are countable.
+**A row names the entry point its act is performed through, and there are two
+kinds.** Most are a route the application serves. A few are an approved staff
+procedure run outside the web surface, because the act is a managed technical
+operation and the deployment has deliberately not put a state-changing door for
+it on the enabled surface. Both are real acts, and the inventory had one cell
+to say either in, so an operation only a runbook performs was indistinguishable
+from a step nothing can perform at all -- which is why the two correction
+outcomes the core journey walks had no row here at all rather than a row saying
+the product could not do them.
+
+That false binary is what ``procedure`` ends. A runbook step is not
+automatically a product gap; an undocumented Python call, a SQL repair, or a
+missing route wearing a runbook's clothes is. So a procedure row carries the
+four things that separate them -- the entry point somebody can actually run,
+the retained input it is given, the receipt it must leave, and the path the
+customer reads the outcome back through -- and ``undocumented_procedures``
+refuses one that is missing any of them.
+
+**A row with neither a route nor a procedure is a row for a step the product
+cannot do yet**, and it says which ticket owes it. That is the point of
+committing the inventory before the tickets land: the empty cells are the work,
+and they are countable.
 """
 
 from __future__ import annotations
@@ -53,11 +73,13 @@ ENROLLED_ONLY = "Enrolled member, no designation"
 class JourneyRow:
     """One role, in one workflow state, doing one thing, with one result.
 
-    ``route`` is ``METHOD /path`` for a route the application serves, and the
-    empty string for a step the product cannot perform at all yet -- in which
-    case ``owner`` names the ticket that owes it and the scenario step is
+    ``route`` is ``METHOD /path`` for a route the application serves.
+    ``procedure`` is the command line of an approved staff procedure, for an
+    act the deployment performs off the web surface. A row carries one of them:
+    a row with neither is a step the product cannot perform at all yet, in
+    which case ``owner`` names the ticket that owes it and the scenario step is
     marked expected-to-fail. ``handoff_to`` is for a state where this role may
-    not act: it names who can, and ``route`` is the route *they* use.
+    not act: it names who can, and the entry point is *theirs*.
     """
 
     role: str
@@ -73,6 +95,17 @@ class JourneyRow:
     produces: str = ""
     #: The output this row retrieves.
     retrieves: str = ""
+    #: The approved staff procedure this act is performed through, as a person
+    #: would run it. Set instead of ``route``, and only with the three cells
+    #: below, which are what make the operation attributable rather than an
+    #: undocumented call somebody made once.
+    procedure: str = ""
+    #: What the procedure is given, and where the person running it got it.
+    retained_input: str = ""
+    #: What it must leave behind, in the record rather than in a shell.
+    receipt: str = ""
+    #: Where the customer reads the outcome, in the product.
+    returns_through: str = ""
 
 
 #: The supported journey, role by state by action by route by result.
@@ -255,6 +288,51 @@ CORE_JOURNEY: tuple[JourneyRow, ...] = (
         "reverses exactly that act",
         scenario="undo_one_decision",
         owner="#834",
+    ),
+    JourneyRow(
+        role=TECHNICAL_OPERATIONS,
+        state="An extraction error is reported, and the corrected reading "
+        "still differs from the accepted record",
+        action="Re-read the reported capture from the passage the coordinator "
+        "named",
+        route="",
+        procedure='make operations-repair ARGS="correct-capture <project-slug> '
+        '--request-id=<report-id>"',
+        retained_input="The extraction-error report the coordinator's own "
+        "receipt numbered, held in capture_correction_requests with the "
+        "challenged capture and the selected passage",
+        receipt="One correction result and its retirement through the "
+        "record-decision role's command, plus the ordinary operations audit "
+        "entry naming the procedure, the report, the outcome and the "
+        "replacement",
+        returns_through="GET /review/{slug} for the corrected proposal, and "
+        "GET /record/{slug} for what the retired one was replaced by",
+        result="The obsolete proposal is retired and a corrected one is raised "
+        "in its place; no accepted value changes",
+        scenario="a_corrected_capture_that_still_differs_replaces_the_proposal",
+        owner="#836, #842",
+    ),
+    JourneyRow(
+        role=TECHNICAL_OPERATIONS,
+        state="An extraction error is reported on a change the coordinator has "
+        "dated, and the corrected reading matches the accepted record",
+        action="Re-read the reported capture from the passage the coordinator "
+        "named",
+        route="",
+        procedure='make operations-repair ARGS="correct-capture <project-slug> '
+        '--request-id=<report-id>"',
+        retained_input="The extraction-error report the coordinator's own "
+        "receipt numbered, held in capture_correction_requests with the "
+        "challenged capture and the selected passage",
+        receipt="One correction result recording the no-change outcome and its "
+        "retirement, plus the ordinary operations audit entry",
+        returns_through="GET /record/{slug}, which says Corridor corrected its "
+        "reading, that no accepted value changed, and when the coordinator "
+        "meant to come back",
+        result="The dated proposal is retired without being woken, no accepted "
+        "value changes, and the scheduling receipt survives it",
+        scenario="a_deferred_proposal_is_retired_by_a_corrected_capture",
+        owner="#836, #842",
     ),
     JourneyRow(
         role=COORDINATION,
@@ -549,9 +627,10 @@ def rows_without_an_act(
     action with "None:" is declaring that this role may not act here, which is
     allowed only when the row also names the role that can.
 
-    A row with an action and no route yet is *not* stranded: the act exists
-    and the product cannot perform it, which is a ticket, and the check that a
-    missing route matches a step still waiting on one is separate.
+    A row with an action and no entry point yet is *not* stranded: the act
+    exists and nothing performs it, which is a ticket, and the check that a row
+    with neither a route nor a procedure matches a step still waiting on one is
+    separate.
     """
 
     return tuple(
@@ -560,6 +639,55 @@ def rows_without_an_act(
         if not row.action.strip()
         or (row.action.strip().startswith(NO_PERMITTED_ACTION) and not row.handoff_to)
     )
+
+
+#: What a procedure row has to carry to be an attributable operation rather
+#: than somebody's remembered shell command, in the order a reader needs them.
+PROCEDURE_CELLS = ("retained_input", "receipt", "returns_through")
+
+
+def rows_without_an_entry_point(
+    rows: tuple[JourneyRow, ...] = CORE_JOURNEY,
+) -> tuple[JourneyRow, ...]:
+    """Rows naming neither a route the product serves nor an approved procedure.
+
+    This is the "the product cannot do this yet" cell, and it stayed meaningful
+    when ``procedure`` arrived: an act is performed through one entry point or
+    the other, and a row with neither is a step nothing performs, whoever holds
+    the designation.
+    """
+
+    return tuple(
+        row for row in rows if not row.route.strip() and not row.procedure.strip()
+    )
+
+
+def undocumented_procedures(
+    rows: tuple[JourneyRow, ...] = CORE_JOURNEY,
+) -> tuple[tuple[JourneyRow, str], ...]:
+    """Each procedure row missing something, and which thing it is missing.
+
+    A runbook step is not a product gap. An undocumented Python call, a SQL
+    repair or a missing route disguised as one *is*, and what separates them is
+    exactly these cells: a command somebody can run, the retained input it is
+    given, the receipt it leaves in the record, and where the customer reads
+    the outcome. A row naming both a route and a procedure is listed too,
+    because then nothing says which of them performed the act.
+    """
+
+    missing: list[tuple[JourneyRow, str]] = []
+    for row in rows:
+        if not row.procedure.strip():
+            for cell in PROCEDURE_CELLS:
+                if getattr(row, cell).strip():
+                    missing.append((row, f"{cell} without a procedure"))
+            continue
+        if row.route.strip():
+            missing.append((row, "both a route and a procedure"))
+        for cell in PROCEDURE_CELLS:
+            if not getattr(row, cell).strip():
+                missing.append((row, cell))
+    return tuple(missing)
 
 
 def unretrieved_outputs(

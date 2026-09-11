@@ -375,16 +375,22 @@ processing state (#841), read the exact wording behind a proposed change
 retrieve the bytes of an issue the product has told them was approved (#830).
 
 **Where the second fact is measured**, rather than estimated: the acceptance
-harness in `tests/test_core_journey_acceptance.py` walks the whole of #849
-under the real sign-in, the enforced boundary, the real database capabilities
-and the production worker, with a controlled clock and a non-sending mail
-delivery as its only seams. Each step it cannot yet perform names the ticket
-that owes it, and the report is the frontier: it moves one step further as
-each child of #820 lands. `tests/journey_matrix.py` is the declared inventory
-of who may do what, in which state, on which route, with what result, that
-those scenarios are run against. #849 is the ticket that closes when the
-harness reports no waiting step, and that is the point at which
-user-workflow completion for this journey can be recorded as done.
+harness in `tests/test_core_journey_acceptance.py` walks the whole of #849 as
+a **local integration rehearsal using the production database role and the
+enforced web boundary** — the real sign-in, the real database capabilities and
+the production dispatch and worker, with three declared seams: a controlled
+clock, a non-sending mail delivery, and one test-only extraction fault that
+makes a genuinely misread capture reachable without changing what the retained
+source says. It is not a deployment and is not reported as one: the project is
+synthetic, the database is disposable, and the requests do not travel through
+the production router. Each step it cannot yet perform names the ticket that
+owes it, and the report is the frontier: it moves one step further as each
+child of #820 lands. `tests/journey_matrix.py` is the declared inventory of
+who may do what, in which state, on which route or through which approved
+staff procedure, with what result, that those scenarios are run against. #849
+is the ticket that closes when the harness reports no waiting step, and that
+is the point at which user-workflow completion for this journey can be
+recorded as done.
 
 ## Phase 3 — run the measured pilot and reach the checkpoint
 
