@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from corridor.web_boundary import PILOT_ROUTES
+from corridor.web_boundary import BOUNDARY_DISABLED_REASON, PILOT_ROUTES
 
 from corridor.activation import (ActivationConfiguration, ActivationRefused, BASE_GATES,
     EvidenceArtifact, activate, processing_authorized, route_manifest_digest)
@@ -132,11 +132,11 @@ def test_boundary_collector_requires_actual_login_and_deployed_enforcement(
         "expected_status": 200} for method, route in PILOT_ROUTES]
     cases.append({"method": "GET", "template": "/fixture-disabled", "url": "/fixture-disabled",
         "expected_status": 404})
-    boundary_state = "enforced"
+    boundary_state, boundary_healthy = "enforced", True
     def request(method, url, **kwargs):
         return SimpleNamespace(status_code=404 if url == "/fixture-disabled" else 200,
             text="fixture response", json=lambda: {"checks": [{"component": "live_pilot_web_boundary",
-                "healthy": True, "detail": boundary_state}]})
+                "healthy": boundary_healthy, "detail": boundary_state}]})
     with runtime_database.session_factory() as owner:
         with pytest.raises(ActivationRefused, match="actual corridor_web"):
             collect_boundary_smoke(owner, configuration=configuration, request=request, cases=cases, now=NOW)
@@ -155,6 +155,11 @@ def test_boundary_collector_requires_actual_login_and_deployed_enforcement(
                 collect_boundary_smoke(web, configuration=replace(configuration, deployment_id="other"),
                     request=request, cases=cases, now=NOW)
             boundary_state = "not_declared"
+            with pytest.raises(ActivationRefused, match="does not report an enforced"):
+                collect_boundary_smoke(web, configuration=configuration, request=request, cases=cases, now=NOW)
+            # #822: the reading a deployment that could not read its own web
+            # capability serves. No receipt is written while that is the answer.
+            boundary_state, boundary_healthy = BOUNDARY_DISABLED_REASON, False
             with pytest.raises(ActivationRefused, match="does not report an enforced"):
                 collect_boundary_smoke(web, configuration=configuration, request=request, cases=cases, now=NOW)
     finally:

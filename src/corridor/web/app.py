@@ -592,7 +592,9 @@ def get_session(request: Request):
 # live-pilot deployment that forgot the flag reads as `corridor_web` and holds
 # nothing on 124 relations, so it must be. Both facts are the login the
 # request's own reads run as, taken off the session's bind — no query, and no
-# second thing to keep in step with the revoke.
+# second thing to keep in step with the revoke. A bind this reader cannot
+# inspect is neither of those deployments, and #822 stopped it passing for the
+# forgiving one: `web_boundary.legacy_capabilities` names who may be excused.
 #
 # `_refuse_legacy_project_under_the_boundary` is the one place a route this
 # boundary *enables* still has to refuse: `/work/{slug}` renders ADR-0035's
@@ -612,15 +614,15 @@ def get_web_capability(session: Session = Depends(get_session)) -> str:
 
     Read off the bind, so it costs no statement and cannot disagree with the
     capability the revoke was aimed at. An unrecognizable bind answers with no
-    capability, which leaves the deployment undeclared: the boundary's enabled
-    half never depends on this, only the detection of a flag-off deployment
-    that has the revoke does.
+    capability at all, and no capability is one `web_boundary` cannot name:
+    since #822 that is an inconsistent configuration and refuses, rather than
+    passing for the legacy development clone that refuses nothing.
     """
 
     try:
         bind = session.get_bind()
         return getattr(bind, "engine", bind).url.username or ""
-    except Exception:  # pragma: no cover - a substituted seam without a bind
+    except Exception:
         return ""
 
 

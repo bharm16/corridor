@@ -2617,6 +2617,8 @@ def test_readiness_reports_the_boundary_state_this_deployment_is_in(
     kept_the_blanket_read = client.get("/health")
     app.dependency_overrides[get_web_capability] = lambda: "corridor_web"
     has_the_revoke_only = client.get("/health")
+    app.dependency_overrides[get_web_capability] = lambda: ""
+    cannot_read_its_capability = client.get("/health")
 
     assert kept_the_blanket_read.status_code == 200
     assert kept_the_blanket_read.json()["checks"][-1] == {
@@ -2627,6 +2629,15 @@ def test_readiness_reports_the_boundary_state_this_deployment_is_in(
     assert has_the_revoke_only.status_code == 503
     assert has_the_revoke_only.json()["status"] == "degraded"
     assert has_the_revoke_only.json()["checks"][-1] == {
+        "component": "live_pilot_web_boundary",
+        "healthy": False,
+        "detail": "live_pilot_web_boundary_disabled",
+    }
+    # #822: a deployment whose capability nobody could read is not serving
+    # either, and the activation gate reads this same component before it will
+    # write a receipt (`corridor.activation.collect_boundary_smoke`).
+    assert cannot_read_its_capability.status_code == 503
+    assert cannot_read_its_capability.json()["checks"][-1] == {
         "component": "live_pilot_web_boundary",
         "healthy": False,
         "detail": "live_pilot_web_boundary_disabled",
@@ -2653,6 +2664,110 @@ def test_the_deployment_state_is_derived_from_the_flag_and_the_reading_login():
             declared=False, web_capability="corridor_legacy_dev"
         )
         is web_boundary.BoundaryState.NOT_DECLARED
+    )
+
+
+def test_a_capability_the_boundary_cannot_name_refuses_rather_than_reading_as_legacy():
+    """#822: the third answer the reading login can give, and what it means now.
+
+    #694 asked one question — "is this `corridor_web`?" — and read every other
+    answer as the legacy development clone, which refuses nothing. Two answers
+    are not that clone: a bind this process could not inspect, which arrives as
+    no capability at all, and a login this build has never heard of. Neither is
+    evidence that nothing was taken away, and treating them as the forgiving
+    deployment is how a process that has the revoke serves the surfaces the
+    revoke exists to close.
+
+    So the excused logins are a named list rather than a fallback, and it holds
+    exactly the two capabilities the revoke never aimed at: the opt-in login
+    ADR-0081 keeps for a legacy development deployment, and the schema owner
+    that migrations, the test harness and local tooling connect as. Both are
+    deployment configuration somebody selected.
+    """
+
+    schema_owner = make_url(settings.database_url).username
+
+    assert web_boundary.legacy_capabilities() == {"corridor_legacy_dev", schema_owner}
+
+    def state(capability):
+        return web_boundary.boundary_state(declared=False, web_capability=capability)
+
+    assert state("") is web_boundary.BoundaryState.INCONSISTENT
+    assert state("postgres") is web_boundary.BoundaryState.INCONSISTENT
+    assert (
+        state(web_boundary.LIVE_PILOT_WEB_CAPABILITY)
+        is web_boundary.BoundaryState.INCONSISTENT
+    )
+    assert state("corridor_legacy_dev") is web_boundary.BoundaryState.NOT_DECLARED
+    assert state(schema_owner) is web_boundary.BoundaryState.NOT_DECLARED
+
+
+def test_a_bind_this_request_cannot_read_answers_with_no_capability_at_all():
+    """The reader's own failure mode, which is what #822 was filed about.
+
+    Two shapes reach it: a substituted session seam whose `get_bind` raises,
+    and a bind whose URL carries no username. Both answer with no capability,
+    and no capability is not a name `legacy_capabilities` holds — so the
+    deployment is inconsistent rather than excused, which is the whole fix.
+    """
+
+    from types import SimpleNamespace
+
+    class _NoBind:
+        def get_bind(self):
+            raise RuntimeError("a substituted seam with no bind")
+
+    nameless = SimpleNamespace(
+        get_bind=lambda: SimpleNamespace(
+            url=make_url("postgresql+psycopg://localhost:5433/corridor")
+        )
+    )
+
+    assert get_web_capability(_NoBind()) == ""
+    assert get_web_capability(nameless) == ""
+    assert (
+        web_boundary.boundary_state(declared=False, web_capability="")
+        is web_boundary.BoundaryState.INCONSISTENT
+    )
+
+
+def test_absent_and_malformed_boundary_configuration_never_declare_the_boundary(
+    monkeypatch,
+):
+    """The flag half of the same question, at both of its failure shapes (#822).
+
+    Absent, the boundary is undeclared, and the deployment reading as the
+    revoked live-pilot login refuses. Malformed, the process does not start at
+    all: the field is typed, so `Settings` rejects the value rather than
+    resolving it to whichever of true and false the string is truthy for.
+    `boundary_state` asks for the boolean itself for the same reason — a value
+    that reaches it from somewhere that never parsed it declares nothing.
+    """
+
+    from pydantic import ValidationError
+
+    from corridor.config import Settings
+
+    monkeypatch.delenv("CORRIDOR_LIVE_PILOT_WEB_BOUNDARY", raising=False)
+    absent = Settings(_env_file=None).live_pilot_web_boundary
+
+    assert absent is False
+    assert (
+        web_boundary.boundary_state(
+            declared=absent, web_capability=web_boundary.LIVE_PILOT_WEB_CAPABILITY
+        )
+        is web_boundary.BoundaryState.INCONSISTENT
+    )
+
+    monkeypatch.setenv("CORRIDOR_LIVE_PILOT_WEB_BOUNDARY", "sometimes")
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+    assert (
+        web_boundary.boundary_state(
+            declared="true", web_capability=web_boundary.LIVE_PILOT_WEB_CAPABILITY
+        )
+        is web_boundary.BoundaryState.INCONSISTENT
     )
 
 
