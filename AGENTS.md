@@ -288,9 +288,20 @@ remote-tracking ref outlives the work it carried.
   database lazily on the first connection and reuse one migrated template;
   pure checks perform neither database setup nor database teardown. Serial
   database tests use the configured database.
-- A database test still defines its own rollback-scoped `session` fixture:
-  `engine.connect()`, `begin()`, `Session(bind=connection)`. Follow that pattern;
-  the session-level harness owns database isolation, not shared test data.
+- **A database test asks `tests/conftest.py` for its fixtures; it does not
+  hand-write them.** `session` is one rollback-scoped Session over this
+  worker's migrated database, so nothing a test writes through it survives the
+  test. `project` is one synthetic Project flushed inside that transaction,
+  with a fresh slug because `projects.slug` is unique and a module that commits
+  a scenario must not collide with one that rolls back. `member_project` builds
+  that project and seeds the one roster membership the #331 access gate wants,
+  taking the acting principal the module names. `runtime_database` is the next
+  bullet. Declare a local `project` only when the test asserts on a project's
+  own slug or display name, or needs a value the shared row does not carry, and
+  a local `session` only when the transaction itself differs: a non-default
+  isolation level is an argument to `rollback_scoped_session`, not a copied
+  fixture body. `tests/test_harness_fixtures.py` holds these promises, so a
+  change to one fails there rather than in 170 modules.
 - A public seam that requires independent committed transactions — durable
   leases, competing workers, or restart recovery — uses only the harness-owned
   `runtime_database` fixture in `tests/conftest.py`. Ordinary database tests
