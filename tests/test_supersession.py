@@ -7,15 +7,15 @@ from datetime import date
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import delete, select, text, update
+from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError, OperationalError
 
 from corridor.db import Session
+from committed_scenario_support import delete_committed_project
 from corridor.models import (
     DocPage,
     Document,
     Project,
-    RevisionReconciliationRequest,
 )
 
 
@@ -85,30 +85,7 @@ def _committed_lock_chain():
 
 
 def _delete_committed_project(project_id):
-    with Session() as cleanup:
-        cleanup.execute(
-            update(Document)
-            .where(Document.project_id == project_id)
-            .values(
-                superseded_by=None,
-                superseded_on=None,
-                supersession_source_document_id=None,
-                supersession_source_page=None,
-            )
-        )
-        document_ids = select(Document.id).where(Document.project_id == project_id)
-        cleanup.execute(delete(DocPage).where(DocPage.document_id.in_(document_ids)))
-        cleanup.execute(delete(Document).where(Document.project_id == project_id))
-        # Registering a supersession bumps the durable revision-reconciliation
-        # watermark (#343), so the committed row must be cleared before the
-        # project it references can be deleted.
-        cleanup.execute(
-            delete(RevisionReconciliationRequest).where(
-                RevisionReconciliationRequest.project_id == project_id
-            )
-        )
-        cleanup.execute(delete(Project).where(Project.id == project_id))
-        cleanup.commit()
+    delete_committed_project(project_id, session_factory=Session)
 
 
 def _declaration(
