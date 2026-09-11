@@ -1,0 +1,292 @@
+{% import "_primitives.html" as ui -%}
+<!doctype html>
+<meta charset="utf-8">
+<title>Issue configuration — {{ project.name }}</title>
+{#
+  What this project externally issues, and the one act that changes it (#828,
+  ADR-0086 as amended by ADR-0091).
+
+  It is deliberately not a report builder and not a weekly artifact picker.
+  The only choice on the page is which of ADR-0091's configured artifacts
+  participate; the updated UCM is mandatory and has no control, and what each
+  artifact contains is its renderer's declaration rather than a per-customer
+  selection.
+
+  Every state word comes from the primitives, and every artifact name comes
+  from `issue_content.ARTIFACT_WORDS`, which is ADR-0091's own prose.
+#}
+<style>
+  :root { --line:#e2e2e2; --muted:#666; }
+  * { box-sizing: border-box; }
+  body { font: 14px/1.5 system-ui, sans-serif; margin: 0; color:#111;
+         background:#fff; }
+  header { display:flex; justify-content:space-between; align-items:baseline;
+           padding:.7rem 1.2rem; border-bottom:1px solid var(--line); }
+  header b { font-size:1rem; }
+  header a { color:#111; }
+  main { max-width: 56rem; margin: 2.5rem auto; padding: 0 1.2rem; }
+  h1 { font-size:1.4rem; margin:0 0 .3rem; letter-spacing:-.01em; }
+  h2 { font-size:1.05rem; margin:1.8rem 0 .4rem; }
+  h3 { font-size:.95rem; margin:1rem 0 .3rem; }
+  .lead { color:var(--muted); margin:0 0 1.6rem; font-size:.95rem; }
+  .quiet { color:var(--muted); font-size:.9rem; }
+  .mono { font-family:ui-monospace, monospace; font-size:.78rem;
+          color:var(--muted); }
+  .panel { border:1px solid var(--line); border-radius:6px;
+           padding:.8rem 1rem; margin:.8rem 0; }
+  ul.plain { list-style:none; margin:.3rem 0; padding:0; }
+  ul.plain li { padding:.15rem 0; }
+  fieldset { border:1px solid var(--line); border-radius:6px;
+             padding:.6rem .9rem; margin:.8rem 0; }
+  legend { font-weight:600; padding:0 .3rem; }
+  button { font:inherit; padding:.35rem .9rem; border:1px solid #111;
+           background:#111; color:#fff; border-radius:4px; }
+  button.secondary { background:#fff; color:#111; }
+</style>
+{{ ui.styles() }}
+
+<header>
+  <b>{{ project.name }}</b>
+  <span><a href="/work/{{ project.slug }}">Work &rarr;</a></span>
+</header>
+
+<main>
+  <h1>Issue configuration — {{ project.name }}</h1>
+  <p class="lead">
+    What this project externally issues, fixed until an attributable change.
+    The updated UCM is in every issue and has no switch; the rest is this
+    project's own configuration. Changing it is one approval, not a weekly
+    choice.
+  </p>
+
+  {%- if refusal %}
+  {% call ui.outcome("refused", refusal, focus) %}
+  <p class="quiet">Nothing was registered. The configuration below is unchanged.</p>
+  {% endcall %}
+  {%- elif approved %}
+  {% call ui.outcome("saved", approved.heading, focus) %}
+  <p class="quiet">{{ approved.detail }}</p>
+  {% endcall %}
+  {%- endif %}
+
+  <section aria-labelledby="effective-heading">
+    <h2 id="effective-heading"{{ ui.anchor(focus_ids["item"], focus) }}>In force now</h2>
+    {%- if view.effective %}
+    {{ ui.fact_list([
+         ("Version", view.effective.profile_version),
+         ("Effective from", view.effective.effective_from.strftime('%Y-%m-%d %H:%M')),
+         ("Approved by", view.effective.registered_by_principal),
+         ("Approved at", view.effective.registered_at.strftime('%Y-%m-%d %H:%M')),
+         ("Configuration digest", view.effective.content_sha256),
+       ]) }}
+
+    <h3>Issued artifacts</h3>
+    <ul class="plain">
+      <li>
+        {{ view.effective.updated_ucm.words }}
+        — mandatory
+        <span class="mono">{{ view.effective.updated_ucm.renderer.identity }}
+          {{ view.effective.updated_ucm.renderer.version }}</span>
+      </li>
+      {%- for line in view.effective.configured %}
+      <li>
+        {{ line.words }}
+        <span class="mono">{{ line.renderer.identity }} {{ line.renderer.version }}</span>
+      </li>
+      {%- else %}
+      <li class="quiet">Nothing beyond the updated UCM is configured.</li>
+      {%- endfor %}
+    </ul>
+
+    <h3>Template and mapping</h3>
+    {{ ui.fact_list([
+         ("Output template", view.effective.output_template[0] ~ " " ~ view.effective.output_template[1]),
+         ("Field mapping", view.effective.field_mapping[0] ~ " " ~ view.effective.field_mapping[1]),
+       ]) }}
+
+    <h3>Source coverage expected before an issue</h3>
+    <ul class="plain">
+      {%- for requirement, statement in view.effective.coverage_requirements %}
+      <li>{{ statement }} <span class="mono">{{ requirement }}</span></li>
+      {%- else %}
+      <li class="quiet">No coverage requirement is configured for this project.</li>
+      {%- endfor %}
+    </ul>
+
+    <h3>Decisions this customer requires before an issue</h3>
+    <ul class="plain">
+      {%- for policy, required_decision, statement in view.effective.decision_blocking_policies %}
+      <li>{{ statement }}
+        <span class="mono">{{ policy }} waits on {{ required_decision }}</span></li>
+      {%- else %}
+      <li class="quiet">No customer policy blocks an issue on a named decision.</li>
+      {%- endfor %}
+    </ul>
+
+    {%- if view.effective.problems %}
+    <div class="panel">
+      <p>{{ ui.state(state_label("attention", "This release cannot execute the configuration in force")) }}</p>
+      <ul class="plain">
+        {%- for problem in view.effective.problems %}
+        <li>{{ problem.sentence }}</li>
+        {%- endfor %}
+      </ul>
+    </div>
+    {%- endif %}
+    {%- else %}
+    <p class="quiet">
+      No configuration has taken effect for this project, so nothing says what
+      it externally issues. Approving the first version below establishes it.
+    </p>
+    {%- endif %}
+  </section>
+
+  {%- if view.candidate %}
+  <section aria-labelledby="candidate-heading">
+    <h2 id="candidate-heading">The issue prepared against it</h2>
+    <p>
+      <span class="mono">{{ view.candidate.candidate_identity }}</span>,
+      prepared against version {{ view.candidate.profile_version }}.
+    </p>
+    {%- if view.candidate.stale %}
+    <p>{{ ui.state(state_label("attention", "This prepared issue no longer describes the project")) }}</p>
+    <ul class="plain">
+      {%- for reason in view.candidate.stale_reasons %}
+      <li>{{ reason }}</li>
+      {%- endfor %}
+    </ul>
+    {%- else %}
+    <p class="quiet">
+      It still matches the configuration in force. Approving a change makes it
+      stale, and a fresh candidate is prepared on the Work page.
+    </p>
+    {%- endif %}
+  </section>
+  {%- endif %}
+
+  <section aria-labelledby="propose-heading">
+    <h2 id="propose-heading">Prepare a change</h2>
+    <p class="quiet">
+      Choose which of this project's optional artifacts it issues. Nothing is
+      recorded until the change is approved below.
+    </p>
+    <form method="get" action="/issue-configuration/{{ project.slug }}">
+      <input type="hidden" name="propose" value="1">
+      <fieldset>
+        <legend>Artifacts issued beside the updated UCM</legend>
+        <ul class="plain">
+          {%- for choice in view.choices %}
+          <li>
+            {%- if choice.offered %}
+            <label>
+              <input type="checkbox" name="artifact" value="{{ choice.artifact_type }}"
+                     {% if choice.artifact_type in preselected %}checked{% endif %}>
+              {{ choice.words }}
+              <span class="mono">{{ choice.renderer.identity }} {{ choice.renderer.version }}</span>
+            </label>
+            {%- else %}
+            {{ choice.words }}
+            <span class="quiet">— no renderer revision this release registers
+              produces it, so it cannot be configured</span>
+            {%- endif %}
+          </li>
+          {%- endfor %}
+        </ul>
+      </fieldset>
+      <button type="submit" class="secondary">Prepare this configuration</button>
+    </form>
+  </section>
+
+  {%- if view.proposal %}
+  <section aria-labelledby="proposal-heading" class="panel">
+    <h2 id="proposal-heading">Proposed version {{ view.proposal.profile_version }}</h2>
+    {%- if view.proposal.unchanged %}
+    <p>{{ ui.state(state_label("neutral", "This is the configuration already in force")) }}</p>
+    <p class="quiet">Approving it registers nothing, because nothing changed.</p>
+    {%- endif %}
+
+    <h3>Issued artifacts</h3>
+    <ul class="plain">
+      <li>
+        {{ view.proposal.updated_ucm.words }} — mandatory
+        <span class="mono">{{ view.proposal.updated_ucm.renderer.identity }}
+          {{ view.proposal.updated_ucm.renderer.version }}</span>
+      </li>
+      {%- for line in view.proposal.configured %}
+      <li>
+        {{ line.words }}
+        <span class="mono">{{ line.renderer.identity }} {{ line.renderer.version }}</span>
+      </li>
+      {%- else %}
+      <li class="quiet">Nothing beyond the updated UCM.</li>
+      {%- endfor %}
+    </ul>
+
+    {{ ui.fact_list([
+         ("Output template", view.proposal.output_template[0] ~ " " ~ view.proposal.output_template[1]),
+         ("Field mapping", view.proposal.field_mapping[0] ~ " " ~ view.proposal.field_mapping[1]),
+         ("Effective from", view.proposal.effective_from.strftime('%Y-%m-%d %H:%M')),
+         ("Configuration digest", view.proposal.content_sha256),
+       ]) }}
+
+    {%- if view.proposal.problems %}
+    <p>{{ ui.state(state_label("attention", "This release cannot execute this configuration, so it cannot be approved")) }}</p>
+    <ul class="plain">
+      {%- for problem in view.proposal.problems %}
+      <li>{{ problem.sentence }}</li>
+      {%- endfor %}
+    </ul>
+    {%- endif %}
+
+    <p class="quiet">
+      {%- if view.may_approve %}
+      Approving is a Project Coordination act, and you hold that designation
+      for this project.
+      {%- else %}
+      Approving is a Project Coordination act, and you do not hold that
+      designation for this project.
+      {%- endif %}
+    </p>
+
+    <form method="post" action="/issue-configuration/{{ project.slug }}/approve">
+      {{ csrf_field() }}
+      {#
+        The selection exactly as it arrived, not the proposal's resolved
+        entries: a selection this release cannot render drops out of the
+        declaration and has to survive to the approval, which is where it is
+        refused.
+      #}
+      {%- for artifact_type in selected %}
+      <input type="hidden" name="artifact" value="{{ artifact_type }}">
+      {%- endfor %}
+      <input type="hidden" name="content_sha256" value="{{ view.proposal.content_sha256 }}">
+      <input type="hidden" name="supersedes_profile_id"
+             value="{{ view.proposal.supersedes_profile_id if view.proposal.supersedes_profile_id is not none else '' }}">
+      <input type="hidden" name="supersedes_version"
+             value="{{ view.proposal.supersedes_version if view.proposal.supersedes_version is not none else '' }}">
+      <button type="submit">Approve version {{ view.proposal.profile_version }}</button>
+    </form>
+  </section>
+  {%- endif %}
+
+  <section aria-labelledby="history-heading">
+    <h2 id="history-heading">Every version, and who approved it</h2>
+    {%- if view.history %}
+    {% call ui.record_table("Approved versions, newest first",
+                            ["Version", "Effective from", "Approved by",
+                             "Approved at", "Configuration digest"]) %}
+      {%- for row in view.history %}
+      <tr>
+        <th scope="row">{{ row.profile_version }}</th>
+        <td>{{ row.effective_from.strftime('%Y-%m-%d %H:%M') }}</td>
+        <td>{{ row.registered_by_principal }}</td>
+        <td>{{ row.registered_at.strftime('%Y-%m-%d %H:%M') }}</td>
+        <td class="mono">{{ row.content_sha256[:16] }}…</td>
+      </tr>
+      {%- endfor %}
+    {% endcall %}
+    {%- else %}
+    <p class="quiet">Nothing has been approved for this project yet.</p>
+    {%- endif %}
+  </section>
+</main>

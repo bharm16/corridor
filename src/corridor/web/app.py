@@ -430,7 +430,12 @@ from corridor.follow_up_bundles import (
     read_follow_up_bundles,
 )
 from corridor.issue_coverage import CoverageRefused, confirm_coverage, derive_coverage_reading
-from corridor.issue_profile import effective_issue_inventory
+from corridor.issue_profile import IssueProfileRefused, effective_issue_inventory
+from corridor.issue_profile_approval import (
+    IssueProfileApprovalRefused,
+    approve_issue_profile,
+)
+from corridor.web.issue_profile_view import issue_configuration_view
 from corridor.project_workflow import read_project_workflow
 from corridor.release_preparation import (
     PreparationRequestRefused,
@@ -7628,3 +7633,250 @@ def resolve_inbound_route(
         raise HTTPException(409, str(exc)) from exc
     session.commit()
     return {"thread_id": thread_id, "project": project.slug, "route_status": "routed"}
+
+
+# --- What this project externally issues, and the one act that changes it ----
+#
+# #828. The configured issue set decides what a customer receives and which
+# questions can block an issue, and it had no surface at all: the customer-
+# journey audit found `register_issue_profile` with a domain implementation, a
+# migration granting it to the web capability, and callers in tests only.
+#
+# The reading is `web.issue_profile_view`; every rule about what may be
+# approved -- what a proposal carries forward, whether this release can execute
+# it, which predecessor it binds, and whether it changes anything at all -- is
+# `issue_profile_approval`'s. Neither is re-decided here, and in particular
+# there is no second designation gate: `register_issue_profile` proves the
+# Project Coordination designation against the roster and answers with the
+# sentence this page prints.
+
+
+def _issue_configuration_page(
+    request: Request,
+    project: Project,
+    membership: access.MembershipAccess,
+    session: Session,
+    *,
+    now: datetime,
+    selected: tuple[str, ...] | None,
+    refusal: str | None = None,
+    approved: dict[str, str] | None = None,
+    status_code: int = 200,
+) -> Response:
+    """The configuration page, rendered around whatever just happened to it.
+
+    `selected` is `None` where nobody has prepared anything and a tuple --
+    possibly empty, which is a real proposal -- where a selection arrived.
+    """
+
+    view = issue_configuration_view(
+        session,
+        project_id=project.id,
+        membership=membership,
+        as_of=now,
+        proposed_artifact_types=selected,
+    )
+    return TEMPLATES.TemplateResponse(
+        request,
+        "issue_configuration.html",
+        {
+            "project": project,
+            "view": view,
+            "selected": list(selected or ()),
+            # What the selection form opens with. A page nobody has prepared
+            # anything on opens on what the project is configured to issue, so
+            # "prepare" without touching a control proposes no change rather
+            # than proposing to stop issuing everything.
+            "preselected": (
+                list(selected)
+                if selected is not None
+                else [
+                    choice.artifact_type
+                    for choice in view.choices
+                    if choice.configured
+                ]
+            ),
+            "refusal": refusal,
+            "approved": approved,
+            "focus": ui_primitives.focus_target(
+                refused=refusal is not None, saved=approved is not None
+            ),
+        },
+        status_code=status_code,
+    )
+
+
+def _issue_configuration_membership(
+    session: Session, slug: str, principal: HumanPrincipal
+) -> tuple[Project, access.MembershipAccess]:
+    """The project, its partition, and this person's standing in it.
+
+    `_project` is the gate and opens the partition; the membership is read
+    again from the same resolver so the page can say whether this reader holds
+    the designation the approval command will prove. That is a derived display
+    and not a second authority -- the control is still rendered and the refusal
+    still comes from the command (the audit's own "UI permission feedback is
+    not a competing security boundary").
+    """
+
+    project = _project(session, slug, principal)
+    if not is_adopted_baseline(session, project.id):
+        # A legacy project has no adopted template or field mapping, so it has
+        # nothing an issue could be configured against. Answered the way a
+        # route that does not exist for it is answered.
+        raise HTTPException(404, f"no project {slug!r}")
+    membership = access.resolve_membership(session, principal.subject, project.id)
+    if membership is None:
+        raise HTTPException(404, f"no project {slug!r}")
+    return project, membership
+
+
+@app.get("/issue-configuration/{slug}", response_class=HTMLResponse)
+def issue_configuration(
+    request: Request,
+    slug: str,
+    propose: str = Query(default=""),
+    artifact: list[str] = Query(default=[]),
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+    clock=Depends(get_review_clock),
+):
+    """Read what this project issues, and prepare a change to it.
+
+    The selection travels in the query string because a prepared proposal has
+    nowhere to be stored: no schema holds one, and #824 holds the schema slot.
+    That is deliberate rather than incidental -- it makes the prepared
+    configuration a link, which is how operations hands one to the person who
+    approves it -- and it is why the approval binds the proposal by digest.
+    """
+
+    project, membership = _issue_configuration_membership(session, slug, principal)
+    now = clock()
+    selected = tuple(artifact) if propose.strip() else None
+    try:
+        return _issue_configuration_page(
+            request, project, membership, session, now=now, selected=selected
+        )
+    except IssueProfileApprovalRefused as refused:
+        return _issue_configuration_page(
+            request,
+            project,
+            membership,
+            session,
+            now=now,
+            selected=None,
+            refusal=refused.customer_sentence,
+            status_code=refusal_status(refused),
+        )
+
+
+@app.post("/issue-configuration/{slug}/approve", response_class=HTMLResponse)
+def approve_issue_configuration(
+    request: Request,
+    slug: str,
+    content_sha256: str = Form(...),
+    supersedes_profile_id: str = Form(default=""),
+    supersedes_version: str = Form(default=""),
+    artifact: list[str] = Form(default=[]),
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+    clock=Depends(get_review_clock),
+):
+    """Approve one prepared configuration, as the person performing the act.
+
+    The version it replaces and the digest of the bytes it would register both
+    travel back through the form, so an approval registers exactly the
+    configuration the page printed or registers nothing at all. The new version
+    takes effect at this request's declared instant: an approval is what makes
+    a configuration current, so there is no date to pick and no way to backdate
+    what an earlier reporting cutoff was configured to issue.
+    """
+
+    project, membership = _issue_configuration_membership(session, slug, principal)
+    now = clock()
+    selected = tuple(artifact)
+    try:
+        # One savepoint around the approval, so a refusal gives up its own work
+        # and this session can still render the configuration around it.
+        with session.begin_nested():
+            outcome = approve_issue_profile(
+                session,
+                project_id=project.id,
+                artifact_types=selected,
+                effective_from=now,
+                supersedes_profile_id=_optional_id(supersedes_profile_id),
+                supersedes_version=_optional_id(supersedes_version),
+                content_sha256=content_sha256,
+                principal=principal,
+            )
+    except IssueProfileApprovalRefused as refused:
+        return _issue_configuration_page(
+            request,
+            project,
+            membership,
+            session,
+            now=now,
+            selected=selected,
+            refusal=refused.customer_sentence,
+            status_code=refusal_status(refused),
+        )
+    except IssueProfileRefused as refused:
+        # The registration command's own refusal, including the one it gives a
+        # member who holds no Project Coordination designation. It carries no
+        # code, so the sentence is what the page prints; restating the rule
+        # here to pick a status would be the second gate this route avoids.
+        return _issue_configuration_page(
+            request,
+            project,
+            membership,
+            session,
+            now=now,
+            selected=selected,
+            refusal=str(refused),
+            status_code=409,
+        )
+    session.commit()
+    return _issue_configuration_page(
+        request,
+        project,
+        membership,
+        session,
+        now=now,
+        selected=None,
+        approved=_approved_configuration(outcome),
+        status_code=201 if outcome.registered else 200,
+    )
+
+
+def _approved_configuration(outcome) -> dict[str, str]:
+    """What the approval did, in the words the page announces it with."""
+
+    if not outcome.registered:
+        return {
+            "heading": "Nothing changed",
+            "detail": (
+                "This is the configuration already in force, so no version was "
+                "registered and nobody is recorded as having changed anything."
+            ),
+        }
+    return {
+        "heading": f"Version {outcome.profile_version} is in force",
+        "detail": (
+            "What this project externally issues is now version "
+            f"{outcome.profile_version}, effective from the instant you "
+            "approved it. Any issue prepared against the previous version is "
+            "stale, and a fresh one is prepared on the Work page."
+        ),
+    }
+
+
+def _optional_id(value: str) -> int | None:
+    """A form's integer field, where an absent value means an absent row."""
+
+    text = (value or "").strip()
+    if not text:
+        return None
+    try:
+        return int(text)
+    except ValueError as exc:
+        raise HTTPException(400, "this form was not the one the page rendered") from exc
