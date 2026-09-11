@@ -43,6 +43,7 @@ __all__ = [
     "DeltaDeferral",
     "DeltaDisposition",
     "DeltaFollowUpPlan",
+    "DeltaFollowUpPlanClosure",
     "DeltaFollowUpPlanEvidence",
     "DeltaGroup",
     "DeltaRecordDecision",
@@ -51,6 +52,8 @@ __all__ = [
     "DeltaReviewPacketReversal",
     "DeltaReviewPacketSupport",
     "DeltaSupersession",
+    "CANCELLATION_REASONS",
+    "CLOSURE_KINDS",
     "OutgoingRequest",
     "OutgoingRequestResponse",
     "PACKET_CHILD_OUTCOMES",
@@ -430,6 +433,25 @@ PACKET_GROUPING_KEY_KINDS = (
     "coordination_question",
     "shared_commitment",
 )
+# What a Follow-up Plan closure says happened to the plan (#835).
+# ``superseded`` names the plan that replaced it; ``cancelled`` names a
+# structured reason it is no longer needed.
+CLOSURE_KINDS = ("superseded", "cancelled")
+# The structured reasons a cancellation may carry.  ADR-0038 requires one on
+# the legacy plan lifecycle and refuses free text as a substitute; the spine's
+# plan is the same act, so it carries the same rule.  Prose belongs in the
+# closure's ``note`` beside one of these, never instead of one.
+CANCELLATION_REASONS = (
+    "answered_another_way",
+    "no_longer_needed",
+    "raised_in_error",
+    "asked_of_the_wrong_party",
+)
+
+_CLOSURE_KINDS_SQL = ", ".join(f"'{value}'" for value in CLOSURE_KINDS)
+_CANCELLATION_REASONS_SQL = ", ".join(
+    f"'{value}'" for value in CANCELLATION_REASONS
+)
 _PACKET_CHILD_OUTCOMES_SQL = ", ".join(f"'{value}'" for value in PACKET_CHILD_OUTCOMES)
 _PACKET_GROUPING_KEY_KINDS_SQL = ", ".join(
     f"'{value}'" for value in PACKET_GROUPING_KEY_KINDS
@@ -499,6 +521,99 @@ class DeltaFollowUpPlan(Base):
     idempotency_key: Mapped[str] = mapped_column(String(160))
     recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class DeltaFollowUpPlanClosure(Base):
+    """How one Follow-up Plan stopped being an outside ask (#835).
+
+    ``DeltaFollowUpPlan`` is insert-only, and until this row existed a plan
+    left the two readers that decide whether it is still waiting for exactly
+    two reasons: its Proposed Delta stopped being open, or the packet act that
+    recorded it was reversed.  A coordinator who had recorded the wrong
+    question, or who no longer needed an outside answer, had nothing to record
+    — and appending a corrected plan produced *two live asks for one question*,
+    because nothing said one replaced the other.
+
+    ``superseded`` names the plan that replaced this one; ``cancelled`` names a
+    structured reason it is no longer needed (ADR-0038's rule, on the spine's
+    relation).  Written only by ``close_delta_follow_up_plan``; a wrong closure
+    is corrected by recording a new plan, never by an update.  It is not
+    ``DeltaReviewPacketReversal``: Undo says the recorded act never stood and
+    takes the packet's revision and citations back with it, where a closure
+    says the ask was real and is finished.  It writes no Project Record
+    revision (ADR-0084).
+    """
+
+    __tablename__ = "delta_follow_up_plan_closures"
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id", "id", name="uq_delta_follow_up_plan_closures_project_id"
+        ),
+        # A plan closes once: a second closure is two statements about one
+        # plan, and the readers would have to choose between them.
+        UniqueConstraint("plan_id", name="uq_delta_follow_up_plan_closures_plan"),
+        UniqueConstraint(
+            "project_id",
+            "idempotency_key",
+            name="uq_delta_follow_up_plan_closures_key",
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "plan_id"],
+            ["delta_follow_up_plans.project_id", "delta_follow_up_plans.id"],
+            name="fk_delta_follow_up_plan_closures_plan",
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "successor_plan_id"],
+            ["delta_follow_up_plans.project_id", "delta_follow_up_plans.id"],
+            name="fk_delta_follow_up_plan_closures_successor",
+        ),
+        CheckConstraint(
+            f"closure_kind in ({_CLOSURE_KINDS_SQL})",
+            name="ck_delta_follow_up_plan_closures_kind",
+        ),
+        CheckConstraint(
+            "(closure_kind = 'superseded' and successor_plan_id is not null "
+            "and cancellation_reason is null) "
+            "or (closure_kind = 'cancelled' and successor_plan_id is null "
+            "and cancellation_reason is not null)",
+            name="ck_delta_follow_up_plan_closures_shape",
+        ),
+        CheckConstraint(
+            "cancellation_reason is null or cancellation_reason in "
+            f"({_CANCELLATION_REASONS_SQL})",
+            name="ck_delta_follow_up_plan_closures_reason",
+        ),
+        CheckConstraint(
+            "successor_plan_id is null or successor_plan_id <> plan_id",
+            name="ck_delta_follow_up_plan_closures_not_self",
+        ),
+        CheckConstraint(
+            "length(btrim(closed_by_principal)) > 0",
+            name="ck_delta_follow_up_plan_closures_principal",
+        ),
+        CheckConstraint(
+            "length(btrim(idempotency_key)) > 0",
+            name="ck_delta_follow_up_plan_closures_key_text",
+        ),
+        CheckConstraint(
+            "note is null or (length(btrim(note)) > 0 and length(note) <= 2000)",
+            name="ck_delta_follow_up_plan_closures_note",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    plan_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    closure_kind: Mapped[str] = mapped_column(String(32))
+    successor_plan_id: Mapped[int | None] = mapped_column(BigInteger)
+    cancellation_reason: Mapped[str | None] = mapped_column(String(64))
+    note: Mapped[str | None] = mapped_column(Text)
+    closed_by_principal: Mapped[str] = mapped_column(String(128))
+    closed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    idempotency_key: Mapped[str] = mapped_column(String(160))
+    recorded_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
 

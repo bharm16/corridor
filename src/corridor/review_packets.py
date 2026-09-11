@@ -67,7 +67,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 import json
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 from sqlalchemy import BigInteger, bindparam, cast, func, select
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
@@ -798,6 +798,54 @@ def _commit_child(
     )
 
 
+def record_follow_up_plan(
+    session: Session,
+    *,
+    project_id: int,
+    delta_id: int,
+    revision_id: int,
+    principal: HumanPrincipal,
+    question: str,
+    responsible_principal: str | None,
+    responsible_organization: str | None,
+    return_date: datetime | None,
+    affected_scope: Mapping[str, Any],
+    evidence_ids: Sequence[int],
+    recorded_at: datetime,
+    idempotency_key: str,
+) -> int:
+    """Write one Follow-up Plan through the one command that may.
+
+    The packet's own path below calls this, and so does #835's plan lifecycle
+    when a coordinator corrects a plan outside a packet act: both record the
+    same kind of row through the same command, and a second call site spelling
+    the twelve arguments again is how the two would come apart.
+    """
+
+    written = session.scalar(
+        select(
+            func.record_delta_follow_up_plan(
+                project_id,
+                delta_id,
+                revision_id,
+                principal.subject,
+                question,
+                responsible_principal,
+                responsible_organization,
+                return_date,
+                _jsonb(dict(affected_scope)),
+                cast(
+                    bindparam(None, [int(value) for value in evidence_ids]),
+                    ARRAY(BigInteger),
+                ),
+                recorded_at,
+                idempotency_key,
+            )
+        )
+    )
+    return int(written["plan_id"])
+
+
 def _record_follow_up_plan(
     session: Session,
     request: ReviewPacketRequest,
@@ -811,27 +859,23 @@ def _record_follow_up_plan(
     evidence = tuple(
         int(value) for value in coordination.evidence_support_assessment_ids
     )
-    written = session.scalar(
-        select(
-            func.record_delta_follow_up_plan(
-                request.project_id,
-                child.request.delta_id,
-                revision_id,
-                request.principal.subject,
-                coordination.question,
-                coordination.responsible_principal,
-                coordination.responsible_organization,
-                coordination.return_date,
-                _jsonb(coordination.affected_scope or {}),
-                cast(bindparam(None, list(evidence)), ARRAY(BigInteger)),
-                request.decided_at.astimezone(timezone.utc),
-                child_idempotency_key(
-                    request.idempotency_key, child.request.delta_id
-                ),
-            )
-        )
+    plan_id = record_follow_up_plan(
+        session,
+        project_id=request.project_id,
+        delta_id=child.request.delta_id,
+        revision_id=revision_id,
+        principal=request.principal,
+        question=coordination.question,
+        responsible_principal=coordination.responsible_principal,
+        responsible_organization=coordination.responsible_organization,
+        return_date=coordination.return_date,
+        affected_scope=coordination.affected_scope or {},
+        evidence_ids=evidence,
+        recorded_at=request.decided_at.astimezone(timezone.utc),
+        idempotency_key=child_idempotency_key(
+            request.idempotency_key, child.request.delta_id
+        ),
     )
-    plan_id = int(written["plan_id"])
     _emit_follow_up_plan(
         binding,
         request,

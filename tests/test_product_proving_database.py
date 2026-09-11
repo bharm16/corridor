@@ -262,8 +262,12 @@ def test_public_fingerprint_discovers_all_current_tables_and_sequences_read_only
     # a coverage confirmation or a preparation request is appended. It is a
     # function and two triggers over relations that already exist, so it moves
     # the schema digest and neither count.
-    assert fingerprint.table_count == 224
-    assert fingerprint.sequence_count == 202
+    # #835 adds how a Follow-up Plan stops being an outside ask -- superseded
+    # by a corrected plan, or cancelled with a structured reason -- keyed by
+    # its own bigserial: one table, one sequence. The designation trigger
+    # beside it reuses #839's function and adds neither.
+    assert fingerprint.table_count == 225
+    assert fingerprint.sequence_count == 203
     assert fingerprint.schema_object_count > 0
     assert len(fingerprint.schema_sha256) == 64
     assert [item.name for item in fingerprint.tables] == sorted(

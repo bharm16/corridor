@@ -51,6 +51,7 @@ from sqlalchemy.orm import Session
 
 from corridor.delta_refusals import REVIEW_PACKET_TOKEN
 from corridor.delta_resolution import Refusal
+from corridor.follow_up_plan_lifecycle import ClosureRefusal
 from corridor.models import (
     DeltaReviewPacketChild,
     DeltaReviewPacketReceipt,
@@ -177,13 +178,17 @@ def _child_reading(
     )
 
 
-def refusal_words(refusal: Refusal) -> str:
+def refusal_words(refusal: Refusal | ClosureRefusal) -> str:
     """The command's own refusal sentence, without its machine token.
 
     The token is how the two halves of one rule agree on what refused
     (``delta_refusals``); it is not a sentence, and a coordinator reading
     ``review_packet:later_act_depends`` learns nothing the words after it do
     not already say.
+
+    Both refusal shapes of this family reach here: the packet's, which is about
+    a Proposed Delta, and #835's closure, which is about a Follow-up Plan.
+    Only the sentence is read, and the sentence is the command's either way.
     """
 
     return REVIEW_PACKET_TOKEN.sub("", refusal.detail).strip()

@@ -134,6 +134,14 @@
       Nothing is needed from you while that happens.
     </p>
   {% endcall %}
+  {%- elif plan_refusal %}
+  {% call ui.outcome("refused", "Nothing was recorded against this plan", focus) %}
+    <p>{{ plan_refusal }}</p>
+  {% endcall %}
+  {%- elif plan_closed %}
+  {% call ui.outcome("saved", "The follow-up is recorded against your name", focus) %}
+    <p>{{ plan_closed }}</p>
+  {% endcall %}
   {%- elif schedule_refusal %}
   {% call ui.outcome("refused", "Nothing was rescheduled", focus) %}
     <p>{{ schedule_refusal }}</p>
@@ -255,30 +263,79 @@
       {%- endif %}
 
     {%- elif section.name == "follow_up" %}
+      {#
+        Each recorded Follow-up Plan, and the two things a coordinator may do
+        to one (#835). Correcting a plan records a new one and closes this as
+        superseded, so the week shows one ask rather than two; cancelling
+        records a structured reason and leaves the proposed change open, still
+        decided on the review screen. Neither writes a Project Record revision
+        and neither sends anything.
+      #}
       {%- if workflow.follow_up %}
-      {% call ui.record_table(
-           "What each recorded Follow-up Plan is waiting for",
-           ["What is in question", "Field", "The question the plan recorded",
-            "Who owes the answer", "Returns"]) %}
-        {%- for need in workflow.follow_up %}
-        <tr>
-          <th scope="row">{{ need.subject_name }}</th>
-          <td>{{ need.field_name }}</td>
-          <td>{{ need.open_question }}</td>
-          <td>{{ need.responsible if need.responsible else not_recorded }}</td>
-          <td>
-            {{ need.return_date if need.return_date else not_recorded }}
-            {%- if need.overdue(today=today) %}
-            {{ ui.state(state_label("attention", "past the date this plan named")) }}
-            {%- endif %}
-          </td>
-        </tr>
-        {%- endfor %}
-      {% endcall %}
+      {%- for need in workflow.follow_up %}
+      <section class="bundle" aria-labelledby="plan-{{ need.plan_id }}-heading">
+        <h3 id="plan-{{ need.plan_id }}-heading">{{ need.subject_name }} &mdash; {{ need.field_name }}</h3>
+        {{ ui.fact_list([
+             ("The question the plan recorded", need.open_question),
+             ("Who owes the answer", need.responsible if need.responsible else not_recorded),
+             ("Returns", need.return_date if need.return_date else not_recorded),
+           ]) }}
+        {%- if need.overdue(today=today) %}
+        <p>{{ ui.state(state_label("attention", "past the date this plan named")) }}</p>
+        {%- endif %}
+        <form method="post" action="/work/{{ project.slug }}/follow-up/close">
+          {{ csrf_field() }}
+          <input type="hidden" name="plan_id" value="{{ need.plan_id }}">
+          {% call ui.field(
+               "plan-" ~ need.plan_id ~ "-question",
+               "A corrected question, if this one is wrong") %}
+          <input type="text" id="plan-{{ need.plan_id }}-question"
+                 name="plan_question" value="{{ need.open_question }}">
+          {% endcall %}
+          {% call ui.field(
+               "plan-" ~ need.plan_id ~ "-organization",
+               "The organization that owes the answer") %}
+          <input type="text" id="plan-{{ need.plan_id }}-organization"
+                 name="plan_organization" value="{{ need.responsible }}">
+          {% endcall %}
+          {% call ui.field(
+               "plan-" ~ need.plan_id ~ "-return",
+               "The date the question returns") %}
+          <input type="date" id="plan-{{ need.plan_id }}-return"
+                 name="plan_return"
+                 value="{{ need.return_date.isoformat() if need.return_date else '' }}">
+          {% endcall %}
+          {% call ui.field(
+               "plan-" ~ need.plan_id ~ "-cancellation",
+               "If you are cancelling, why this is no longer an outside ask") %}
+          <select id="plan-{{ need.plan_id }}-cancellation" name="plan_cancellation_reason">
+            <option value="">Choose a reason</option>
+            {%- for value, words in cancellation_reasons %}
+            <option value="{{ value }}">{{ words }}</option>
+            {%- endfor %}
+          </select>
+          {% endcall %}
+          {% call ui.field(
+               "plan-" ~ need.plan_id ~ "-note",
+               "Anything else worth recording (optional)") %}
+          <input type="text" id="plan-{{ need.plan_id }}-note" name="plan_note" value="">
+          {% endcall %}
+          <p>
+            <button type="submit" name="plan_action" value="update">
+              Record this correction
+            </button>
+            <button type="submit" name="plan_action" value="cancel">
+              Cancel this follow-up
+            </button>
+          </p>
+        </form>
+      </section>
+      {%- endfor %}
       <p class="quiet">
         Each of these was recorded as a Follow-up Plan when a proposed change
-        was answered Needs coordination. Contacting anyone from here is not
-        built yet, so nothing on this page sends, closes, or reassigns one.
+        was answered Needs coordination. Correcting or cancelling one is
+        recorded against your name; nothing on this page sends anything, so a
+        message still goes out from wherever you send mail.
       </p>
       {%- endif %}
 

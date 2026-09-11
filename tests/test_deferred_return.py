@@ -44,7 +44,16 @@ from corridor.delta_resolution import (
     ChildDecisionRequest,
     resolve_delta,
 )
-from corridor.models import DeltaDeferral, Project, ProjectRecordRevision
+from corridor.follow_up_plan_lifecycle import cancel_follow_up_plan, closure_for
+from corridor.native_follow_up_reading import read_adopted_follow_up_plans
+from corridor.models import (
+    DeltaDeferral,
+    DeltaFollowUpPlan,
+    DeltaReviewPacketReceipt,
+    Project,
+    ProjectRecordRevision,
+)
+from corridor.review_packets import packet_reversal
 from corridor.operating_mode import adopt_project_baseline
 from corridor.packet_review import read_review_items
 from corridor.principals import HumanPrincipal
@@ -96,6 +105,9 @@ COMMITTED = "committed_date"
 A_PAGE_VIEW_WRITES = {"product_proving_frontend_requests", "audit_log"}
 # What a scheduling act adds on top of that, and the whole of what it adds.
 SCHEDULING_WRITES = A_PAGE_VIEW_WRITES | {"delta_deferrals"}
+# What correcting a plan adds: the closure, and the successor plan the closure
+# names. A revision is deliberately not in this set.
+CLOSING_WRITES = {"delta_follow_up_plan_closures", "delta_follow_up_plans"}
 
 
 class Clock:
@@ -260,7 +272,9 @@ def _revision_count(session: Session, project: Project) -> int:
 
 
 def _text(markup: str) -> str:
-    return html.unescape(re.sub(r"<[^>]+>", " ", markup))
+    """The words a reader sees, with the markup's own line wrapping removed."""
+
+    return re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", " ", markup)))
 
 
 # --- the coordinator can see what is deferred, and when it returns ---------
@@ -859,27 +873,29 @@ def _two_sources_planned(session: Session, client, project: Project) -> list[int
 
 
 def test_no_follow_up_plan_control_claims_to_send_anything(session, project, client):
-    """Nothing on the week sends, and the page says which of the two it is.
+    """A plan can be corrected and cancelled here, and nothing sends.
 
-    #835 asks for a plan that can be updated or cancelled with attribution and
-    for nothing to send email.  The second half holds today and is asserted
-    here so it cannot quietly stop holding; the first half has no home in the
-    record yet and the page still says so rather than offering a control that
-    would have nowhere to write.
+    #835 asks for both halves at once, and they pull in opposite directions: a
+    screen that can retire an outside ask is exactly the screen somebody would
+    next expect to send the message.  It does not, it says so, and the page's
+    own words tell the coordinator where the message still comes from.
     """
 
     _two_sources_planned(session, client, project)
 
     markup = client.get(f"/work/{project.slug}").text
     page = _text(markup)
-    assert "nothing on this page sends, closes, or reassigns one" in page
-    # Every form this week can carry, named. A send, a plan update or a plan
-    # cancellation would be a fourth, and none exists to render.
+    assert "nothing on this page sends anything" in page
+    assert "a message still goes out from wherever you send mail" in page
+    # Every form this week can carry, named. A send would be another one.
     actions = set(re.findall(r'<form[^>]*action="([^"]+)"', markup))
     assert actions <= {
+        # #843's navigation shell, on every customer page.
+        "/sign-out",
         f"/work/{project.slug}/issue/authorize",
         f"/work/{project.slug}/issue/prepare",
         f"/work/{project.slug}/schedule",
+        f"/work/{project.slug}/follow-up/close",
     }, actions
     assert not any(
         word in page.lower()
@@ -895,6 +911,352 @@ def test_no_follow_up_plan_control_claims_to_send_anything(session, project, cli
     )
     assert application.count("sender.send_sign_in_link") == 1
     assert re.findall(r"sender\.send_\w+", application) == ["sender.send_sign_in_link"]
+
+
+# --- the plan lifecycle: correcting one, and cancelling one ---------------
+
+
+def _one_plan(session: Session, client, project: Project) -> int:
+    """One live Follow-up Plan, recorded the way the review screen records it."""
+
+    plans = _two_sources_planned(session, client, project)
+    week = read_project_workflow(session, project_id=project.id, as_of=FIRST_VISIT)
+    assert len(week.follow_up) == len(plans)
+    return week.follow_up[0].plan_id
+
+
+def test_correcting_a_plan_leaves_one_live_ask_and_not_two(
+    session, project, client
+):
+    """The finding this relation exists for, asserted as a count.
+
+    Appending a corrected plan was always possible: ``delta_follow_up_plans``
+    takes more than one row per Proposed Delta and every reader of them returns
+    them all. What was missing is the statement that one replaced the other,
+    without which the week lists both and the chase list contacts somebody
+    twice.
+    """
+
+    plan_id = _one_plan(session, client, project)
+    before = read_project_workflow(session, project_id=project.id, as_of=FIRST_VISIT)
+    asks = len(before.follow_up)
+
+    response = client.post(
+        f"/work/{project.slug}/follow-up/close",
+        data={
+            "plan_id": str(plan_id),
+            "plan_action": "update",
+            "plan_question": "Which date does City Water hold to for U-042?",
+            "plan_organization": "City Water",
+            "plan_return": "2026-11-30",
+        },
+    )
+    assert response.status_code == 201, response.text
+    session.expire_all()
+
+    after = read_project_workflow(session, project_id=project.id, as_of=FIRST_VISIT)
+    assert len(after.follow_up) == asks, "the correction replaced the ask, it did not add one"
+    assert plan_id not in {need.plan_id for need in after.follow_up}
+    corrected = next(
+        need
+        for need in after.follow_up
+        if need.plan_id not in {row.plan_id for row in before.follow_up}
+    )
+    assert corrected.open_question == "Which date does City Water hold to for U-042?"
+    assert corrected.return_date.isoformat() == "2026-11-30"
+
+    closure = closure_for(session, project_id=project.id, plan_id=plan_id)
+    assert closure is not None
+    assert closure.closure_kind == "superseded"
+    assert closure.successor_plan_id == corrected.plan_id
+    assert closure.closed_by_principal == COORDINATOR.subject
+    assert closure.closed_at == FIRST_VISIT
+    assert closure.cancellation_reason is None
+
+
+def test_cancelling_a_plan_retires_the_ask_and_leaves_the_change_open(
+    session, project, client
+):
+    """Nobody outside owes an answer; the proposed change is still undecided."""
+
+    plan_id = _one_plan(session, client, project)
+    before = read_project_workflow(session, project_id=project.id, as_of=FIRST_VISIT)
+    delta_id = next(
+        need.delta_id for need in before.follow_up if need.plan_id == plan_id
+    )
+
+    response = client.post(
+        f"/work/{project.slug}/follow-up/close",
+        data={
+            "plan_id": str(plan_id),
+            "plan_action": "cancel",
+            "plan_cancellation_reason": "answered_another_way",
+            "plan_note": "the utility called and confirmed it",
+        },
+    )
+    assert response.status_code == 201, response.text
+    session.expire_all()
+
+    after = read_project_workflow(session, project_id=project.id, as_of=FIRST_VISIT)
+    assert plan_id not in {need.plan_id for need in after.follow_up}
+    assert len(after.follow_up) == len(before.follow_up) - 1
+
+    closure = closure_for(session, project_id=project.id, plan_id=plan_id)
+    assert closure is not None
+    assert closure.closure_kind == "cancelled"
+    assert closure.cancellation_reason == "answered_another_way"
+    assert closure.successor_plan_id is None
+    assert closure.note == "the utility called and confirmed it"
+    assert closure.closed_by_principal == COORDINATOR.subject
+
+    # The Proposed Delta is untouched: still open, still offered.
+    reading = read_review_items(session, project_id=project.id, as_of=FIRST_VISIT)
+    assert delta_id in reading.reading.open_delta_ids
+    assert delta_id in reading.reading.actionable_delta_ids
+
+
+def test_neither_closing_act_writes_a_project_record_revision(
+    session, project, client
+):
+    """Counted the way the scheduling acts are: over the whole project graph."""
+
+    plan_id = _one_plan(session, client, project)
+    revisions = _revision_count(session, project)
+
+    with nothing_written(
+        session, project.id, apart_from=A_PAGE_VIEW_WRITES | CLOSING_WRITES
+    ):
+        correction = client.post(
+            f"/work/{project.slug}/follow-up/close",
+            data={
+                "plan_id": str(plan_id),
+                "plan_action": "update",
+                "plan_question": "Which date does City Water hold to?",
+                "plan_organization": "City Water",
+            },
+        )
+    assert correction.status_code == 201, correction.text
+    session.expire_all()
+    assert _revision_count(session, project) == revisions
+
+    week = read_project_workflow(session, project_id=project.id, as_of=FIRST_VISIT)
+    with nothing_written(
+        session, project.id, apart_from=A_PAGE_VIEW_WRITES | {"delta_follow_up_plan_closures"}
+    ):
+        cancellation = client.post(
+            f"/work/{project.slug}/follow-up/close",
+            data={
+                "plan_id": str(week.follow_up[0].plan_id),
+                "plan_action": "cancel",
+                "plan_cancellation_reason": "no_longer_needed",
+            },
+        )
+    assert cancellation.status_code == 201, cancellation.text
+    session.expire_all()
+    assert _revision_count(session, project) == revisions
+
+
+def test_a_plan_closes_once_and_a_second_attempt_is_refused(
+    session, project, clock, client
+):
+    """A second closure is two statements about one plan, not a correction."""
+
+    plan_id = _one_plan(session, client, project)
+    first = client.post(
+        f"/work/{project.slug}/follow-up/close",
+        data={
+            "plan_id": str(plan_id),
+            "plan_action": "cancel",
+            "plan_cancellation_reason": "raised_in_error",
+        },
+    )
+    assert first.status_code == 201, first.text
+    session.expire_all()
+
+    clock.advance_to(SECOND_VISIT)
+    with nothing_written(session, project.id, apart_from=A_PAGE_VIEW_WRITES):
+        again = client.post(
+            f"/work/{project.slug}/follow-up/close",
+            data={
+                "plan_id": str(plan_id),
+                "plan_action": "cancel",
+                "plan_cancellation_reason": "no_longer_needed",
+            },
+        )
+    assert again.status_code == 409
+    assert "not one this project is still waiting on" in _text(again.text)
+
+
+def test_postgresql_refuses_a_closure_by_a_person_who_may_not_coordinate(
+    session, project, client
+):
+    """#839's proof, on the relation, for exactly the reason #839 gives.
+
+    The route performs no designation check of its own, so this is the rule
+    holding where a second caller could not forget it: the trigger re-reads the
+    active roster entry as the schema's own owner and refuses.
+    """
+
+    plan_id = _one_plan(session, client, project)
+    reader = HumanPrincipal("local:reader")
+    seed_membership(session, project, reader, designations=())
+
+    outcome = cancel_follow_up_plan(
+        session,
+        project_id=project.id,
+        plan_id=plan_id,
+        principal=reader,
+        cancellation_reason="no_longer_needed",
+        closed_at=FIRST_VISIT,
+        idempotency_key=f"close:{uuid4().hex[:10]}",
+    )
+    assert not outcome.closed
+    assert "project-coordination designation" in outcome.refusal.detail
+    session.expire_all()
+    assert closure_for(session, project_id=project.id, plan_id=plan_id) is None
+    assert plan_id in {
+        need.plan_id
+        for need in read_project_workflow(
+            session, project_id=project.id, as_of=FIRST_VISIT
+        ).follow_up
+    }
+
+
+def test_a_cancellation_with_no_structured_reason_is_refused(
+    session, project, client
+):
+    """ADR-0038's rule on the spine's relation: prose is not a reason."""
+
+    plan_id = _one_plan(session, client, project)
+
+    with nothing_written(session, project.id, apart_from=A_PAGE_VIEW_WRITES):
+        response = client.post(
+            f"/work/{project.slug}/follow-up/close",
+            data={
+                "plan_id": str(plan_id),
+                "plan_action": "cancel",
+                "plan_note": "we decided we do not need it",
+            },
+        )
+    assert response.status_code == 400
+    assert "Choose why this is no longer an outside ask" in _text(response.text)
+
+
+def test_a_correction_with_no_question_or_no_party_is_refused(
+    session, project, client
+):
+    plan_id = _one_plan(session, client, project)
+
+    with nothing_written(session, project.id, apart_from=A_PAGE_VIEW_WRITES):
+        no_question = client.post(
+            f"/work/{project.slug}/follow-up/close",
+            data={
+                "plan_id": str(plan_id),
+                "plan_action": "update",
+                "plan_question": "   ",
+                "plan_organization": "City Water",
+            },
+        )
+    assert no_question.status_code == 400
+    assert "still records the exact question" in _text(no_question.text)
+
+    with nothing_written(session, project.id, apart_from=A_PAGE_VIEW_WRITES):
+        no_party = client.post(
+            f"/work/{project.slug}/follow-up/close",
+            data={
+                "plan_id": str(plan_id),
+                "plan_action": "update",
+                "plan_question": "Which date?",
+                "plan_organization": "",
+            },
+        )
+    assert no_party.status_code == 400
+    assert "still names who owes the answer" in _text(no_party.text)
+
+
+def test_both_readers_drop_a_closed_plan_and_cannot_disagree(
+    session, project, client
+):
+    """The week and the publication reader answer from the one rule.
+
+    Two renderings of one plan came apart once before, over the reversal join
+    written twice; the closure rule is written once in
+    ``native_follow_up_reading`` and both readers call it.
+    """
+
+    plan_id = _one_plan(session, client, project)
+    revision_id = read_project_workflow(
+        session, project_id=project.id, as_of=FIRST_VISIT
+    ).accepted_revision_id
+    before = read_adopted_follow_up_plans(
+        session, project.id, revision_id, current=True
+    )
+    assert plan_id in {plan.plan_id for plan in before}
+
+    response = client.post(
+        f"/work/{project.slug}/follow-up/close",
+        data={
+            "plan_id": str(plan_id),
+            "plan_action": "cancel",
+            "plan_cancellation_reason": "no_longer_needed",
+        },
+    )
+    assert response.status_code == 201, response.text
+    session.expire_all()
+
+    after = read_adopted_follow_up_plans(
+        session, project.id, revision_id, current=True
+    )
+    assert plan_id not in {plan.plan_id for plan in after}
+    assert plan_id not in {
+        need.plan_id
+        for need in read_project_workflow(
+            session, project_id=project.id, as_of=FIRST_VISIT
+        ).follow_up
+    }
+
+
+def test_the_closure_is_not_an_undo_and_leaves_the_packet_act_standing(
+    session, project, client
+):
+    """The boundary #834 owns, asserted rather than described.
+
+    Undo says the recorded act never stood. A closure says the ask was real and
+    is finished, so the packet receipt, its children and the revision it wrote
+    are all exactly where they were.
+    """
+
+    plan_id = _one_plan(session, client, project)
+    receipt = session.scalars(
+        select(DeltaReviewPacketReceipt).where(
+            DeltaReviewPacketReceipt.project_id == project.id
+        )
+    ).one()
+    revision_id = receipt.revision_id
+
+    response = client.post(
+        f"/work/{project.slug}/follow-up/close",
+        data={
+            "plan_id": str(plan_id),
+            "plan_action": "cancel",
+            "plan_cancellation_reason": "no_longer_needed",
+        },
+    )
+    assert response.status_code == 201, response.text
+    session.expire_all()
+
+    still = session.scalars(
+        select(DeltaReviewPacketReceipt).where(
+            DeltaReviewPacketReceipt.project_id == project.id
+        )
+    ).one()
+    assert still.id == receipt.id
+    assert still.revision_id == revision_id
+    assert packet_reversal(session, receipt.id) is None
+    # And the plan itself: never edited, never removed.
+    plan = session.get(DeltaFollowUpPlan, plan_id)
+    assert plan is not None
+    assert plan.recorded_by_principal == COORDINATOR.subject
 
 
 # --- the boundary and the form ---------------------------------------------

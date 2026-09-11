@@ -175,19 +175,28 @@ REFUSAL_CODES: dict[str, RefusalCode] = {
 # declared, because every packet message names the delta, receipt or
 # assessment the coordinator needs, and the runtime keeps that line as the
 # detail.
+#
+# #835's closure codes join this family rather than opening a third: closing a
+# Follow-up Plan acts on the same relation ``record_delta_follow_up_plan``
+# writes, so its command raises the same ``review_packet:`` token, and the
+# agreement test parses both blocks of plpgsql for it.
 REVIEW_PACKET_VOCABULARY: tuple[RefusalCode, ...] = (
+    RefusalCode("already_closed", REFUSED, DATABASE_ONLY),
     RefusalCode("already_resolved", REFUSED, BOTH),
     RefusalCode("already_reversed", REFUSED, DATABASE_ONLY),
     RefusalCode("child_identity_mismatch", REFUSED, DATABASE_ONLY),
     RefusalCode("cross_project_delta", REFUSED, BOTH),
+    RefusalCode("cross_project_plan", REFUSED, DATABASE_ONLY),
     RefusalCode("cross_project_receipt", REFUSED, DATABASE_ONLY),
     RefusalCode("cross_project_revision", REFUSED, DATABASE_ONLY),
     RefusalCode("duplicate_child", REFUSED, DATABASE_ONLY),
     RefusalCode("empty_packet", REFUSED, DATABASE_ONLY),
+    RefusalCode("invalid_closure_kind", REFUSED, DATABASE_ONLY),
     RefusalCode("invalid_grouping_key", REFUSED, DATABASE_ONLY),
     RefusalCode("invalid_outcome", REFUSED, BOTH),
     RefusalCode("key_bound_to_other_content", REFUSED, DATABASE_ONLY),
     RefusalCode("later_act_depends", REFUSED, DATABASE_ONLY),
+    RefusalCode("missing_cancellation_reason", REFUSED, DATABASE_ONLY),
     RefusalCode("missing_decided_at", REFUSED, DATABASE_ONLY),
     RefusalCode("missing_grouping_rule", REFUSED, DATABASE_ONLY),
     RefusalCode("missing_idempotency_key", REFUSED, DATABASE_ONLY),
@@ -196,7 +205,9 @@ REVIEW_PACKET_VOCABULARY: tuple[RefusalCode, ...] = (
     RefusalCode("missing_responsible_party", REFUSED, BOTH),
     RefusalCode("missing_revision", REFUSED, DATABASE_ONLY),
     RefusalCode("missing_source_revision", REFUSED, DATABASE_ONLY),
+    RefusalCode("missing_successor_plan", REFUSED, DATABASE_ONLY),
     RefusalCode("missing_support", UNSUPPORTED, BOTH),
+    RefusalCode("successor_on_other_delta", REFUSED, DATABASE_ONLY),
     RefusalCode("superseded_delta", REFUSED, BOTH),
     RefusalCode("unexpected_revision", REFUSED, DATABASE_ONLY),
     RefusalCode("unordered_children", REFUSED, DATABASE_ONLY),

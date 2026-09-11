@@ -85,6 +85,13 @@ ROUTE_CONTRACTS: Mapping[str, frozenset[int]] = {
     # the command refused to schedule it. None of the four writes a Project
     # Record revision, which is exactly why this is not among the decisions.
     "reschedule_deferred_change": frozenset({200, 201, 400, 409}),
+    # The Follow-up Plan lifecycle (#835). A 201 records the closure -- a
+    # correction that supersedes the plan, or a cancellation with a structured
+    # reason; a 400 says the form arrived without the question, the party or
+    # the reason its act needs; a 409 says the plan is not one this project is
+    # still waiting on, or PostgreSQL refused the closure. None writes a
+    # Project Record revision (ADR-0084).
+    "close_project_follow_up_plan": frozenset({201, 400, 409}),
     "queue": frozenset({200}),
     "internal_report": frozenset({200}),
     "internal_report_full": frozenset({200}),

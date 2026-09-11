@@ -93,7 +93,10 @@ from corridor.models import (
     Document,
     ProposedDelta,
 )
-from corridor.native_follow_up_reading import undone_follow_up_plan_ids
+from corridor.native_follow_up_reading import (
+    closed_follow_up_plan_ids,
+    undone_follow_up_plan_ids,
+)
 from corridor.packet_review import ItemReading, ReviewReading, read_review_items
 from corridor.presentation import field_label
 from corridor.release_preparation import PreparationStanding, preparation_standings
@@ -393,10 +396,12 @@ def outstanding_follow_up(
 ) -> tuple[FollowUpNeed, ...]:
     """Every Follow-up Plan whose question is still live, oldest first.
 
-    A plan leaves this reading for one of two reasons, neither of them a stored
-    status: the Proposed Delta it was raised on stopped being open, so the
-    question it named was settled or replaced; or the one packet act that
-    recorded it was undone, and an act that never stood raises no ask.
+    A plan leaves this reading for one of three reasons, none of them a stored
+    status on the plan: the Proposed Delta it was raised on stopped being open,
+    so the question it named was settled or replaced; the one packet act that
+    recorded it was undone, and an act that never stood raises no ask; or a
+    coordinator closed it, superseding it with a corrected plan or cancelling
+    it outright (#835).
     """
 
     return outstanding_follow_up_by_project(
@@ -431,6 +436,11 @@ def outstanding_follow_up_by_project(
     # same join written twice here and there is how two renderings of one plan
     # came to be able to disagree about a reversal.
     undone = undone_follow_up_plan_ids(project_ids)
+    # And the third rule that retires a plan (#835), decided in the same place
+    # for the same reason: a superseded or cancelled plan is no longer an
+    # outside ask, and a week that listed the plan a correction replaced would
+    # show two live asks for one question.
+    closed = closed_follow_up_plan_ids(project_ids)
     rows = session.execute(
         select(DeltaFollowUpPlan, ProposedDelta)
         .join(
@@ -442,6 +452,7 @@ def outstanding_follow_up_by_project(
             ProposedDelta.project_id == DeltaFollowUpPlan.project_id,
             DeltaFollowUpPlan.delta_id.in_(every_open),
             DeltaFollowUpPlan.id.not_in(undone),
+            DeltaFollowUpPlan.id.not_in(closed),
         )
         .order_by(DeltaFollowUpPlan.id)
     ).all()

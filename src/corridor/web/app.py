@@ -250,6 +250,11 @@ from corridor.delta_resolution import (
     ChildDecisionRequest,
     resolve_delta,
 )
+from corridor.follow_up_plan_lifecycle import (
+    CANCELLATION_REASON_WORDS,
+    cancel_follow_up_plan,
+    update_follow_up_plan,
+)
 from corridor.disputes import (
     disputes_for,
     history_assessments_for,
@@ -4082,6 +4087,8 @@ def _project_workflow_response(
     requested: ReleasePreparationRequest | None = None,
     scheduled: str | None = None,
     schedule_refusal: str | None = None,
+    plan_closed: str | None = None,
+    plan_refusal: str | None = None,
     route_name: str = "coordinator_home",
     request_fields: Any = None,
     status_code: int = 200,
@@ -4139,6 +4146,12 @@ def _project_workflow_response(
             # about what just happened.
             "scheduled": scheduled,
             "schedule_refusal": schedule_refusal,
+            # #835's plan lifecycle, kept apart from the scheduling act above
+            # and from both issue outcomes: it retired or replaced an outside
+            # ask and decided nothing about the project record.
+            "plan_closed": plan_closed,
+            "plan_refusal": plan_refusal,
+            "cancellation_reasons": tuple(CANCELLATION_REASON_WORDS.items()),
             # Exactly one element carries `autofocus`: a refusal first, then a
             # completed approval, and otherwise the section the coordinator's
             # work actually starts in.
@@ -4148,11 +4161,13 @@ def _project_workflow_response(
                         refusal is not None
                         or prepare_refusal is not None
                         or schedule_refusal is not None
+                        or plan_refusal is not None
                     ),
                     saved=(
                         approved is not None
                         or requested is not None
                         or scheduled is not None
+                        or plan_closed is not None
                     ),
                 )
                 if refusal is not None
@@ -4161,6 +4176,8 @@ def _project_workflow_response(
                 or requested is not None
                 or scheduled is not None
                 or schedule_refusal is not None
+                or plan_closed is not None
+                or plan_refusal is not None
                 else workflow.landing
             ),
             "cutoff": workflow.cutoff.date().isoformat(),
@@ -4449,6 +4466,161 @@ def reschedule_deferred_change(
         ),
         status_code=201,
     )
+
+
+# --- The Follow-up Plan lifecycle (#835) ----------------------------------
+#
+# The two things a coordinator may do to a plan they already recorded. Both
+# are attributable, neither writes a Project Record revision, and neither
+# sends anything: a message still goes out from wherever the person sends
+# mail, and #837 owns recording that it did.
+
+PLAN_UPDATE = "update"
+PLAN_CANCEL = "cancel"
+
+
+@app.post("/work/{slug}/follow-up/close", response_class=HTMLResponse)
+def close_project_follow_up_plan(
+    request: Request,
+    slug: str,
+    plan_id: int = Form(...),
+    plan_action: str = Form(...),
+    plan_question: str = Form(""),
+    plan_organization: str = Form(""),
+    plan_return: str = Form(""),
+    plan_cancellation_reason: str = Form(""),
+    plan_note: str = Form(""),
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+    clock=Depends(get_review_clock),
+):
+    """Correct a Follow-up Plan, or cancel it, with attribution (#835).
+
+    **No designation check here.** PostgreSQL proves the project-coordination
+    designation on the closure relation itself, the way #839 proves it for a
+    coverage confirmation and a preparation request, so a check here would be
+    a second gate over the same roster that a later change could let drift.
+    `_project` still runs, because it is the project partition every
+    slug-addressed surface opens and the read boundary a non-member is
+    answered by (#531).
+
+    **Neither act decides the proposed change.** Correcting the plan records a
+    new one and closes this as superseded; cancelling records a structured
+    reason. The Proposed Delta is open before and after either, and is still
+    decided on the review screen.
+    """
+
+    project = _project(session, slug, principal)
+    if not is_adopted_baseline(session, project.id):
+        raise HTTPException(404, f"no project {slug!r}")
+    if plan_action not in (PLAN_UPDATE, PLAN_CANCEL):
+        raise HTTPException(400, "a plan act is a correction or a cancellation")
+    now = clock()
+    fields = {"plan_id": plan_id, "plan_action": plan_action}
+
+    def answer(*, done=None, refused=None, status_code=200):
+        return _project_workflow_response(
+            request,
+            project,
+            principal,
+            session,
+            now=now,
+            plan_closed=done,
+            plan_refusal=refused,
+            route_name="close_project_follow_up_plan",
+            request_fields=fields,
+            status_code=status_code,
+        )
+
+    # The plan has to be one this week is still asking about. A plan already
+    # closed, already undone, or raised on a change that has since been
+    # settled is not an ask, and the one reading that decides that is the one
+    # the page just rendered.
+    live = {
+        need.plan_id: need
+        for need in read_project_workflow(
+            session, project_id=project.id, as_of=now
+        ).follow_up
+    }
+    if plan_id not in live:
+        return answer(
+            refused=(
+                "That Follow-up Plan is not one this project is still waiting "
+                "on, so nothing was recorded."
+            ),
+            status_code=409,
+        )
+
+    key = f"plan-close:{plan_id}:{now.isoformat()}"
+    note = plan_note.strip() or None
+    if plan_action == PLAN_CANCEL:
+        if plan_cancellation_reason not in CANCELLATION_REASON_WORDS:
+            return answer(
+                refused=(
+                    "Choose why this is no longer an outside ask before "
+                    "cancelling it."
+                ),
+                status_code=400,
+            )
+        outcome = cancel_follow_up_plan(
+            session,
+            project_id=project.id,
+            plan_id=plan_id,
+            principal=principal,
+            cancellation_reason=plan_cancellation_reason,
+            closed_at=now,
+            note=note,
+            idempotency_key=key,
+        )
+        done = (
+            "This is no longer an outside ask: "
+            f"{CANCELLATION_REASON_WORDS[plan_cancellation_reason].lower()}. "
+            "The proposed change is still open and is decided on the review "
+            "screen."
+        )
+    else:
+        if not plan_question.strip():
+            return answer(
+                refused="A corrected plan still records the exact question.",
+                status_code=400,
+            )
+        if not plan_organization.strip():
+            return answer(
+                refused="A corrected plan still names who owes the answer.",
+                status_code=400,
+            )
+        returns_on = _optional_form_date(plan_return)
+        outcome = update_follow_up_plan(
+            session,
+            project_id=project.id,
+            plan_id=plan_id,
+            principal=principal,
+            open_question=plan_question,
+            responsible_organization=plan_organization.strip(),
+            return_date=(
+                datetime.combine(returns_on, time(0, 0), tzinfo=timezone.utc)
+                if returns_on is not None
+                else None
+            ),
+            note=note,
+            closed_at=now,
+            idempotency_key=key,
+        )
+        done = (
+            "The corrected question replaces the one recorded before. This "
+            "project is waiting on one answer, not two."
+        )
+    if not outcome.closed:
+        return answer(
+            refused=(
+                refusal_words(outcome.refusal)
+                if outcome.refusal is not None
+                else "The Follow-up Plan could not be closed."
+            ),
+            status_code=409,
+        )
+    session.commit()
+    return answer(done=done, status_code=201)
 
 
 @app.post("/work/{slug}/issue/prepare", response_class=HTMLResponse)

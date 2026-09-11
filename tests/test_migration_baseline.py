@@ -96,7 +96,16 @@ EXPECTED_SCHEMA_SHA256 = (
     # objects this fingerprint reads, so the digest moves; no relation or
     # sequence is added, so both counts are unchanged. Recomputed against a
     # fresh disposable database.
-    "53a00548e6e1103b6dad8a5fd71fe26f2f89a33d5902125e81d0c76a16db7dac"
+    # #835 adds `delta_follow_up_plan_closures` (+1 table, +1 sequence) and the
+    # `close_delta_follow_up_plan` command: how a Follow-up Plan stops being an
+    # outside ask, superseded by a corrected plan or cancelled with a
+    # structured reason. It carries the Review Packet family's own
+    # record-decision write guard and, because retiring somebody's outside ask
+    # is coordination work reachable on its own route, #839's
+    # `enforce_coordination_designation` trigger -- the same function, named at
+    # its own principal column, rather than a second near-copy. Recomputed
+    # against a fresh disposable database.
+    "ddb6174e5f4e46400098a9d1c8462cbdd13eb921e6ecffd891ff9933da49cf42"
 )
 
 pytestmark = [pytest.mark.slow, pytest.mark.migration]
@@ -220,6 +229,7 @@ COMPOSED_UPGRADE = (
     "spend_authorization",
     "product_upload_delivery",
     "source_revision_declaration",
+    "follow_up_plan_closure",
     # The sibling transitions this revision has always carried at the end, and
     # the PUBLIC sweep that runs last of all because it reads the catalog every
     # block above has finished writing.
@@ -244,6 +254,7 @@ COMPOSED_DOWNGRADE = (
     "minutes_spine",
     "project_contacts",
     "email_spine",
+    "follow_up_plan_closure",
     "source_revision_declaration",
     "product_upload_delivery",
     "spend_authorization",

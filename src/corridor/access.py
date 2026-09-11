@@ -921,6 +921,7 @@ PARTITIONED_RELATIONS: frozenset[str] = frozenset(
         "delta_decision_supports",
         "delta_deferrals",
         "delta_dispositions",
+        "delta_follow_up_plan_closures",
         "delta_follow_up_plan_evidence",
         "delta_follow_up_plans",
         "delta_groups",

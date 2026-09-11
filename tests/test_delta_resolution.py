@@ -460,24 +460,28 @@ DECLARED_VOCABULARY: tuple[tuple[str, str, str], ...] = (
     ("unsupported_free_text", CONSTRAINED_EDIT, PYTHON_PRECHECK),
 )
 
-# The Review Packet family (#526): every ``review_packet:<code>`` token the
-# packet, Follow-up Plan and reversal commands raise, with the status a screen
-# routes on and which half raises it. Only ``missing_support`` leaves REFUSED,
+# The Review Packet family (#526, #835): every ``review_packet:<code>`` token
+# the packet, Follow-up Plan, closure and reversal commands raise, with the
+# status a screen routes on and which half raises it. Only ``missing_support`` leaves REFUSED,
 # because none of the others carries the structured refresh a STALE,
 # UNSUPPORTED, CONSTRAINED_EDIT or COORDINATION_NEEDED outcome promises.
 DECLARED_PACKET_VOCABULARY: tuple[tuple[str, str, str], ...] = (
+    ("already_closed", REFUSED, DATABASE_ONLY),
     ("already_resolved", REFUSED, BOTH),
     ("already_reversed", REFUSED, DATABASE_ONLY),
     ("child_identity_mismatch", REFUSED, DATABASE_ONLY),
     ("cross_project_delta", REFUSED, BOTH),
+    ("cross_project_plan", REFUSED, DATABASE_ONLY),
     ("cross_project_receipt", REFUSED, DATABASE_ONLY),
     ("cross_project_revision", REFUSED, DATABASE_ONLY),
     ("duplicate_child", REFUSED, DATABASE_ONLY),
     ("empty_packet", REFUSED, DATABASE_ONLY),
+    ("invalid_closure_kind", REFUSED, DATABASE_ONLY),
     ("invalid_grouping_key", REFUSED, DATABASE_ONLY),
     ("invalid_outcome", REFUSED, BOTH),
     ("key_bound_to_other_content", REFUSED, DATABASE_ONLY),
     ("later_act_depends", REFUSED, DATABASE_ONLY),
+    ("missing_cancellation_reason", REFUSED, DATABASE_ONLY),
     ("missing_decided_at", REFUSED, DATABASE_ONLY),
     ("missing_grouping_rule", REFUSED, DATABASE_ONLY),
     ("missing_idempotency_key", REFUSED, DATABASE_ONLY),
@@ -486,7 +490,9 @@ DECLARED_PACKET_VOCABULARY: tuple[tuple[str, str, str], ...] = (
     ("missing_responsible_party", REFUSED, BOTH),
     ("missing_revision", REFUSED, DATABASE_ONLY),
     ("missing_source_revision", REFUSED, DATABASE_ONLY),
+    ("missing_successor_plan", REFUSED, DATABASE_ONLY),
     ("missing_support", UNSUPPORTED, BOTH),
+    ("successor_on_other_delta", REFUSED, DATABASE_ONLY),
     ("superseded_delta", REFUSED, BOTH),
     ("unexpected_revision", REFUSED, DATABASE_ONLY),
     ("unordered_children", REFUSED, DATABASE_ONLY),
@@ -674,9 +680,15 @@ def test_the_packet_vocabulary_gives_every_code_a_status_and_one_raiser() -> Non
 def test_every_refusal_the_packet_commands_raise_is_declared() -> None:
     """The packet, Follow-up Plan and reversal plpgsql, parsed with the runtime's expression."""
 
-    source = Path(
-        "src/corridor/migrations/source_append_commands/review_packets.py"
-    ).read_text(encoding="utf-8")
+    # Two blocks of plpgsql, one family. #835's closure command acts on the
+    # relation `review_packets` creates and raises the same token, so both are
+    # parsed here rather than a third vocabulary being opened for six codes.
+    source = "".join(
+        Path(f"src/corridor/migrations/source_append_commands/{name}.py").read_text(
+            encoding="utf-8"
+        )
+        for name in ("review_packets", "follow_up_plan_closure")
+    )
     raised = set(REVIEW_PACKET_TOKEN.findall(source))
 
     assert raised == {
