@@ -159,6 +159,7 @@ from alembic import op
 from corridor.migrations.source_append_commands import (
     baseline_format_manifest,
     baseline_record,
+    capture_correction,
     coverage_preparation,
     delta_deduplication,
     environment_binding,
@@ -1520,6 +1521,13 @@ def upgrade() -> None:
     # relation nothing later in the revision names.
     follow_up_plan_closure.upgrade(op)
 
+    # --- #836 What a coordinator reported about one capture ---------------
+    # After `review_packets`, whose `proposed_deltas` project-scoped unique its
+    # composite foreign key names, and after the spine relations the baseline
+    # created, whose `(project_id, document_id, id)` uniques carry the rest of
+    # the binding. It creates one relation nothing later in the revision names.
+    capture_correction.upgrade(op)
+
     from corridor.migrations import email_spine
 
     email_spine.upgrade(op, APPEND_NATIVE_SOURCE_SEGMENTS, APPEND_FACT)
@@ -1579,9 +1587,15 @@ def downgrade() -> None:
     project_contacts.downgrade(op)
     email_spine.downgrade(op)
 
-    # --- #835 How a Follow-up Plan stops being an outside ask -------------
+    # --- #836 What a coordinator reported about one capture ---------------
     # First among the feature reversals, because the upgrade added it last,
-    # and before the plan relation its composite foreign key names unwinds.
+    # and before the Proposed Delta and spine relations its composite foreign
+    # keys name unwind.
+    capture_correction.downgrade(op)
+
+    # --- #835 How a Follow-up Plan stops being an outside ask -------------
+    # Next, because the upgrade added it second from the end, and before the
+    # plan relation its composite foreign key names unwinds.
     follow_up_plan_closure.downgrade(op)
 
     # --- #825 What a coordinator declared about one delivery --------------

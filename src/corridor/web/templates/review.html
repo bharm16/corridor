@@ -495,6 +495,96 @@
         </button>
       {% endcall %}
     </form>
+
+    {#-
+      ADR-0100's ancillary action, outside the answers form and after it.
+
+      It is not one of the four primary decisions and it is not Defer, so it
+      is not an option in the control above: everything in that select is an
+      answer to "what should happen to this source's value?", and this is not
+      an answer to that question. It is a separate act with a separate submit,
+      it resolves nothing, and the decision above is still waiting when it is
+      over.
+
+      It appears only where the change has no other captured source value to
+      apply instead, which is the case ADR-0084's constrained edit leaves the
+      coordinator nothing to choose in. Whether that holds is answered by
+      `capture_correction.offers_correction`, never by this template.
+    -#}
+    {%- for child in view.item.children %}
+    {%- set correction_view = view.corrections.get(child.delta_id) %}
+    {%- if correction_view %}
+    <section class="answer" aria-labelledby="correction-heading-{{ child.delta_id }}">
+      <h3 id="correction-heading-{{ child.delta_id }}">{{ correction_control }}</h3>
+      <p class="quiet" id="correction-hint-{{ child.delta_id }}">{{ correction_supporting_text }}</p>
+
+      {% call ui.record_table(
+           "The capture this would report, and where it was read",
+           ["Utility Conflict", "Field", "Value Corridor captured", "Where it was read", "Cited text"]) %}
+      <tr>
+        <th scope="row">{{ child.subject_name }}</th>
+        <td>{{ child.field_name }}</td>
+        <td>{{ child.incoming_value if child.incoming_value else not_recorded }}</td>
+        <td>
+          {%- if correction_view.capture.source_segment_id %}<a href="/sources/{{ project.slug }}/passage/{{ correction_view.capture.source_segment_id }}">{{ correction_view.capture.document_filename }}, {{ correction_view.capture.locator }}</a>
+          {%- else %}{{ correction_view.capture.document_filename }}{% endif %}
+        </td>
+        <td>{{ correction_view.capture.exact_text if correction_view.capture.exact_text else not_recorded }}</td>
+      </tr>
+      {% endcall %}
+
+      {%- if correction_view.reported %}
+      {% call ui.record_table(
+           "What has already been reported about this capture",
+           ["Reported by", "Reported on", "Passage selected", "What it says"]) %}
+        {%- for report in correction_view.reported %}
+      <tr>
+        <th scope="row">{{ report.reported_by_principal }}</th>
+        <td>{{ report.reported_at }}</td>
+        <td>{{ report.selected_locator if report.selected_locator else not_recorded }}</td>
+        <td>{{ report.expected_interpretation }}</td>
+      </tr>
+        {%- endfor %}
+      {% endcall %}
+      {%- endif %}
+
+      <form method="post" action="/review/{{ project.slug }}/correction">
+        {{ csrf_field() }}
+        <input type="hidden" name="item_key" value="{{ view.item.item_key }}">
+        <input type="hidden" name="correction_delta" value="{{ child.delta_id }}">
+
+        {% call ui.field(
+             "correction-passage-" ~ child.delta_id,
+             "Which passage of this source should it have been read from?",
+             "The passages this source retained, around the one the capture cited.") %}
+        <select id="correction-passage-{{ child.delta_id }}" name="correction_passage"
+                aria-describedby="correction-passage-{{ child.delta_id }}-hint">
+          <option value="">No passage chosen</option>
+          {%- for passage in correction_view.passages %}
+          <option value="{{ passage.source_segment_id }}"
+            {%- if correction.passage == passage.source_segment_id|string %} selected
+            {%- elif not correction.passage and passage.cited %} selected{% endif %}>
+            {{ passage.locator }}: {{ passage.exact_text }}
+          </option>
+          {%- endfor %}
+        </select>
+        {% endcall %}
+
+        {% call ui.field(
+             "correction-interpretation-" ~ child.delta_id,
+             "What does that passage say?",
+             "What the source says and where. This is the reason for a request about a capture; it never becomes an accepted value.") %}
+        <input type="text" id="correction-interpretation-{{ child.delta_id }}"
+               name="correction_interpretation"
+               aria-describedby="correction-interpretation-{{ child.delta_id }}-hint"
+               value="{{ correction.interpretation if correction else '' }}">
+        {% endcall %}
+
+        <button type="submit">{{ correction_control }} for this capture</button>
+      </form>
+    </section>
+    {%- endif %}
+    {%- endfor %}
     {%- elif view.item.batched %}
     <form method="post" action="/review/{{ project.slug }}">
       {{ csrf_field() }}

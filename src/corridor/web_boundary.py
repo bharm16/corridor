@@ -866,6 +866,43 @@ PILOT_ROUTES: dict[tuple[str, str], PilotRoute] = {
             }
         ),
     ),
+    # ADR-0100's ancillary action about a capture (#836). It resolves no
+    # Proposed Delta and writes no Project Record revision, so its relations
+    # are the focused screen's own reading plus the one report it appends --
+    # which it appends through `report_capture_correction`, so the web
+    # capability needs `select` on that relation and nothing more.
+    ("POST", "/review/{slug}/correction"): PilotRoute(
+        why=(
+            "#836 report that one capture is wrong about its source, bound to "
+            "that exact capture (ADR-0100)"
+        ),
+        relations=frozenset(
+            {
+                "capture_correction_requests",
+                "delta_deferrals",
+                "delta_dispositions",
+                "delta_groups",
+                "delta_review_packet_children",
+                "delta_review_packet_reversals",
+                "delta_supersessions",
+                "dependency_events",
+                "documents",
+                "fact_decisions",
+                "fact_sources",
+                "facts",
+                "issue_coverage_declarations",
+                "project_baseline_formats",
+                "project_baseline_source_rows",
+                "project_issue_profiles",
+                "project_record_revisions",
+                "project_roster_entries",
+                "projects",
+                "proposed_deltas",
+                "source_segments",
+                "support_assessments",
+            }
+        ),
+    ),
     ("POST", "/review/{slug}/answers"): PilotRoute(
         why=(
             "#526 record the Review Packet answers"
@@ -1016,7 +1053,8 @@ def undocumented_public_privileges(
 # project workflow also consumes source-backed recipient resolution (#562).
 for _key in (("GET", "/work/{slug}"), ("POST", "/work/{slug}/issue/prepare"),
              ("POST", "/work/{slug}/issue/authorize"), ("GET", "/review/{slug}"),
-             ("POST", "/review/{slug}"), ("POST", "/review/{slug}/answers")):
+             ("POST", "/review/{slug}"), ("POST", "/review/{slug}/answers"),
+             ("POST", "/review/{slug}/correction")):
     _route = PILOT_ROUTES[_key]
     _relations = _route.relations | {"minutes_captures", "source_segments", "documents"}
     if _key[1].startswith("/work/"):

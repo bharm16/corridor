@@ -272,8 +272,13 @@ def test_public_fingerprint_discovers_all_current_tables_and_sequences_read_only
     # the request, the completeness and evidence columns on the response, both
     # command signatures -- is columns and constraints on relations that
     # already exist, and moves neither count.
-    assert fingerprint.table_count == 226
-    assert fingerprint.sequence_count == 204
+    # #836 adds what a coordinator reported about one capture -- ADR-0100's
+    # ancillary action, which resolves no Proposed Delta and changes no
+    # accepted value -- keyed by its own bigserial: one table, one sequence.
+    # The command that writes it and the guard that refuses every other write
+    # are schema objects the digest reads and neither count does.
+    assert fingerprint.table_count == 227
+    assert fingerprint.sequence_count == 205
     assert fingerprint.schema_object_count > 0
     assert len(fingerprint.schema_sha256) == 64
     assert [item.name for item in fingerprint.tables] == sorted(

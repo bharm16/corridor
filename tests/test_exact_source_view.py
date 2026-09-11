@@ -533,9 +533,17 @@ def test_a_review_citation_is_a_link_to_the_passage_it_names():
         for line in review.splitlines()
         if '/sources/{{ project.slug }}/passage/' in line
     ]
-    assert len(links) == 2, links
+    assert len(links) == 3, links
     assert any("row.source_segment_id" in line for line in links)
     assert any("child.source.source_segment_id" in line for line in links)
+    # The third is #836's: the correction control cites the capture it would
+    # report, and a citation there is a link for the same reason the other two
+    # are -- a person deciding whether an extraction is wrong needs to open the
+    # passage, not read its locator. The count stays exact so a fourth citation
+    # has to be as deliberate as this one was.
+    assert any(
+        "correction_view.capture.source_segment_id" in line for line in links
+    )
     # The reading behind those links carries the address, not only the words.
     assert "source_segment_id" in SourceReference.__dataclass_fields__
     assert "source_segment_id" in SourceAnswer.__dataclass_fields__
