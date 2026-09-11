@@ -160,6 +160,26 @@
   {% endcall %}
   {%- endif %}
 
+  {#
+    What a session expiry handed back (#844). Announced as the refusal it is:
+    the submission was not applied, and nothing below it is saved until the
+    coordinator submits the form again. The table names every change the draft
+    referred to, so a change that left the reading while they were signing in
+    is read in the reading's own words rather than silently dropped.
+  #}
+  {%- if restored %}
+  {% call ui.outcome("refused", restored.heading, focus) %}
+    <p>{{ restored.detail }}</p>
+    {%- if restored.rows %}
+    {% call ui.record_table("What you had entered, as it stands now", ["Change", "Since you started"]) %}
+      {%- for row in restored.rows %}
+      <tr><th scope="row">{{ row.subject }}</th><td>{{ row.detail }}</td></tr>
+      {%- endfor %}
+    {% endcall %}
+    {%- endif %}
+  {% endcall %}
+  {%- endif %}
+
   {{ ui.error_summary(errors, focus) }}
 
   {%- if not items %}

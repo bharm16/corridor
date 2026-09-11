@@ -112,3 +112,23 @@ def clear_invalid_customer_cookies(request: Request, response: Response) -> Resp
         clear_session_cookies(response)
         clear_customer_cookie(response)
     return response
+
+
+def customer_scope() -> str:
+    """A stable name for the customer this process is serving right now.
+
+    `customer_session` proves the binding and then opens that customer's own
+    database, so every ordinary read is separated by the database it runs in.
+    Anything held *outside* a database -- a short-lived form draft held by the
+    process (#844) -- has to carry the same boundary explicitly, or two
+    customers served by one process would share a project slug space. An
+    unrouted local clone serves one database and answers `local`.
+    """
+    router = configured_customer_router()
+    if router is None:
+        return "local"
+    identity = router.identity
+    return (
+        f"{identity.customer_id}/{identity.environment_id}/"
+        f"{identity.deployment_id}"
+    )
