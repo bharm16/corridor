@@ -257,28 +257,28 @@ def test_partial_unique_index_rejects_second_effective_value(session, decision_c
     second_fact_id = facts[1].id
     subject_key = facts[1].subject_key
     fact_type = facts[1].fact_type
-    session.execute(text("set local role corridor_fact_decision_writer"))
-    revision = ProjectRecordRevision(
-        project_id=project_id,
-        predecessor_revision_id=predecessor_revision_id,
-        command_type="include_structured_cell_fact",
-        human_principal=None,
-        released_policy=STRUCTURED_CELL_INCLUSION_POLICY,
-        idempotency_key="include:station:invalid-second",
-    )
-    session.add(revision)
-    session.flush()
-    session.add(
-        FactDecision(
-            project_id=project.id,
-            fact_id=second_fact_id,
-            subject_key=subject_key,
-            fact_type=fact_type,
-            revision_id=revision.id,
+    with as_role(session, RECORD_DECISION_ROLE):
+        revision = ProjectRecordRevision(
+            project_id=project_id,
+            predecessor_revision_id=predecessor_revision_id,
+            command_type="include_structured_cell_fact",
+            human_principal=None,
+            released_policy=STRUCTURED_CELL_INCLUSION_POLICY,
+            idempotency_key="include:station:invalid-second",
         )
-    )
-    with pytest.raises(IntegrityError):
+        session.add(revision)
         session.flush()
+        session.add(
+            FactDecision(
+                project_id=project.id,
+                fact_id=second_fact_id,
+                subject_key=subject_key,
+                fact_type=fact_type,
+                revision_id=revision.id,
+            )
+        )
+        with pytest.raises(IntegrityError), session.begin_nested():
+            session.flush()
 
 
 def test_direct_revision_and_decision_writes_are_database_guarded(session, decision_case):

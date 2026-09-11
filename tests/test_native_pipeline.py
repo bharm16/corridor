@@ -11,6 +11,11 @@ from sqlalchemy.exc import DBAPIError
 
 from corridor.admission import load_project
 from corridor.config import Settings
+from corridor.db_roles import (
+    SOURCE_APPEND_ROLE,
+    WEB_CAPABILITY_LOGIN,
+    WORKER_CAPABILITY_LOGIN,
+)
 from corridor.models import (
     ActiveExtractionRun, Dependency, Document, Fact, FactDisposition, PipelineAcceptance,
     PipelineComparison, PipelineObservation, PipelineQualification, PipelineSelection,
@@ -30,6 +35,7 @@ from corridor.principals import HumanPrincipal, InvalidHumanPrincipal
 from corridor_pdf_reader.replacement import semantics
 from corridor_pdf_reader.replacement.pages import slim_page
 
+from harness_support import as_role
 from model_client_support import FakeModelClient
 from test_native_matrix import _document, matrix_source, project
 
@@ -323,13 +329,11 @@ def test_pipeline_receipts_and_selection_are_immutable_and_runtime_cannot_select
     for model in (PipelineObservation, PipelineComparison, PipelineQualification):
         with pytest.raises(DBAPIError, match="append-only"), session.begin_nested():
             session.execute(text(f"delete from {model.__tablename__}"))
-    with session.begin_nested():
-        session.execute(text("set local role corridor_worker"))
+    with session.begin_nested(), as_role(session, WORKER_CAPABILITY_LOGIN):
         with pytest.raises(PipelineQualificationRefused, match="maintenance"):
             select_qualified_pipeline(session, gate.id, actor=ACTOR, reason="Unprivileged", expected_selection_id=None)
         assert session.scalar(text("select has_table_privilege(current_user, 'pipeline_selections', 'INSERT')")) is False
         assert session.scalar(text("select has_table_privilege(current_user, 'pipeline_qualifications', 'INSERT')")) is False
-        session.execute(text("reset role"))
 
 
 def test_exact_replay_checks_new_image_bytes_before_reusing_answer(matrix_source, tmp_path):
@@ -649,9 +653,8 @@ def test_no_automated_path_can_grant_itself_an_acceptance(session, project, matr
     with pytest.raises(InvalidHumanPrincipal, match="HumanPrincipal"):
         record_acceptance(session, acceptance, project_id=project.id, scope=scope,
                           actor="pipeline:native-matrix-worker")
-    for role in ("corridor_web", "corridor_worker", "corridor_source_append"):
-        with session.begin_nested():
-            session.execute(text(f"set local role {role}"))
+    for role in (WEB_CAPABILITY_LOGIN, WORKER_CAPABILITY_LOGIN, SOURCE_APPEND_ROLE):
+        with session.begin_nested(), as_role(session, role):
             with pytest.raises(PipelineQualificationRefused, match="maintenance"):
                 record_acceptance(session, acceptance, project_id=project.id, scope=scope, actor=ACTOR)
             with pytest.raises(PipelineQualificationRefused, match="maintenance"):
@@ -659,15 +662,13 @@ def test_no_automated_path_can_grant_itself_an_acceptance(session, project, matr
                                           reason="Unprivileged", expected_selection_id=None)
             assert session.scalar(text(
                 "select has_table_privilege(current_user, 'pipeline_acceptances', 'INSERT')")) is False
-            session.execute(text("reset role"))
         # And the relation itself refuses the raw write, not only the module.
-        with pytest.raises(DBAPIError, match="permission denied"), session.begin_nested():
-            session.execute(text(f"set local role {role}"))
-            session.execute(text(
-                "insert into pipeline_acceptances (project_id, configuration_sha256, scope_sha256,"
-                " implementation_revision, actor, receipt_text, receipt_sha256)"
-                " values (1, 'a', 'b', 'c', 'local:impostor', '{}', 'd')"))
-        session.execute(text("reset role"))
+        with as_role(session, role):
+            with pytest.raises(DBAPIError, match="permission denied"), session.begin_nested():
+                session.execute(text(
+                    "insert into pipeline_acceptances (project_id, configuration_sha256, scope_sha256,"
+                    " implementation_revision, actor, receipt_text, receipt_sha256)"
+                    " values (1, 'a', 'b', 'c', 'local:impostor', '{}', 'd')"))
     # No SECURITY DEFINER command exists that could append one on their behalf.
     definers = session.scalars(text(
         "select p.proname from pg_proc p join pg_namespace n on n.oid = p.pronamespace "

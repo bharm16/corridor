@@ -69,7 +69,8 @@ from corridor.proposed_deltas import (
     ProposedDeltaValues,
     create_proposed_delta_group,
 )
-from harness_support import adopt_baseline_fact
+from corridor.db_roles import RECORD_DECISION_ROLE
+from harness_support import adopt_baseline_facts, as_role
 from delta_supersession_support import record_delta_supersession
 from corridor.review_packets import (
     APPLY,
@@ -257,7 +258,7 @@ def _delta(
 def _adopt(session: Session, project: Project, fact: Fact, key: str) -> int:
     """One accepted baseline decision, written as the record-decision role."""
 
-    return adopt_baseline_fact(session, project, fact, key)
+    return adopt_baseline_facts(session, project, fact, key=key)
 
 
 def _packet(
@@ -1608,10 +1609,10 @@ def test_a_recorded_packet_act_is_never_updated_or_deleted(
 
     # The role the commands run as holds no update or delete at all.
     for statement in statements:
-        with pytest.raises(DBAPIError) as refused:
-            with session.begin_nested():
-                session.execute(text("set local role corridor_fact_decision_writer"))
-                session.execute(text(statement), {"id": saved.receipt_id})
+        with as_role(session, RECORD_DECISION_ROLE):
+            with pytest.raises(DBAPIError) as refused:
+                with session.begin_nested():
+                    session.execute(text(statement), {"id": saved.receipt_id})
         assert "permission denied" in str(refused.value)
 
     session.expire_all()

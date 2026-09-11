@@ -7,6 +7,7 @@ import json
 import pytest
 
 from corridor.web_boundary import PILOT_ROUTES
+from harness_support import as_role
 
 from corridor.activation import (ActivationConfiguration, ActivationRefused, BASE_GATES,
     EvidenceArtifact, activate, processing_authorized, route_manifest_digest)
@@ -300,9 +301,8 @@ def test_boundary_smoke_checks_set_role_and_inherited_read_capabilities(runtime_
             assert web.scalar(text("select has_table_privilege(current_user,:relation,'SELECT')"), {"relation": relation}) is False
             assert web.scalar(text("select has_any_column_privilege(current_user,:relation,'SELECT')"), {"relation": relation}) is False
             assert web.scalar(text("select pg_has_role(session_user,:role,'SET')"), {"role": authority}) is False
-            web.execute(text(f'set role "{intermediary}"'))
-            assert web.scalar(text(f'select secret from public."{relation}"')) == "retained fixture value"
-            web.execute(text("reset role"))
+            with as_role(web, intermediary):
+                assert web.scalar(text(f'select secret from public."{relation}"')) == "retained fixture value"
             calls.clear()
             with pytest.raises(ActivationRefused, match="revoked relation"):
                 collect_boundary_smoke(web, configuration=configuration, request=request, cases=cases, now=NOW)

@@ -17,7 +17,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 import conftest as harness
-from harness_support import as_record_decision_role
+from harness_support import as_role
 
 from corridor.db import capability_engine
 from corridor.db_roles import RECORD_DECISION_ROLE
@@ -86,7 +86,7 @@ def test_every_synthetic_project_carries_a_fresh_slug(session, project):
 
 def test_the_role_context_manager_borrows_and_returns_the_role(session):
     before = session.scalar(text("select current_user"))
-    with as_record_decision_role(session) as borrowed:
+    with as_role(session, RECORD_DECISION_ROLE) as borrowed:
         assert borrowed is session
         assert session.scalar(text("select current_user")) == RECORD_DECISION_ROLE
     assert session.scalar(text("select current_user")) == before
@@ -95,7 +95,7 @@ def test_the_role_context_manager_borrows_and_returns_the_role(session):
 def test_the_role_is_returned_even_when_the_body_raises(session):
     before = session.scalar(text("select current_user"))
     with pytest.raises(RuntimeError, match="body failed"):
-        with as_record_decision_role(session):
+        with as_role(session, RECORD_DECISION_ROLE):
             assert session.scalar(text("select current_user")) == RECORD_DECISION_ROLE
             raise RuntimeError("body failed")
     assert session.scalar(text("select current_user")) == before

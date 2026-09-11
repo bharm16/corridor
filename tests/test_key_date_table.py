@@ -599,9 +599,9 @@ def test_impact_refuses_cross_project_conflicting_results_and_raw_mutation(
             derivation=replace(impact.derivation, affected_constraint_ids=("invented",)))
     with pytest.raises(DBAPIError, match="immutable source append"), session.begin_nested():
         session.execute(text("update proposed_delta_impact_derivations set rule='rewritten' where project_id=:p"), {"p": adopted.id})
-    with pytest.raises(DBAPIError, match="permission denied"), session.begin_nested():
-        session.execute(text("set local role corridor_worker"))
-        session.execute(text("delete from proposed_delta_impact_derivations where project_id=:p"), {"p": adopted.id})
+    with as_role(session, WORKER_CAPABILITY_LOGIN):
+        with pytest.raises(DBAPIError, match="permission denied"), session.begin_nested():
+            session.execute(text("delete from proposed_delta_impact_derivations where project_id=:p"), {"p": adopted.id})
 
 
 def test_the_impact_derivation_is_retained_with_the_act_that_produced_it(

@@ -12,6 +12,7 @@ import pytest
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import DBAPIError
 
+from corridor.db_roles import SOURCE_APPEND_ROLE
 from corridor.fact_types import FACT_TYPE_CONTRACTS, STRUCTURED_CELL_FACT_TYPES
 from corridor.materializer import (
     PDF_MARKED_RESOLUTION_TRANSFORMATION,
@@ -35,6 +36,7 @@ from corridor.models import (
     ProjectRecordRevision,
 )
 from corridor.source_append import SegmentValues, append_fact, append_source_segments
+from harness_support import as_role
 
 
 @pytest.fixture
@@ -308,8 +310,7 @@ def test_sql_typed_value_check_keeps_pdf_transformations_in_their_fact_types(
     run = ExtractionRun(document_id=document.id, prompt_version="fixture", candidate_count=0)
     session.add(run)
     session.flush()
-    with pytest.raises(DBAPIError) as caught, session.begin_nested():
-        session.execute(text("set local role corridor_source_append"))
+    with as_role(session, SOURCE_APPEND_ROLE), pytest.raises(DBAPIError) as caught, session.begin_nested():
         session.execute(text(
             "insert into facts (project_id, document_id, extraction_run_id, fact_type, "
             "subject_kind, subject_key, text_value, transformation, recorded_by, content_sha256) "

@@ -49,7 +49,7 @@ from corridor.proposed_deltas import (
     create_proposed_delta_group,
     record_delta_deferral,
 )
-from harness_support import adopt_baseline_fact
+from harness_support import adopt_baseline_facts
 from delta_supersession_support import record_delta_supersession
 from corridor.review_packet_reading import (
     ACTIONABLE,
@@ -221,7 +221,7 @@ class _Capture:
 def _accept(session: Session, project: Project, fact: Fact) -> int:
     """One accepted decision for a subject and field, at its own revision."""
 
-    return adopt_baseline_fact(session, project, fact, f"accept:{uuid4().hex[:12]}")
+    return adopt_baseline_facts(session, project, fact, key=f"accept:{uuid4().hex[:12]}")
 
 
 def _reject(session: Session, project: Project, delta: ProposedDelta) -> None:

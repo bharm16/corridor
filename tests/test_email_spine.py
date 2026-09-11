@@ -7,6 +7,7 @@ import pytest
 from sqlalchemy import select
 
 from corridor.config import settings
+from corridor.db_roles import WORKER_CAPABILITY_LOGIN
 from corridor.email_intake import receive_pushed_message
 from corridor.models import Fact, InboundMessage, Project, ProjectRecordRevision, SourceDelivery
 from corridor.push_intake import PushCredential, register_push_credential
@@ -16,6 +17,7 @@ from corridor.email_segments import read_mime_segments
 
 from corridor.llm import RequestConfiguration
 
+from harness_support import as_role
 from model_client_support import FakeModelClient
 
 
@@ -312,12 +314,10 @@ def test_worker_capability_runs_capture_and_cannot_write_accepted_authority(sess
     from corridor.email_spine import capture_email_thread
 
     _, envelope = deliver(session, message_bytes(body="We will finish in October.\n"))
-    with session.begin_nested():
-        session.execute(text("set local role corridor_worker"))
+    with session.begin_nested(), as_role(session, WORKER_CAPABILITY_LOGIN):
         reading = capture_email_thread(session, envelope, client=fixture_client())
         assert reading.proposed_delta_id is not None
         assert session.scalar(text("select has_table_privilege(current_user, 'fact_decisions', 'INSERT')")) is False
-        session.execute(text("reset role"))
 
 
 def test_worker_cannot_insert_a_source_reading_around_the_append_command(session):
@@ -328,8 +328,9 @@ def test_worker_cannot_insert_a_source_reading_around_the_append_command(session
     project, _ = deliver(session, message_bytes(body="Maybe October?\n"))
     inbound = session.scalar(select(InboundMessage).where(InboundMessage.project_id == project.id))
     segment = session.scalar(select(SourceSegment).where(SourceSegment.document_id == inbound.document_id).order_by(SourceSegment.id).limit(1))
-    with pytest.raises(IntegrityError, match="requires its append command"), session.begin_nested():
-        session.execute(text("set local role corridor_worker"))
+    with as_role(session, WORKER_CAPABILITY_LOGIN), pytest.raises(
+        IntegrityError, match="requires its append command"
+    ), session.begin_nested():
         session.execute(text("""insert into inbound_thread_readings
             (project_id, thread_id, closing_message_id, resolution, open_question, question_segment_id, input_sha256)
             values (:project, :thread, :message, 'unresolved', 'bypassed', :segment, :digest)"""),

@@ -98,7 +98,8 @@ from corridor.proposed_deltas import (
     ProposedSubjectTarget,
     create_proposed_delta_group,
 )
-from harness_support import adopt_baseline_fact
+from corridor.db_roles import RECORD_DECISION_ROLE
+from harness_support import adopt_baseline_facts, as_role
 from delta_supersession_support import record_delta_supersession
 from corridor.support_assessments import FactProposition, record_support_assessment
 
@@ -261,7 +262,7 @@ def _delta(
 def _adopt(session: Session, project: Project, fact: Fact, key: str) -> int:
     """One accepted baseline decision, written as the record-decision role."""
 
-    return adopt_baseline_fact(session, project, fact, key)
+    return adopt_baseline_facts(session, project, fact, key=key)
 
 
 def _request(delta: ProposedDelta, **overrides) -> ChildDecisionRequest:
@@ -1906,12 +1907,11 @@ def test_a_delta_decision_cannot_be_updated_or_deleted(
         "update delta_record_decisions set disposition = 'reject' where id = :id",
         "delete from delta_record_decisions where id = :id",
     ):
-        with pytest.raises(DBAPIError) as role_write:
-            with session.begin_nested():
-                session.execute(text("set local role corridor_fact_decision_writer"))
-                session.execute(text(statement), {"id": outcome.decision_id})
+        with as_role(session, RECORD_DECISION_ROLE):
+            with pytest.raises(DBAPIError) as role_write:
+                with session.begin_nested():
+                    session.execute(text(statement), {"id": outcome.decision_id})
         assert "permission denied" in str(role_write.value)
-    session.execute(text("reset role"))
 
 
 def test_a_replay_of_the_same_act_returns_what_it_already_wrote(
