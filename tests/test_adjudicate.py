@@ -3,7 +3,7 @@ from threading import Event
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from corridor.adjudicate import (
@@ -39,6 +39,7 @@ from corridor.models import (
     Project,
 )
 from corridor.principals import HumanPrincipal
+from record_counts import nothing_written
 
 BRYCE = HumanPrincipal("local:bryce")
 REVIEWER = HumanPrincipal("local:test-reviewer")
@@ -231,20 +232,14 @@ def test_accepting_refuses_a_candidate_citing_another_projects_document(
             }
         ],
     }
-    before_evidence = session.scalar(select(func.count()).select_from(EvidenceLink))
-    before_assertions = session.scalar(select(func.count()).select_from(Assertion))
-    before_audit = session.scalar(select(func.count()).select_from(AuditLog))
-
-    with pytest.raises(InvalidCandidateProvenance, match="citation document"):
-        accept_candidate(session, candidate, principal=REVIEWER)
+    with nothing_written(session, document.project_id, other.id):
+        with pytest.raises(InvalidCandidateProvenance, match="citation document"):
+            accept_candidate(session, candidate, principal=REVIEWER)
 
     assert candidate.state == "pending"
     assert session.scalars(
         select(Dependency).where(Dependency.project_id == document.project_id)
     ).all() == []
-    assert session.scalar(select(func.count()).select_from(EvidenceLink)) == before_evidence
-    assert session.scalar(select(func.count()).select_from(Assertion)) == before_assertions
-    assert session.scalar(select(func.count()).select_from(AuditLog)) == before_audit
 
 
 def test_accepting_refuses_a_candidate_with_a_missing_cited_page(session, document):
@@ -258,96 +253,66 @@ def test_accepting_refuses_a_candidate_with_a_missing_cited_page(session, docume
             }
         ],
     }
-    before_evidence = session.scalar(select(func.count()).select_from(EvidenceLink))
-    before_assertions = session.scalar(select(func.count()).select_from(Assertion))
-    before_audit = session.scalar(select(func.count()).select_from(AuditLog))
-
-    with pytest.raises(InvalidCandidateProvenance, match="cited page"):
-        accept_candidate(session, candidate, principal=REVIEWER)
+    with nothing_written(session, document.project_id):
+        with pytest.raises(InvalidCandidateProvenance, match="cited page"):
+            accept_candidate(session, candidate, principal=REVIEWER)
 
     assert candidate.state == "pending"
     assert session.scalars(
         select(Dependency).where(Dependency.project_id == document.project_id)
     ).all() == []
-    assert session.scalar(select(func.count()).select_from(EvidenceLink)) == before_evidence
-    assert session.scalar(select(func.count()).select_from(Assertion)) == before_assertions
-    assert session.scalar(select(func.count()).select_from(AuditLog)) == before_audit
 
 
 def test_accepting_refuses_a_candidate_with_non_mapping_payload(session, document):
     candidate = make_candidate(session, document)
     candidate.payload_json = []
-    before_evidence = session.scalar(select(func.count()).select_from(EvidenceLink))
-    before_assertions = session.scalar(select(func.count()).select_from(Assertion))
-    before_audit = session.scalar(select(func.count()).select_from(AuditLog))
-
-    with pytest.raises(InvalidCandidateProvenance, match="payload must be an object"):
-        accept_candidate(session, candidate, principal=REVIEWER)
+    with nothing_written(session, document.project_id):
+        with pytest.raises(InvalidCandidateProvenance, match="payload must be an object"):
+            accept_candidate(session, candidate, principal=REVIEWER)
 
     assert candidate.state == "pending"
     assert session.scalars(
         select(Dependency).where(Dependency.project_id == document.project_id)
     ).all() == []
-    assert session.scalar(select(func.count()).select_from(EvidenceLink)) == before_evidence
-    assert session.scalar(select(func.count()).select_from(Assertion)) == before_assertions
-    assert session.scalar(select(func.count()).select_from(AuditLog)) == before_audit
 
 
 def test_accepting_refuses_a_candidate_with_non_mapping_fields(session, document):
     candidate = make_candidate(session, document)
     candidate.payload_json = {**candidate.payload_json, "fields": []}
-    before_evidence = session.scalar(select(func.count()).select_from(EvidenceLink))
-    before_assertions = session.scalar(select(func.count()).select_from(Assertion))
-    before_audit = session.scalar(select(func.count()).select_from(AuditLog))
-
-    with pytest.raises(InvalidCandidateProvenance, match="fields must be an object"):
-        accept_candidate(session, candidate, principal=REVIEWER)
+    with nothing_written(session, document.project_id):
+        with pytest.raises(InvalidCandidateProvenance, match="fields must be an object"):
+            accept_candidate(session, candidate, principal=REVIEWER)
 
     assert candidate.state == "pending"
     assert session.scalars(
         select(Dependency).where(Dependency.project_id == document.project_id)
     ).all() == []
-    assert session.scalar(select(func.count()).select_from(EvidenceLink)) == before_evidence
-    assert session.scalar(select(func.count()).select_from(Assertion)) == before_assertions
-    assert session.scalar(select(func.count()).select_from(AuditLog)) == before_audit
 
 
 def test_accepting_refuses_a_candidate_with_non_list_citations(session, document):
     candidate = make_candidate(session, document)
     candidate.payload_json = {**candidate.payload_json, "citations": {"page": 1}}
-    before_evidence = session.scalar(select(func.count()).select_from(EvidenceLink))
-    before_assertions = session.scalar(select(func.count()).select_from(Assertion))
-    before_audit = session.scalar(select(func.count()).select_from(AuditLog))
-
-    with pytest.raises(InvalidCandidateProvenance, match="citations must be a list"):
-        accept_candidate(session, candidate, principal=REVIEWER)
+    with nothing_written(session, document.project_id):
+        with pytest.raises(InvalidCandidateProvenance, match="citations must be a list"):
+            accept_candidate(session, candidate, principal=REVIEWER)
 
     assert candidate.state == "pending"
     assert session.scalars(
         select(Dependency).where(Dependency.project_id == document.project_id)
     ).all() == []
-    assert session.scalar(select(func.count()).select_from(EvidenceLink)) == before_evidence
-    assert session.scalar(select(func.count()).select_from(Assertion)) == before_assertions
-    assert session.scalar(select(func.count()).select_from(AuditLog)) == before_audit
 
 
 def test_accepting_refuses_a_candidate_with_non_mapping_citation(session, document):
     candidate = make_candidate(session, document)
     candidate.payload_json = {**candidate.payload_json, "citations": ["bad"]}
-    before_evidence = session.scalar(select(func.count()).select_from(EvidenceLink))
-    before_assertions = session.scalar(select(func.count()).select_from(Assertion))
-    before_audit = session.scalar(select(func.count()).select_from(AuditLog))
-
-    with pytest.raises(InvalidCandidateProvenance, match="citation must be an object"):
-        accept_candidate(session, candidate, principal=REVIEWER)
+    with nothing_written(session, document.project_id):
+        with pytest.raises(InvalidCandidateProvenance, match="citation must be an object"):
+            accept_candidate(session, candidate, principal=REVIEWER)
 
     assert candidate.state == "pending"
     assert session.scalars(
         select(Dependency).where(Dependency.project_id == document.project_id)
     ).all() == []
-    assert session.scalar(select(func.count()).select_from(EvidenceLink)) == before_evidence
-    assert session.scalar(select(func.count()).select_from(Assertion)) == before_assertions
-    assert session.scalar(select(func.count()).select_from(AuditLog)) == before_audit
 
 
 def test_accepting_refuses_a_candidate_with_a_missing_quote_key(session, document):
@@ -362,28 +327,14 @@ def test_accepting_refuses_a_candidate_with_a_missing_quote_key(session, documen
             }
         ],
     }
-    before_evidence = session.scalar(select(func.count()).select_from(EvidenceLink))
-    before_assertions = session.scalar(select(func.count()).select_from(Assertion))
-    before_audit = session.scalar(select(func.count()).select_from(AuditLog))
-
-    with pytest.raises(InvalidCandidateProvenance, match="citation quote is missing"):
-        accept_candidate(session, candidate, principal=REVIEWER)
+    with nothing_written(session, document.project_id):
+        with pytest.raises(InvalidCandidateProvenance, match="citation quote is missing"):
+            accept_candidate(session, candidate, principal=REVIEWER)
 
     assert candidate.state == "pending"
     assert session.scalars(
         select(Dependency).where(Dependency.project_id == document.project_id)
     ).all() == []
-    assert session.scalar(select(func.count()).select_from(EvidenceLink)) == before_evidence
-    assert session.scalar(select(func.count()).select_from(Assertion)) == before_assertions
-    assert session.scalar(select(func.count()).select_from(AuditLog)) == before_audit
-
-
-def _ledger_counts(session):
-    return (
-        session.scalar(select(func.count()).select_from(EvidenceLink)),
-        session.scalar(select(func.count()).select_from(Assertion)),
-        session.scalar(select(func.count()).select_from(AuditLog)),
-    )
 
 
 @pytest.mark.parametrize(
@@ -410,16 +361,15 @@ def test_accepting_refuses_a_candidate_that_cites_nothing(
     else:
         payload["citations"] = []
     candidate.payload_json = payload
-    before = _ledger_counts(session)
 
-    with pytest.raises(InvalidCandidateProvenance, match="cites nothing"):
-        accept_candidate(session, candidate, principal=REVIEWER)
+    with nothing_written(session, document.project_id):
+        with pytest.raises(InvalidCandidateProvenance, match="cites nothing"):
+            accept_candidate(session, candidate, principal=REVIEWER)
 
     assert candidate.state == "pending"
     assert session.scalars(
         select(Dependency).where(Dependency.project_id == document.project_id)
     ).all() == []
-    assert _ledger_counts(session) == before
 
 
 @pytest.mark.parametrize(
@@ -453,14 +403,13 @@ def test_merging_refuses_a_candidate_that_cites_nothing(
     else:
         payload["citations"] = []
     candidate.payload_json = payload
-    before = _ledger_counts(session)
 
-    with pytest.raises(InvalidCandidateProvenance, match="cites nothing"):
-        merge_candidate(session, candidate, target, principal=REVIEWER)
+    with nothing_written(session, document.project_id):
+        with pytest.raises(InvalidCandidateProvenance, match="cites nothing"):
+            merge_candidate(session, candidate, target, principal=REVIEWER)
 
     assert candidate.state == "pending"
     assert candidate.merged_into is None
-    assert _ledger_counts(session) == before
 
 
 @pytest.mark.parametrize(
@@ -479,16 +428,15 @@ def test_accepting_refuses_a_candidate_that_asserts_nothing(
     a source could disagree with" that way.
     """
     candidate = make_candidate(session, document, fields=fields)
-    before = _ledger_counts(session)
 
-    with pytest.raises(CandidateAssertsNothing, match="asserts nothing"):
-        accept_candidate(session, candidate, principal=REVIEWER)
+    with nothing_written(session, document.project_id):
+        with pytest.raises(CandidateAssertsNothing, match="asserts nothing"):
+            accept_candidate(session, candidate, principal=REVIEWER)
 
     assert candidate.state == "pending"
     assert session.scalars(
         select(Dependency).where(Dependency.project_id == document.project_id)
     ).all() == []
-    assert _ledger_counts(session) == before
 
 
 def test_merging_a_candidate_that_asserts_nothing_keeps_its_evidence(
@@ -1197,18 +1145,12 @@ def test_merging_refuses_a_candidate_from_another_project(session, document):
     session.flush()
     candidate = make_candidate(session, stray_doc)
 
-    before_assertions = session.scalar(select(func.count()).select_from(Assertion))
-    before_evidence = session.scalar(select(func.count()).select_from(EvidenceLink))
-    before_audit = session.scalar(select(func.count()).select_from(AuditLog))
-
-    with pytest.raises(InvalidCandidateProvenance, match="different project"):
-        merge_candidate(session, candidate, target, principal=REVIEWER)
+    with nothing_written(session, document.project_id, other.id):
+        with pytest.raises(InvalidCandidateProvenance, match="different project"):
+            merge_candidate(session, candidate, target, principal=REVIEWER)
 
     assert candidate.state == "pending"
     assert candidate.merged_into is None
-    assert session.scalar(select(func.count()).select_from(Assertion)) == before_assertions
-    assert session.scalar(select(func.count()).select_from(EvidenceLink)) == before_evidence
-    assert session.scalar(select(func.count()).select_from(AuditLog)) == before_audit
 
 
 def test_merging_refuses_a_candidate_with_a_missing_quote_key(session, document):
@@ -1226,18 +1168,12 @@ def test_merging_refuses_a_candidate_with_a_missing_quote_key(session, document)
             }
         ],
     }
-    before_assertions = session.scalar(select(func.count()).select_from(Assertion))
-    before_evidence = session.scalar(select(func.count()).select_from(EvidenceLink))
-    before_audit = session.scalar(select(func.count()).select_from(AuditLog))
-
-    with pytest.raises(InvalidCandidateProvenance, match="citation quote is missing"):
-        merge_candidate(session, candidate, target, principal=REVIEWER)
+    with nothing_written(session, document.project_id):
+        with pytest.raises(InvalidCandidateProvenance, match="citation quote is missing"):
+            merge_candidate(session, candidate, target, principal=REVIEWER)
 
     assert candidate.state == "pending"
     assert candidate.merged_into is None
-    assert session.scalar(select(func.count()).select_from(Assertion)) == before_assertions
-    assert session.scalar(select(func.count()).select_from(EvidenceLink)) == before_evidence
-    assert session.scalar(select(func.count()).select_from(AuditLog)) == before_audit
 
 
 def test_merging_refuses_a_candidate_with_non_integer_citation_document_id(
@@ -1256,20 +1192,14 @@ def test_merging_refuses_a_candidate_with_non_integer_citation_document_id(
             }
         ],
     }
-    before_assertions = session.scalar(select(func.count()).select_from(Assertion))
-    before_evidence = session.scalar(select(func.count()).select_from(EvidenceLink))
-    before_audit = session.scalar(select(func.count()).select_from(AuditLog))
-
-    with pytest.raises(
-        InvalidCandidateProvenance, match="citation document must be an integer"
-    ):
-        merge_candidate(session, candidate, target, principal=REVIEWER)
+    with nothing_written(session, document.project_id):
+        with pytest.raises(
+            InvalidCandidateProvenance, match="citation document must be an integer"
+        ):
+            merge_candidate(session, candidate, target, principal=REVIEWER)
 
     assert candidate.state == "pending"
     assert candidate.merged_into is None
-    assert session.scalar(select(func.count()).select_from(Assertion)) == before_assertions
-    assert session.scalar(select(func.count()).select_from(EvidenceLink)) == before_evidence
-    assert session.scalar(select(func.count()).select_from(AuditLog)) == before_audit
 
 
 def test_merging_refuses_a_candidate_with_non_integer_cited_page(session, document):
@@ -1286,20 +1216,14 @@ def test_merging_refuses_a_candidate_with_non_integer_cited_page(session, docume
             }
         ],
     }
-    before_assertions = session.scalar(select(func.count()).select_from(Assertion))
-    before_evidence = session.scalar(select(func.count()).select_from(EvidenceLink))
-    before_audit = session.scalar(select(func.count()).select_from(AuditLog))
-
-    with pytest.raises(
-        InvalidCandidateProvenance, match="cited page must be a positive integer"
-    ):
-        merge_candidate(session, candidate, target, principal=REVIEWER)
+    with nothing_written(session, document.project_id):
+        with pytest.raises(
+            InvalidCandidateProvenance, match="cited page must be a positive integer"
+        ):
+            merge_candidate(session, candidate, target, principal=REVIEWER)
 
     assert candidate.state == "pending"
     assert candidate.merged_into is None
-    assert session.scalar(select(func.count()).select_from(Assertion)) == before_assertions
-    assert session.scalar(select(func.count()).select_from(EvidenceLink)) == before_evidence
-    assert session.scalar(select(func.count()).select_from(AuditLog)) == before_audit
 
 
 def test_a_candidate_cannot_be_merged_twice(session, document):

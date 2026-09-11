@@ -63,6 +63,7 @@ from corridor.work_decisions import (
     current_next_action_decision,
 )
 from access_support import seed_membership
+from record_counts import nothing_written
 
 TEST_PRINCIPAL = HumanPrincipal("local:test-reviewer")
 PLAN_ACTION = FOLLOW_UP_NEXT_ACTION_CHOICES[0]
@@ -1409,31 +1410,15 @@ def test_accepting_malformed_citations_returns_400_without_writes(
 ):
     candidate = make_candidate(session, project, document)
     candidate.payload_json = {**candidate.payload_json, "citations": {"page": 1}}
-    before_dependencies = session.scalar(select(func.count()).select_from(Dependency))
-    before_assertions = session.scalar(select(func.count()).select_from(Assertion))
-    before_evidence = session.scalar(select(func.count()).select_from(EvidenceLink))
-    before_audit = session.scalar(select(func.count()).select_from(AuditLog))
-
-    response = client.post(
-        f"/candidates/{candidate.id}/accept",
-        data={"slug": project.slug},
-        follow_redirects=False,
-    )
+    with nothing_written(session, project.id):
+        response = client.post(
+            f"/candidates/{candidate.id}/accept",
+            data={"slug": project.slug},
+            follow_redirects=False,
+        )
 
     assert response.status_code == 400
     assert candidate.state == "pending"
-    assert (
-        session.scalar(select(func.count()).select_from(Dependency))
-        == before_dependencies
-    )
-    assert (
-        session.scalar(select(func.count()).select_from(Assertion)) == before_assertions
-    )
-    assert (
-        session.scalar(select(func.count()).select_from(EvidenceLink))
-        == before_evidence
-    )
-    assert session.scalar(select(func.count()).select_from(AuditLog)) == before_audit
 
 
 def test_accepting_non_mapping_payload_returns_400_without_writes(
@@ -1441,31 +1426,15 @@ def test_accepting_non_mapping_payload_returns_400_without_writes(
 ):
     candidate = make_candidate(session, project, document)
     candidate.payload_json = []
-    before_dependencies = session.scalar(select(func.count()).select_from(Dependency))
-    before_assertions = session.scalar(select(func.count()).select_from(Assertion))
-    before_evidence = session.scalar(select(func.count()).select_from(EvidenceLink))
-    before_audit = session.scalar(select(func.count()).select_from(AuditLog))
-
-    response = client.post(
-        f"/candidates/{candidate.id}/accept",
-        data={"slug": project.slug},
-        follow_redirects=False,
-    )
+    with nothing_written(session, project.id):
+        response = client.post(
+            f"/candidates/{candidate.id}/accept",
+            data={"slug": project.slug},
+            follow_redirects=False,
+        )
 
     assert response.status_code == 400
     assert candidate.state == "pending"
-    assert (
-        session.scalar(select(func.count()).select_from(Dependency))
-        == before_dependencies
-    )
-    assert (
-        session.scalar(select(func.count()).select_from(Assertion)) == before_assertions
-    )
-    assert (
-        session.scalar(select(func.count()).select_from(EvidenceLink))
-        == before_evidence
-    )
-    assert session.scalar(select(func.count()).select_from(AuditLog)) == before_audit
 
 
 def test_accepting_non_mapping_fields_returns_400_without_writes(
@@ -1473,31 +1442,15 @@ def test_accepting_non_mapping_fields_returns_400_without_writes(
 ):
     candidate = make_candidate(session, project, document)
     candidate.payload_json = {**candidate.payload_json, "fields": []}
-    before_dependencies = session.scalar(select(func.count()).select_from(Dependency))
-    before_assertions = session.scalar(select(func.count()).select_from(Assertion))
-    before_evidence = session.scalar(select(func.count()).select_from(EvidenceLink))
-    before_audit = session.scalar(select(func.count()).select_from(AuditLog))
-
-    response = client.post(
-        f"/candidates/{candidate.id}/accept",
-        data={"slug": project.slug},
-        follow_redirects=False,
-    )
+    with nothing_written(session, project.id):
+        response = client.post(
+            f"/candidates/{candidate.id}/accept",
+            data={"slug": project.slug},
+            follow_redirects=False,
+        )
 
     assert response.status_code == 400
     assert candidate.state == "pending"
-    assert (
-        session.scalar(select(func.count()).select_from(Dependency))
-        == before_dependencies
-    )
-    assert (
-        session.scalar(select(func.count()).select_from(Assertion)) == before_assertions
-    )
-    assert (
-        session.scalar(select(func.count()).select_from(EvidenceLink))
-        == before_evidence
-    )
-    assert session.scalar(select(func.count()).select_from(AuditLog)) == before_audit
 
 
 def test_merging_malformed_citations_returns_400_without_writes(
@@ -1523,32 +1476,16 @@ def test_merging_malformed_citations_returns_400_without_writes(
             }
         ],
     }
-    before_dependencies = session.scalar(select(func.count()).select_from(Dependency))
-    before_assertions = session.scalar(select(func.count()).select_from(Assertion))
-    before_evidence = session.scalar(select(func.count()).select_from(EvidenceLink))
-    before_audit = session.scalar(select(func.count()).select_from(AuditLog))
-
-    response = client.post(
-        f"/candidates/{candidate.id}/merge",
-        data={"slug": project.slug, "dependency_id": target.id},
-        follow_redirects=False,
-    )
+    with nothing_written(session, project.id):
+        response = client.post(
+            f"/candidates/{candidate.id}/merge",
+            data={"slug": project.slug, "dependency_id": target.id},
+            follow_redirects=False,
+        )
 
     assert response.status_code == 400
     assert candidate.state == "pending"
     assert candidate.merged_into is None
-    assert (
-        session.scalar(select(func.count()).select_from(Dependency))
-        == before_dependencies
-    )
-    assert (
-        session.scalar(select(func.count()).select_from(Assertion)) == before_assertions
-    )
-    assert (
-        session.scalar(select(func.count()).select_from(EvidenceLink))
-        == before_evidence
-    )
-    assert session.scalar(select(func.count()).select_from(AuditLog)) == before_audit
 
 
 @pytest.mark.parametrize(
@@ -1572,31 +1509,15 @@ def test_accepting_a_candidate_that_cites_nothing_returns_400_without_writes(
         "fields": payload_fields,
         "citations": [],
     }
-    before_dependencies = session.scalar(select(func.count()).select_from(Dependency))
-    before_assertions = session.scalar(select(func.count()).select_from(Assertion))
-    before_evidence = session.scalar(select(func.count()).select_from(EvidenceLink))
-    before_audit = session.scalar(select(func.count()).select_from(AuditLog))
-
-    response = client.post(
-        f"/candidates/{candidate.id}/accept",
-        data={"slug": project.slug},
-        follow_redirects=False,
-    )
+    with nothing_written(session, project.id):
+        response = client.post(
+            f"/candidates/{candidate.id}/accept",
+            data={"slug": project.slug},
+            follow_redirects=False,
+        )
 
     assert response.status_code == 400
     assert candidate.state == "pending"
-    assert (
-        session.scalar(select(func.count()).select_from(Dependency))
-        == before_dependencies
-    )
-    assert (
-        session.scalar(select(func.count()).select_from(Assertion)) == before_assertions
-    )
-    assert (
-        session.scalar(select(func.count()).select_from(EvidenceLink))
-        == before_evidence
-    )
-    assert session.scalar(select(func.count()).select_from(AuditLog)) == before_audit
 
 
 @pytest.mark.parametrize(
@@ -1623,32 +1544,16 @@ def test_merging_a_candidate_that_cites_nothing_returns_400_without_writes(
         "fields": payload_fields,
         "citations": [],
     }
-    before_dependencies = session.scalar(select(func.count()).select_from(Dependency))
-    before_assertions = session.scalar(select(func.count()).select_from(Assertion))
-    before_evidence = session.scalar(select(func.count()).select_from(EvidenceLink))
-    before_audit = session.scalar(select(func.count()).select_from(AuditLog))
-
-    response = client.post(
-        f"/candidates/{candidate.id}/merge",
-        data={"slug": project.slug, "dependency_id": target.id},
-        follow_redirects=False,
-    )
+    with nothing_written(session, project.id):
+        response = client.post(
+            f"/candidates/{candidate.id}/merge",
+            data={"slug": project.slug, "dependency_id": target.id},
+            follow_redirects=False,
+        )
 
     assert response.status_code == 400
     assert candidate.state == "pending"
     assert candidate.merged_into is None
-    assert (
-        session.scalar(select(func.count()).select_from(Dependency))
-        == before_dependencies
-    )
-    assert (
-        session.scalar(select(func.count()).select_from(Assertion)) == before_assertions
-    )
-    assert (
-        session.scalar(select(func.count()).select_from(EvidenceLink))
-        == before_evidence
-    )
-    assert session.scalar(select(func.count()).select_from(AuditLog)) == before_audit
 
 
 def test_merging_non_integer_citation_document_id_returns_400_without_writes(
@@ -1673,32 +1578,16 @@ def test_merging_non_integer_citation_document_id_returns_400_without_writes(
             }
         ],
     }
-    before_dependencies = session.scalar(select(func.count()).select_from(Dependency))
-    before_assertions = session.scalar(select(func.count()).select_from(Assertion))
-    before_evidence = session.scalar(select(func.count()).select_from(EvidenceLink))
-    before_audit = session.scalar(select(func.count()).select_from(AuditLog))
-
-    response = client.post(
-        f"/candidates/{candidate.id}/merge",
-        data={"slug": project.slug, "dependency_id": target.id},
-        follow_redirects=False,
-    )
+    with nothing_written(session, project.id):
+        response = client.post(
+            f"/candidates/{candidate.id}/merge",
+            data={"slug": project.slug, "dependency_id": target.id},
+            follow_redirects=False,
+        )
 
     assert response.status_code == 400
     assert candidate.state == "pending"
     assert candidate.merged_into is None
-    assert (
-        session.scalar(select(func.count()).select_from(Dependency))
-        == before_dependencies
-    )
-    assert (
-        session.scalar(select(func.count()).select_from(Assertion)) == before_assertions
-    )
-    assert (
-        session.scalar(select(func.count()).select_from(EvidenceLink))
-        == before_evidence
-    )
-    assert session.scalar(select(func.count()).select_from(AuditLog)) == before_audit
 
 
 def test_merging_non_integer_cited_page_returns_400_without_writes(
@@ -1723,32 +1612,16 @@ def test_merging_non_integer_cited_page_returns_400_without_writes(
             }
         ],
     }
-    before_dependencies = session.scalar(select(func.count()).select_from(Dependency))
-    before_assertions = session.scalar(select(func.count()).select_from(Assertion))
-    before_evidence = session.scalar(select(func.count()).select_from(EvidenceLink))
-    before_audit = session.scalar(select(func.count()).select_from(AuditLog))
-
-    response = client.post(
-        f"/candidates/{candidate.id}/merge",
-        data={"slug": project.slug, "dependency_id": target.id},
-        follow_redirects=False,
-    )
+    with nothing_written(session, project.id):
+        response = client.post(
+            f"/candidates/{candidate.id}/merge",
+            data={"slug": project.slug, "dependency_id": target.id},
+            follow_redirects=False,
+        )
 
     assert response.status_code == 400
     assert candidate.state == "pending"
     assert candidate.merged_into is None
-    assert (
-        session.scalar(select(func.count()).select_from(Dependency))
-        == before_dependencies
-    )
-    assert (
-        session.scalar(select(func.count()).select_from(Assertion)) == before_assertions
-    )
-    assert (
-        session.scalar(select(func.count()).select_from(EvidenceLink))
-        == before_evidence
-    )
-    assert session.scalar(select(func.count()).select_from(AuditLog)) == before_audit
 
 
 def test_accepting_another_projects_candidate_is_hidden_and_refused(
@@ -1902,12 +1775,12 @@ def test_marking_evidence_on_another_projects_dependency_is_hidden_and_refused(
         select(EvidenceLink).where(EvidenceLink.dependency_id == dependency.id)
     ).one()
 
-    before_audit = session.scalar(select(func.count()).select_from(AuditLog))
-    mark = client.post(
-        f"/dependencies/{dependency.id}/evidence/{evidence.id}/satisfies",
-        data={"slug": project.slug},
-        follow_redirects=False,
-    )
+    with nothing_written(session, project.id, other.id):
+        mark = client.post(
+            f"/dependencies/{dependency.id}/evidence/{evidence.id}/satisfies",
+            data={"slug": project.slug},
+            follow_redirects=False,
+        )
 
     assert mark.status_code == 404
     assert (
@@ -1922,7 +1795,6 @@ def test_marking_evidence_on_another_projects_dependency_is_hidden_and_refused(
         )
         == 0
     )
-    assert session.scalar(select(func.count()).select_from(AuditLog)) == before_audit
 
 
 def test_accepting_creates_a_dependency_and_advances(
@@ -2012,13 +1884,12 @@ def test_mark_satisfies_route_refuses_without_a_signed_in_session(
     evidence = session.scalars(
         select(EvidenceLink).where(EvidenceLink.dependency_id == dependency.id)
     ).one()
-    before_audit = session.scalar(select(func.count()).select_from(AuditLog))
-
-    response = client_without_session.post(
-        f"/dependencies/{dependency.id}/evidence/{evidence.id}/satisfies",
-        data={"slug": project.slug},
-        follow_redirects=False,
-    )
+    with nothing_written(session, project.id):
+        response = client_without_session.post(
+            f"/dependencies/{dependency.id}/evidence/{evidence.id}/satisfies",
+            data={"slug": project.slug},
+            follow_redirects=False,
+        )
 
     assert response.status_code == 401
     assert (
@@ -2033,7 +1904,6 @@ def test_mark_satisfies_route_refuses_without_a_signed_in_session(
         )
         == 0
     )
-    assert session.scalar(select(func.count()).select_from(AuditLog)) == before_audit
 
 
 def test_edit_then_accept_records_the_edited_values(client, session, project, document):
