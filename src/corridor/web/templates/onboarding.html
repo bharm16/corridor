@@ -117,15 +117,43 @@
       and which is the current onboarding permission as well as the
       designation, so a project whose compatibility permission has lapsed
       shows no control rather than one that is about to be refused (#934).
+
+      One row per delivery, never per digest (#933). The reading behind this
+      kept the newest row of each `content_sha256`, so a connector pull and a
+      person's upload of the same workbook reached this page as one control
+      and the earlier act was invisible. Each row now carries what the ledger
+      retains about that delivery, because a coordinator being asked to choose
+      between two of them has to be able to tell them apart -- and where a
+      fact is not recorded the row says so rather than deriving one.
     #}
     {% if view.supplied %}
       <section class="panel">
         <h2>Workbook received</h2>
-        <ul class="plain">
-          {% for source in view.supplied %}
+        {% for group in view.supplied %}
+          {% if group.identical_contents %}
+            <h3>Identical file contents &mdash; {{ group.deliveries | length }} deliveries</h3>
+          {% endif %}
+          <ul class="plain">
+          {% for source in group.deliveries %}
             <li>
-              {{ source.filename }} &mdash; delivered {{ source.delivered_at }}
-              <div class="mono">{{ source.content_sha256 }}</div>
+              <b>{{ source.filename }}</b>
+              <div>Received {{ source.delivered_at }}</div>
+              <div>
+                Arrived on {{ source.channel }}, configuration
+                {{ source.configuration_identity }}
+              </div>
+              <div>{{ source.submitted_by }}</div>
+              <div>{{ source.confirmation }}</div>
+              <div class="mono">
+                {{ source.content_sha256 }} &middot;
+                delivery {{ source.delivery_id }} &middot;
+                receipt {{ source.delivery_identity }} &middot;
+                {% if source.configuration_version %}
+                  configuration version {{ source.configuration_version }}
+                {% else %}
+                  no configuration version recorded
+                {% endif %}
+              </div>
               {% if view.may_prepare %}
                 <form method="post"
                       action="/projects/{{ view.project_slug }}/baseline/prepare">
@@ -150,7 +178,8 @@
               {% endif %}
             </li>
           {% endfor %}
-        </ul>
+          </ul>
+        {% endfor %}
       </section>
     {% endif %}
   {% else %}

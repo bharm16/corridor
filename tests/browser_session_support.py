@@ -93,6 +93,28 @@ _HIDDEN_TEXTAREA = re.compile(
 )
 
 
+def every_form_fields(body: str, action_suffix: str) -> tuple[dict[str, str], ...]:
+    """The hidden fields of every form on the page with this action, in order.
+
+    A page may offer one act on more than one subject: the onboarding page
+    offers the baseline reading once per delivery, because two deliveries of
+    one workbook are two acts and the coordinator picks between them (#933).
+    A test reading only the first could not say which one it submitted, and a
+    test composing the other's payload would be composing the submission this
+    module exists not to compose.
+    """
+
+    return tuple(
+        {
+            one.group("name"): html.unescape(one.group("value"))
+            for pattern in (_HIDDEN, _HIDDEN_TEXTAREA)
+            for one in pattern.finditer(match.group("body"))
+        }
+        for match in _FORM.finditer(body)
+        if match.group("action").endswith(action_suffix)
+    )
+
+
 def form_fields(body: str, action_suffix: str) -> dict[str, str] | None:
     """The hidden fields of the one form on the page with this action.
 
@@ -106,15 +128,8 @@ def form_fields(body: str, action_suffix: str) -> dict[str, str] | None:
     *page* supplies, so a caller adds the typed ones itself.
     """
 
-    for match in _FORM.finditer(body):
-        if match.group("action").endswith(action_suffix):
-            found = match.group("body")
-            return {
-                one.group("name"): html.unescape(one.group("value"))
-                for pattern in (_HIDDEN, _HIDDEN_TEXTAREA)
-                for one in pattern.finditer(found)
-            }
-    return None
+    found = every_form_fields(body, action_suffix)
+    return found[0] if found else None
 
 
 def submit_form(client, url, fields):
