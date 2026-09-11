@@ -13,7 +13,7 @@ from corridor.config import settings
 from corridor.extract_batch import extract_documents
 from corridor.extract_minutes_v5 import (
     MIN_PAGE_CHARS,
-    PROMPT_PATH,
+    PROMPT,
     PROMPT_VERSION,
     SCHEMA,
     extract_page_candidates,
@@ -407,7 +407,7 @@ def test_minutes_batch_routes_statement_facts_through_the_scoped_append_command(
             session,
             [document],
             client=client,
-            system=PROMPT_PATH.read_text(),
+            system=PROMPT.text,
             schema=SCHEMA,
             min_page_chars=MIN_PAGE_CHARS,
             to_candidate=to_candidate,
@@ -490,7 +490,7 @@ def test_minutes_batch_refuses_fact_append_when_original_bytes_are_unavailable(
                 session,
                 [document],
                 client=client,
-                system=PROMPT_PATH.read_text(),
+                system=PROMPT.text,
                 schema=SCHEMA,
                 min_page_chars=MIN_PAGE_CHARS,
                 to_candidate=to_candidate,

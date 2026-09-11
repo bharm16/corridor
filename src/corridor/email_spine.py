@@ -30,6 +30,7 @@ from corridor.models import (
     DeltaSupersession, Document, ExtractionRun, Fact, InboundMessage, InboundThread, InboundThreadReading,
     Project, ProjectRecordRevision, SourceDelivery,
 )
+from corridor.prompt_library import installed_prompt
 from corridor.proposed_delta_comparison import (
     StatedSubject, accepted_values, compare_stated_subjects, revision_label,
 )
@@ -41,8 +42,8 @@ from corridor.typed_output import StrictOutputModel, strict_output_schema, valid
 
 
 PROMPT_VERSION = "email_thread_v1"
+PROMPT = installed_prompt(PROMPT_VERSION)
 SCHEMA_VERSION = "email-thread-output-v1"
-PROMPT_PATH = Path(__file__).resolve().parents[2] / "prompts/email_thread_v1.md"
 MAX_TURNS = 20
 MAX_THREAD_CHARACTERS = 120_000
 
@@ -65,7 +66,7 @@ def email_extractor_config(client):
     return injected_extractor_config(
         extractor="email_thread", prompt_version=PROMPT_VERSION,
         model=getattr(client, "model", None), schema_version=SCHEMA_VERSION,
-        prompt_bytes=PROMPT_PATH.read_bytes(), schema=strict_output_schema(EmailThreadOutput),
+        prompt_bytes=PROMPT.data, schema=strict_output_schema(EmailThreadOutput),
         postprocessor_bytes=(Path(__file__).read_bytes() + Path(email_segments.__file__).read_bytes()
                              + Path(materializer.__file__).read_bytes()),
         request_controls={"api": "structured_client", "strict": True, "store": False,
@@ -166,7 +167,7 @@ def capture_email_thread(session, envelope: SourceEnvelope, *, client):
         revision = session.scalar(select(func.max(ProjectRecordRevision.id)).where(
             ProjectRecordRevision.project_id == thread.project_id))
         schema = strict_output_schema(EmailThreadOutput)
-        system = PROMPT_PATH.read_text()
+        system = PROMPT.text
         before = usage_snapshot(client)
         raw = client.complete(system=system, user=json.dumps({"turns": source_turns}), schema=schema)
         output = validate_typed_output(EmailThreadOutput, raw)

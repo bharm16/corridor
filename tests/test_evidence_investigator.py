@@ -1721,7 +1721,7 @@ def test_v2_cohort_freezes_an_explicit_hidden_reproducible_manifest(
     assert manifest["project"] == {"id": project.id, "slug": project.slug}
     assert manifest["candidate_ids"] == [second.id, first.id]
     assert manifest["selection_rule"].startswith("operator-declared:")
-    assert manifest["prompt_version"] == "evidence-investigator-v3"
+    assert manifest["prompt_version"] == "evidence-investigator-v2"
     assert manifest["prompt_sha256"] == PROMPT_SHA256
     assert manifest["tool_contract_version"] == "evidence-investigator-tools-v3"
     assert manifest["adapter_contract_version"] == ADAPTER_CONTRACT_VERSION

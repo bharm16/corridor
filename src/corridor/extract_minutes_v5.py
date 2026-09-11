@@ -31,13 +31,14 @@ from sqlalchemy.orm import Session
 from corridor.candidates import dedupe_hint, propose
 from corridor.llm import OpenAIClient, StructuredClient
 from corridor.models import Candidate, DocPage, Document
+from corridor.prompt_library import installed_prompt
 from corridor.prose_spans import NumberedActionSpan, numbered_action_spans
 from corridor.statement_timing_parser import exact_statement_timings
 from corridor.verify import literal_quote_on_page, normalize
 
 
 PROMPT_VERSION = "minutes_v5"
-PROMPT_PATH = Path("prompts/minutes_v5.md")
+PROMPT = installed_prompt(PROMPT_VERSION)
 MIN_PAGE_CHARS = 200
 EXTERNAL_PARTY_STATEMENT_TYPES = (
     "commitment",
@@ -187,7 +188,7 @@ def extract_document(
         if len(text) < MIN_PAGE_CHARS:
             continue
         result = client.complete(
-            system=PROMPT_PATH.read_text(),
+            system=PROMPT.text,
             user=f"Page {page.page_no} of {document.filename}:\n\n{text}",
             schema=SCHEMA,
         )
@@ -613,7 +614,7 @@ def main(argv: list[str]) -> int:
         doc_type="minutes",
         default_slug="sh99-grand-parkway",
         prompt_version=PROMPT_VERSION,
-        system=PROMPT_PATH.read_text(),
+        system=PROMPT.text,
         schema=SCHEMA,
         min_page_chars=MIN_PAGE_CHARS,
         to_candidate=to_candidate,

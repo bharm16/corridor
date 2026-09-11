@@ -11,7 +11,7 @@ from sqlalchemy import select
 from corridor.extract_batch import extract_documents
 from corridor.extract_minutes_v5 import (
     MIN_PAGE_CHARS,
-    PROMPT_PATH,
+    PROMPT,
     PROMPT_VERSION,
     SCHEMA,
     extract_document,
@@ -386,7 +386,7 @@ def test_production_batch_seam_emits_action_items_when_model_returns_none(
         session,
         [document],
         client=client,
-        system=PROMPT_PATH.read_text(),
+        system=PROMPT.text,
         schema=SCHEMA,
         min_page_chars=MIN_PAGE_CHARS,
         to_candidate=to_candidate,

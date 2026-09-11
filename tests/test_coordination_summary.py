@@ -335,6 +335,31 @@ def test_input_over_the_declared_budget_is_refused_without_a_model_call(
     assert client.calls == []
 
 
+def test_the_request_sends_the_prompt_and_the_schema_that_prompt_promises(
+    session, project, cited_dependency
+):
+    """The schema was a byte-identical retype of `briefing.SENTENCE_SCHEMA` in a
+    module that already imported the prompt, so one prompt file had two copies
+    of its own output contract and only one carried the ref-vocabulary comment."""
+    from corridor import briefing
+    from corridor.coordination_summary import request_summary
+
+    _declare(session, project)
+    client = stub_client({"sentences": []})
+
+    request_summary(
+        session,
+        project_id=project.id,
+        principal=ACTOR,
+        client_factory=lambda _: client,
+        today=TODAY,
+    )
+
+    assert len(client.calls) == 1
+    assert client.calls[0].schema is briefing.SENTENCE_SCHEMA
+    assert client.calls[0].system == briefing.PROMPT.text
+
+
 def test_missing_required_alert_coverage_withholds_the_whole_draft(
     session, project, cited_dependency
 ):

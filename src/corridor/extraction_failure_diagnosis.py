@@ -32,7 +32,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from hashlib import sha256
-from pathlib import Path
 from typing import Callable, Iterable, Mapping, Sequence
 from uuid import uuid4
 
@@ -57,6 +56,7 @@ from corridor.models import (
     SpendAuthorization,
 )
 from corridor.principals import HumanPrincipal, require_human_principal
+from corridor.prompt_library import installed_prompt, require_installed_prompt
 from corridor.spend_authorization import (
     RETENTION_POLICY,
     declare_spend_authorization,
@@ -64,11 +64,6 @@ from corridor.spend_authorization import (
 
 
 PROMPT_VERSION = "extraction_failure_diagnosis_v1"
-PROMPT = (
-    Path(__file__).resolve().parents[2]
-    / "prompts"
-    / "extraction_failure_diagnosis_v1.md"
-)
 TOOL_CONTRACT_VERSION = "extraction-failure-diagnosis-input-v1"
 VALIDATOR_VERSION = "extraction-failure-diagnosis-validator-v1"
 
@@ -213,6 +208,8 @@ DIAGNOSIS_SCHEMA: dict = {
     },
 }
 
+PROMPT = installed_prompt(PROMPT_VERSION, schema=DIAGNOSIS_SCHEMA)
+
 
 class ConfigurationRequired(ValueError):
     """No declared, complete server configuration permits a model request."""
@@ -281,10 +278,9 @@ def declare_configuration(
         raise InvalidDiagnosisConfiguration(
             "every failure-diagnosis configuration field must be declared"
         )
-    if prompt_version != PROMPT_VERSION:
-        raise InvalidDiagnosisConfiguration(
-            "the configured prompt is not the installed failure-diagnosis prompt"
-        )
+    require_installed_prompt(
+        prompt_version, installed=PROMPT, error=InvalidDiagnosisConfiguration, family="failure-diagnosis"
+    )
     authorization = declare_spend_authorization(
         session,
         project_id=project_id,
@@ -899,9 +895,8 @@ def request_failure_diagnosis(
         BoundedExplanationPlan(
             configuration=configuration,
             client_factory=client_factory,
-            system_prompt=PROMPT.read_text(),
+            prompt=PROMPT,
             user_message=_user_message(prepared),
-            schema=DIAGNOSIS_SCHEMA,
             is_current=is_current,
             stale_reason="the document or failed attempt changed during the request",
             validate=lambda result: validate_diagnosis(

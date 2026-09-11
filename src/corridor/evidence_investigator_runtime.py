@@ -20,7 +20,6 @@ import time
 import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
-from pathlib import Path
 
 import httpx
 
@@ -50,11 +49,24 @@ from corridor.models import (
     EvidenceInvestigationRun,
     EvidenceInvestigationStepReceipt,
 )
+from corridor.prompt_library import installed_prompt
 
-PROMPT_VERSION = "evidence-investigator-v3"
-PROMPT_PATH = (
-    Path(__file__).resolve().parents[2] / "prompts" / "evidence_investigator_v2.md"
-)
+# The version string every receipt records for these bytes. It read
+# `evidence-investigator-v3` for a while: a domain-vocabulary sweep bumped the
+# constant without touching the prompt file, so new receipts claimed v3 while
+# the file name, this module's own refusal message, the shadow-cohort schema
+# version and all four retained cohort artifacts in
+# `artifacts/evidence-investigator/` went on calling the same bytes v2.
+# Deriving the file from the version is what makes such a bump impossible to
+# miss; naming v2 again is what puts the running code and the retained
+# evidence back on one prompt.
+PROMPT_VERSION = "evidence-investigator-v2"
+PROMPT = installed_prompt(PROMPT_VERSION, schema=INVESTIGATION_PACKET_SCHEMA)
+# Stays a hand-written literal, because it is the expectation and not the
+# observation: the four retained cohort artifacts name these exact bytes, and
+# a digest read back out of the file could only ever agree with itself. Recompute
+# it deliberately, with `shasum -a 256 prompts/evidence_investigator_v2.md`, when
+# a new prompt version is issued alongside it.
 PROMPT_SHA256 = "b5c57c83708d6305db4b614080922ab2b9733f6e275a2d04214e3ccdf3c14906"
 ADAPTER = "direct-responses-v2"
 ADAPTER_CONTRACT_VERSION = "direct-responses-contract-v2"
@@ -173,12 +185,14 @@ class DirectResponsesInvestigationRuntime:
         self.model = model
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
-        self.prompt = (
-            prompt if prompt is not None else PROMPT_PATH.read_text(encoding="utf-8")
-        )
+        self.prompt = prompt if prompt is not None else PROMPT.text
         self.prompt_sha256 = hashlib.sha256(self.prompt.encode()).hexdigest()
         if prompt is None and self.prompt_sha256 != PROMPT_SHA256:
-            raise RuntimeError("sealed v2 prompt bytes do not match PROMPT_SHA256")
+            raise RuntimeError(
+                f"{PROMPT.path.name} does not match the sealed PROMPT_SHA256 the "
+                f"retained {PROMPT_VERSION} cohorts name; issue a new prompt "
+                "version rather than editing these bytes"
+            )
         self._client = client
 
     async def run(self, case, tools, budget):
@@ -408,7 +422,7 @@ class DirectResponsesInvestigationRuntime:
                     "type": "json_schema",
                     "name": "evidence_investigation_packet",
                     "strict": True,
-                    "schema": INVESTIGATION_PACKET_SCHEMA,
+                    "schema": PROMPT.schema,
                 }
             },
             "store": False,

@@ -19,7 +19,6 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from hashlib import sha256
-from pathlib import Path
 from typing import Any
 
 from sqlalchemy import func, select
@@ -41,7 +40,6 @@ class ProductProvingExtractionError(ValueError):
 
 
 _ExtractionImplementation = Callable[[Session, Document, object], None]
-_REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def extract_product_proving_document(
@@ -188,7 +186,7 @@ def _extract_minutes_document(
     from corridor.extract_batch import extract_documents
     from corridor.extract_minutes_v5 import (
         MIN_PAGE_CHARS,
-        PROMPT_PATH,
+        PROMPT,
         PROMPT_VERSION,
         SCHEMA,
         extract_page_candidates,
@@ -200,7 +198,7 @@ def _extract_minutes_document(
         session,
         [document],
         client=client,
-        system=(_REPO_ROOT / PROMPT_PATH).read_text(),
+        system=PROMPT.text,
         schema=SCHEMA,
         min_page_chars=MIN_PAGE_CHARS,
         to_candidate=to_candidate,
