@@ -50,8 +50,16 @@ MIGRATION_CONTAINER_NAME = "MigrationContainer"
 UNSET_OUTPUT_VALUE = "not-configured"
 
 # Application-stack output -> the environment variable the release exports it as.
+#
+# `ClusterName` is here because the workflow used to carry `CLUSTER:
+# corridor-nonprod` in its own `env:` block while the stack emitted the cluster
+# it actually created and nothing related the two. Every `aws ecs` call in the
+# release names that cluster, so a stack that renamed it would have run the
+# drain, the migration and both service updates against a cluster this
+# repository invented.
 RELEASE_STACK_OUTPUTS: Mapping[str, str] = MappingProxyType({
     "RepositoryUri": "REPOSITORY_URI",
+    "ClusterName": "CLUSTER",
     "WebServiceName": "WEB_SERVICE",
     "WorkerServiceName": "WORKER_SERVICE",
     "TaskSubnetIds": "TASK_SUBNETS",
@@ -106,7 +114,6 @@ STACK_OUTPUT_READERS: Mapping[str, Mapping[str, str]] = MappingProxyType({
             DISPOSITION_STACK_OUTPUTS["CorridorApplication"], DISPOSITION_PROVIDER
         ),
         "LoadBalancerDns": OPERATOR_SUMMARY,
-        "ClusterName": OPERATOR_SUMMARY,
         "ClusterArn": OPERATOR_SUMMARY,
         "BatchSecurityGroupId": OPERATOR_SUMMARY,
         "DispositionAlbLogsBucket": OPERATOR_SUMMARY,

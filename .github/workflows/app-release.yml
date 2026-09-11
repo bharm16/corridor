@@ -48,9 +48,12 @@ concurrency:
   group: corridor-nonproduction-mutation
   cancel-in-progress: false
 
+# `CLUSTER` is deliberately absent: it is a `CorridorApplication` output, and
+# the resolve step below exports it with the rest of the release contract. A
+# name written here would be this repository's guess at what the stack created,
+# and every `aws ecs` call in this workflow would follow the guess.
 env:
   AWS_REGION: us-east-2
-  CLUSTER: corridor-nonprod
   COMMIT_SHA: ${{ inputs.commit_sha }}
   WEB_DESIRED_COUNT: ${{ inputs.web_desired_count }}
   WORKER_DESIRED_COUNT: ${{ inputs.worker_desired_count }}
