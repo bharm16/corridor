@@ -81,23 +81,38 @@ _HIDDEN = re.compile(
     r'<input[^>]*type="hidden"[^>]*name="(?P<name>[^"]*)"[^>]*'
     r'value="(?P<value>[^"]*)"'
 )
+# A hidden textarea is a hidden field: the browser submits it exactly like an
+# `<input type="hidden">`, and the Key dates confirmation carries the previewed
+# CSV in one (#880).  Reading only the inputs would have handed back a payload
+# missing a required field, and a test that filled that field in from its own
+# variable would be composing the submission this module exists not to compose.
+_HIDDEN_TEXTAREA = re.compile(
+    r'<textarea(?=[^>]*\bhidden\b)[^>]*name="(?P<name>[^"]*)"[^>]*>'
+    r"(?P<value>.*?)</textarea>",
+    re.S,
+)
 
 
 def form_fields(body: str, action_suffix: str) -> dict[str, str] | None:
-    """The hidden inputs of the one form on the page with this action.
+    """The hidden fields of the one form on the page with this action.
 
     Reading the payload out of the rendered page is the point: a test that
     composed its own would prove that the route accepts a payload, not that the
     screen offers one a coordinator could submit.  The request-forgery field is
     a hidden input like any other, so a form that omits it hands back a payload
     the write path refuses — which is the defect this reader is meant to catch.
+
+    What a person types is not here and should not be: these are the fields the
+    *page* supplies, so a caller adds the typed ones itself.
     """
 
     for match in _FORM.finditer(body):
         if match.group("action").endswith(action_suffix):
+            found = match.group("body")
             return {
-                found.group("name"): html.unescape(found.group("value"))
-                for found in _HIDDEN.finditer(match.group("body"))
+                one.group("name"): html.unescape(one.group("value"))
+                for pattern in (_HIDDEN, _HIDDEN_TEXTAREA)
+                for one in pattern.finditer(found)
             }
     return None
 
