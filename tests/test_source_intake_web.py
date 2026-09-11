@@ -103,10 +103,18 @@ def test_upload_shows_a_read_only_preview_before_confirm(client, project, store)
     # The unresolved metadata is spelled out, not silently made authoritative.
     assert "supersession" in r.text.lower()
     assert _fingerprint(project, body, "matrix", "matrix.pdf") in r.text
-    # Nothing is registered yet.
+    # Nothing is registered yet -- and since #841 that is what the register
+    # says, rather than the absence it used to show. The delivery is on the
+    # ledger the moment the bytes are stored, and the row names the person who
+    # still has to admit it.
+    register = client.get(f"/projects/{project.slug}/sources")
+    assert "matrix.pdf" in register.text
     assert (
-        client.get(f"/projects/{project.slug}/sources").text.count("matrix.pdf") == 0
+        "Received and stored, and nobody has confirmed it for processing yet"
+        in register.text
     )
+    # No registered source, so nothing on the row opens an original.
+    assert "/original" not in register.text
 
 
 def test_confirm_registers_and_lists_the_upload(client, session, project, store):
@@ -143,6 +151,74 @@ def test_confirm_registers_and_lists_the_upload(client, session, project, store)
     assert listing.status_code == 200
     assert "matrix.pdf" in listing.text
     assert "Pending" in listing.text
+
+
+def test_the_register_shows_a_refused_delivery_and_the_owner_of_it(
+    client, project, store
+):
+    """The refusal is a row on the page, not the absence it used to be (#841).
+
+    The request is still answered 400 -- the upload was refused -- and the
+    delivery the gate recorded survives that answer, which is the whole reason
+    ADR-0089 wanted a ledger.
+    """
+
+    refused = client.post(
+        f"/projects/{project.slug}/sources/upload",
+        data={"doc_type": "matrix"},
+        files={"upload": ("hostile.pdf", b"not really a pdf", "application/pdf")},
+    )
+    assert refused.status_code == 400
+
+    register = client.get(f"/projects/{project.slug}/sources")
+    assert register.status_code == 200
+    assert "hostile.pdf" in register.text
+    assert "Refused at intake and not processed" in register.text
+    assert "The project team" in register.text
+
+
+def test_the_register_filters_and_pages_over_the_deliveries_it_holds(
+    client, project, store
+):
+    """The three controls and the older-deliveries cursor, over the real route."""
+
+    staged = {}
+    for marker in ("alpha", "beta"):
+        preview = client.post(
+            f"/projects/{project.slug}/sources/upload",
+            data={"doc_type": "matrix"},
+            files={
+                "upload": (f"{marker}.pdf", _matrix_pdf(marker), "application/pdf")
+            },
+        )
+        assert preview.status_code == 200
+        staged[marker] = _delivery_id(preview.text)
+
+    everything = client.get(f"/projects/{project.slug}/sources")
+    assert "alpha.pdf" in everything.text and "beta.pdf" in everything.text
+
+    by_family = client.get(
+        f"/projects/{project.slug}/sources", params={"family": "alpha"}
+    )
+    assert "alpha.pdf" in by_family.text and "beta.pdf" not in by_family.text
+
+    by_state = client.get(
+        f"/projects/{project.slug}/sources",
+        params={"state": "awaiting_confirmation"},
+    )
+    assert "alpha.pdf" in by_state.text and "beta.pdf" in by_state.text
+    assert "No delivery matches this filter." in client.get(
+        f"/projects/{project.slug}/sources", params={"state": "processed"}
+    ).text
+
+    # The newest delivery is the one listed first, so the page after it holds
+    # the older one and not itself.
+    older = client.get(
+        f"/projects/{project.slug}/sources",
+        params={"before": f"delivery:{staged['beta']}"},
+    )
+    assert older.status_code == 200
+    assert "alpha.pdf" in older.text and "beta.pdf" not in older.text
 
 
 def test_upload_refuses_an_unsupported_type_with_no_registration(

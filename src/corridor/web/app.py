@@ -87,6 +87,7 @@ from corridor.telemetry import (
     configure_logging,
 )
 from corridor import access
+from corridor import source_register
 from corridor import web_boundary
 from corridor.web.artifact_downloads import (
     CANDIDATE_DOWNLOAD,
@@ -266,7 +267,6 @@ from corridor.source_intake import (
     IntakeRefused,
     UploadNotTaken,
     confirm_intake,
-    list_confirmed_uploads,
     preview_intake,
     receive_upload,
 )
@@ -7469,30 +7469,70 @@ def source_confirm(
 def source_uploads(
     request: Request,
     slug: str,
+    state: str = "",
+    family: str = "",
+    received_from: str = Query("", alias="from"),
+    received_to: str = Query("", alias="to"),
+    before: str = "",
     principal: HumanPrincipal = Depends(get_human_principal),
     session: Session = Depends(get_session),
 ):
-    """The confirmed uploads and their honest processing outcomes."""
+    """Every delivery this project has received, and what became of each (#841).
+
+    ``before`` pages the register backwards, exactly as the Record view's
+    audit trail pages (#830): it names the oldest row of the page the reader
+    came from, selects which page is shown, and changes nothing else. The
+    filters travel with it, so paging does not drop the question the controls
+    are asking.
+    """
     project = _project(session, slug, principal, designation=access.COORDINATION)
+    filters = source_register.RegisterFilters(
+        state=state if state in source_register.STATE_WORDS else "",
+        family=family.strip(),
+        received_from=_register_day(received_from, time.min),
+        received_to=_register_day(received_to, time.max),
+    )
+    register = source_register.read_source_register(
+        session, project_id=project.id, filters=filters, before=before
+    )
     return TEMPLATES.TemplateResponse(
         request,
         "source_uploads.html",
         {
             "project": project,
-            "uploads": list_confirmed_uploads(session, project.id),
-            "status_labels": _UPLOAD_STATUS_LABELS,
+            "register": register,
+            # The filters this page is answering, as a query string, so the
+            # older-deliveries link carries them. The path is written in the
+            # template beside it: a link whose whole target is an expression
+            # is one `tests/test_manifest_page_links.py` cannot read.
+            "register_query": urlencode(
+                {
+                    "state": filters.state,
+                    "family": filters.family,
+                    "from": _register_day_value(filters.received_from),
+                    "to": _register_day_value(filters.received_to),
+                }
+            ),
         },
     )
 
 
-_UPLOAD_STATUS_LABELS = {
-    "pending": "Pending — waiting for the processing pass",
-    "processed": "Processed",
-    "unreadable": "Unreadable — the reader could not use it",
-    "parse_failed": "Failed to parse — the file could not be read",
-    "processing_failed": "Processing failed — a later pass will retry",
-    "held_unmodeled": "Held — its content is deliberately not read",
-}
+def _register_day(value: str, at: time) -> datetime | None:
+    """One date bound on the register, or nothing at all.
+
+    A value that is not a date is dropped rather than echoed back into the
+    control, because a filter the reading did not apply must not appear on
+    screen as one it did.
+    """
+    try:
+        return datetime.combine(date.fromisoformat(value.strip()), at, timezone.utc)
+    except ValueError:
+        return None
+
+
+def _register_day_value(bound: datetime | None) -> str:
+    """The date a bound was read from, in the form the control submits."""
+    return "" if bound is None else bound.date().isoformat()
 
 
 # --- The exact source behind one citation (#831) ---------------------------

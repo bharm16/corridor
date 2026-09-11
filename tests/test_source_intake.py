@@ -30,7 +30,6 @@ from corridor.due_work import (
     enqueue_due_work,
     run_due_work_once,
 )
-from corridor.extraction_runs import record_extraction_run
 from corridor.intake_hardening import HostileContentRefused, inspect_byte_gate
 from corridor.models import (
     AuditLog,
@@ -51,7 +50,6 @@ from corridor.source_intake import (
     IntakeConflict,
     IntakeRefused,
     confirm_intake,
-    list_confirmed_uploads,
     preview_intake,
     validate_and_stage,
 )
@@ -443,67 +441,6 @@ def test_confirm_refuses_a_cross_project_binding(session, store):
         )
         == 0
     )
-
-
-# --- The uploads list reports honest, derived processing status
-
-
-def _confirm(session, project, doc_type="matrix", marker="Owner"):
-    staged = validate_and_stage(_matrix_pdf(marker), f"{marker}.pdf")
-    preview = preview_intake(session, project, staged, doc_type)
-    return confirm_intake(
-        session,
-        project=project,
-        sha256=preview.sha256,
-        filename=preview.filename,
-        doc_type=preview.doc_type,
-        binding_fingerprint=preview.binding_fingerprint,
-        principal=PRINCIPAL,
-    )
-
-
-def test_uploads_list_reports_pending_processed_and_failed(session, project, store):
-    pending = _confirm(session, project, marker="Pending")
-    processed = _confirm(session, project, marker="Processed")
-    failed = _confirm(session, project, marker="Failed")
-
-    record_extraction_run(
-        session,
-        session.get(Document, processed.document_id),
-        prompt_version=PROMPT_VERSION,
-        candidate_count=0,
-        page_errors=0,
-        outcome="completed",
-        model=MODEL,
-        schema_version=SCHEMA_VERSION,
-        allow_unsealed_legacy=True,
-    )
-    session.get(Document, failed.document_id).parse_status = "failed"
-    session.flush()
-
-    rows = {row.document_id: row for row in list_confirmed_uploads(session, project.id)}
-    assert rows[pending.document_id].processing_status == "pending"
-    assert rows[processed.document_id].processing_status == "processed"
-    assert rows[failed.document_id].processing_status == "parse_failed"
-    assert rows[pending.document_id].confirmed_by == PRINCIPAL.subject
-
-
-def test_uploads_list_is_scoped_to_confirmed_uploads(session, project, store):
-    # A document registered another way (no confirmation receipt) is not listed.
-    other = Document(
-        project_id=project.id,
-        sha256=hashlib.sha256(b"corpus-fetched").hexdigest(),
-        filename="from-corpus.pdf",
-        doc_type="matrix",
-        parse_status="parsed",
-        pages=1,
-    )
-    session.add(other)
-    session.flush()
-    confirmed = _confirm(session, project, marker="Uploaded")
-
-    listed = {row.document_id for row in list_confirmed_uploads(session, project.id)}
-    assert listed == {confirmed.document_id}
 
 
 # --- Durable handoff: the standing pass processes a committed upload; a

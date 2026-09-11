@@ -81,7 +81,6 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 from uuid import uuid4
@@ -106,10 +105,7 @@ from corridor.intake_hardening import (
 )
 from corridor.models import (
     DOC_TYPES,
-    AuditLog,
-    DocumentQuarantine,
     Document,
-    ExtractionRun,
     Project,
     SourceDelivery,
 )
@@ -294,21 +290,6 @@ class IntakeConfirmation:
     # The delivery this person admitted to processing, where the confirmation
     # named one; a source that arrived through no transport names none (#823).
     delivery_confirmation_id: int | None = None
-
-
-@dataclass(frozen=True)
-class UploadedSourceRow:
-    """One confirmed upload with its source facts and derived processing status."""
-
-    document_id: int
-    filename: str
-    doc_type: str
-    sha256: str
-    parse_status: str
-    pages: int | None
-    processing_status: str
-    confirmed_by: str
-    confirmed_at: datetime
 
 
 def validate_and_stage(
@@ -783,99 +764,6 @@ def confirm_intake(
         audit_id=entry.id,
         delivery_confirmation_id=None if confirmation is None else confirmation.id,
     )
-
-
-def list_confirmed_uploads(
-    session: Session, project_id: int
-) -> list[UploadedSourceRow]:
-    """Every document confirmed through product intake, with processing status.
-
-    Scoped to intake by the append-only confirmation receipt rather than by
-    guessing provenance from a null source url. Each row's ``processing_status``
-    is derived, not stored: a failed parse reads as failed, an unreadable
-    extraction as unreadable, and a document the standing pass has not reached yet
-    as pending — none is ever relabelled as success.
-    """
-
-    confirmations = session.scalars(
-        select(AuditLog)
-        .join(Document, Document.id == AuditLog.entity_id)
-        .where(
-            AuditLog.action == audit.CONFIRM_SOURCE_INTAKE,
-            AuditLog.entity_type == audit.DOCUMENT,
-            Document.project_id == project_id,
-        )
-        .order_by(AuditLog.ts, AuditLog.id)
-    ).all()
-
-    first_confirm: dict[int, AuditLog] = {}
-    for entry in confirmations:
-        first_confirm.setdefault(entry.entity_id, entry)
-    if not first_confirm:
-        return []
-
-    documents = {
-        document.id: document
-        for document in session.scalars(
-            select(Document).where(Document.id.in_(first_confirm.keys()))
-        ).all()
-    }
-    quarantined = set(
-        session.scalars(
-            select(DocumentQuarantine.document_id).where(
-                DocumentQuarantine.document_id.in_(first_confirm.keys())
-            )
-        ).all()
-    )
-
-    rows: list[UploadedSourceRow] = []
-    for document_id, entry in first_confirm.items():
-        document = documents.get(document_id)
-        if document is None:
-            continue
-        rows.append(
-            UploadedSourceRow(
-                document_id=document.id,
-                filename=document.filename,
-                doc_type=document.doc_type,
-                sha256=document.sha256,
-                parse_status=document.parse_status,
-                pages=document.pages,
-                processing_status=_processing_status(
-                    session, document, document_id in quarantined
-                ),
-                confirmed_by=entry.human_principal or entry.actor,
-                confirmed_at=entry.ts,
-            )
-        )
-    rows.sort(key=lambda row: row.confirmed_at, reverse=True)
-    return rows
-
-
-def _processing_status(
-    session: Session, document: Document, quarantined: bool
-) -> str:
-    """Derive the honest processing state of one confirmed document."""
-
-    if document.parse_status == "failed":
-        return "parse_failed"
-    if document.parse_status != "parsed":
-        return "pending"
-    if quarantined:
-        return "held_unmodeled"
-    outcome = session.scalar(
-        select(ExtractionRun.outcome)
-        .where(ExtractionRun.document_id == document.id)
-        .order_by(ExtractionRun.id.desc())
-        .limit(1)
-    )
-    if outcome is None:
-        return "pending"
-    if outcome == "completed":
-        return "processed"
-    if outcome in ("unreadable", "no_matrix"):
-        return "unreadable"
-    return "processing_failed"
 
 
 def _binding_fingerprint(

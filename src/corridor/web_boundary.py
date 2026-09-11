@@ -407,7 +407,7 @@ PILOT_ROUTES: dict[tuple[str, str], PilotRoute] = {
     ),
     # --- #824 The deterministic intake path ------------------------------
     #
-    # A coordinator opens Source history from the Work or Record page, hands
+    # A coordinator opens the source register from the Work or Record page, hands
     # Corridor one file, reads what registering it would record, confirms it,
     # and follows a Review row back to the source it came from. Every one of
     # those routes existed and none was listed, so an enforcing deployment
@@ -481,20 +481,33 @@ PILOT_ROUTES: dict[tuple[str, str], PilotRoute] = {
     ),
     ("GET", "/projects/{slug}/sources"): PilotRoute(
         why=(
-            "#349 the source register: every document confirmed through "
-            "product intake and its honest processing outcome. "
-            "Authorization: the same coordination designation. The outcome "
-            "is derived from the extraction runs and the quarantine rather "
-            "than stored, which is why both are read here"
+            "#349, #841 the source register: every delivery this project has "
+            "received, whatever transport carried it, and what became of it. "
+            "Authorization: the same coordination designation. Its spine is "
+            "the ADR-0089 ledger and the admissions recorded against it, so a "
+            "refused or unconfirmed delivery is a row rather than an absence; "
+            "the processing state is derived from the extraction runs and the "
+            "quarantine rather than stored; and what a reading produced is "
+            "counted from the Source Facts and the Proposed Deltas its "
+            "document's delta groups carry, with the open ones read through "
+            "the same supersession and disposition partition the Review "
+            "screen reads. It no longer reads `audit_log`: the confirmation "
+            "it used to scope itself by is now the delivery's own"
         ),
         relations=frozenset(
             {
-                "audit_log",
+                "delta_dispositions",
+                "delta_groups",
+                "delta_supersessions",
                 "document_quarantines",
                 "documents",
                 "extraction_runs",
+                "facts",
                 "project_roster_entries",
                 "projects",
+                "proposed_deltas",
+                "source_deliveries",
+                "source_delivery_confirmations",
             }
         ),
     ),
