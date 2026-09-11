@@ -24,6 +24,7 @@ Nothing here reads a clock.  The cutoff is declared by the test.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import html
 import re
 from urllib.parse import quote
 from uuid import uuid4
@@ -51,6 +52,7 @@ from corridor.project_workflow import (
     FOLLOW_UP,
     ISSUE,
     NO_OUTPUT_TEMPLATE,
+    OPERATIONS_OWNER,
     REVIEW,
     SECTION_ORDER,
     UNREAD_SOURCE,
@@ -454,6 +456,48 @@ def test_coverage_and_rendering_problems_are_issue_readiness_not_decisions(
     body = client.get(f"/work/{project.slug}").text
     readiness_at = body.index("The issue to approve for sharing")
     assert body.index("permit-2026-09.pdf") > readiness_at
+
+
+def test_every_readiness_problem_names_who_puts_it_right_and_what_happens_next(
+    session, project, client
+):
+    """A blocker that says only what is wrong is half a sentence (#840).
+
+    All three of these are operations or configuration facts, so none of them
+    is something the person reading the page can put right; saying so, and
+    naming who does, is the difference between a screen that explains a dead
+    end and one that gets somebody out of it. The owner is not a designation
+    claim — nothing gates any of this on a designation today — it is who does
+    the work.
+    """
+
+    adopted = Adopted(session, project).accepted(CONFLICT)
+    unread = adopted.rendition("permit-2026-09.pdf")
+    unread.document.parse_status = "failed"
+    session.flush()
+    adopted.adopt()
+
+    problems = read_project_workflow(
+        session, project_id=project.id, as_of=NOW
+    ).readiness
+
+    assert problems
+    for problem in problems:
+        assert problem.owner, problem.code
+        assert problem.next_action, problem.code
+    # All three are Corridor's own work rather than the reader's, and the page
+    # says which of the two it is rather than leaving it to be guessed.
+    assert {problem.owner for problem in problems} == {OPERATIONS_OWNER}
+
+    # Unescaped, because an apostrophe is `&#39;` in the served bytes and a
+    # test that spelled the entity would be testing Jinja rather than the
+    # words a coordinator reads.
+    body = html.unescape(client.get(f"/work/{project.slug}").text)
+    assert "Who puts it right" in body
+    assert "What happens next" in body
+    for problem in problems:
+        assert problem.owner in body
+        assert problem.next_action in body
 
 
 # --- exactly once, and nothing recorded ------------------------------------

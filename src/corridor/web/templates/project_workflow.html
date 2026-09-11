@@ -310,13 +310,28 @@
       {%- endif %}
 
     {%- else %}
+      {#
+        What is wrong, who puts it right, and what they do (#840).
+
+        The owner and the next action come off the problem itself, because
+        `issue_readiness` is what knows the code; this table prints three
+        columns of one derivation and composes none of them. A blocker that
+        said only what was wrong is what the customer-journey audit found, and
+        a person reading one had nowhere to go from it.
+      #}
       {%- if workflow.readiness %}
       <h3>What must be put right first</h3>
-      <ul>
+      {% call ui.record_table(
+           "Everything standing between this project and an honest issue, and who puts each right",
+           ["What is wrong", "Who puts it right", "What happens next"]) %}
         {%- for problem in workflow.readiness %}
-        <li>{{ ui.state(state_label("attention", problem.sentence)) }}</li>
+        <tr>
+          <th scope="row">{{ ui.state(state_label("attention", problem.sentence)) }}</th>
+          <td>{{ problem.owner }}</td>
+          <td>{{ problem.next_action }}</td>
+        </tr>
         {%- endfor %}
-      </ul>
+      {% endcall %}
       <p class="quiet">
         These are problems with reading sources and producing the customer's
         own files. None of them is a decision about the project record, so none
@@ -345,6 +360,22 @@
         {%- if issue.prepared or issue.preparing %}{{ ui.state(issue.state_label) }} {% endif -%}
         {{ issue.summary }}
       </p>
+
+      {#
+        While a worker holds the request (#840).
+
+        There is no script here and there will not be one: an attempt is
+        recorded when it finishes, so nothing can push a completion to this
+        page. What the section can honestly offer is when the request was made
+        and who made it, and a way to read the records again -- which is also
+        how a person tells a preparation that started a minute ago from one
+        that has been waiting since yesterday.
+      #}
+      {%- if issue.preparing %}
+      {{ ui.fact_list(issue.preparation_facts) }}
+      <p class="quiet">{{ issue.check_again_rule }}</p>
+      <p><a href="/work/{{ project.slug }}">{{ issue.check_again_action }}</a></p>
+      {%- endif %}
 
       {%- if issue.prepared %}
       {{ ui.fact_list(issue.facts) }}
@@ -420,16 +451,19 @@
 
       {%- if issue.blockers %}
       <h4>Why this cannot be approved as it stands</h4>
-      <ul>
-        {%- for sentence in issue.blockers %}
-        <li>{{ ui.state(state_label("attention", sentence)) }}</li>
+      {% call ui.record_table(
+           "Everything standing between this prepared candidate and the customer",
+           ["What stands in the way", "Who puts it right", "What happens next"]) %}
+        {%- for reason in issue.blocking_reasons %}
+        <tr>
+          <th scope="row">{{ ui.state(state_label("attention", reason.sentence)) }}</th>
+          <td>{{ reason.owner }}</td>
+          <td>{{ reason.next_action }}</td>
+        </tr>
         {%- endfor %}
-      </ul>
+      {% endcall %}
       <p>{{ issue.fresh_preparation }}</p>
-      <p class="quiet">
-        Preparing that candidate is not something this page does, and nothing
-        here approves this one.
-      </p>
+      <p class="quiet">Nothing here approves this one.</p>
       {%- endif %}
 
       {%- if issue.authorized %}
@@ -531,6 +565,7 @@
       <h4>Sources for this issue</h4>
       <p class="quiet">{{ issue.coverage_rule }}</p>
       {{ ui.fact_list(issue.coverage_facts) }}
+      <p class="quiet">{{ issue.cutoff_rule }}</p>
       {% call ui.record_table(
            "What Corridor's records say about each source for this issue",
            ["Source", "State", "What the records say"]) %}
@@ -550,7 +585,16 @@
       {% endcall %}
       {%- endif %}
 
+      {#
+        Refresh coverage (#840). A link and not a form: reading the sources
+        again at the current instant is a read, it records nothing, and the
+        section's one act is still the confirmation below it. The cutoff it
+        moves to is whatever the next reading is taken at, which is why the
+        instant is printed above rather than implied.
+      #}
       {%- if issue.may_prepare %}
+      <p class="quiet">{{ issue.refresh_rule }}</p>
+      <p><a href="/work/{{ project.slug }}">{{ issue.refresh_action }}</a></p>
       <form method="post" action="/work/{{ project.slug }}/issue/prepare">
         {{ csrf_field() }}
         <input type="hidden" name="issue_profile_id" value="{{ issue.coverage.profile_id }}">

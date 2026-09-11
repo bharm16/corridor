@@ -90,6 +90,33 @@ primary states are untouched: a project being prepared asks nothing, and a
 preparation that produced nothing joins the current-issue technical blockers
 the project already shows (``project_workflow.issue_readiness``).
 
+**The cutoff is shown, and it is the one the form submits** (#840). It used to
+be a hidden render-time value that nothing displayed: the screen printed a date
+while the form carried an instant, so a coordinator confirmed coverage "as at"
+something they had never been shown. ``cutoff_words`` prints the exact
+time-zone-aware instant out of ``coverage.cutoff`` -- the same value the hidden
+field holds -- and **Refresh coverage** is the only thing that moves it. There
+is no earlier-cutoff control and this is not an omission: the backend keeps the
+instant a source spoke at, the instant the record accepted it and the instant an
+issue was prepared apart, and one date box would read as all three. Choosing an
+earlier cutoff waits until those semantics are proved.
+
+**A preparation in flight can be looked at again.** There is no script on this
+page and ``release_preparation`` records an attempt only when it finishes, so
+nothing here can announce a completion. What it can do is say when the request
+was made and by whom, and offer to read the records again -- which is the whole
+of what the honest "a dead worker and a slow one read alike" gap leaves a person
+able to do.
+
+**Every blocking reason names who resolves it and what happens next.** The
+sentences stay #529's and ``issue_readiness``'s own; what is added is the half
+that was missing. ``blocking_reasons`` pairs each un-offerable-candidate reason
+with the one resolution ADR-0086 leaves — a freshly prepared candidate, asked
+for on this page — and the readiness problems carry theirs from the derivation
+that knows their code. Neither is a designation claim: nothing in the write
+path gates confirming coverage on one today, and this section does not state
+rules the database does not enforce.
+
 **No clock.** ``as_of`` is the same declared reporting cutoff the rest of the
 week is read at, and the release instant is the caller's. Nothing here reads
 the day.
@@ -127,6 +154,7 @@ from corridor.models import (
     ReleasePackage,
 )
 from corridor.presentation import field_label
+from corridor.project_workflow import COORDINATOR_OWNER
 from corridor.release_authorization import (
     SealedArtifact,
     candidate_set,
@@ -187,6 +215,40 @@ PREPARING_RULE = (
     "nothing and says why."
 )
 
+# The one thing a person can do while a worker holds the request: look again.
+# There is no script on this page and `release_preparation` records an attempt
+# only when it finishes, so nothing can announce a completion here; reading the
+# records again is what tells a coordinator where their issue got to (#840).
+CHECK_AGAIN_ACTION = "Check whether this issue is ready"
+CHECK_AGAIN_RULE = (
+    "This page does not update itself. Checking again re-reads Corridor's own "
+    "records and shows whatever they say then: still preparing, a prepared "
+    "issue, or an attempt that produced nothing and why."
+)
+
+# The cutoff, said beside it. The audit found it was a hidden render-time
+# value that nothing displayed, so a coordinator confirmed coverage "as at"
+# an instant they were never shown (#840).
+CUTOFF_RULE = (
+    "This issue is read at one reporting cutoff, and it is the exact instant "
+    "shown above with the time zone it is stated in. It was fixed when this "
+    "page was read, and confirming sends that same instant back, so an issue "
+    "can never be prepared at a cutoff you were not shown. There is no way to "
+    "pick an earlier one here on purpose: when a source said something, when "
+    "the record accepted it, and when an issue was prepared are three "
+    "different instants, and a single date box would read as all three."
+)
+
+# The maintainer's own wording for the control that moves the cutoff, which is
+# the only way it moves. It re-reads; it records nothing.
+REFRESH_ACTION = "Refresh coverage"
+REFRESH_RULE = (
+    "Reading the sources again at the current instant. That moves the cutoff "
+    "to now and produces a fresh reading, with its own fingerprint, for you to "
+    "confirm. It records nothing by itself, and it changes nothing about what "
+    "has already been prepared or approved."
+)
+
 # The one recovery every un-offerable candidate leads to, said once. ADR-0086
 # makes the blocking coverage and decision state part of the candidate's own
 # identity, so there is nothing to press that could clear it in place.
@@ -196,6 +258,20 @@ FRESH_PREPARATION = (
     "freshly prepared candidate read at the current cutoff. It stays listed "
     "here as it was prepared, so what was proposed to the customer and refused "
     "is not lost."
+)
+
+# The next action every un-offerable candidate leads to, in the words of the
+# one control that performs it. Spelled from ``PREPARE_ACTION`` rather than
+# beside it, so the sentence and the button cannot come to name the act
+# differently (ADR-0048).
+#
+# It names the act and never where the control is. A candidate carrying
+# blockers is still read while a *fresh* preparation is in flight, and the
+# section deliberately offers nothing at all in that state, so "below" would
+# point at a control that is not there.
+FRESH_PREPARATION_NEXT = (
+    f"{PREPARE_ACTION}. The candidate that produces is read at the current "
+    "cutoff, and it is the one that can be approved."
 )
 
 # Said beside the control, because the rule the database enforces is not the
@@ -282,6 +358,21 @@ class SupersededCandidate:
     accepted_revision_id: int
     outcome: str
     artifacts: tuple[ArtifactRow, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class BlockingReason:
+    """One reason an issue cannot proceed, with who resolves it and how.
+
+    The sentence is the derivation's own and is never composed here. What is
+    added beside it is the half the customer-journey audit found missing: a
+    blocker that explains why an issue cannot go out, and leaves the person
+    reading it with nowhere to go, is not a finished sentence (#840).
+    """
+
+    sentence: str
+    owner: str
+    next_action: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -379,7 +470,7 @@ class IssueView:
             return ()
         boundary = self.coverage.through_source_delivery_id
         return (
-            ("Sources included through", self.coverage.cutoff.date().isoformat()),
+            ("Sources included through", cutoff_words(self.coverage.cutoff)),
             (
                 "Deliveries included up to and including",
                 "none — no source has been delivered to this project yet"
@@ -387,6 +478,50 @@ class IssueView:
                 else boundary,
             ),
             ("This exact reading", self.coverage.reading_digest),
+        )
+
+    @property
+    def preparation_facts(self) -> tuple[tuple[str, Any], ...]:
+        """What is known about the request a worker is holding.
+
+        ``release_preparation`` records an attempt only when it finishes and
+        never claims one is running, so *preparing* is honestly the absence of
+        a finished attempt, and a request whose worker died reads exactly like
+        one still going. Saying when it was asked for, and by whom, is what
+        lets a person tell those apart by elapsed time -- which is the only
+        judgement this state asks of anybody, and the reason the check-again
+        control beside it is worth pressing twice.
+        """
+
+        if self.preparation is None or self.preparation.requested_at is None:
+            return ()
+        return (
+            ("Asked for at", self.preparation.requested_at.isoformat()),
+            ("Asked for by", self.preparation.requested_by_principal),
+        )
+
+    @property
+    def blocking_reasons(self) -> tuple[BlockingReason, ...]:
+        """Why this candidate cannot be approved, and who puts each right.
+
+        Every reason ``authorization_blockers`` gives is the same kind of
+        reason -- the blocked coverage or decision state it was prepared
+        against, or a bound input that has moved since -- and ADR-0086 makes
+        all of them part of the candidate's own identity. So they share one
+        resolution, which is the one ``FRESH_PREPARATION`` already names: a
+        freshly prepared candidate, asked for on this page. It names the act
+        and not where the control is, because a candidate with blockers on it
+        can be read while a *fresh* preparation is already in flight, and the
+        section offers nothing at all in that state.
+
+        The sentences are #529's own. Nothing here rewrites one, drops one, or
+        adds a reason of its own: pairing each with who resolves it is not a
+        second opinion about whether it blocks.
+        """
+
+        return tuple(
+            BlockingReason(sentence, COORDINATOR_OWNER, FRESH_PREPARATION_NEXT)
+            for sentence in self.blockers
         )
 
     @property
@@ -488,6 +623,11 @@ class IssueView:
     designation_rule = DESIGNATION_RULE
     coverage_rule = COVERAGE_RULE
     prepare_action = PREPARE_ACTION
+    cutoff_rule = CUTOFF_RULE
+    refresh_action = REFRESH_ACTION
+    refresh_rule = REFRESH_RULE
+    check_again_action = CHECK_AGAIN_ACTION
+    check_again_rule = CHECK_AGAIN_RULE
 
 
 def issue_view(session: Session, *, project_id: int, as_of: datetime) -> IssueView:
@@ -700,6 +840,25 @@ def _artifact_rows(artifacts: tuple[SealedArtifact, ...]) -> tuple[ArtifactRow, 
         )
         for one in artifacts
     )
+
+
+def cutoff_words(cutoff: datetime) -> str:
+    """One reporting cutoff as this section states it: the instant and zone.
+
+    A date is not the cutoff. The confirmation carries the exact time-zone-aware
+    instant the reading was derived at -- ``coverage.cutoff``, the same value
+    the form's hidden field holds -- and a screen that printed only the day
+    would show a coordinator something coarser than what their submission
+    attests to. The audit found the stronger version of that: the cutoff was a
+    hidden render-time value with nothing displaying it at all (#840).
+
+    The zone is the one the instant itself carries, because that is the only
+    zone there is: every instant on this path is declared by its caller and the
+    deployment declares UTC. Naming a project reporting zone here would invent
+    configuration nobody has modelled.
+    """
+
+    return f"{cutoff.isoformat()} ({cutoff.tzname()})"
 
 
 def artifact_words(artifact_type: str) -> str:
