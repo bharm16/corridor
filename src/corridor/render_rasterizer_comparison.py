@@ -14,6 +14,25 @@ It is an experiment, not a test: it reads the corpus content store, renders
 hundreds of pages twice, and takes minutes (ADR-0008). CI runs the bounded
 fixture tests in `tests/test_render_profiles.py` instead. Nothing it reports
 selects an engine for production; #447 owns that act.
+
+## It is spent, and retained as the provenance of its receipt
+
+It ran once, on 2026-09-08, over 192 corpus documents and 576 page-profile
+comparisons under PyMuPDF 1.28.2 and PDFium 153.0.7999.0. That run is
+`artifacts/render-rasterizer-comparison/735-corpus-render-comparison.json`,
+explained by `receipt.md` beside it, and this module is kept because it is
+what those numbers mean: the tolerances, the measures and the classification
+above are the receipt's own definitions, and rewriting them would leave the
+retained numbers describing nothing.
+
+It cannot run again. #741 deleted the MuPDF adapter with the engine, so
+`render_page_derivatives` serves only PDFium and there is no second engine to
+compare against; `main` says that once rather than rendering the corpus into a
+receipt in which every document failed. Its `make` target is retired for the
+same reason, which leaves this module retained but unwired, the footing
+`corridor_pdf_reader/SOURCE.md` already describes for the Textract rung's own
+spent drivers. Re-measuring would need a new rasterizer, and that is a new
+comparison with its own declared tolerances.
 """
 
 from __future__ import annotations
@@ -25,6 +44,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 import sys
 import tempfile
+from typing import NoReturn
 
 from PIL import Image, ImageChops, ImageFilter
 
@@ -39,6 +59,17 @@ from corridor.render_profiles import (
 )
 
 PROFILES = ("review", "ocr_layout", "table_cv")
+
+RECEIPT = (
+    "artifacts/render-rasterizer-comparison/735-corpus-render-comparison.json"
+)
+
+SPENT = (
+    f"this comparison is spent: it renders each page under {LEGACY_RASTERIZER} "
+    f"and {REPLACEMENT_RASTERIZER}, and #741 removed the {LEGACY_RASTERIZER} "
+    f"adapter with the engine. Its one run is retained at {RECEIPT}, explained "
+    "by the receipt.md beside it"
+)
 
 # Ink is dark on the unprocessed and OCR profiles and bright on the table
 # profile, whose preprocessing inverts and thresholds the page.
@@ -391,7 +422,17 @@ def summarize(documents: list[dict]) -> dict:
     }
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None) -> NoReturn:
+    """Refuse the spent comparison, having accepted the arguments it took.
+
+    The arguments stay because the retained receipt cites their defaults -
+    page 1, every locked document, at most 20 MB - so the command that
+    produced it still reads back here. What is gone is the call: `run` would
+    open the content store and ask for the legacy engine once per document,
+    and the seam would refuse every one of them, leaving minutes of work and a
+    receipt in the retained receipt's own schema that measured nothing.
+    """
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--corpus-root", type=Path, default=Path("corpus"))
@@ -399,17 +440,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--limit", type=int, default=0, help="0 compares every document")
     parser.add_argument("--max-bytes", type=int, default=20_000_000)
     parser.add_argument("--profile", action="append", dest="profiles")
-    arguments = parser.parse_args(argv)
-    receipt = run(
-        output=arguments.output,
-        corpus_root=arguments.corpus_root,
-        page_number=arguments.page,
-        limit=arguments.limit,
-        max_bytes=arguments.max_bytes,
-        profiles=tuple(arguments.profiles or PROFILES),
-    )
-    print(json.dumps(receipt["summary"], indent=2, sort_keys=True))
-    return 0
+    parser.parse_args(argv)
+    raise RuntimeError(SPENT)
 
 
 if __name__ == "__main__":
