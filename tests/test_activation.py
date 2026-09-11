@@ -7,10 +7,10 @@ import json
 import pytest
 
 from corridor.web_boundary import PILOT_ROUTES
-from harness_support import as_role
 
 from corridor.activation import (ActivationConfiguration, ActivationRefused, BASE_GATES,
     EvidenceArtifact, activate, processing_authorized, route_manifest_digest)
+from harness_support import as_role
 
 NOW = datetime(2026, 9, 9, tzinfo=timezone.utc)
 

@@ -36,8 +36,8 @@ from corridor.proposed_deltas import (
 )
 from corridor import push_intake
 from corridor.db_roles import RECORD_DECISION_ROLE
-from harness_support import as_role
 from corridor.source_append import SegmentValues, append_fact, append_source_segments
+from harness_support import as_role
 
 
 DECISION_ROLE = RECORD_DECISION_ROLE
