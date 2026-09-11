@@ -3,7 +3,15 @@
 The fixture software for #564 and #535 does not authorize customer data or
 activate a real environment. The signed partner authorization, selected source
 configuration, deployed capability checks and operational disposition rehearsal
-remain live evidence requirements on those issues.
+remain live evidence requirements on those issues. So does the retained proof
+that a limited onboarding authorization for this customer, environment and
+project was valid when the baseline adoption committed: under
+[ADR-0099](../adr/0099-onboarding-before-activation-runs-under-a-limited-authorization-not-under-relaxed-activation-checks.md)
+the baseline that #535 requires is adopted under that authorization, never by
+relaxing the activation checks while the project is unadopted. Activation does
+not ask for an unexpired authorization; it asks for that proof, alongside
+current customer authorization and the ordinary activation prerequisites. #827
+builds the authorization and the proof; neither exists yet.
 
 ## Shadow capture
 
