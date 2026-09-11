@@ -4,6 +4,9 @@ A Revision Comparison is a receipt, not a live worklist (ADR-0018).  It pins
 two declared-successor documents, their exact completed Extraction Runs, the
 matcher version and full configuration, then snapshots every Candidate input
 and persists the resulting findings.  Nothing here writes to the Ledger.
+Those last four -- the two exact runs, the matcher version, the matcher
+configuration -- are the execution's identity, and the database now holds one
+receipt per identity rather than trusting whoever writes one to look first.
 
 The matcher deliberately does not call ``merge.rank_matches``.  Merge is an
 asymmetric Candidate-to-Dependency suggestion contract; revision comparison
@@ -38,6 +41,7 @@ from math import inf, isfinite
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from corridor.extraction_runs import is_completed_run
@@ -48,6 +52,7 @@ from corridor.models import (
     Document,
     ExtractionRun,
     is_placeholder_party,
+    REVISION_COMPARISON_EXECUTION_IDENTITY,
     RevisionComparisonFinding,
     RevisionComparisonRun,
 )
@@ -200,6 +205,16 @@ def create_revision_comparison(
     is not evidence that predecessor rows were dropped. An identical execution
     returns its retained receipt only after integrity readback; a deliberately
     changed matcher identity remains distinct append-only history.
+
+    Two guards stand behind that, and they protect different things.  The
+    project lock serializes this project's writers, so the declared document
+    relationship and the exact inputs are revalidated against one committed
+    ordering instead of a snapshot that may already be stale.  The
+    execution-identity constraint makes a second receipt for one execution
+    unrepresentable, by any writer and any path, including one that never
+    takes the lock; a writer that loses that insert rolls back its own
+    attempt alone, re-reads the committed winner, and converges on it only
+    when the readback proves it is the same execution.
     """
 
     if not isinstance(matcher_version, str) or not matcher_version.strip():
@@ -300,70 +315,133 @@ def create_revision_comparison(
             matcher_version=effective_matcher_version,
         )
 
-        retained = _read_identical_execution(
-            session,
-            predecessor_extraction_run_id=predecessor_run.id,
-            successor_extraction_run_id=successor_run.id,
-            matcher_version=effective_matcher_version,
-            matcher_config=config,
-            predecessor_inputs=locked_predecessor_inputs,
-            successor_inputs=locked_successor_inputs,
-            require_unambiguous_pair_history=require_unambiguous_pair_history,
-        )
+        def retained_execution() -> RevisionComparisonReadback | None:
+            """This execution's committed receipt, integrity-checked, if any."""
+
+            return _read_identical_execution(
+                session,
+                predecessor_extraction_run_id=predecessor_run.id,
+                successor_extraction_run_id=successor_run.id,
+                matcher_version=effective_matcher_version,
+                matcher_config=config,
+                predecessor_inputs=locked_predecessor_inputs,
+                successor_inputs=locked_successor_inputs,
+                require_unambiguous_pair_history=require_unambiguous_pair_history,
+            )
+
+        retained = retained_execution()
         if retained is not None:
             return retained.comparison
 
-        content = _receipt_content(
-            project_id=predecessor_document.project_id,
-            predecessor_document_id=predecessor_document.id,
-            successor_document_id=successor_document.id,
-            predecessor_run=predecessor_run,
-            successor_run=successor_run,
-            matcher_version=effective_matcher_version,
-            matcher_config=config,
-            predecessor_inputs=predecessor_inputs,
-            successor_inputs=successor_inputs,
-            findings=[finding.content() for finding in findings],
-        )
-        comparison = RevisionComparisonRun(
-            project_id=predecessor_document.project_id,
-            predecessor_document_id=predecessor_document.id,
-            successor_document_id=successor_document.id,
-            predecessor_extraction_run_id=predecessor_run.id,
-            successor_extraction_run_id=successor_run.id,
-            predecessor_schema_version=predecessor_run.schema_version,
-            successor_schema_version=successor_run.schema_version,
-            predecessor_prompt_version=predecessor_run.prompt_version,
-            successor_prompt_version=successor_run.prompt_version,
-            predecessor_model=predecessor_run.model,
-            successor_model=successor_run.model,
-            matcher_version=effective_matcher_version,
-            matcher_config=config,
-            predecessor_inputs_json=predecessor_inputs,
-            successor_inputs_json=successor_inputs,
-            finding_count=len(findings),
-            content_sha256=_content_sha256(content),
-        )
-        session.add(comparison)
-        session.flush([comparison])
-        for ordinal, finding in enumerate(findings, start=1):
-            session.add(
-                RevisionComparisonFinding(
-                    revision_comparison_run_id=comparison.id,
-                    ordinal=ordinal,
-                    state=finding.state,
-                    predecessor_candidate_ids=list(finding.predecessor_ids),
-                    successor_candidate_ids=list(finding.successor_ids),
-                    match_score=finding.match_score,
-                    field_changes=list(finding.field_changes),
-                    matcher_detail=finding.matcher_detail,
+        try:
+            with session.begin_nested():
+                return _write_receipt(
+                    session,
+                    predecessor_document=predecessor_document,
+                    successor_document=successor_document,
+                    predecessor_run=predecessor_run,
+                    successor_run=successor_run,
+                    matcher_version=effective_matcher_version,
+                    matcher_config=config,
+                    predecessor_inputs=predecessor_inputs,
+                    successor_inputs=successor_inputs,
+                    findings=findings,
                 )
-            )
-        session.flush()
-        comparison.sealed_at = datetime.now(timezone.utc)
-        session.flush([comparison])
-        return comparison
+        except IntegrityError as conflict:
+            # Only the execution-identity violation means another transaction
+            # committed this exact execution first.  Every other integrity
+            # failure -- a vanished run, a failed check, the sealing triggers
+            # -- would be read here as a harmless duplicate and answered with
+            # somebody else's receipt.
+            if not _is_execution_identity_conflict(conflict):
+                raise
+            converged = retained_execution()
+            if converged is None:
+                raise
+            return converged.comparison
 
+
+def _is_execution_identity_conflict(error: IntegrityError) -> bool:
+    """True only for the named execution-identity unique violation."""
+
+    diagnostic = getattr(getattr(error, "orig", None), "diag", None)
+    return (
+        getattr(diagnostic, "constraint_name", None)
+        == REVISION_COMPARISON_EXECUTION_IDENTITY
+    )
+
+
+def _write_receipt(
+    session: Session,
+    *,
+    predecessor_document: Document,
+    successor_document: Document,
+    predecessor_run: ExtractionRun,
+    successor_run: ExtractionRun,
+    matcher_version: str,
+    matcher_config: dict[str, Any],
+    predecessor_inputs: list[dict[str, Any]],
+    successor_inputs: list[dict[str, Any]],
+    findings: list[_FindingDraft],
+) -> RevisionComparisonRun:
+    """Write one sealed receipt and its complete finding set, or nothing.
+
+    It runs inside its own savepoint so a lost race for the execution
+    identity rolls back this attempt alone -- no half-written finding set,
+    and nothing undone that the surrounding transaction still needs, the
+    project lock included.
+    """
+
+    content = _receipt_content(
+        project_id=predecessor_document.project_id,
+        predecessor_document_id=predecessor_document.id,
+        successor_document_id=successor_document.id,
+        predecessor_run=predecessor_run,
+        successor_run=successor_run,
+        matcher_version=matcher_version,
+        matcher_config=matcher_config,
+        predecessor_inputs=predecessor_inputs,
+        successor_inputs=successor_inputs,
+        findings=[finding.content() for finding in findings],
+    )
+    comparison = RevisionComparisonRun(
+        project_id=predecessor_document.project_id,
+        predecessor_document_id=predecessor_document.id,
+        successor_document_id=successor_document.id,
+        predecessor_extraction_run_id=predecessor_run.id,
+        successor_extraction_run_id=successor_run.id,
+        predecessor_schema_version=predecessor_run.schema_version,
+        successor_schema_version=successor_run.schema_version,
+        predecessor_prompt_version=predecessor_run.prompt_version,
+        successor_prompt_version=successor_run.prompt_version,
+        predecessor_model=predecessor_run.model,
+        successor_model=successor_run.model,
+        matcher_version=matcher_version,
+        matcher_config=matcher_config,
+        predecessor_inputs_json=predecessor_inputs,
+        successor_inputs_json=successor_inputs,
+        finding_count=len(findings),
+        content_sha256=_content_sha256(content),
+    )
+    session.add(comparison)
+    session.flush([comparison])
+    for ordinal, finding in enumerate(findings, start=1):
+        session.add(
+            RevisionComparisonFinding(
+                revision_comparison_run_id=comparison.id,
+                ordinal=ordinal,
+                state=finding.state,
+                predecessor_candidate_ids=list(finding.predecessor_ids),
+                successor_candidate_ids=list(finding.successor_ids),
+                match_score=finding.match_score,
+                field_changes=list(finding.field_changes),
+                matcher_detail=finding.matcher_detail,
+            )
+        )
+    session.flush()
+    comparison.sealed_at = datetime.now(timezone.utc)
+    session.flush([comparison])
+    return comparison
 
 def _read_identical_execution(
     session: Session,
@@ -412,6 +490,9 @@ def _read_identical_execution(
     if not matching:
         return None
     if len(matching) != 1:
+        # Unrepresentable since #859 made the execution identity unique. It
+        # stays as a reading guard: a receipt read here is authority for what
+        # was executed, and two of them are not a set to pick from.
         raise AmbiguousRevisionComparison(
             "multiple Revision Comparisons claim the identical execution"
         )

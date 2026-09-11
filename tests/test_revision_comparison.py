@@ -10,11 +10,10 @@ from threading import Barrier
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import delete, select, text, update
+from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.exc import IntegrityError
 
 import corridor.revision_comparison as revision_comparison
-from corridor.db import Session
 from corridor.extraction_runs import record_extraction_run
 from corridor.models import (
     Candidate,
@@ -22,11 +21,11 @@ from corridor.models import (
     Document,
     ExtractionRun,
     Project,
+    REVISION_COMPARISON_EXECUTION_IDENTITY,
     RevisionComparisonFinding,
     RevisionComparisonRun,
 )
 from corridor.revision_comparison import (
-    AmbiguousRevisionComparison,
     CorruptRevisionComparison,
     DEFAULT_MATCHER_CONFIG,
     DEFAULT_MATCHER_VERSION,
@@ -48,7 +47,6 @@ from corridor.revision_comparison import (
     read_revision_comparison,
 )
 from corridor.supersession import SupersessionDeclaration, register_supersessions
-from committed_scenario_support import delete_committed_project
 from supersession_support import superseded_chain
 
 
@@ -237,8 +235,16 @@ def _insert_unsealed_comparison_fixture(
     return comparison
 
 
-def _committed_comparison_pair():
-    with Session() as setup:
+def _committed_comparison_pair(session_factory):
+    """One committed declared pair, ready for two independent transactions.
+
+    The race below needs rows two connections can both see, so this commits.
+    It commits into the harness-owned database the caller passes rather than
+    the configured one, which is what keeps those commits -- and the receipt
+    the race leaves behind -- out of every other test's way.
+    """
+
+    with session_factory() as setup:
         project = Project(
             slug=f"revision-comparison-race-{uuid4().hex}",
             name="Revision Comparison Race",
@@ -299,10 +305,6 @@ def _committed_comparison_pair():
         ids = (project.id, predecessor_run.id, successor_run.id)
         setup.commit()
         return ids
-
-
-def _delete_committed_comparison_project(project_id):
-    delete_committed_project(project_id, session_factory=Session)
 
 
 @pytest.mark.parametrize(
@@ -1262,6 +1264,58 @@ def test_near_threshold_alternative_is_preserved_as_ambiguity():
     ) == 2
 
 
+def test_the_released_ambiguity_margin_decides_a_live_competitor():
+    """The released 0.04 margin is load-bearing against a real competitor.
+
+    Every other margin case pins its own configuration, so widening the
+    default changed no answer any test asserted. Here the successor keeps the
+    predecessor's source id and moves 300 feet, which scores 0.76; a second
+    successor row 250 feet away carries a different id and scores exactly the
+    0.60 assignment threshold. Both edges are in the graph under either
+    configuration -- only the margin decides whether losing the assignment by
+    0.16 is close enough to put in front of a reviewer. At the released 0.04
+    the rows correspond and the competitor is an added row; at 0.20 the same
+    competitor turns the pair into one ambiguity.
+    """
+
+    predecessor = [
+        {
+            "utility_id": "FOC1-1",
+            "external_org": "AT&T",
+            "utility_type": "fiber",
+            "baseline": "US 59",
+            "alignment": "Kirby Drive",
+            "station_from": "100+00",
+        }
+    ]
+    successor = [
+        {
+            "utility_id": "FOC1-1",
+            "external_org": "AT&T",
+            "utility_type": "fiber",
+            "baseline": "US 59",
+            "alignment": "Kirby Drive",
+            "station_from": "103+00",
+        },
+        {
+            "utility_id": "FOC9-9",
+            "external_org": "AT&T",
+            "utility_type": "fiber",
+            "baseline": "US 59",
+            "alignment": "Kirby Drive",
+            "station_from": "102+50",
+        },
+    ]
+
+    assert _correspondence(predecessor, successor) == [
+        ("changed", (1,), (1,)),
+        ("added", (), (2,)),
+    ]
+    assert _correspondence(
+        predecessor, successor, {"ambiguity_margin": 0.20}
+    ) == [("ambiguous", (1,), (1, 2))]
+
+
 def test_sparse_global_assignment_beats_greedy_cardinality():
     """The assignment primitive finds two rows where greedy finds one."""
 
@@ -1703,9 +1757,20 @@ def test_identical_execution_returns_the_verified_retained_comparison(
     ] == [original.id]
 
 
-def test_identical_execution_refuses_preexisting_ambiguous_history(
+def test_a_second_receipt_for_one_execution_identity_is_unrepresentable(
     session, consecutive_nhhip_documents
 ):
+    """ADR-0018's immutable run becomes a property of the record (#859).
+
+    `create_revision_comparison` reads the retained receipt before it writes
+    one, and the project lock kept two writers from interleaving that read
+    with their inserts. Neither of those is a property of the record, so a
+    writer that skipped the read -- or reached the table by another path --
+    left a second receipt for one execution behind. The execution identity is
+    now unique, so this clone is refused exactly as a racing writer's insert
+    is, and the one receipt it collided with reads back intact.
+    """
+
     _, predecessor, successor = consecutive_nhhip_documents
     predecessor_run, _ = _run(
         session,
@@ -1726,19 +1791,23 @@ def test_identical_execution_refuses_preexisting_ambiguous_history(
     original = create_revision_comparison(
         session, predecessor_run.id, successor_run.id
     )
-    duplicate = _clone_comparison_receipt(session, original)
 
-    with pytest.raises(AmbiguousRevisionComparison, match="identical execution"):
-        create_revision_comparison(
-            session, predecessor_run.id, successor_run.id
-        )
+    with pytest.raises(IntegrityError) as refusal:
+        with session.begin_nested():
+            _clone_comparison_receipt(session, original)
 
+    assert (
+        refusal.value.orig.diag.constraint_name
+        == REVISION_COMPARISON_EXECUTION_IDENTITY
+    )
+    readback = read_revision_comparison(session, original.id)
+    assert len(readback.findings) == original.finding_count
     assert [
         comparison.id
         for comparison in list_revision_comparisons(
             session, predecessor_run.id, successor_run.id
         )
-    ] == [original.id, duplicate.id]
+    ] == [original.id]
 
 
 def test_identical_execution_refuses_an_unsealed_retained_receipt(
@@ -1875,13 +1944,58 @@ def test_identical_execution_refuses_changed_retained_input_identity(
     ).all() == [mismatched]
 
 
-def test_concurrent_identical_executions_converge_on_one_comparison():
-    project_id, predecessor_run_id, successor_run_id = _committed_comparison_pair()
-    ready = Barrier(2)
+def _blind_to_the_first_read(monkeypatch):
+    """Make one pre-insert read miss a receipt, the way a lost race does.
 
-    def compare_in_own_transaction():
-        with Session() as competing:
-            ready.wait(timeout=2)
+    A writer that reads before its competitor commits sees nothing and goes
+    on to insert. Inside one project the lock makes that interleaving
+    impossible, so the cases below produce it directly instead of racing for
+    a window the lock exists to close.
+    """
+
+    read_identical_execution = revision_comparison._read_identical_execution
+    reads = []
+
+    def blind(*args, **kwargs):
+        reads.append(None)
+        if len(reads) == 1:
+            return None
+        return read_identical_execution(*args, **kwargs)
+
+    monkeypatch.setattr(
+        revision_comparison, "_read_identical_execution", blind
+    )
+
+
+@pytest.mark.parametrize(
+    "serialized_by", ["the project lock", "the execution identity alone"]
+)
+def test_concurrent_identical_executions_leave_one_intact_comparison(
+    runtime_database, monkeypatch, serialized_by
+):
+    """Two real transactions, one sealed receipt, and no orphaned findings.
+
+    The parameters are the two guards, separately. With the project lock the
+    second writer waits and reads the first one's receipt. Without it -- the
+    mutation #859 reported as failing nothing -- both writers reach the
+    insert, and the unique execution identity and the conflict convergence
+    have to produce the same single receipt on their own. Neither writer may
+    leave a half-written finding set behind either way.
+    """
+
+    if serialized_by == "the execution identity alone":
+        monkeypatch.setattr(
+            revision_comparison,
+            "lock_project",
+            lambda session, project_id: None,
+        )
+    factory = runtime_database.session_factory
+    _, predecessor_run_id, successor_run_id = _committed_comparison_pair(factory)
+    ready = Barrier(2, timeout=30)
+
+    def compare_in_own_transaction(_):
+        with factory() as competing:
+            ready.wait()
             comparison = create_revision_comparison(
                 competing, predecessor_run_id, successor_run_id
             )
@@ -1889,20 +2003,181 @@ def test_concurrent_identical_executions_converge_on_one_comparison():
             competing.commit()
             return comparison_id
 
-    try:
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            comparison_ids = tuple(pool.map(lambda _: compare_in_own_transaction(), range(2)))
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        attempts = [pool.submit(compare_in_own_transaction, index) for index in range(2)]
+        comparison_ids = [attempt.result(timeout=60) for attempt in attempts]
 
-        assert comparison_ids[0] == comparison_ids[1]
-        with Session() as verification:
-            assert [
-                comparison.id
-                for comparison in list_revision_comparisons(
-                    verification, predecessor_run_id, successor_run_id
-                )
-            ] == [comparison_ids[0]]
-    finally:
-        _delete_committed_comparison_project(project_id)
+    assert comparison_ids[0] == comparison_ids[1]
+    with factory() as verification:
+        [retained] = list_revision_comparisons(
+            verification, predecessor_run_id, successor_run_id
+        )
+        assert retained.id == comparison_ids[0]
+        readback = read_revision_comparison(verification, retained.id)
+        assert len(readback.findings) == retained.finding_count
+        assert verification.scalar(
+            select(func.count()).select_from(RevisionComparisonRun)
+        ) == 1
+        assert verification.scalar(
+            select(func.count()).select_from(RevisionComparisonFinding)
+        ) == retained.finding_count
+
+
+def test_a_lost_race_converges_on_the_committed_receipt(
+    session, consecutive_nhhip_documents, monkeypatch
+):
+    """The loser rolls back its own attempt and reads the winner's receipt.
+
+    It returns that receipt only through the same integrity readback the
+    pre-insert path uses, so convergence is a verified reading of what was
+    executed rather than an assumption that a unique violation is harmless.
+    """
+
+    _, predecessor, successor = consecutive_nhhip_documents
+    predecessor_run, _ = _run(
+        session,
+        predecessor,
+        [{"utility_id": "FOC1-1", "external_org": "AT&T"}],
+        prompt_version="matrix_tiered_v2",
+        model="gpt-test",
+        schema_version="matrix-schema-v2",
+    )
+    successor_run, _ = _run(
+        session,
+        successor,
+        [{"utility_id": "FOC1-1", "external_org": "AT&T"}],
+        prompt_version="matrix_tiered_v3",
+        model="gpt-test",
+        schema_version="matrix-schema-v3",
+    )
+    winner = create_revision_comparison(
+        session, predecessor_run.id, successor_run.id
+    )
+    _blind_to_the_first_read(monkeypatch)
+
+    converged = create_revision_comparison(
+        session, predecessor_run.id, successor_run.id
+    )
+
+    assert converged.id == winner.id
+    assert [
+        comparison.id
+        for comparison in list_revision_comparisons(
+            session, predecessor_run.id, successor_run.id
+        )
+    ] == [winner.id]
+    assert session.scalars(
+        select(RevisionComparisonFinding.revision_comparison_run_id).where(
+            RevisionComparisonFinding.revision_comparison_run_id != winner.id
+        )
+    ).all() == []
+
+
+def test_a_lost_race_to_a_receipt_over_other_inputs_is_refused(
+    session, consecutive_nhhip_documents, monkeypatch
+):
+    """Converging is for the same execution, not for whatever won the insert.
+
+    The receipt already holding this execution identity retained different
+    exact inputs, so it is not this execution's receipt whatever the unique
+    constraint says about its key. The conflict is refused with the reading
+    error rather than answered with that receipt.
+    """
+
+    project, predecessor, successor = consecutive_nhhip_documents
+    predecessor_run, _ = _run(
+        session,
+        predecessor,
+        [{"utility_id": "FOC1-1", "external_org": "AT&T"}],
+        prompt_version="matrix_tiered_v2",
+        model="gpt-test",
+        schema_version="matrix-schema-v2",
+    )
+    successor_run, _ = _run(
+        session,
+        successor,
+        [],
+        prompt_version="matrix_tiered_v3",
+        model="gpt-test",
+        schema_version="matrix-schema-v3",
+    )
+    mismatched = _insert_unsealed_comparison_fixture(
+        session,
+        project,
+        predecessor,
+        successor,
+        predecessor_run,
+        successor_run,
+        predecessor_inputs=[],
+        successor_inputs=[],
+    )
+    mismatched.sealed_at = datetime.now(timezone.utc)
+    session.flush([mismatched])
+    _blind_to_the_first_read(monkeypatch)
+
+    with pytest.raises(RevisionComparisonError, match="input identity"):
+        create_revision_comparison(
+            session, predecessor_run.id, successor_run.id
+        )
+
+    assert session.scalars(
+        select(RevisionComparisonRun).where(
+            RevisionComparisonRun.predecessor_extraction_run_id
+            == predecessor_run.id,
+            RevisionComparisonRun.successor_extraction_run_id
+            == successor_run.id,
+        )
+    ).all() == [mismatched]
+
+
+def test_an_integrity_failure_that_is_not_the_execution_identity_is_raised(
+    session, consecutive_nhhip_documents, monkeypatch
+):
+    """Only the named conflict means somebody else committed this execution.
+
+    A writer that answered every integrity failure with the retained receipt
+    would report a comparison it did not write and did not verify. The
+    refusal below names another constraint, and the caller sees it.
+    """
+
+    _, predecessor, successor = consecutive_nhhip_documents
+    predecessor_run, _ = _run(
+        session,
+        predecessor,
+        [{"utility_id": "FOC1-1", "external_org": "AT&T"}],
+        prompt_version="matrix_tiered_v2",
+        model="gpt-test",
+        schema_version="matrix-schema-v2",
+    )
+    successor_run, _ = _run(
+        session,
+        successor,
+        [{"utility_id": "FOC1-1", "external_org": "AT&T"}],
+        prompt_version="matrix_tiered_v3",
+        model="gpt-test",
+        schema_version="matrix-schema-v3",
+    )
+    create_revision_comparison(session, predecessor_run.id, successor_run.id)
+    _blind_to_the_first_read(monkeypatch)
+
+    class _OtherConstraintFailure(Exception):
+        diag = type(
+            "_Diagnostic",
+            (),
+            {"constraint_name": "ck_revision_comparison_finding_count"},
+        )()
+
+    def refuse_for_another_reason(*args, **kwargs):
+        raise IntegrityError("insert", {}, _OtherConstraintFailure())
+
+    monkeypatch.setattr(
+        revision_comparison, "_write_receipt", refuse_for_another_reason
+    )
+
+    with pytest.raises(IntegrityError):
+        create_revision_comparison(
+            session, predecessor_run.id, successor_run.id
+        )
 
 
 def test_readback_uses_input_snapshots_after_candidate_state_or_payload_changes(
