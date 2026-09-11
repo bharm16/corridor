@@ -206,6 +206,85 @@ capture does not unmake either. Any necessary repair to the accepted record
 with the corrected evidence in front of them. Previously issued artifacts are
 not rewritten.
 
+### What the coordinator is told, approved as written
+
+The three sentences below are approved wording. Each is shown linked to the
+retained correction request, the original capture, the corrected evidence, and
+the comparison result, so a coordinator who wants the proof can reach it from
+the sentence.
+
+**No change.** *"Corridor corrected its reading of this source. The corrected
+value matches the accepted record at revision 12, so this proposed change is no
+longer in Review. No accepted value changed."*
+
+**Replacement.** *"Corridor corrected its reading of this source. The original
+proposed change has been replaced by a corrected proposal. Review the corrected
+proposal before changing the accepted record."*
+
+**Stale Apply.** *"This proposal can no longer be applied because its source
+reading was corrected. Nothing was applied. View the correction result."*
+
+The revision number in the first sentence is the accepted revision the
+recomparison actually read — proof item 5 above, printed rather than described.
+
+**The original item leaves active Review without disappearing from history.**
+It is gone from the Work List, the packets and the open counts because it is no
+longer actionable; it remains in the record history, with its correction
+result, its prior deferral receipt and its Follow-up history, because it
+happened. A coordinator who remembers seeing a proposed change and goes looking
+for it finds it, and finds out what became of it.
+
+### Technical Operations authorizes and executes it, with no second decision
+
+**A person holding the Technical Operations designation may authorize and
+execute the source-grounded correction procedure. Its validated result may
+retire the obsolete Proposed Delta through a narrowly granted command, without
+another coordinator decision.**
+
+The reason is what the operation is. It removes a machine-generated comparison
+that no longer has a valid basis; it does not choose what the customer's
+accepted record should say. Asking a coordinator to approve the removal would
+hand Corridor's own extraction defect back to the customer as extra
+coordination work, which is exactly what ADR-0034 calls disguised work for the
+customer and what ADR-0100 already refused when it rejected routing this case
+to Needs coordination. The Operations boundary the
+[Corridor Operations glossary](../operations/CONTEXT.md) already draws puts
+repairing Corridor's own processing on Corridor's side of it, and this is that
+kind of act.
+
+**When a worker executes part of the procedure, the responsible operations
+actor and the service identity performing the work stay distinct.** A queued
+re-capture running under a service identity does not become the author of the
+decision to correct; the designation holder who authorized it remains the
+responsible actor, and both are recorded. This is ADR-0081's rule that a
+migration executor is never the semantic author, applied to the same shape of
+problem.
+
+**This must not become a generic operations permission to remove things from
+Review.** The command is narrow, and it establishes six things before it
+retires anything. They are the proof bound above, stated as the conditions the
+command checks:
+
+1. **the exact challenged capture and the request are identified** — by the
+   immutable identity ADR-0100 requires, not by a query that moves;
+2. **the corrected capture is supported by the retained source** — the
+   reporter's suggested answer alone is not evidence, and an expected
+   interpretation never becomes a value (ADR-0084, ADR-0100);
+3. **the recomparison used the declared rule and the stated accepted
+   revision** — the ordinary comparison contract, both inputs recorded;
+4. **the delta is still eligible for correction retirement** — a customer
+   decision made during the investigation must not be undone;
+5. **no accepted value changes and no disposition is fabricated** — the
+   command writes neither; and
+6. **the operation is retained and idempotent** — its evidence survives and a
+   repeat is the same act, not a second one.
+
+**No second-person approval is required for this first slice.** The protection
+is the bounded proof, the command's own authority, the concurrency checks and
+the retained evidence — not asking another person to click through the same
+technical result. A reviewer who cannot re-derive the comparison adds a
+signature, not a check.
+
 ### It is a derived terminal reason, not a status column
 
 **Do not add a mutable `status` column to `ProposedDelta`.** Standing stays
@@ -215,12 +294,37 @@ shadow seal. This is one more derived terminal reason, backed by one more
 append-only relationship, and it is read the same way the other three are.
 
 Ordering, where a reader must pick one word: a disposition still wins, then a
-supersession, then this retirement, then a live deferral, then open. The write
-guard makes the first two ties unreachable — a retirement is refused against a
-delta that already carries a disposition or a supersession — so the ordering
-that does work is the last one: **a deferred delta is retired without being
-woken**, because a scheduled return to a comparison that no longer exists is a
-return to nothing.
+supersession, then this retirement, then a live deferral, then open. The last
+of those is the one that does real work — **a deferred delta is retired without
+being woken**, because a scheduled return to a comparison that no longer exists
+is a return to nothing.
+
+**That a delta never carries two terminal relationships at once is a required
+invariant, not something the precedence order proves.** Checking retirement's
+own inputs is not enough; the invariant needs protecting in both directions and
+at every write:
+
+- **retirement refuses** a delta already disposed of or superseded;
+- **resolution, supersession and scheduling commands refuse** a delta already
+  retired by correction;
+- **concurrent competing acts serialise** — one wins, and the other receives a
+  bounded refusal rather than a lost write or a silent overwrite;
+- **Undo of an old scheduling act may not reactivate a correction-retired
+  proposal**, because reversing a deferral must not resurrect a comparison
+  whose basis is gone; and
+- **inconsistent imported or historical records** that contain incompatible
+  terminal relationships surface an **integrity problem** rather than letting
+  precedence quietly erase the contradiction.
+
+In the maintainer's words: *the shared readers may use the order to present
+valid history; they should not be the mechanism that makes contradictory writes
+appear harmless.*
+
+**Retiring a proposal preserves everything that already happened to it.** Any
+prior deferral receipt and any Follow-up history are retained and remain
+readable. Removing an invalid proposal from active work does not mean the
+scheduling or the correspondence never happened, and a history reading that
+hid them would be making the same false claim as a fabricated disposition.
 
 ### Every shared lifecycle reader and write command honours it
 
@@ -277,9 +381,12 @@ true when it was rendered — submits Apply. The submission names a delta whose
 comparison no longer exists. It refuses, with a named refusal in the shared
 refusal vocabulary (`delta_refusals`) raised by both the Python and the SQL
 halves, carrying the correction result so the coordinator is told what happened
-to the item rather than being told only that it is gone. Silence, a generic
-conflict, or a page that quietly drops the row all leave a person believing
-they applied something they did not.
+to the item rather than being told only that it is gone. It refuses in the
+approved words above: *"This proposal can no longer be applied because its
+source reading was corrected. Nothing was applied. View the correction
+result."* The middle sentence is the one that cannot be dropped — silence, a
+generic conflict, or a page that quietly drops the row all leave a person
+believing they applied something they did not.
 
 ### Two edge cases
 
@@ -336,23 +443,68 @@ proved:
    readiness and candidate checks rather than leaving a prepared package
    claiming an open question that no longer exists.
 
+The one-terminal-relationship invariant carries three more, because an
+invariant that only the happy path observes is not enforced:
+
+10. a resolution, supersession or scheduling command acting on an
+    already-retired delta refuses, and two competing acts serialise so that one
+    wins and the other receives a bounded refusal;
+11. Undo of a scheduling act that preceded the retirement does not reactivate
+    the retired proposal, and the deferral receipt and Follow-up history it
+    reverses remain readable; and
+12. a record carrying incompatible terminal relationships — from an import or
+    from retained history — surfaces an integrity problem rather than being
+    silently resolved by the reader's precedence order.
+
 ## Terminology
 
-This decision introduces **no new customer-facing term**.
-`DeltaCaptureCorrection` is an **internal technical name**, suggested by the
-maintainer in the decision text, on the same footing as `Review Packet` and
-`correction request`. It is never shown to a customer as a defined concept, so
-the terminology-research procedure in
-[docs/agents/domain.md](../agents/domain.md) is not triggered here.
+This decision names a lifecycle relationship, so the terminology-research
+procedure in
+[docs/agents/domain.md](../agents/domain.md#research-before-proposing-terminology)
+**applies** — a named lifecycle relationship in an ADR and in code is a domain
+concept even while it is internal, and only ordinary software helper names sit
+outside that gate. The evidence is
+[capture-correction-retirement-terminology-2026-09-11.md](../research/capture-correction-retirement-terminology-2026-09-11.md).
 
-What a coordinator is *shown* when a proposal is retired — the words on the
-Work List, on the history view, and in the stale-Apply refusal — is a
-customer-facing wording question that this ADR does not settle. Plain
-description of the act is available without defining a type, as ADR-0100's
-"Report an extraction error" control already demonstrates. Should any surface
-want a defined customer-facing **type** for this outcome rather than a
-description of it, that research runs first, as ADR-0085 required of any
-customer-facing label for a Review Packet.
+**The finding: published practice does not supply this concept.** W3C PROV
+(*PROV-DM*, W3C Recommendation, 30 April 2013) keeps two nearby relations
+apart. **Revision** (§5.2.2) is a derivation whose result is a revised version
+of an original — it relates a revised entity to the earlier one. **Invalidation**
+(§5.1.8) is the start of an entity's destruction, cessation or expiry, after
+which it is "no longer available for use". Corridor's corrected capture is a
+revision in that sense; the obsolete Proposed Delta is nearer invalidation. But
+neither relation says anything about retaining the earlier entity's evidence,
+and neither says anything about a decision history recorded against it — and
+both are exactly what this relationship must preserve. Construction change
+control names the merit decision on a proposed change (change request, change
+order, dispositioning under ISO 10007) and has no term for withdrawing an
+automatically generated proposal because the generator misread its input.
+
+**The treatment.** `DeltaCaptureCorrection` is retained as the proposed
+**internal implementation name**, documented as a **Corridor-specific
+relationship — not an established construction term and not a verbatim PROV
+concept.** It is not adopted into the Project Record glossary and is never
+shown to a customer. The [Corridor Operations glossary](../operations/CONTEXT.md)
+carries its concise definition, under **Capture Correction Retirement**, beside
+the other repair concepts that describe Corridor's work on its own processing.
+
+It is distinct from four Corridor concepts it would otherwise be confused with,
+and the research note states each distinction: a **Document Revision** is a new
+issued version of the source, where here the bytes are unchanged and only the
+reading was wrong; a **Supersession** names the newer version replacing an
+earlier one for current use, where here there is no newer version and often no
+successor; a **Resolve Delta `reject`** or **Keep current** is a person's
+conclusion that the accepted value stands, where here nobody concluded
+anything; and **deletion or disposition** removes data, where here every piece
+of evidence and history is retained.
+
+**Customer-facing wording is settled by description, not by a defined type.**
+The three approved sentences above say what happened in plain words and name no
+new concept, which is the same treatment ADR-0100 gave the "Report an
+extraction error" control. Should a surface later want a defined
+customer-facing **type** for this outcome rather than a description of it, that
+research completes first, as ADR-0085 required of any customer-facing label for
+a Review Packet.
 
 ## Considered options
 
@@ -415,6 +567,19 @@ preparation would each still act on a comparison that no longer exists.
   through **Resolve Delta**, operation 4, by a coordinator.
 - ADR-0092 and ADR-0086 are unchanged. A retirement never rewrites a published
   reading or an authorized package; it changes what the next preparation finds.
+- ADR-0034 is unchanged and is relied on for the execution authority. Repairing
+  Corridor's own reading is managed technical operations, so the Technical
+  Operations designation (`access.TECHNICAL_OPERATIONS`, read live from the
+  roster as `operations_repair` already does) authorizes and executes it, and
+  the customer is not asked to approve Corridor's defect.
+- The [Corridor Operations glossary](../operations/CONTEXT.md) gains one
+  concise entry, **Capture Correction Retirement**, and
+  [the terminology research note](../research/capture-correction-retirement-terminology-2026-09-11.md)
+  records its evidence: W3C PROV supplies the revision/invalidation
+  distinction but not this concept, construction change control names only the
+  merit decision, and the relationship is therefore documented as
+  Corridor-specific. The Project Record glossary is not extended, and no
+  customer-facing type is defined.
 - **#836** gains the relationship its `withdraw_for_no_change` refusal is
   holding open, and its stale acceptance criterion — that the corrected result
   returns as a Proposed Delta — is corrected to admit the no-change outcome.
