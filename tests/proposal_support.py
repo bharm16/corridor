@@ -54,7 +54,7 @@ def proposal(
     confidence: float | None = 1.0,
     prompt_version: str = PROMPT_VERSION,
     dedupe: str | None = None,
-    text_source: str | None = "cells",
+    text_source: str | None = "text_layer",
     model: str | None = None,
     tier: str | None = None,
     unverified: Sequence[str] = (),
@@ -67,7 +67,9 @@ def proposal(
     repeat what it does not care about.  ``dedupe`` defaults to what
     ``corridor.vocabulary`` says discriminates one row from another, which is
     the same blocking key the matrix readers pass; a caller whose rows collide
-    on party, kind and stationing passes its own.
+    on party, kind and stationing passes its own. ``text_source`` defaults to
+    the text layer because a fixture's page almost always carries one; a
+    workbook fixture says ``cells``.
 
     The Candidate is not added to a Session.  Whether a proposal is flushed,
     sealed into an ExtractionRun, or declared active is the calling module's

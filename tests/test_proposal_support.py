@@ -57,7 +57,7 @@ def test_the_defaults_delegate_the_whole_payload_to_the_extractors_constructor()
         confidence=1.0,
         prompt_version=PROMPT_VERSION,
         dedupe=dedupe_hint(FIELDS),
-        text_source="cells",
+        text_source="text_layer",
     )
 
     assert built.payload_json == directly.payload_json
