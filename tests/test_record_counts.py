@@ -1,7 +1,7 @@
 """What `record_counts` reads, and what the hands it replaces did not.
 
 The argument for a derived reading is only worth as much as the contrast,
-so the table sets the seven retired helpers hand-picked are recorded here,
+so the table sets the eight retired helpers hand-picked are recorded here,
 and one write is proved invisible to every one of them and visible to the
 derivation.
 """
