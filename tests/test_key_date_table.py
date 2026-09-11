@@ -22,6 +22,7 @@ from sqlalchemy import func, select
 
 from corridor import audit
 from corridor.config import settings
+from corridor.db_roles import WORKER_CAPABILITY_LOGIN
 from corridor.delta_resolution import (
     ACCEPT,
     RESOLVED,
@@ -57,6 +58,7 @@ from corridor.models import (
     SupportAssessment,
 )
 
+from harness_support import as_role
 from key_date_table_support import (
     KEY_DATE_ROWS,
     UCM_HEADINGS,
