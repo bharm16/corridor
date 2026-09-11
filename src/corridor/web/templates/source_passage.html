@@ -1,0 +1,218 @@
+{% import "_primitives.html" as ui -%}
+{#
+  One cited passage, opened at its place in the source it was read from (#831).
+
+  Every surface that prints a citation links here, so this is the one screen
+  that answers "what does the document actually say around this quote". It
+  keeps three different facts apart and never lets one stand in for another:
+
+  * the Source Passage Check, in its adopted words, when the registered bytes
+    were there to check against;
+  * the fact that those bytes could not be retrieved at all, which is a
+    storage failure in Corridor and is never printed as a finding about the
+    document;
+  * what surrounds the passage, which is Corridor's own reading of the source
+    and is labelled as such, beside a link to the original file itself.
+
+  It performs no act, so nothing here carries `autofocus`: moving focus on load
+  would carry a screen-reader user past the heading that says what they are
+  looking at (`docs/accessibility-acceptance-checklist.md`, section 4). The
+  skip link below is user-activated instead, and every region it can reach
+  keeps `tabindex="-1"`.
+
+  There is no script and no colour-only state: every state prints its own words
+  through `_primitives.html`, and the classes here carry layout only.
+#}
+<!doctype html>
+<meta charset="utf-8">
+<title>Exact source — {{ project.name }}</title>
+<style>
+  :root { --line:#e2e2e2; --muted:#666; }
+  * { box-sizing:border-box; }
+  body { margin:0; color:#111; background:#fff; font:15px/1.5 system-ui,sans-serif; }
+  a { color:#06c; }
+  header { display:flex; justify-content:space-between; align-items:baseline;
+           padding:.8rem 1.2rem; border-bottom:1px solid var(--line); }
+  main { max-width:58rem; margin:2rem auto; padding:0 1.2rem 4rem; }
+  h1 { font-size:1.55rem; margin:0 0 .25rem; }
+  .lead { color:var(--muted); margin:0 0 1.5rem; }
+  .quiet { color:var(--muted); font-size:.9rem; }
+  .skip { display:inline-block; margin:0 0 1rem; }
+  .region { margin:1.4rem 0; }
+  blockquote.exact { margin:.4rem 0; padding:.5rem .9rem;
+                     border-left:3px solid var(--line); font-style:italic; }
+  dl.facts { display:grid; grid-template-columns:auto 1fr; gap:.15rem .8rem;
+             margin:.4rem 0 .6rem; }
+  dl.facts dt { color:var(--muted); }
+  dl.facts dd { margin:0; }
+  ol.passages { margin:.4rem 0; padding-left:1.3rem; }
+  ol.passages li { padding:.15rem 0; }
+  ol.passages li.cited { font-weight:600; }
+  .mono { font:12px ui-monospace, monospace; color:var(--muted);
+          overflow-wrap:anywhere; }
+  td.cited-cell { font-weight:600; }
+</style>
+{{ ui.styles() }}
+
+<header>
+  <b>Exact source — {{ project.name }}</b>
+  <span><a href="/review/{{ project.slug }}">source changes &rarr;</a></span>
+</header>
+
+<main>
+  <h1>{{ label('cited_passage') }} in its source</h1>
+  <p class="lead">
+    This is where the quoted words were read, what the source says around them,
+    and which file they came out of.
+  </p>
+  <p><a class="skip" href="#cited-passage">Skip to the cited passage</a></p>
+
+  {% call ui.region("cited-passage", "The passage, exactly as it was captured") %}
+    <blockquote class="exact">{{ view.exact_text }}</blockquote>
+    {{ ui.fact_list([
+         ("Cited location", view.locator),
+         ("Retained wording proved by digest", view.content_sha256),
+       ]) }}
+    <p class="quiet">
+      These are the exact words Corridor stored when it read the source, kept
+      once and proved against the digest beside them. They are not a
+      paraphrase and nothing on this page rewrites them.
+    </p>
+  {% endcall %}
+
+  {% call ui.region("passage-check", label('source_passage_check')) %}
+    {%- if view.source_bytes_unavailable %}
+    <p>
+      <b>Corridor could not retrieve the original file for this document, so
+      no {{ label('source_passage_check')|lower }} was run.</b>
+    </p>
+    <p>
+      This is a storage or retrieval failure inside Corridor. It is not a
+      finding about the document, and it does not mean the passage is missing
+      from the source: nothing opened the source to look. The exact wording
+      above is still proved by its recorded digest.
+    </p>
+    <p class="quiet">
+      Corridor recorded this attempt as a retrieval failure of kind
+      {{ view.retrieval_failure.failure }}: {{ view.retrieval_failure.detail }}.
+      Ask technical operations to restore the stored file; nothing a
+      coordinator can do on this screen changes it.
+    </p>
+    {%- elif view.passage_check_status %}
+    <p>
+      {{ ui.state(state_label(
+           'settled' if evidence_link_verified(view.passage_check_status)
+                     else 'refused',
+           source_passage_check_label(view.passage_check_status))) }}
+    </p>
+    {%- if view.passage_check_reason %}
+    <p class="quiet">{{ view.passage_check_reason }}</p>
+    {%- endif %}
+    <p class="quiet">
+      This check followed the cited location in the original file and reports
+      only whether the stored passage was there. It says nothing about what
+      the passage supports.
+    </p>
+    {%- endif %}
+  {% endcall %}
+
+  {% call ui.region("source-file", "The source this passage belongs to") %}
+    {%- if view.revision %}
+    {{ ui.fact_list([
+         ("File", view.revision.filename),
+         ("Format", view.rendition.file_format),
+         ("Kind", view.revision.doc_type),
+         ("Registry identifier", view.revision.registry_id),
+         ("Document date", view.revision.doc_date),
+         ("Pages", view.revision.pages),
+         ("Registered file digest", view.rendition.registered_sha256),
+       ]) }}
+    {%- if view.revision.is_superseded %}
+    <p>
+      A newer revision of this document is registered:
+      {{ view.revision.superseded_by_filename if view.revision.superseded_by_filename else not_recorded }}{% if view.revision.superseded_on %}, replacing this one on {{ view.revision.superseded_on }}{% endif %}.
+      The passage above was read from the revision named here, which is the
+      one the citation names.
+    </p>
+    {%- endif %}
+    {%- if view.rendition and not view.rendition.cites_the_registered_file %}
+    <p>
+      <b>This citation names a different file from the one registered for this
+      document today.</b> It was read from the file whose digest is
+      <span class="mono">{{ view.rendition.cited_sha256 }}</span>, and the
+      document is registered under the digest above. The original offered
+      below is the registered file.
+    </p>
+    {%- endif %}
+    <p>
+      <a href="/sources/{{ project.slug }}/document/{{ view.revision.document_id }}/original">Open the original file</a>
+      — the registered bytes themselves, exactly as they arrived.
+    </p>
+    <p class="quiet">
+      Everything else on this page is Corridor's reading of that file, derived
+      from it when the document was processed. The original is the only thing
+      here that is the document.
+    </p>
+    {%- else %}
+    <p>
+      This passage is a recorded verbal statement rather than a document
+      passage, so there is no file to open. Its exact words are proved against
+      the recorder's own attestation.
+    </p>
+    {%- endif %}
+  {% endcall %}
+
+  {% call ui.region("nearby-context", "What the source says around it") %}
+    {%- if view.rows %}
+    <p>
+      Sheet {{ view.sheet_name }}, around cell {{ view.cited_cell }}. Only
+      cells that hold a value are shown; a blank means the cell is empty in
+      the source.
+    </p>
+    <table class="record">
+      <caption>The populated cells around {{ view.cited_cell }} on sheet {{ view.sheet_name }}</caption>
+      <thead>
+        <tr>
+          <th scope="col">Row</th>
+          {%- for column in view.columns %}<th scope="col">{{ column }}</th>{% endfor %}
+        </tr>
+      </thead>
+      <tbody>
+        {%- for row in view.rows %}
+        <tr>
+          <th scope="row">{{ row.row_number }}</th>
+          {%- for cell in row.cells %}
+          <td{% if cell and cell.is_cited %} class="cited-cell"{% endif %}>
+            {%- if cell %}{{ cell.exact_text }}{% if cell.is_cited %}<span class="visually-hidden"> (this is the cited cell)</span>{% endif %}{% endif %}
+          </td>
+          {%- endfor %}
+        </tr>
+        {%- endfor %}
+      </tbody>
+    </table>
+    {%- elif view.passages %}
+    <p>
+      {%- if view.page_no %}The passages Corridor read on page {{ view.page_no }}, in the order they appear, with the cited one marked.
+      {%- else %}The passages Corridor read around this one, in the order they appear, with the cited one marked.{% endif %}
+    </p>
+    <ol class="passages">
+      {%- for passage in view.passages %}
+      <li{% if passage.is_cited %} class="cited"{% endif %}>
+        {%- if passage.is_cited %}<span class="visually-hidden">The cited passage: </span>{% endif %}
+        {{ passage.exact_text }}
+      </li>
+      {%- endfor %}
+    </ol>
+    {%- else %}
+    <p>
+      Corridor holds no other passage from this part of the source, so there
+      is nothing to show around the cited words. Open the original file above
+      to read the rest of the document.
+    </p>
+    {%- endif %}
+    <p class="quiet">
+      This is what Corridor read out of the source, not the source itself.
+      Open the original file to see the document as it was issued.
+    </p>
+  {% endcall %}
+</main>

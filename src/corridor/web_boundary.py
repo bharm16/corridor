@@ -540,6 +540,39 @@ PILOT_ROUTES: dict[tuple[str, str], PilotRoute] = {
             }
         ),
     ),
+    ("GET", "/sources/{slug}/passage/{segment_id}"): PilotRoute(
+        why=(
+            "#831 the exact-source view every citation opens: one project's "
+            "cited passage, its Document Revision and rendition, and the "
+            "neighbouring Source Segments that are its nearby context. It "
+            "reads no `doc_pages` and no `page_render_derivatives` — both are "
+            "revoked — so the context is the spine's own segments, which is "
+            "also what makes a boundary-admitted reading possible"
+        ),
+        relations=frozenset(
+            {
+                "documents",
+                "project_roster_entries",
+                "projects",
+                "source_segments",
+            }
+        ),
+    ),
+    ("GET", "/sources/{slug}/document/{document_id}/original"): PilotRoute(
+        why=(
+            "#831 the registered original behind that view, served to a "
+            "member of the owning project. The legacy `/page-image` route "
+            "stays out: it serves a derived rendition addressed by document "
+            "id alone and no pilot template uses it"
+        ),
+        relations=frozenset(
+            {
+                "documents",
+                "project_roster_entries",
+                "projects",
+            }
+        ),
+    ),
     ("POST", "/review/{slug}/answers"): PilotRoute(
         why=(
             "#526 record the Review Packet answers"

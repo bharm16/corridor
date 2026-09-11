@@ -39,7 +39,8 @@
   <p class="lead">
     Documents registered through product upload, and the honest state of their
     processing. A document that could not be read shows as failed; one the
-    processing pass has not reached yet shows as pending.
+    processing pass has not reached yet shows as pending. Each file name opens
+    the original document, exactly as it arrived.
   </p>
 
   <p class="top">
@@ -60,7 +61,7 @@
         {% for row in uploads %}
           <tr>
             <td>
-              <div class="file">{{ row.filename }}</div>
+              <div class="file"><a href="/sources/{{ project.slug }}/document/{{ row.document_id }}/original">{{ row.filename }}</a></div>
               <div class="mono">{{ row.sha256[:16] }}…</div>
             </td>
             <td>{{ row.doc_type }}</td>

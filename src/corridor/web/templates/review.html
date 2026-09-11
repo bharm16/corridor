@@ -205,7 +205,10 @@
         <td>{{ row.subject_name }}</td>
         <td>{{ row.field_name }}</td>
         <td>{{ row.value if row.value else not_recorded }}</td>
-        <td>{{ row.document_filename }}, {{ row.location }}</td>
+        <td>
+          {%- if row.source_segment_id %}<a href="/sources/{{ project.slug }}/passage/{{ row.source_segment_id }}">{{ row.document_filename }}, {{ row.location }}</a>
+          {%- else %}{{ row.document_filename }}, {{ row.location }}{% endif %}
+        </td>
         <td>{{ row.quote if row.quote else not_recorded }}</td>
         <td>
           {%- if row.external_links %}
@@ -273,7 +276,8 @@
         <td>{{ child.field_name }}</td>
         <td>{{ child.accepted_revision_id if child.accepted_revision_id else not_recorded }}</td>
         <td>
-          {%- if child.source %}{{ child.source.document_filename }}, {{ child.source.location }}
+          {%- if child.source and child.source.source_segment_id %}<a href="/sources/{{ project.slug }}/passage/{{ child.source.source_segment_id }}">{{ child.source.document_filename }}, {{ child.source.location }}</a>
+          {%- elif child.source %}{{ child.source.document_filename }}, {{ child.source.location }}
           {%- else %}{{ not_recorded }}{% endif %}
         </td>
         <td>{{ child.source.exact_text if child.source and child.source.exact_text else not_recorded }}</td>
