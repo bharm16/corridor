@@ -12,6 +12,7 @@ from collections import defaultdict
 from pathlib import Path
 
 from corridor.migrations import policy
+from corridor.prompt_library import installed_prompt_path
 from ratchet_support import assert_ratchet
 from source_scan_support import (  # noqa: F401
     callers_of,
@@ -1736,17 +1737,23 @@ def _source_string_literals() -> frozenset[str]:
 def _a_loader_names(prompt: Path, literals: frozenset[str]) -> bool:
     """True when some module in `src/` names this prompt file.
 
-    Both conventions count: a path literal ending in the file name, and the
-    bare version string, which `corridor_pdf_reader.replacement.semantics`
-    already joins as `f"{PROMPT_VERSION}.md"`. Equality rather than substring
-    is what keeps a docstring that merely mentions a retired version from
-    reading as a loader -- `extract_minutes_v5` opens by explaining what it
-    took over from `extract_minutes_v4`, and that is not a use of the file.
+    Three conventions count: a path literal ending in the file name, the bare
+    version string, which `corridor_pdf_reader.replacement.semantics` joins as
+    `f"{PROMPT_VERSION}.md"`, and a version `corridor.prompt_library` resolves
+    to this file. That last one is asked of the loader rather than re-derived
+    here, because a family may spell its version with hyphens where the file
+    stem uses underscores, and one rule for that belongs in the loader.
+
+    Equality rather than substring is what keeps a docstring that merely
+    mentions a retired version from reading as a loader -- `extract_minutes_v5`
+    opens by explaining what it took over from `extract_minutes_v4`, and that
+    is not a use of the file.
     """
     return any(
         literal == prompt.name
         or literal.endswith("/" + prompt.name)
         or literal == prompt.stem
+        or installed_prompt_path(literal).name == prompt.name
         for literal in literals
     )
 

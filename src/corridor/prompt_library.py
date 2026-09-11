@@ -60,11 +60,23 @@ class Prompt:
         return self.data.decode("utf-8")
 
 
+def installed_prompt_path(version: str) -> Path:
+    """The file one prompt version names.
+
+    The version string is the persisted evidence -- it is written onto every
+    Extracted Proposal and every retained receipt -- and some families spell it
+    with hyphens while the file stems have always used underscores. This is the
+    one place that rule lives, so a guard asking "does a loader name this file"
+    reads it here rather than deriving it a second time.
+    """
+    return PROMPTS / f"{version.replace('-', '_')}.md"
+
+
 def installed_prompt(
     version: str, *, schema: Mapping[str, Any] | None = None
 ) -> Prompt:
     """Load the installed prompt one version names, with its digest and schema."""
-    path = PROMPTS / f"{version.replace('-', '_')}.md"
+    path = installed_prompt_path(version)
     data = path.read_bytes()
     return Prompt(
         version=version,
