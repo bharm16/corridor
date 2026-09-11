@@ -73,7 +73,7 @@ from corridor.web.issue_section import (
 )
 from corridor.web.issue_section import issue_view
 
-from browser_session_support import form_fields
+from browser_session_support import form_fields, page_without_shell
 from coverage_support import declare_coverage
 from later_revision_support import BASELINE_ROWS, adopt, workbook_bytes
 from packet_review_support import configure_issue
@@ -721,7 +721,8 @@ def test_a_preparation_in_flight_can_be_looked_at_again(session, adopted, client
     assert REQUESTED_AT.isoformat() in readable
     assert COORDINATOR.subject in readable
     assert "/issue/prepare" not in body
-    assert "<button" not in body
+    # The shell's sign-out is not this section's control (#843).
+    assert "<button" not in page_without_shell(body)
 
 
 def test_a_failed_preparation_says_who_retries_it_and_that_a_retry_is_new(

@@ -57,6 +57,7 @@ from corridor.web.app import (
 from corridor.web.packet_receipt import read_packet_receipt
 from corridor.web.ui_primitives import FOCUS_IDS
 
+from browser_session_support import page_without_shell
 from access_support import seed_membership
 from harness_support import move_accepted_value
 from record_counts import nothing_written
@@ -293,8 +294,10 @@ def test_only_the_opened_item_carries_decision_controls(
     closed = client.get(f"/review/{project.slug}").text
     opened = _open(client, project, key).text
 
-    assert closed.count("<form method=\"post\"") == 0
-    assert opened.count("<form method=\"post\"") == 1
+    # The navigation shell every customer page carries (#843) posts only its
+    # own sign-out, so the item's controls are counted without it.
+    assert page_without_shell(closed).count("<form method=\"post\"") == 0
+    assert page_without_shell(opened).count("<form method=\"post\"") == 1
     assert "Open this item" in opened
 
 
@@ -668,7 +671,7 @@ def test_a_burst_of_forty_changes_is_one_bounded_item_on_the_screen(
 
     body = _open(client, project, key).text
 
-    assert body.count('<form method="post"') == 1
+    assert page_without_shell(body).count('<form method="post"') == 1
     assert body.count('type="checkbox"') == 42  # forty selectable, two held out
     assert body.count("disabled") == 2
     assert "Apply the selected changes" in body
@@ -981,7 +984,9 @@ def test_the_undo_form_carries_the_request_forgery_token(
     )
     url, receipt_id = _receipt_link(saved)
 
-    body = client.get(url).text
+    # The screen's own form, without the shell's sign-out, which carries the
+    # same field on every customer page (#843).
+    body = page_without_shell(client.get(url).text)
 
     assert f'action="/review/{project.slug}/packet/{receipt_id}/undo"' in body
     assert body.count('name="csrf_token"') == 1
@@ -1056,9 +1061,11 @@ def test_undo_compensates_the_decision_and_deletes_nothing(
         decided_revision
     )
     assert [child.delta_id for child in packet_children(session, receipt_id)] == ids
-    # And the page now says so instead of offering the button again.
+    # And the page now says so instead of offering the button again. The
+    # shell's own sign-out carries the field on every customer page (#843),
+    # so what is read here is the page without it.
     assert "was already undone by" in client.get(url).text
-    assert "csrf_token" not in client.get(url).text
+    assert "csrf_token" not in page_without_shell(client.get(url).text)
 
 
 def test_undoing_a_defer_only_act_returns_the_changes_to_immediate_work(

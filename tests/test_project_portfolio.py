@@ -99,6 +99,7 @@ from corridor.web.app import (
 )
 
 from access_support import request_scoped, seed_membership
+from browser_session_support import page_without_shell
 from coverage_support import declare_coverage
 from record_counts import nothing_written
 from later_revision_support import BASELINE_ROWS, adopt, workbook_bytes
@@ -1467,10 +1468,12 @@ def test_portfolio_page_preserves_accessibility_and_presentation_contract(
     reading = _portfolio(session)
     body = client.get("/portfolio").text
 
-    # No portfolio completion action of any kind.
-    assert "<form" not in body
-    assert "<button" not in body
-    assert "<input" not in body
+    # No portfolio completion action of any kind. The navigation shell every
+    # customer page carries (#843) is not this page's control surface.
+    own = page_without_shell(body)
+    assert "<form" not in own
+    assert "<button" not in own
+    assert "<input" not in own
     for token in ("done", "complete", "dismiss", "snooze"):
         assert f'value="{token}"' not in body
 

@@ -42,6 +42,8 @@ from corridor.release_authorization import (
 from corridor.release_candidate import ARTIFACT_SUFFIXES, current_release_candidate
 from corridor.web.artifact_downloads import download_name, member_name
 
+from browser_session_support import page_without_shell
+
 from test_issue_section import (  # noqa: F401 -- fixtures used by name
     COORDINATOR,
     NOW,
@@ -628,9 +630,12 @@ def test_the_record_view_lists_the_approved_package_with_its_fields_and_files(
     ):
         assert client.get(link).status_code == 200, link
 
-    # And it is still a reading: the one form on it is the GET search.
-    assert 'method="post"' not in rendered.text.lower()
-    assert rendered.text.lower().count("<form") == 1
+    # And it is still a reading: the one form on it is the GET search. The
+    # navigation shell every customer page carries (#843) is not this page's
+    # own control surface, so the page is read without it.
+    own = page_without_shell(rendered.text).lower()
+    assert 'method="post"' not in own
+    assert own.count("<form") == 1
 
 
 def test_the_download_routes_are_admitted_with_protected_readings():

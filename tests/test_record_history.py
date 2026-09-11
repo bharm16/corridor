@@ -63,6 +63,7 @@ from corridor.review_packets import APPLY, KEEP_CURRENT, resolve_review_packet
 from corridor.web.app import app, get_human_principal, get_session
 
 from access_support import seed_membership
+from browser_session_support import page_without_shell
 from record_counts import nothing_written, project_record_counts
 from packet_review_support import (
     Rendition,
@@ -783,7 +784,10 @@ def test_the_page_carries_no_decision_control(session, project, client):
 
     _adopted(session, project)
 
-    body = client.get(f"/record/{project.slug}").text
+    # The navigation shell every customer page carries is not this page's
+    # control surface, and its sign-out form is not a decision about the
+    # record (#843), so the page is read without it.
+    body = page_without_shell(client.get(f"/record/{project.slug}").text)
 
     assert 'method="post"' not in body.lower()
     assert body.lower().count("<form") == 1

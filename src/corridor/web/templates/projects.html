@@ -14,17 +14,13 @@
        margin:.5rem 0; }
   li a { color:#111; font-weight:600; text-decoration:none; }
   .muted { color:var(--muted); }
-  button { font:inherit; color:#111; background:#fff; border:1px solid var(--line);
-           border-radius:4px; padding:.35rem .7rem; cursor:pointer; }
 </style>
+
+{% include "_shell.html" %}
 
 <header>
   <b>Corridor</b>
-  <form method="post" action="/sign-out">
-    {{ csrf_field() }}
-    <span class="muted">{{ email }}</span>
-    <button type="submit">Sign out</button>
-  </form>
+  <span class="muted">{{ email }}</span>
 </header>
 
 <main>

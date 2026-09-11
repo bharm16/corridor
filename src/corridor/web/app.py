@@ -98,6 +98,7 @@ from corridor.web.artifact_downloads import (
     download_response,
 )
 from corridor.web import auth
+from corridor.web import navigation
 from corridor.web import ui_primitives
 from corridor.check_configuration import (
     SUPPORTED_THRESHOLDS,
@@ -565,6 +566,9 @@ TEMPLATES.env.globals.update(
 # The shared accessibility primitives (#559): state and consequence words, the
 # before-and-after reading, and the one focus target per response.
 ui_primitives.register(TEMPLATES.env)
+# The navigation shell every customer page carries (#843): its items, their
+# words and destinations, and which one the reader is inside.
+navigation.register(TEMPLATES.env)
 app = FastAPI(title="Corridor — coordination records")
 # Configured where the process is defined rather than in an entry point, so
 # every way this application is served — uvicorn, a test client, a smoke

@@ -3241,6 +3241,122 @@ def test_every_authenticated_form_on_a_pilot_page_carries_the_forgery_field():
         "`{{ csrf_field() }}`, so a signed-in person clicking it is refused "
         "with 403. Emit the field as the first thing inside the form"
     )
+
+
+# --- Every customer page the manifest renders carries the shell (#843) -------
+#
+# A shell each template opts into by hand is a shell that drifts, and the drift
+# is what the customer-journey audit found: thirteen customer pages, thirteen
+# different answers to "where can I go from here", and a sign-out control on
+# exactly one of them.  So membership is not a convention a reviewer has to
+# remember.  It is read the same way the forgery-field rule above reads it --
+# `_manifest_page_templates()` resolves a live-pilot route to the templates its
+# handler renders, transitively through the helpers it calls, and
+# `_composed_templates()` says what each of those pulls in.
+#
+# A *customer page* is a whole HTML document; a partial is markup a page sends
+# and carries no shell of its own.  That is also what keeps criterion two true
+# without a second mechanism: a health response, a machine endpoint and a
+# download render no template at all, so there is nothing for a shell to be
+# inside, and the last check below refuses a shell that reaches any template
+# but a customer page the manifest serves.
+
+SHELL_TEMPLATE = TEMPLATE_ROOT / "_shell.html"
+
+#: The manifest pages that deliberately carry no shell, and why each does not.
+#: Both are the pre-authentication pair: there is no current project, no
+#: account, and nothing to sign out of, so every item but one would be an
+#: offer the reader cannot take and the sign-out form would post a token the
+#: reader has not been issued.  A page joining this list is a decision, and
+#: one leaving it is the shell reaching one more screen; the check below is
+#: written from both sides so neither happens quietly.
+UNSHELLED_PAGES = {
+    "sign_in.html": "the public sign-in form; nobody is signed in yet",
+    "sign_in_invalid.html": "a spent or expired link, reached signed out",
+}
+
+
+def _customer_pages() -> frozenset[Path]:
+    """Every manifest page template that is a whole HTML document."""
+    return frozenset(
+        path
+        for path in _manifest_page_templates()
+        if "<!doctype" in path.read_text(encoding="utf-8").lower()
+    )
+
+
+def _renders_template(path: Path, target: Path) -> bool:
+    """True when this template pulls in that one, directly or through a partial."""
+    composition = _composed_templates()
+    seen: set[Path] = set()
+    frontier = [path]
+    while frontier:
+        for composed in composition.get(frontier.pop(), frozenset()):
+            if composed not in seen:
+                seen.add(composed)
+                frontier.append(composed)
+    return target in seen
+
+
+def test_the_navigation_shell_rule_reaches_the_pages_it_is_written_for():
+    """The check is worthless if it silently covers nothing.
+
+    Its reach is both halves: the project's week, the Review screen and the
+    source register are customer pages the manifest serves, and the two
+    exemptions are manifest pages too rather than names nothing measures.
+    """
+    pages = {path.name for path in _customer_pages()}
+
+    assert SHELL_TEMPLATE.exists()
+    assert {
+        "project_workflow.html",
+        "review.html",
+        "record_history.html",
+        "source_uploads.html",
+        "projects.html",
+        "portfolio.html",
+    } <= pages
+    assert set(UNSHELLED_PAGES) <= pages
+    assert "_primitives.html" not in pages, "a partial is not a customer page"
+
+
+def test_every_customer_page_the_manifest_renders_carries_the_shell():
+    """One shell, on every page a signed-in person can be sent to."""
+    unshelled = {
+        path.name
+        for path in _customer_pages()
+        if not _renders_template(path, SHELL_TEMPLATE)
+    }
+
+    assert unshelled == set(UNSHELLED_PAGES), (
+        f"{sorted(unshelled)}: a customer page the live pilot serves does not "
+        'render the navigation shell. Add `{% include "_shell.html" %}` '
+        "immediately before the page's own `<header>`, or record the page in "
+        "`UNSHELLED_PAGES` with the reason it carries none"
+    )
+
+
+def test_the_navigation_shell_reaches_no_response_that_is_not_a_customer_page():
+    """A machine surface, a health response and a download carry no shell.
+
+    None of them renders a template, so none of them can; what this refuses is
+    the other direction -- the shell composed into some template that is not a
+    customer page the manifest serves, which is how it would arrive somewhere
+    nobody decided to put it.
+    """
+    pages = _customer_pages()
+    elsewhere = sorted(
+        path.name
+        for path in TEMPLATE_ROOT.glob("*.html")
+        if path not in pages and _renders_template(path, SHELL_TEMPLATE)
+    )
+
+    assert elsewhere == [], (
+        f"{elsewhere}: the navigation shell reaches a template that is not a "
+        "customer page the live pilot serves"
+    )
+
+
 # The families ADR-0081 converges on, and the constraint in each that makes a
 # duplicate unrepresentable (#457).  A dedup identity that lives in a writer —
 # a ``SECURITY DEFINER`` command's body, or the Python calling it — holds only
