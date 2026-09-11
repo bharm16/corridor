@@ -844,6 +844,23 @@ def deprovision_principal(
 # grants stay.  ``connector_checkpoint_advance_deliveries`` does not carry
 # one, no human surface has ever written it, and the connector poller writes
 # it as ``corridor_worker``, so that one is revoked.
+#
+# **#824 moved six more, and corrected a reason while it did.**  Admitting the
+# upload, confirmation and source-register routes gave five of them a reader
+# at last: ``doc_pages``, ``token_layers``, ``page_render_derivatives`` and
+# ``document_quarantines`` are what confirming one upload writes, and
+# ``extraction_runs`` and ``document_quarantines`` are what the register reads
+# to say honestly whether a document has been processed.  ``processing_artifacts``
+# carries a ``project_id`` and takes the ordinary policy.
+#
+# The other five carry none, and the reason recorded against them said a
+# policy therefore "has nothing to test".  That was wrong: a policy tests an
+# expression, and theirs joins the parent it already has.  Each row belongs to
+# one ``documents`` row, ``documents`` is partitioned, so the policy asks
+# whether *that* document is in the caller's partition.  The remaining
+# "carries no project column" entries below are still revoked, but the reason
+# is that no enabled route reads them -- not that they could not be
+# partitioned if one did.
 
 PARTITION_CLASSIFICATIONS = (
     "partitioned",
@@ -888,12 +905,15 @@ PARTITIONED_RELATIONS: frozenset[str] = frozenset(
         "delta_review_packet_supports",
         "delta_supersessions",
         "dependency_events",
+        "doc_pages",
+        "document_quarantines",
         "documents",
         "evidence_link_sources",
         "extracted_proposal_facts",
         "extracted_proposals",
         "external_report_artifacts",
         "external_report_releases",
+        "extraction_runs",
         "fact_applies_to",
         "fact_closure_results",
         "fact_closure_sources",
@@ -905,6 +925,8 @@ PARTITIONED_RELATIONS: frozenset[str] = frozenset(
         "issue_coverage_declarations",
         "outgoing_request_responses",
         "outgoing_requests",
+        "page_render_derivatives",
+        "processing_artifacts",
         "project_baseline_adoptions",
         "project_baseline_format_manifests",
         "project_baseline_format_objects",
@@ -942,6 +964,7 @@ PARTITIONED_RELATIONS: frozenset[str] = frozenset(
         "spend_authorizations",
         "support_assessment_sources",
         "support_assessments",
+        "token_layers",
     }
 )
 
@@ -1202,12 +1225,6 @@ NOT_YET_PARTITIONED_RELATIONS: dict[str, str] = {
         "revoked every `corridor_web` privilege on it, so the live-pilot "
         "web capability cannot reach it by any id at all"
     ),
-    "doc_pages": (
-        "carries no project column, so a partition policy has nothing to "
-        "test. Its project is reached through `documents`, and #680 "
-        "revoked every `corridor_web` privilege on it, so the live-pilot "
-        "web capability cannot reach it by any id at all"
-    ),
     "document_notification_attempts": (
         "project-scoped, and no enabled live-pilot route reads it. #680 "
         "revoked every `corridor_web` privilege on it rather than writing "
@@ -1225,12 +1242,6 @@ NOT_YET_PARTITIONED_RELATIONS: dict[str, str] = {
         "revoked every `corridor_web` privilege on it rather than writing "
         "a policy for a reader that does not exist; a route that needs it "
         "again has to partition it first"
-    ),
-    "document_quarantines": (
-        "carries no project column, so a partition policy has nothing to "
-        "test. Its project is reached through `documents`, and #680 "
-        "revoked every `corridor_web` privilege on it, so the live-pilot "
-        "web capability cannot reach it by any id at all"
     ),
     "document_rendition_derivations": (
         "project-scoped, and no enabled live-pilot route reads it. #680 "
@@ -1404,13 +1415,6 @@ NOT_YET_PARTITIONED_RELATIONS: dict[str, str] = {
         "privilege on it, so the live-pilot web capability cannot reach "
         "it by any id at all"
     ),
-    "extraction_runs": (
-        "carries no project column, so a partition policy has nothing to "
-        "test. Its project is reached through `documents`, "
-        "`extractor_configurations`, and #680 revoked every "
-        "`corridor_web` privilege on it, so the live-pilot web capability "
-        "cannot reach it by any id at all"
-    ),
     "follow_up_plan_receipts": (
         "carries no project column, so a partition policy has nothing to "
         "test. Its project is reached through `audit_log`, "
@@ -1513,12 +1517,6 @@ NOT_YET_PARTITIONED_RELATIONS: dict[str, str] = {
         "revoked every `corridor_web` privilege on it, so the live-pilot "
         "web capability cannot reach it by any id at all"
     ),
-    "page_render_derivatives": (
-        "carries no project column, so a partition policy has nothing to "
-        "test. Its project is reached through `documents`, and #680 "
-        "revoked every `corridor_web` privilege on it, so the live-pilot "
-        "web capability cannot reach it by any id at all"
-    ),
     "policy_activations": (
         "project-scoped, and no enabled live-pilot route reads it. One "
         "relation now carries every ADR-0050 activation ledger, keyed by "
@@ -1533,12 +1531,6 @@ NOT_YET_PARTITIONED_RELATIONS: dict[str, str] = {
         "again has to partition it first"
     ),
     "policy_runs": (
-        "project-scoped, and no enabled live-pilot route reads it. #680 "
-        "revoked every `corridor_web` privilege on it rather than writing "
-        "a policy for a reader that does not exist; a route that needs it "
-        "again has to partition it first"
-    ),
-    "processing_artifacts": (
         "project-scoped, and no enabled live-pilot route reads it. #680 "
         "revoked every `corridor_web` privilege on it rather than writing "
         "a policy for a reader that does not exist; a route that needs it "
@@ -1751,12 +1743,6 @@ NOT_YET_PARTITIONED_RELATIONS: dict[str, str] = {
         "a policy for a reader that does not exist; a route that needs it "
         "again has to partition it first"
     ),
-    "token_layers": (
-        "carries no project column, so a partition policy has nothing to "
-        "test. Its project is reached through `documents`, and #680 "
-        "revoked every `corridor_web` privilege on it, so the live-pilot "
-        "web capability cannot reach it by any id at all"
-    ),
     "unreadable_cell_reading_profiles": (
         "project-scoped, and no enabled live-pilot route reads it. #680 "
         "revoked every `corridor_web` privilege on it rather than writing "
@@ -1798,7 +1784,7 @@ NOT_YET_PARTITIONED_RELATIONS: dict[str, str] = {
     ),
 }
 
-NOT_YET_PARTITIONED_CEILING = 121
+NOT_YET_PARTITIONED_CEILING = 115
 
 
 def classify_relation(name: str) -> tuple[str, str]:

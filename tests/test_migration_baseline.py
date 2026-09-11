@@ -75,6 +75,15 @@ EXPECTED_SCHEMA_SHA256 = (
     # `ck_source_delivery_push_credential` with the authentication-mode pair
     # `ck_source_delivery_authentication` and `ck_source_delivery_principal`
     # over a new `source_deliveries.delivered_by_principal` column.
+    # #824 partitions the six relations the admitted intake path reads --
+    # `processing_artifacts` by its own `project_id`, and `doc_pages`,
+    # `document_quarantines`, `extraction_runs`, `page_render_derivatives`
+    # and `token_layers` through the `documents` row each names. Row-level
+    # security and policies are not schema objects this fingerprint reads
+    # (it reads columns, constraints, functions, triggers and indexes), and
+    # no relation or sequence is added, so the digest and both counts are
+    # unchanged. Recomputed against a fresh disposable database to say so
+    # rather than assumed.
     "1416594efdd6dcdec84e6b78a695942993afb5025d0883f7d8867e60429351f4"
 )
 

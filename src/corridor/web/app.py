@@ -619,6 +619,13 @@ def get_session(request: Request):
 # boundary *enables* still has to refuse: `/work/{slug}` renders ADR-0035's
 # item-per-record Work List for an unadopted project, and every relation that
 # list reads is revoked.
+#
+# `_deployment_serves` is the same question asked forwards, for a page rather
+# than for a request (#824). An enabled page that prints a control for a route
+# this deployment does not serve is a button that answers 404, and the person
+# clicking it has done nothing wrong. So a screen offering an optional route's
+# control asks here first, and the answer is the identical `route_refusal` the
+# gate would give that request -- not a second reading of the flag.
 
 
 def get_machine_session(request: Request):
@@ -709,6 +716,20 @@ def _refuse_legacy_project_under_the_boundary(
         )
     if state is web_boundary.BoundaryState.INCONSISTENT:
         raise HTTPException(503, web_boundary.BOUNDARY_DISABLED_REASON)
+
+
+def _deployment_serves(request: Request, method: str, template: str) -> bool:
+    """Whether this deployment would answer that route, so a page may offer it.
+
+    The question a screen has to ask before printing an optional control. It is
+    answered by `route_refusal` on the state the gate already decided for this
+    request, so a page cannot offer a button the very next request is refused.
+    """
+
+    state = getattr(
+        request.state, "live_pilot_boundary", web_boundary.BoundaryState.NOT_DECLARED
+    )
+    return web_boundary.route_refusal(state, method, template) is None
 
 
 def get_content_store() -> ObjectStore:
@@ -7123,6 +7144,9 @@ def source_upload_preview(
     # The delivery outlives an abandoned preview: the person may close the tab,
     # and what arrived is recorded either way.
     session.commit()
+    offers_draft = _deployment_serves(
+        request, "POST", "/projects/{slug}/sources/draft"
+    )
     return TEMPLATES.TemplateResponse(
         request,
         "source_preview.html",
@@ -7133,12 +7157,19 @@ def source_upload_preview(
             # The optional, explicitly requested draft of source-bound
             # suggestions (#362). Offered only once bounded spend authority is
             # declared; requesting it is a separate, attributable act.
-            "draft_configured": current_intake_draft_configuration(
-                session, project.id
-            )
-            is not None,
-            "draft_state_token": intake_draft_state_token(
-                session, project.id, received.staged.sha256
+            #
+            # And only where this deployment serves the route behind the button
+            # (#824). The live pilot admits the deterministic path and leaves
+            # the model-assisted draft out of it, so on an enforcing deployment
+            # the draft is not offered at all -- which is also what keeps this
+            # page off `source_intake_draft_configurations`, a relation that
+            # boundary revokes.
+            "draft_configured": offers_draft
+            and current_intake_draft_configuration(session, project.id) is not None,
+            "draft_state_token": (
+                intake_draft_state_token(session, project.id, received.staged.sha256)
+                if offers_draft
+                else ""
             ),
         },
     )
