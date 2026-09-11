@@ -81,6 +81,14 @@ AUDIT_ENTITY_TABLES: dict[str, str] = {
 # about one project (#531), so their entries survive a project's deletion.
 GLOBAL_AUDIT_ENTITY_TYPES = frozenset({audit.PERSON_IDENTITY})
 
+# A table placed only through nullable columns could hold a row carrying no
+# placement at all, and that row would outlive the cleanup unnoticed. One
+# table is placed that way on purpose, and a check constraint keeps every
+# row of it placed.
+NULLABLE_PLACEMENT_TABLES: dict[str, str] = {
+    "work_decisions": "ck_work_decisions_exactly_one_subject requires one of dependency_id and commitment_lineage_id",
+}
+
 # A placement: the local column, the table it places this one against, and
 # the column of that table it names.
 Placement = tuple[str, str, str]
@@ -170,6 +178,27 @@ def place_project_tables(
         raise AssertionError(
             "these tables are project-scoped and must not be classified as global: "
             f"{misclassified}"
+        )
+
+    optional = {
+        name
+        for name, found in placements.items()
+        if found
+        and name not in (AUDIT_TABLE,)
+        and "project_id" not in tables[name].c
+        and all(tables[name].c[local].nullable for local, _, _ in found)
+    }
+    unheld = sorted(optional - set(NULLABLE_PLACEMENT_TABLES))
+    if unheld:
+        raise AssertionError(
+            "a row of these tables can carry no placement at all and would outlive "
+            "the cleanup; make one placement column NOT NULL, or name the check "
+            f"constraint that holds it in tests/committed_scenario_support.py: {unheld}"
+        )
+    held = sorted(set(NULLABLE_PLACEMENT_TABLES) - optional)
+    if held:
+        raise AssertionError(
+            f"these tables no longer need a nullable-placement reason: {held}"
         )
 
     return _dependents_first(placements), placements
