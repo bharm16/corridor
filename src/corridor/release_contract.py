@@ -7,12 +7,19 @@ heredoc, and nothing related that list to the stacks that emit them. Renaming a
 the middle of a release -- after the `nonproduction` environment approval had
 been spent and, past the drain step, with both services already at zero.
 
-The names live here so that the run-time reader in `app-release.yml` and the
-synthesis-time assertion in `infra/tests/test_stacks.py` read one declaration
-rather than two copies of it. That test imports this module by path, because
-`infra/` is a separate uv project that deliberately excludes the application's
-dependencies; like everything in `scripts/`, this module imports the standard
-library only.
+The names live here so that the run-time reader in `app-release.yml`, the
+synthesis-time assertion in `infra/tests/test_stacks.py`, and the disposition
+provider read one declaration rather than three copies of it. That test imports
+this module by path, because `infra/` is a separate uv project that
+deliberately excludes the application's dependencies, so this module imports
+the standard library only and nothing from `corridor`.
+
+It lives under `src/corridor/` for the third of those readers. It was in
+`scripts/`, and `aws_environment_disposition.py` therefore could not import it
+at all: `Dockerfile` copies only `container_entrypoint.py` out of `scripts/`,
+so inside the deployed image the module was simply not there, and the provider
+spelled its five output keys itself. A rename failed at synthesis for the
+release path and still refused a correctly requested destruction.
 
 Every authored output is declared here, including the ones no program reads.
 `infra-deploy.yml` puts the whole outputs document in the deployment's run
@@ -56,14 +63,25 @@ RELEASE_STACK_OUTPUTS: Mapping[str, str] = MappingProxyType({
 })
 
 RELEASE_WORKFLOW = "app-release.yml, through resolve()"
-# The disposition provider still spells these keys itself, inline: it runs
-# inside the image, and `Dockerfile:72` copies only `container_entrypoint.py`
-# out of `scripts/`, so it cannot import this module. Declaring them here binds
-# them to the stacks -- a rename now fails at synthesis rather than refusing a
-# correctly requested destruction. Its own copy stays unpaired; changing one of
-# these names means changing the stack, this list, and that module.
 DISPOSITION_PROVIDER = "src/corridor/aws_environment_disposition.py"
 OPERATOR_SUMMARY = "an operator, from the infra-deploy run summary; no program reads it"
+
+# The outputs the disposition provider reads back to prove that the stacks it
+# is about to destroy are the registered environment's, by the stack that emits
+# them. Each names the attribute of the registered resources it must equal, so
+# a renamed output and a renamed registration field both fail here rather than
+# leaving a comparison that silently never matches.
+DISPOSITION_STACK_OUTPUTS: Mapping[str, Mapping[str, str]] = MappingProxyType({
+    "CorridorApplication": MappingProxyType({
+        "DispositionCustomerId": "customer_id",
+        "DispositionEnvironmentId": "environment_id",
+        "DispositionDeploymentId": "deployment_id",
+    }),
+    "CorridorData": MappingProxyType({
+        "DatabaseEndpoint": "database_host",
+        "ArtifactBucketName": "object_namespace_bucket",
+    }),
+})
 
 # Every authored output, by the stack that emits it and what reads it.
 STACK_OUTPUT_READERS: Mapping[str, Mapping[str, str]] = MappingProxyType({
@@ -78,16 +96,15 @@ STACK_OUTPUT_READERS: Mapping[str, Mapping[str, str]] = MappingProxyType({
         "ControlPlaneDatabaseName": OPERATOR_SUMMARY,
     }),
     "CorridorData": MappingProxyType({
-        "DatabaseEndpoint": DISPOSITION_PROVIDER,
-        "ArtifactBucketName": DISPOSITION_PROVIDER,
+        **dict.fromkeys(DISPOSITION_STACK_OUTPUTS["CorridorData"], DISPOSITION_PROVIDER),
         "DispositionArtifactLogsBucket": OPERATOR_SUMMARY,
         "DispositionDatabaseArn": OPERATOR_SUMMARY,
     }),
     "CorridorApplication": MappingProxyType({
         **dict.fromkeys(RELEASE_STACK_OUTPUTS, RELEASE_WORKFLOW),
-        "DispositionCustomerId": DISPOSITION_PROVIDER,
-        "DispositionEnvironmentId": DISPOSITION_PROVIDER,
-        "DispositionDeploymentId": DISPOSITION_PROVIDER,
+        **dict.fromkeys(
+            DISPOSITION_STACK_OUTPUTS["CorridorApplication"], DISPOSITION_PROVIDER
+        ),
         "LoadBalancerDns": OPERATOR_SUMMARY,
         "ClusterName": OPERATOR_SUMMARY,
         "ClusterArn": OPERATOR_SUMMARY,

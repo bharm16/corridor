@@ -120,7 +120,7 @@ jobs:
           aws cloudformation describe-stacks --stack-name CorridorApplication \
             --query 'Stacks[0].Outputs' --output json > outputs.json \
             || { echo "::error::CorridorApplication is not deployed yet"; exit 1; }
-          uv run python scripts/release_contract.py resolve outputs.json >> "$GITHUB_ENV"
+          uv run python -m corridor.release_contract resolve outputs.json >> "$GITHUB_ENV"
 
       # A retry of a failed release re-runs the same commit. The repository is
       # tag-immutable, so pushing again is rejected before the workflow reaches
@@ -202,7 +202,7 @@ jobs:
         run: |
           uv run python - <<'PY' > migration-overrides.json
           import json, os
-          from scripts.release_contract import MIGRATION_CONTAINER_NAME
+          from corridor.release_contract import MIGRATION_CONTAINER_NAME
           command = ["python", "-m", "corridor.deployment_bootstrap", "configure"]
           if os.environ["WORKER_DESIRED_COUNT"] != "0":
               command.append("--require-enabled")

@@ -23,12 +23,15 @@ from corridor_infra.network_stack import CorridorNetworkStack
 from scripts import container_entrypoint
 
 # The deployment contract the release and the disposition provider read off
-# these stacks. `scripts/` is a regular package that imports the standard
-# library only, so this environment can read it without the application's
-# dependencies -- which is also why the config-name tests below read
-# `src/corridor/config.py` by path rather than importing pydantic-settings.
+# these stacks. `corridor.release_contract` imports the standard library only,
+# so this environment can read it without the application's dependencies --
+# which is also why the config-name tests below read `src/corridor/config.py`
+# by path rather than importing pydantic-settings. It lives inside the package
+# because the disposition provider runs inside the deployed image, which
+# carries `src/` and almost none of `scripts/`.
 sys.path.insert(0, str(pathlib.Path(__file__).parents[2]))
-from scripts.release_contract import (  # noqa: E402
+sys.path.insert(0, str(pathlib.Path(__file__).parents[2] / "src"))
+from corridor.release_contract import (  # noqa: E402
     MIGRATION_CONTAINER_NAME,
     RELEASE_STACK_OUTPUTS,
     STACK_OUTPUT_READERS,
@@ -1206,7 +1209,7 @@ def test_the_batch_role_may_still_replace_and_delete(stacks):
 
 
 # --- the contract a release reads off the deployed stacks ---------------
-# `scripts/release_contract.py` is the only declaration of these names. The
+# `src/corridor/release_contract.py` is the only declaration of these names. The
 # release workflow reads it at run time; these assertions read it at synthesis
 # time, so a renamed output fails here instead of in the middle of a release.
 
@@ -1283,10 +1286,10 @@ def test_every_stack_output_is_declared_with_what_reads_it(stacks):
     undeclared = sorted(emitted - declared)
     assert not undeclared, (
         f"{undeclared} say nothing about what reads them; declare them in "
-        "scripts/release_contract.py or delete them"
+        "src/corridor/release_contract.py or delete them"
     )
     stale = sorted(declared - emitted)
     assert not stale, (
-        f"scripts/release_contract.py declares {stale}, which the stacks no "
-        "longer emit"
+        f"src/corridor/release_contract.py declares {stale}, which the stacks "
+        "no longer emit"
     )

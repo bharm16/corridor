@@ -2184,7 +2184,7 @@ def _script_files() -> tuple[Path, ...]:
 def _names(text: str, name: str) -> bool:
     """True when `text` names the whole of `name` rather than the end of one.
 
-    `scripts/release_contract.py` ends with the name of
+    `src/corridor/release_contract.py` ends with the name of
     `scripts/test_gate/contract.py`, and a plain substring search reads the
     first as a caller of the second.
     """
@@ -2317,11 +2317,11 @@ def test_the_script_caller_scanner_reads_invocations_and_not_prose(tmp_path):
         _names(module, "retired_engines.json"),
     ) == (False, True)
 
-    longer = "python3 scripts/release_contract.py resolve outputs.json"
+    longer = '    "src/corridor/release_contract.py",'
     assert (
         _names(longer, "scripts/test_gate/contract.py"),
         _names(longer, "contract.py"),
-        _names(longer, "scripts/release_contract.py"),
+        _names(longer, "src/corridor/release_contract.py"),
     ) == (False, False, True)
 
 
@@ -2409,6 +2409,50 @@ def test_every_archived_script_is_registered_with_the_bytes_it_was_retired_at():
             wrong.append(f"{name}: superseded_by names no file")
 
     assert wrong == []
+
+
+def test_the_image_carries_every_scripts_module_the_application_imports():
+    """`src/` is copied whole into the image; `scripts/` is copied file by file.
+
+    So an application module that imports from `scripts/` is fine in a
+    developer checkout, where the repository root is on the path, and simply
+    absent in the deployed image. `aws_environment_disposition.py` could not
+    import `release_contract.py` for exactly that reason and spelled five
+    stack-output keys itself instead, which is how a renamed output passed
+    every check and still refused a correctly requested destruction. The
+    contract now lives in the package; this refuses the next one.
+
+    Static, and deliberately so: it reads the `COPY` lines rather than a built
+    image. The image itself is proved by the `image` job in `full-suite.yml`,
+    which imports the deployed command inside the container it just built.
+    """
+
+    dockerfile = (REPO_ROOT / "Dockerfile").read_text()
+    carried = {
+        Path(copied).stem
+        for copied in re.findall(r"^COPY\s+(scripts/\S+\.py)\s", dockerfile, re.M)
+    }
+    assert carried, "the image copies no module out of scripts/"
+
+    offenders: dict[str, set[str]] = {}
+    for path in sorted((REPO_ROOT / "src").rglob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text(), filename=str(path))):
+            if isinstance(node, ast.Import):
+                names = {alias.name for alias in node.names}
+            elif isinstance(node, ast.ImportFrom) and node.level == 0:
+                names = {node.module or ""}
+            else:
+                continue
+            for name in names:
+                package, _, rest = name.partition(".")
+                if package != "scripts" or rest.split(".")[0] in carried:
+                    continue
+                offenders.setdefault(str(path.relative_to(REPO_ROOT)), set()).add(name)
+
+    assert offenders == {}, (
+        f"{offenders} import modules the image does not carry; the Dockerfile "
+        f"copies only {sorted(carried)} out of scripts/"
+    )
 
 
 def test_database_upgrade_tests_are_one_explicitly_marked_baseline_contract():

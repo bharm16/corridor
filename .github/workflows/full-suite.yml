@@ -139,6 +139,24 @@ jobs:
           print('batch role ok')
           "
 
+      # The disposition provider runs inside this image and reads its five
+      # stack-output keys off the release contract. `src/` is copied whole and
+      # `scripts/` is not, which is why the contract lives in the package; only
+      # the built image can prove it is actually there.
+      - name: Smoke - the disposition command reads the release contract
+        run: |
+          docker run --rm --network none \
+            -e CORRIDOR_TASK_ROLE=batch \
+            -e CORRIDOR_DB_HOST=h -e CORRIDOR_DB_PORT=5432 \
+            -e CORRIDOR_DB_NAME=corridor -e CORRIDOR_WORKER_DB_PASSWORD=x \
+            "corridor:${{ github.sha }}" python -c "
+          from corridor.aws_environment_disposition import observe_stack_inventory
+          from corridor.release_contract import DISPOSITION_STACK_OUTPUTS, RELEASE_STACK
+          assert set(DISPOSITION_STACK_OUTPUTS) == {'CorridorApplication', 'CorridorData'}
+          assert RELEASE_STACK == 'CorridorApplication'
+          print('disposition contract ok')
+          "
+
       - name: Smoke - the render environment resolves offline
         run: |
           docker run --rm --network none \
