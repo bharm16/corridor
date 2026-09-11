@@ -51,6 +51,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 from starlette.requests import Request
 
+from corridor import form_drafts
 from corridor import refusals
 from corridor import email_intake
 from corridor import notifications
@@ -76,7 +77,7 @@ from corridor.adjudicate import (
 )
 from corridor.db import WebSession, WorkerSession
 from corridor.web.customer_routing import (
-    customer_session, set_customer_cookie, clear_customer_cookie,
+    customer_scope, customer_session, set_customer_cookie, clear_customer_cookie,
     needs_customer_sign_in, clear_invalid_customer_cookies,
 )
 from corridor.object_storage import ObjectStore, StorageError, content_store
@@ -885,8 +886,92 @@ def get_intake_draft_client_factory():
     return OpenAIClient.from_spend_authorization
 
 
+class SessionExpiredMidForm(Exception):
+    """A write arrived on a session that had expired under the form (#844).
+
+    Carried as an exception because the refusal happens in a dependency, before
+    any handler runs, and a dependency cannot return a response of its own.
+    ``return_to`` is a same-app path and never anything the form contained.
+    """
+
+    def __init__(self, return_to: str) -> None:
+        super().__init__("sign in to continue")
+        self.return_to = return_to
+
+
+@app.exception_handler(SessionExpiredMidForm)
+async def _send_an_expired_form_to_sign_in(
+    request: Request, exc: SessionExpiredMidForm
+) -> Response:
+    """Refuse the write and send the person to sign in, carrying only a path."""
+
+    return RedirectResponse(
+        "/sign-in?" + urlencode({"next": exc.return_to}), status_code=303
+    )
+
+
+_KEPT_DRAFTS = form_drafts.KeptDrafts()
+
+
+def get_kept_drafts() -> form_drafts.KeptDrafts:
+    """The process's held form drafts, as a seam a test substitutes (#844)."""
+
+    return _KEPT_DRAFTS
+
+
+async def _keep_what_expired_mid_form(
+    request: Request, session: Session, drafts: form_drafts.KeptDrafts
+) -> None:
+    """Hold a refused write's permitted input, and say where to come back to.
+
+    Only an expiry reaches here.  A browser with no cookie was never mid-form,
+    and a revoked session is a person who has been signed out or offboarded, so
+    both keep the bare refusal they have always had: revocation is not expiry,
+    and someone whose access was taken away must never be handed back what they
+    were typing.  Nothing is read for the project and nothing is authorized —
+    the draft is handed back only after a fresh sign-in re-proves identity and
+    `_project` re-proves membership.
+    """
+
+    if request.method in auth.SAFE_METHODS:
+        return
+    form = getattr(request.scope.get("route"), "path", "") or ""
+    rule = form_drafts.KEPT_FORMS.get(form)
+    if rule is None:
+        return
+    expired = access.expired_web_session(
+        session, request.cookies.get(auth.SESSION_COOKIE, "")
+    )
+    if expired is None:
+        return
+    submitted = [
+        (name, value)
+        for name, value in (await request.form()).multi_items()
+        if isinstance(value, str)
+    ]
+    occurrence = next(
+        (value for name, value in submitted if name == rule.occurrence), ""
+    )
+    page = rule.page.format(**request.path_params)
+    drafts.keep(
+        form_drafts.DraftScope(
+            customer=customer_scope(),
+            principal_subject=expired.principal_subject,
+            project_slug=request.path_params.get("slug", ""),
+            occurrence=occurrence,
+        ),
+        form,
+        form_drafts.permitted_input(form, submitted),
+    )
+    raise SessionExpiredMidForm(
+        page + "?" + urlencode({rule.occurrence_parameter: occurrence})
+    )
+
+
 async def get_human_principal(
-    request: Request, session: Session = Depends(get_session)
+    request: Request,
+    session: Session = Depends(get_session),
+    drafts: form_drafts.KeptDrafts = Depends(get_kept_drafts),
 ) -> HumanPrincipal:
     """The signed-in person for this request (#331).
 
@@ -896,9 +981,15 @@ async def get_human_principal(
     any handler runs, so a revoked session or membership is felt at once. On a
     write, the session's request-forgery token must be echoed, so a cross-site
     POST — which carries neither the cookie nor the token — cannot act.
+
+    One refusal answers differently, and only in where it sends the person: a
+    write whose session expired under a form it was being filled in is refused
+    exactly as before — nothing is applied and no token is trusted — and then
+    redirected to sign in, with the input it carried held as a draft (#844).
     """
     web_session = auth.load_session(request, session)
     if web_session is None:
+        await _keep_what_expired_mid_form(request, session, drafts)
         raise HTTPException(401, "sign in to continue")
     if request.method not in auth.SAFE_METHODS:
         submitted = await auth.extract_csrf(request)
@@ -4771,13 +4862,19 @@ def _review_context(
     refusal: dict | None = None,
     errors: tuple = (),
     judgment: dict | None = None,
+    defer_until: str = "",
+    restored: dict | None = None,
 ) -> dict:
     reading = read_review_items(session, project_id=project.id, as_of=now)
     binding = binding_for_session(session)
     opened = reading.item(opened_key) if opened_key else None
     landing = opened or (reading.items[0] if reading.items else None)
+    # A restored draft is announced as the refusal it is: the submission was
+    # not applied, and the page says so first and assertively (#844).
     focus = ui_primitives.focus_target(
-        refused=refusal is not None, errors=errors, saved=saved is not None
+        refused=refusal is not None or restored is not None,
+        errors=errors,
+        saved=saved is not None,
     )
     views = []
     for item in reading.items:
@@ -4814,7 +4911,9 @@ def _review_context(
         "errors": tuple(errors),
         "saved": saved,
         "refusal": refusal,
-        "defer_until": "",
+        # What a session expiry handed back, and what moved under it (#844).
+        "restored": restored,
+        "defer_until": defer_until,
         "focused_outcomes": _FOCUSED_OUTCOME_LABELS,
         "leave_open": LEAVE_OPEN,
         # #846: the measurement controls belong to the pinned pilot
@@ -4908,6 +5007,119 @@ def _review_counts(item) -> tuple[tuple[str, object], ...]:
     )
 
 
+# --- What a session expiry handed back, and what moved under it (#844) -----
+#
+# A Proposed Delta is append-only and a Review child reads its *own* recorded
+# comparison, so while a change is still offered it reads exactly as it read
+# when the coordinator selected it: the accepted value moving is what makes the
+# delta stale, and a newer incoming value is a different delta that supersedes
+# this one. Both exits take the change out of the reading. So "what changed
+# since the original form" needs nothing captured from the old page — the
+# current reading answers it, in the deterministic exits' own words.
+
+
+def _restored_input(draft, reading, *, batched: bool) -> dict:
+    """Every change the draft names, and what this reading says about it now."""
+
+    named = draft.values("child" if batched else "answer_delta")
+    rows = []
+    for raw in named:
+        if not raw.strip().isdigit():
+            continue
+        delta_id = int(raw)
+        child = next(
+            (
+                found
+                for held in reading.items
+                for found in held.children
+                if found.delta_id == delta_id
+            ),
+            None,
+        )
+        rows.append(
+            {
+                "subject": child.text if child else f"Proposed change {delta_id}",
+                "detail": (
+                    "Unchanged since you started"
+                    if child
+                    else reading.standing_sentence(delta_id)
+                ),
+            }
+        )
+    return {
+        "heading": "Your session expired, so nothing was saved",
+        "detail": (
+            "What you had entered is below, on this project record as it "
+            "stands now. Check what moved, then save again."
+        ),
+        "rows": tuple(rows),
+    }
+
+
+def _restore_expired_draft(
+    session: Session,
+    project: Project,
+    principal: HumanPrincipal,
+    drafts: form_drafts.KeptDrafts,
+    *,
+    now: datetime,
+    opened_key: str,
+) -> dict:
+    """Take this person's draft for this occurrence, as context for the screen.
+
+    Reached only after `_project` has re-proved the caller's current membership
+    of this project, so a person whose access was withdrawn between the expiry
+    and the sign-in is answered by that gate and never reaches a draft of their
+    own. The draft is taken once and is gone whether or not the person saves.
+    """
+
+    if not opened_key:
+        return {}
+    draft = drafts.take(
+        form_drafts.DraftScope(
+            customer=customer_scope(),
+            principal_subject=principal.subject,
+            project_slug=project.slug,
+            occurrence=opened_key,
+        )
+    )
+    if draft is None:
+        return {}
+    # A second reading, taken only on the rare load that has a draft to hand
+    # back: the screen's own context is built *from* what is returned here, so
+    # the comparison cannot be made out of a reading that does not exist yet.
+    reading = read_review_items(session, project_id=project.id, as_of=now)
+    batched = draft.form == form_drafts.REVIEW_ITEM_SAVE
+    restored: dict = {
+        "restored": _restored_input(draft, reading, batched=batched),
+        "judgment": _triage_form(
+            draft.value("judgment"), draft.value("judgment_minutes"), "", "", ""
+        ),
+    }
+    if batched:
+        restored["selected"] = [
+            int(value)
+            for value in draft.values("child")
+            if value.strip().isdigit()
+        ]
+        restored["defer_until"] = draft.value("defer_until")
+        return restored
+    named = draft.values("answer_delta")
+    columns = {
+        key: draft.values(f"answer_{key if key != 'return_date' else 'return'}")
+        for key in (
+            "outcome", "source", "question", "person", "organization", "return_date"
+        )
+    }
+    restored["answers"] = {
+        int(raw): {key: values[index] for key, values in columns.items()}
+        for index, raw in enumerate(named)
+        if raw.strip().isdigit()
+        and all(len(values) > index for values in columns.values())
+    }
+    return restored
+
+
 @app.get("/review/{slug}", response_class=HTMLResponse)
 def review_source_changes(
     request: Request,
@@ -4916,12 +5128,29 @@ def review_source_changes(
     principal: HumanPrincipal = Depends(get_human_principal),
     session: Session = Depends(get_session),
     clock=Depends(get_review_clock),
+    drafts: form_drafts.KeptDrafts = Depends(get_kept_drafts),
 ):
-    """List every actionable item, and open the one the coordinator asked for."""
+    """List every actionable item, and open the one the coordinator asked for.
+
+    This is also the one place a draft left behind by an expired session is
+    offered back (#844). `_project` above has just re-proved the caller's
+    current membership, the reading is taken fresh, and the restored input is
+    rendered on a form carrying a new request-forgery token beside what moved
+    under it, for the coordinator to submit again themselves. Nothing is
+    applied here and no submission is replayed.
+    """
 
     project = _project(session, slug, principal)
     now = clock()
-    context = _review_context(session, project, now=now, opened_key=item)
+    context = _review_context(
+        session,
+        project,
+        now=now,
+        opened_key=item,
+        **_restore_expired_draft(
+            session, project, principal, drafts, now=now, opened_key=item
+        ),
+    )
     return _render_review_response(request, context, principal=principal, record_opening=True)
 
 

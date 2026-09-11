@@ -597,6 +597,32 @@ def resolve_web_session(
     ).first()
 
 
+def expired_web_session(
+    session: Session, raw_session_id: str, *, now: datetime | None = None
+) -> WebSession | None:
+    """The session this cookie names, only when it expired and was not revoked.
+
+    ``resolve_web_session`` answers one question — may this request act — and
+    collapses expired, revoked and unknown into the same ``None``, which is
+    right for authorization and wrong for the one caller that has to tell them
+    apart.  A session that simply ran out of time belonged to a person who was
+    working a moment ago; a revoked one belongs to someone who signed out or
+    was offboarded, and #844 turns on never treating the second as the first.
+    This still authorizes nothing: it returns a row that has already failed
+    every check, so a caller can name the person who was here and no more.
+    """
+    if not raw_session_id:
+        return None
+    moment = _now(now)
+    return session.scalars(
+        select(WebSession).where(
+            WebSession.session_sha256 == _sha256_hex(raw_session_id),
+            WebSession.revoked_at.is_(None),
+            WebSession.expires_at <= moment,
+        )
+    ).first()
+
+
 def revoke_web_session(
     session: Session, raw_session_id: str, *, now: datetime | None = None
 ) -> bool:
