@@ -702,6 +702,46 @@ PILOT_ROUTES: dict[tuple[str, str], PilotRoute] = {
             }
         ),
     ),
+    ("GET", "/issue-configuration/{slug}"): PilotRoute(
+        why=(
+            "#828 read what this project is configured to externally issue, "
+            "its version history, and the change a person is preparing"
+        ),
+        relations=frozenset(
+            {
+                "project_baseline_format_manifests",
+                "project_baseline_formats",
+                "project_issue_profile_artifacts",
+                "project_issue_profiles",
+                "project_record_revisions",
+                "project_roster_entries",
+                "projects",
+                "release_candidates",
+                "release_packages",
+                "web_sessions",
+            }
+        ),
+    ),
+    ("POST", "/issue-configuration/{slug}/approve"): PilotRoute(
+        why=(
+            "#828 approve the next version of the configured issue set; the "
+            "write itself is the record-decision command's, not this role's"
+        ),
+        relations=frozenset(
+            {
+                "project_baseline_format_manifests",
+                "project_baseline_formats",
+                "project_issue_profile_artifacts",
+                "project_issue_profiles",
+                "project_record_revisions",
+                "project_roster_entries",
+                "projects",
+                "release_candidates",
+                "release_packages",
+                "web_sessions",
+            }
+        ),
+    ),
     ("POST", "/review/{slug}/answers"): PilotRoute(
         why=(
             "#526 record the Review Packet answers"
