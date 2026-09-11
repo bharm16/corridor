@@ -24,6 +24,11 @@
   .unresolved { border:1px dashed var(--line); border-radius:6px;
                 padding:.8rem 1rem; margin:.6rem 0 0; }
   .unresolved div { margin-bottom:.5rem; }
+  .unresolved label { font-weight:600; }
+  .unresolved select, .unresolved input[type=text] { font:inherit; margin-top:.3rem;
+            padding:.3rem .4rem; border:1px solid var(--line); border-radius:4px;
+            min-width:20rem; max-width:100%; }
+  .note { color:var(--muted); font-size:.86rem; }
   .unresolved .field { font-weight:600; }
   .unresolved .note { color:var(--muted); font-size:.86rem; }
   .flag { border:1px solid var(--warn); background:#fff7ed; color:var(--warn);
@@ -71,6 +76,26 @@
     {% endfor %}
   </div>
 
+  {% if revision and revision.applies %}
+    {% if revision.held %}
+      <h2>This file is held</h2>
+      <p class="flag">
+        {{ revision.held.reason }}
+        <br>
+        <b>{{ revision.held.responsible_party }}</b> acts next.
+        {{ revision.held.next_action }}
+      </p>
+    {% else %}
+      <h2>What this revision is</h2>
+      <dl>
+        {% for item in revision.known %}
+          <dt>{{ item.question }}</dt>
+          <dd>{{ item.answer_label }}<br><span class="note">{{ item.detail }}</span></dd>
+        {% endfor %}
+      </dl>
+    {% endif %}
+  {% endif %}
+
   {% if preview.type_conflict %}
     <p class="flag">
       These exact bytes are already registered in this project as
@@ -95,6 +120,29 @@
     <input type="hidden" name="binding_fingerprint"
            value="{{ preview.binding_fingerprint }}">
     <input type="hidden" name="source_delivery_id" value="{{ source_delivery_id }}">
+    {% if revision and revision.applies and not revision.held %}
+      <h2>What only you can say about this file</h2>
+      <div class="unresolved">
+        {% for item in revision.unanswered %}
+          <div>
+            <div class="field">
+              <label for="ask-{{ item.field }}">{{ item.question }}</label>
+            </div>
+            {% if item.note %}<div class="note">{{ item.note }}</div>{% endif %}
+            {% if item.choices %}
+              <select id="ask-{{ item.field }}" name="{{ item.field }}" required>
+                <option value=""></option>
+                {% for choice in item.choices %}
+                  <option value="{{ choice.value }}">{{ choice.label }}</option>
+                {% endfor %}
+              </select>
+            {% else %}
+              <input id="ask-{{ item.field }}" type="text" name="{{ item.field }}">
+            {% endif %}
+          </div>
+        {% endfor %}
+      </div>
+    {% endif %}
     <div class="actions">
       {% if not preview.type_conflict %}
         <button type="submit">Confirm registration</button>

@@ -35,6 +35,7 @@ from corridor.issue_content import (
     effective_issue_content,
 )
 from corridor.later_revision import capture_later_revision
+from corridor.source_revision_declaration import RevisionDeclaration
 from corridor.issue_coverage import (
     ANNOTATION_LIMIT,
     CoverageAnnotation,
@@ -996,7 +997,7 @@ def test_a_late_delivery_can_wait_end_to_end_from_intake(session, adopted, tmp_p
         staged=staged,
         envelope=envelope,
         manifest=adopted.manifest,
-        principal=PRINCIPAL,
+        declaration=RevisionDeclaration(declared_by=PRINCIPAL),
         images_dir=tmp_path / "images",
     )
 

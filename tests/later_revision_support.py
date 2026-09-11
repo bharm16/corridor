@@ -23,7 +23,7 @@ from corridor.field_mapping_manifest import (
     FieldMappingManifest,
     MappingDeclaration,
 )
-from corridor.models import Project
+from corridor.models import Document, Project
 from corridor.principals import HumanPrincipal
 from corridor.push_intake import (
     PushCredential,
@@ -32,7 +32,21 @@ from corridor.push_intake import (
     bind_credential,
     register_push_credential,
 )
-from corridor.source_intake import StagedSource, validate_and_stage
+from corridor.source_delivery import require_stored_envelope
+from corridor.source_intake import (
+    StagedSource,
+    confirm_intake,
+    preview_intake,
+    validate_and_stage,
+)
+from corridor.source_revision_declaration import (
+    COMPLETE_ENUMERATION,
+    PARTIAL_EXPORT,
+    REPLACES,
+    RevisionDeclaration,
+    declare_source_revision,
+    revision_intake_reading,
+)
 
 
 PRINCIPAL = HumanPrincipal("local:coordinator")
@@ -121,6 +135,28 @@ def adopt(
     return result.revision_id, preview.field_mapping_manifest
 
 
+def declared(
+    *,
+    is_complete_enumerative_source: bool = False,
+    row_accounting_sealed: bool = False,
+    principal: HumanPrincipal = PRINCIPAL,
+) -> RevisionDeclaration:
+    """The coordinator's declaration a fixture captures one revision under.
+
+    The two flags are the facts confirmation establishes (#825) and they stay
+    separate here for the same reason ``capture_later_revision`` keeps them
+    separate: a test that fixes what an unsealed reading may propose has to be
+    able to declare one without the other, which is a combination the product
+    screen cannot produce but the reader's contract still has to hold.
+    """
+
+    return RevisionDeclaration(
+        declared_by=principal,
+        is_complete_enumerative_source=is_complete_enumerative_source,
+        row_accounting_sealed=row_accounting_sealed,
+    )
+
+
 def deliver(
     session,
     project: Project,
@@ -151,6 +187,69 @@ def deliver(
         ),
     )
     return validate_and_stage(body, filename), receipt.envelope
+
+
+def register_delivered_revision(
+    session,
+    project: Project,
+    body: bytes,
+    tmp_path: Path,
+    *,
+    completeness: str,
+    revision_identity: str = "UCM workbook revision D",
+    revision_relationship: str = REPLACES,
+    related_revision_identity: str = "",
+    filename: str = "ucm-later.xlsx",
+    external_identity: str = "UCM workbook revision D",
+):
+    """Deliver, confirm and declare one later revision the way the product does.
+
+    The whole of what a coordinator's confirmation writes, without the HTTP:
+    the delivery is taken, the exact bytes are registered as this project's
+    Document, and the declaration that says which revision they are is recorded
+    beside the delivery. The ordinary processing pass then has everything it
+    routes on, which is the point of driving it this way rather than calling
+    the reader directly.
+    """
+
+    staged, envelope = deliver(
+        session,
+        project,
+        body,
+        filename=filename,
+        external_identity=external_identity,
+        # One credential per delivery: `register_push_credential` refuses to
+        # re-point a live credential at anything, so a second delivery in one
+        # test presents its own rather than re-registering the first.
+        material=f"secret-{project.slug}-{external_identity}",
+    )
+    delivery = require_stored_envelope(session, envelope)
+    reading = revision_intake_reading(session, project, staged, "matrix")
+    preview = preview_intake(session, project, staged, "matrix")
+    confirmation = confirm_intake(
+        session,
+        project=project,
+        sha256=staged.sha256,
+        filename=staged.filename,
+        doc_type="matrix",
+        binding_fingerprint=preview.binding_fingerprint,
+        principal=PRINCIPAL,
+        images_dir=tmp_path / "images",
+        source_delivery_id=int(delivery.id),
+    )
+    if reading.applies and reading.held is None:
+        declare_source_revision(
+            session,
+            project=project,
+            delivery=delivery,
+            reading=reading,
+            principal=PRINCIPAL,
+            revision_identity=revision_identity,
+            completeness=completeness,
+            revision_relationship=revision_relationship,
+            related_revision_identity=related_revision_identity,
+        )
+    return session.get_one(Document, confirmation.document_id), reading
 
 
 # --- the burst -------------------------------------------------------------

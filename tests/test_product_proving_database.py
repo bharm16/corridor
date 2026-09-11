@@ -256,8 +256,10 @@ def test_public_fingerprint_discovers_all_current_tables_and_sequences_read_only
     # by its own bigserial: one table, one sequence. The human-push
     # authentication column beside it is a column on `source_deliveries` and
     # changes neither count.
-    assert fingerprint.table_count == 223
-    assert fingerprint.sequence_count == 201
+    # #825 adds what a coordinator declared about one delivery, keyed by its
+    # own bigserial: one table, one sequence.
+    assert fingerprint.table_count == 224
+    assert fingerprint.sequence_count == 202
     assert fingerprint.schema_object_count > 0
     assert len(fingerprint.schema_sha256) == 64
     assert [item.name for item in fingerprint.tables] == sorted(

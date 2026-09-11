@@ -20,6 +20,7 @@ from sqlalchemy import select, text
 from corridor.compatibility_intake import CompatibilityReceipt
 from corridor.later_revision import capture_later_revision
 from corridor.models import Project, ProposedDelta
+from corridor.source_revision_declaration import RevisionDeclaration
 from corridor.native_provider_boundary import CustomerAuthorization
 from corridor.source_delivery import require_stored_envelope
 from corridor.shadow_capabilities import ShadowRefused, verify_runtime
@@ -191,10 +192,18 @@ def run_shadow_ucm(session, *, project: Project, staged, envelope,
     if session.scalar(text("select count(*) from shadow_runs where project_id=:id and payload->>'delivery_id'=:delivery and payload->>'source_configuration'=:configuration"),
         {"id": project.id, "delivery": str(delivery.id), "configuration": source_configuration}):
         raise ShadowRefused("delivery already frozen under different run authorization or retention")
+    # The shadow lane declares its own run's terms and names its own operator;
+    # there is no confirmation screen here and no retained declaration row, so
+    # the declaration is assembled from the arguments this run was authorized
+    # with rather than read back (#825). The two flags stay independent here
+    # because the run's identity above already digests both of them.
     capture = capture_later_revision(session, project=project, staged=staged,
-        envelope=envelope, principal=principal,
-        is_complete_enumerative_source=is_complete_enumerative_source,
-        row_accounting_sealed=row_accounting_sealed)
+        envelope=envelope,
+        declaration=RevisionDeclaration(
+            declared_by=principal,
+            is_complete_enumerative_source=is_complete_enumerative_source,
+            row_accounting_sealed=row_accounting_sealed,
+        ))
     deltas = []
     for row in session.scalars(select(ProposedDelta).where(ProposedDelta.id.in_(capture.delta_ids)).order_by(ProposedDelta.id)):
         item = {column.name: getattr(row, column.name) for column in ProposedDelta.__table__.columns}

@@ -48,6 +48,7 @@ __all__ = [
     "SourceDelivery",
     "SourceDeliveryConfirmation",
     "SourceFetchAttempt",
+    "SourceRevisionDeclaration",
 ]
 
 
@@ -293,6 +294,96 @@ class SourceDeliveryConfirmation(Base):
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
     confirmed_by_principal: Mapped[str] = mapped_column(Text)
     confirmed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class SourceRevisionDeclaration(Base):
+    """What a coordinator declared about one delivery that its bytes cannot say (#825).
+
+    A workbook does not state which registered source family it belongs to,
+    which Document Revision it is, whether it enumerates the customer's whole
+    population or a filtered slice of it, whether it replaces, supplements or
+    is another rendition of a revision already delivered, or whether it was
+    produced under the field mapping this project registered.  Those five
+    facts decided whether an absent row may be proposed as an apparent removal
+    (ADR-0076) and whether a reading is a second logical revision at all
+    (ADR-0069), and until this relation existed they were two Boolean keyword
+    arguments a developer set at a call site.
+
+    One row per delivery, because the declaration is about *what arrived*, not
+    about the Document a confirmation went on to register: a delivery may be
+    refused registration and still have been declared, and the same bytes may
+    arrive twice under two different declared revisions.  Append-only for the
+    reason every other receipt here is: a coordinator correcting a declaration
+    is making a new attributable act against the delivery that carries the
+    correction, never editing what was declared before.
+
+    ``answer_sources_json`` is how each answer got here -- ``registration`` for
+    one read back from what the project registered, ``source_metadata`` for one
+    the transport's own external version supplied, ``declared`` for one the
+    person answered.  It is retained rather than derived because the rule that
+    produced a default can change, and a receipt that cannot say where an
+    answer came from cannot show that completeness was never inferred.
+    """
+
+    __tablename__ = "source_revision_declarations"
+    __table_args__ = (
+        UniqueConstraint(
+            "delivery_id", name="uq_source_revision_declaration_delivery"
+        ),
+        # The delivery is named with its project, so a declaration recorded in
+        # one project can never name another customer's delivery (#675).
+        ForeignKeyConstraint(
+            ["delivery_id", "project_id"],
+            ["source_deliveries.id", "source_deliveries.project_id"],
+            name="fk_source_revision_declaration_delivery",
+        ),
+        CheckConstraint(
+            "length(btrim(declared_by_principal)) > 0",
+            name="ck_source_revision_declaration_principal",
+        ),
+        CheckConstraint(
+            "length(btrim(source_family)) > 0",
+            name="ck_source_revision_declaration_family",
+        ),
+        CheckConstraint(
+            "length(btrim(revision_identity)) > 0",
+            name="ck_source_revision_declaration_revision",
+        ),
+        CheckConstraint(
+            "completeness in ('complete_enumeration', 'partial_export')",
+            name="ck_source_revision_declaration_completeness",
+        ),
+        CheckConstraint(
+            "revision_relationship in "
+            "('replaces', 'supplements', 'additional_rendition')",
+            name="ck_source_revision_declaration_relationship",
+        ),
+        # A rendition is a rendition *of* a Document Revision (ADR-0069), so a
+        # declaration that says "another rendition" and names no revision says
+        # nothing at all.
+        CheckConstraint(
+            "revision_relationship <> 'additional_rendition' "
+            "or length(btrim(coalesce(related_revision_identity, ''))) > 0",
+            name="ck_source_revision_declaration_rendition_names_its_revision",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    delivery_id: Mapped[int] = mapped_column(BigInteger)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    source_family: Mapped[str] = mapped_column(Text)
+    revision_identity: Mapped[str] = mapped_column(Text)
+    completeness: Mapped[str] = mapped_column(String(32))
+    revision_relationship: Mapped[str] = mapped_column(String(32))
+    related_revision_identity: Mapped[str | None] = mapped_column(Text)
+    uses_registered_mapping: Mapped[bool] = mapped_column(Boolean)
+    answer_sources_json: Mapped[dict] = mapped_column(
+        JSONB, default=dict, server_default=text("'{}'::jsonb")
+    )
+    declared_by_principal: Mapped[str] = mapped_column(Text)
+    declared_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
 

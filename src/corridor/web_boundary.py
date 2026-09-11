@@ -418,6 +418,13 @@ PILOT_ROUTES: dict[tuple[str, str], PilotRoute] = {
     # model budget under their own declared authority and submitting a UCM
     # needs none of them, so the pilot does not serve them and the preview
     # page does not offer a control this deployment would refuse.
+    #
+    # #825 added what a later revision of the registered workbook has to
+    # declare, so the preview and the confirmation both read the project's
+    # operating mode and its registered field mapping — the adoption receipt
+    # the mode is derived from, the format registration, and the declaration
+    # stored beside it — and the confirmation appends the one declaration row
+    # the processing pass later routes on.
     ("GET", "/projects/{slug}/sources/upload"): PilotRoute(
         why=(
             "#349 the upload fallback's form (ADR-0058). Authorization: an "
@@ -447,6 +454,9 @@ PILOT_ROUTES: dict[tuple[str, str], PilotRoute] = {
             {
                 "customer_environment_binding",
                 "documents",
+                "project_baseline_adoptions",
+                "project_baseline_format_manifests",
+                "project_baseline_formats",
                 "project_roster_entries",
                 "projects",
                 "source_deliveries",
@@ -472,8 +482,12 @@ PILOT_ROUTES: dict[tuple[str, str], PilotRoute] = {
                 "processing_artifacts",
                 "project_roster_entries",
                 "projects",
+                "project_baseline_adoptions",
+                "project_baseline_format_manifests",
+                "project_baseline_formats",
                 "source_deliveries",
                 "source_delivery_confirmations",
+                "source_revision_declarations",
                 "source_segments",
                 "token_layers",
             }

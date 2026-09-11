@@ -164,6 +164,7 @@ from corridor.models import (
     RevisionChangeExplanationRequest,
     ReleaseCandidate,
     ReleasePackage,
+    SourceDelivery,
     SourceIntakeDraftRequest,
 )
 from corridor.coordination_summary import (
@@ -264,6 +265,7 @@ from corridor.source_intake import (
     ACCEPTED_DOC_TYPES,
     MAX_UPLOAD_BYTES,
     IntakeRefused,
+    StagedSource,
     UploadNotTaken,
     confirm_intake,
     list_confirmed_uploads,
@@ -280,6 +282,11 @@ from corridor.source_intake_draft import (
     declare_configuration as declare_intake_draft_configuration,
     intake_draft_state_token,
     request_intake_draft,
+)
+from corridor.source_revision_declaration import (
+    SourceRevisionDeclarationRefused,
+    declare_source_revision,
+    revision_intake_reading,
 )
 from corridor.render_profiles import render_path_for_page
 from corridor.source_passage_view import (
@@ -7262,6 +7269,11 @@ def source_upload_preview(
     # The delivery outlives an abandoned preview: the person may close the tab,
     # and what arrived is recorded either way.
     session.commit()
+    # What registering a workbook on an adopted project has to establish that
+    # its bytes cannot (#825). Read-only, like the preview it sits beside: it
+    # resolves the registered family and proves the file against the registered
+    # field mapping, and asks only the facts nothing can answer for the person.
+    revision = revision_intake_reading(session, project, received.staged, doc_type)
     offers_draft = _deployment_serves(
         request, "POST", "/projects/{slug}/sources/draft"
     )
@@ -7271,6 +7283,7 @@ def source_upload_preview(
         {
             "project": project,
             "preview": preview,
+            "revision": revision,
             "source_delivery_id": received.delivery_id,
             # The optional, explicitly requested draft of source-bound
             # suggestions (#362). Offered only once bounded spend authority is
@@ -7439,6 +7452,10 @@ def source_confirm(
     doc_type: str = Form(...),
     binding_fingerprint: str = Form(...),
     source_delivery_id: int = Form(...),
+    revision_identity: str = Form(""),
+    completeness: str = Form(""),
+    revision_relationship: str = Form(""),
+    related_revision_identity: str = Form(""),
     principal: HumanPrincipal = Depends(get_human_principal),
     session: Session = Depends(get_session),
 ):
@@ -7449,9 +7466,21 @@ def source_confirm(
     this project, these bytes and the ``stored`` disposition before anything is
     written, so a second definition of which delivery these bytes arrived on
     never gets the chance to disagree with the ledger's.
+
+    Where the source is a later revision of this project's registered workbook,
+    the same act records what the person declared about it (#825). Only the
+    answers a person actually gave arrive through the form; the family and the
+    mapping are resolved here again from what the project registered, for the
+    same reason the binding fingerprint is recomputed rather than trusted.
     """
     project = _project(session, slug, principal, designation=access.COORDINATION)
-    confirm_intake(
+    staged = _staged_confirmed_source(sha256, filename)
+    revision = (
+        revision_intake_reading(session, project, staged, doc_type)
+        if staged is not None
+        else None
+    )
+    confirmation = confirm_intake(
         session,
         project=project,
         sha256=sha256,
@@ -7461,8 +7490,50 @@ def source_confirm(
         principal=principal,
         source_delivery_id=source_delivery_id,
     )
+    if (
+        revision is not None
+        and revision.applies
+        and revision.held is None
+        and confirmation.delivery_confirmation_id is not None
+    ):
+        delivery = session.get_one(SourceDelivery, int(source_delivery_id))
+        try:
+            declare_source_revision(
+                session,
+                project=project,
+                delivery=delivery,
+                reading=revision,
+                principal=principal,
+                revision_identity=revision_identity,
+                completeness=completeness,
+                revision_relationship=revision_relationship,
+                related_revision_identity=related_revision_identity,
+            )
+        except SourceRevisionDeclarationRefused as exc:
+            raise HTTPException(400, str(exc)) from exc
     session.commit()
     return RedirectResponse(f"/projects/{slug}/sources", status_code=303)
+
+
+def _staged_confirmed_source(sha256: str, filename: str) -> StagedSource | None:
+    """The staged bytes behind one confirmation, before it registers them.
+
+    ``confirm_intake`` re-resolves and re-digests them for itself; this is the
+    same bytes, read so the revision reading can prove them against the
+    registered field mapping. A missing file is left to that refusal rather
+    than answered twice.
+    """
+
+    path = staged_file(sha256)
+    if path is None:
+        return None
+    return StagedSource(
+        sha256=sha256,
+        size_bytes=path.stat().st_size,
+        suffix=path.suffix.lower(),
+        filename=filename,
+        stored_path=path,
+    )
 
 
 @app.get("/projects/{slug}/sources", response_class=HTMLResponse)

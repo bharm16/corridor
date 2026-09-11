@@ -56,11 +56,15 @@ no removal: nobody can say *which* of two identically numbered facilities went.
 **Apparent removal needs the seal, and a partial export never reads as one.**
 `proposed_deltas.create_proposed_delta_group` refuses an `apparent_removal`
 without both `is_complete_enumerative_source` and `row_accounting_sealed`, and
-this module additionally produces none unless the caller declared both, so an
-unsealed or partial revision proposes nothing about the rows it does not carry.
-Both flags are the caller's declaration about the delivery, not something read
-off the bytes: no property of a spreadsheet says whether it is the customer's
-whole population or a filtered view of it.
+this module additionally produces none unless the declaration carried both, so
+an unsealed or partial revision proposes nothing about the rows it does not
+carry.  Both flags are declared about the delivery, not read off the bytes: no
+property of a spreadsheet says whether it is the customer's whole population or
+a filtered view of it.  They were keyword arguments a developer set, which made
+the answer available only at a call site; they arrive now as a
+`source_revision_declaration.RevisionDeclaration` — a coordinator's retained
+answer, carrying the person who gave it — and the service identity that
+executed this reading is retained beside it as a separate fact (#825).
 
 **Row accounting is a receipt, not a count.**  Every populated row of the
 adopted worksheet reaches an explicit disposition through `row_accounting`,
@@ -151,6 +155,7 @@ from corridor.source_intake import (
     confirm_intake,
     preview_intake,
 )
+from corridor.source_revision_declaration import RevisionDeclaration, source_family_of
 from corridor.storage import staged_file
 from corridor.support_assessments import FactProposition, record_support_assessment
 
@@ -168,6 +173,12 @@ REVISION_COMPARISON_RULE_VERSION = "later-source-revision-row-identity-v1"
 
 # How the reader names itself in the row-accounting receipt.
 REVISION_READER_PATH = "spreadsheet_cells"
+
+# What executed the reading, where the caller names nothing else.  A service
+# identity, never a person: the coordinator's declaration is a separate fact
+# carried beside it, and a worker that filled a `HumanPrincipal` argument with
+# something of its own would be signing a person's name to its own work.
+REVISION_CAPTURE_SERVICE_IDENTITY = "corridor.later_revision"
 
 # The canonical field carrying the conflict number, which is what a matrix row
 # is identified by (`baseline_workbook` reads it into `business_identity`).
@@ -373,6 +384,11 @@ class LaterRevisionCapture:
     fact_ids: tuple[int, ...]
     delta_ids: tuple[int, ...]
     values_agreed: int
+    # Two different facts, deliberately not one. `declaration` is what a
+    # coordinator declared about the delivery and who declared it;
+    # `executed_by` is the service identity that ran the reader.
+    declaration: RevisionDeclaration | None = None
+    executed_by: str = REVISION_CAPTURE_SERVICE_IDENTITY
 
 
 def capture_later_revision(
@@ -382,9 +398,9 @@ def capture_later_revision(
     staged: StagedSource,
     envelope: SourceEnvelope,
     manifest: FieldMappingManifest | None = None,
-    principal: HumanPrincipal,
-    is_complete_enumerative_source: bool = False,
-    row_accounting_sealed: bool = False,
+    declaration: RevisionDeclaration,
+    executed_by: str = REVISION_CAPTURE_SERVICE_IDENTITY,
+    document_id: int | None = None,
     analytics_binding: AnalyticsBinding | None = None,
     images_dir: Path | str | None = None,
 ) -> LaterRevisionCapture:
@@ -405,15 +421,32 @@ def capture_later_revision(
     `manifest` is still accepted and still verified against the registered
     identity, version and digest.
 
-    `is_complete_enumerative_source` and `row_accounting_sealed` are the
-    caller's declaration about this delivery.  Both must be true before an
+    `declaration` is what a person declared about this delivery
+    (`source_revision_declaration`), carrying the two facts no property of a
+    spreadsheet states: whether it enumerates the customer's whole population,
+    and whether its rows are all accounted for.  Both must be true before an
     absent row is proposed as an apparent removal; a partial export declares
-    neither and proposes nothing about what it does not carry.
+    neither and proposes nothing about what it does not carry.  `executed_by`
+    is the service identity that ran the reader, retained beside the
+    declaration rather than folded into it: the worker executes, the
+    coordinator declared, and a receipt that named only one of them would be
+    attributing a machine's reading to a person or a person's declaration to a
+    machine.  Nothing here manufactures a human principal — a capture with no
+    retained declaration behind it has none to pass.
+
+    `document_id` is the Document these exact bytes are already registered as,
+    where the delivery was confirmed before this ran.  The ordinary processing
+    pass supplies it, because registration and confirmation are that person's
+    act and already happened; a caller that registers nothing itself — the
+    shadow lane — omits it and the exact bytes are registered here instead.
     """
 
-    actor = require_human_principal(principal)
+    actor = require_human_principal(declaration.declared_by)
+    is_complete_enumerative_source = declaration.is_complete_enumerative_source
+    row_accounting_sealed = declaration.row_accounting_sealed
     delivery = _refuse_unbound_delivery(session, project, staged, envelope)
     manifest = _registered_mapping(session, project, manifest)
+    _refuse_mismatched_family(project, manifest, declaration)
 
     path = staged_file(staged.sha256)
     if path is None:
@@ -449,7 +482,11 @@ def capture_later_revision(
         row_accounting_sealed=row_accounting_sealed,
     )
 
-    document_id = _register(session, project, staged, actor, images_dir, delivery)
+    document_id = (
+        _registered_document(session, project, staged, delivery, document_id)
+        if document_id is not None
+        else _register(session, project, staged, actor, images_dir, delivery)
+    )
     run_id, fact_ids, captured = _capture_facts(
         session,
         project=project,
@@ -494,6 +531,12 @@ def capture_later_revision(
             "accepted_baseline_revision": revision_label(baseline_revision) or "",
             "is_complete_enumerative_source": is_complete_enumerative_source,
             "row_accounting_sealed": row_accounting_sealed,
+            # The two facts the receipt keeps apart. `declaration` is the
+            # coordinator's retained answer about the delivery and the person
+            # who gave it; `executed_by_service_identity` is what ran the
+            # reader over those bytes.
+            "declaration": declaration.as_payload(),
+            "executed_by_service_identity": executed_by,
             "comparison_rule_version": REVISION_COMPARISON_RULE_VERSION,
             "captured_facts": len(fact_ids),
             "values_agreed": agreed,
@@ -517,6 +560,8 @@ def capture_later_revision(
         fact_ids=fact_ids,
         delta_ids=tuple(row.id for row in appended),
         values_agreed=agreed,
+        declaration=declaration,
+        executed_by=executed_by,
     )
 
 
@@ -553,6 +598,61 @@ def _refuse_unbound_delivery(
         identity_noun="source",
         act_noun="a later revision",
     )
+
+
+def _refuse_mismatched_family(
+    project: Project,
+    manifest: FieldMappingManifest,
+    declaration: RevisionDeclaration,
+) -> None:
+    """The family declared and the family in force are one value, or neither.
+
+    The declaration names the registered source this delivery was said to be a
+    revision of, and `_source_family` derives the same string from the mapping
+    revision the project actually registered.  A declaration made against a
+    mapping that has since been replaced names the predecessor family, and
+    capturing it under the successor would quietly attach this revision's
+    deltas to a lineage nobody declared.
+    """
+
+    declared = (declaration.source_family or "").strip()
+    if declared and declared != _source_family(manifest):
+        raise LaterRevisionRefused(
+            f"this delivery was declared a revision of {declared!r}, and "
+            f"{project.slug} now reads its later revisions under "
+            f"{_source_family(manifest)!r}; declare the delivery again against "
+            "the mapping revision in force"
+        )
+
+
+def _registered_document(
+    session: Session,
+    project: Project,
+    staged: StagedSource,
+    delivery: SourceDelivery,
+    document_id: int,
+) -> int:
+    """Re-prove the Document a confirmation already registered for these bytes.
+
+    Named rather than looked up, and then checked rather than trusted: the
+    caller passes the Document it routed, and this refuses one that belongs to
+    another project, carries other bytes, or arrived on another delivery. The
+    alternative — resolving the Document from the digest here — would make the
+    capture's subject something other than the document the pass was reading.
+    """
+
+    document = session.get(Document, int(document_id))
+    if (
+        document is None
+        or document.project_id != project.id
+        or document.sha256 != staged.sha256
+        or document.source_delivery_id != int(delivery.id)
+    ):
+        raise LaterRevisionRefused(
+            "the registered document this revision was routed as does not "
+            "carry these bytes on this delivery in this project"
+        )
+    return int(document.id)
 
 
 def _registered_mapping(
@@ -1094,10 +1194,10 @@ def _settled(
 def _source_family(manifest: FieldMappingManifest) -> str:
     """The lineage this revision and its successors share.
 
-    The workbook family is named by the mapping revision's *identity*, not its
-    version: a successor mapping revision of the same family still describes the
-    same customer form, and a delta from this revision must be able to supersede
-    one from the last (#518).
+    One definition, in `source_revision_declaration`, because the family a
+    coordinator declares at confirmation and the family this capture records on
+    the Proposed Delta group have to be the same string rather than two rules
+    that agree by habit.
     """
 
-    return f"ucm_workbook:{manifest.identity}"[:64]
+    return source_family_of(manifest)

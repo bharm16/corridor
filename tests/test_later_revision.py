@@ -49,6 +49,7 @@ from later_revision_support import (
     HEADINGS,
     PRINCIPAL,
     adopt,
+    declared,
     burst_workbooks,
     deliver,
     workbook_bytes,
@@ -82,9 +83,8 @@ def _capture(session, project, manifest, body, tmp_path, **overrides):
         staged=staged,
         envelope=envelope,
         manifest=manifest,
-        principal=PRINCIPAL,
+        declaration=declared(**overrides),
         images_dir=tmp_path / "images",
-        **overrides,
     )
 
 
@@ -424,7 +424,7 @@ def test_a_revision_nobody_took_delivery_of_is_refused(
             staged=staged,
             envelope=envelope,
             manifest=manifest,
-            principal=PRINCIPAL,
+            declaration=declared(),
             images_dir=tmp_path / "images",
         )
 
@@ -571,7 +571,7 @@ def test_a_later_revision_is_processed_only_under_the_registered_mapping(
             staged=staged,
             envelope=envelope,
             manifest=unregistered,
-            principal=PRINCIPAL,
+            declaration=declared(),
             images_dir=tmp_path / "images",
         )
 
@@ -597,7 +597,7 @@ def test_the_registered_mapping_is_resolved_from_stored_state(
         "project": project,
         "staged": staged,
         "envelope": envelope,
-        "principal": PRINCIPAL,
+        "declaration": declared(),
         "images_dir": tmp_path / "images",
     }
 
@@ -646,7 +646,7 @@ def test_a_registration_that_stores_no_declaration_refuses_by_name(
         "project": project,
         "staged": staged,
         "envelope": envelope,
-        "principal": PRINCIPAL,
+        "declaration": declared(),
         "images_dir": tmp_path / "images",
     }
 
@@ -692,7 +692,7 @@ def test_a_project_with_no_adopted_baseline_has_no_later_revision(
             staged=staged,
             envelope=envelope,
             manifest=manifest,
-            principal=PRINCIPAL,
+            declaration=declared(),
             images_dir=tmp_path / "images",
         )
 
@@ -713,7 +713,7 @@ def test_capturing_the_same_revision_twice_creates_nothing_new(
         "staged": staged,
         "envelope": envelope,
         "manifest": manifest,
-        "principal": PRINCIPAL,
+        "declaration": declared(),
         "images_dir": tmp_path / "images",
     }
 
@@ -771,7 +771,7 @@ def test_a_second_later_revision_restating_a_value_is_captured(
         staged=staged,
         envelope=envelope,
         manifest=manifest,
-        principal=PRINCIPAL,
+        declaration=declared(),
         images_dir=tmp_path / "images",
     )
 

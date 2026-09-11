@@ -294,3 +294,135 @@ def test_an_upload_names_its_project_and_delivery_when_a_source_arrives(
         _delivery_id(response.text)
     )
     assert arrivals[1].payload["disposition"] == "stored"
+
+
+# --- A later revision of the registered workbook (#825) ----------------------
+#
+# On an adopted project the same confirmation establishes what the bytes cannot
+# say: which registered source this is, which revision, whether it lists every
+# current row, and how it stands to what already arrived. These tests drive
+# that over HTTP, because the whole point of the ticket is that those answers
+# stopped being keyword arguments only a developer could set.
+
+
+def _adopted(session, project, tmp_path):
+    """Adopt one synthetic baseline so the project reads its later revisions."""
+
+    from later_revision_support import BASELINE_ROWS, adopt, workbook_bytes
+
+    adopt(
+        session,
+        project,
+        workbook_bytes(tmp_path / "baseline.xlsx", BASELINE_ROWS),
+        tmp_path,
+    )
+
+
+def _later_workbook(tmp_path):
+    from later_revision_support import BASELINE_ROWS, HEADINGS, workbook_bytes
+
+    rows = [list(row) for row in BASELINE_ROWS]
+    rows[0][HEADINGS.index("Size")] = "18 in"
+    return workbook_bytes(tmp_path / "later.xlsx", rows)
+
+
+def test_the_preview_asks_only_what_registration_cannot_answer(
+    client, session, project, store, tmp_path
+):
+    _adopted(session, project, tmp_path)
+    body = _later_workbook(tmp_path)
+
+    preview = client.post(
+        f"/projects/{project.slug}/sources/upload",
+        data={"doc_type": "matrix"},
+        files={
+            "upload": (
+                "ucm-later.xlsx",
+                body,
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+    )
+
+    assert preview.status_code == 200
+    # Answered from what the project registered, and shown rather than asked.
+    assert "Which registered source is this a revision of?" in preview.text
+    assert "Does this file use the registered field mapping?" in preview.text
+    # Asked, because nothing can answer them for the person.
+    assert 'name="completeness"' in preview.text
+    assert 'name="revision_relationship"' in preview.text
+    assert 'name="revision_identity"' in preview.text
+
+
+def test_confirming_records_the_declaration_beside_the_delivery(
+    client, session, project, store, tmp_path
+):
+    from corridor.models import SourceRevisionDeclaration
+    from corridor.source_revision_declaration import (
+        COMPLETE_ENUMERATION,
+        FROM_DECLARATION,
+        FROM_REGISTRATION,
+        REPLACES,
+    )
+
+    _adopted(session, project, tmp_path)
+    body = _later_workbook(tmp_path)
+    digest = hashlib.sha256(body).hexdigest()
+    preview = client.post(
+        f"/projects/{project.slug}/sources/upload",
+        data={"doc_type": "matrix"},
+        files={
+            "upload": (
+                "ucm-later.xlsx",
+                body,
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+    )
+
+    confirm = client.post(
+        f"/projects/{project.slug}/sources/confirm",
+        data={
+            "sha256": digest,
+            "filename": "ucm-later.xlsx",
+            "doc_type": "matrix",
+            "binding_fingerprint": _fingerprint(
+                project, body, "matrix", "ucm-later.xlsx"
+            ),
+            "source_delivery_id": _delivery_id(preview.text),
+            "revision_identity": "UCM workbook revision D",
+            "completeness": COMPLETE_ENUMERATION,
+            "revision_relationship": REPLACES,
+        },
+        follow_redirects=False,
+    )
+
+    assert confirm.status_code == 303
+    declaration = session.scalars(
+        select(SourceRevisionDeclaration).where(
+            SourceRevisionDeclaration.project_id == project.id
+        )
+    ).one()
+    assert declaration.delivery_id == int(_delivery_id(preview.text))
+    assert declaration.revision_identity == "UCM workbook revision D"
+    assert declaration.completeness == COMPLETE_ENUMERATION
+    assert declaration.revision_relationship == REPLACES
+    assert declaration.declared_by_principal == TEST_PRINCIPAL.subject
+    assert declaration.answer_sources_json["source_family"] == FROM_REGISTRATION
+    assert declaration.answer_sources_json["completeness"] == FROM_DECLARATION
+
+
+def test_an_ordinary_upload_on_a_legacy_project_asks_nothing_extra(
+    client, project, store
+):
+    body = _matrix_pdf()
+
+    preview = client.post(
+        f"/projects/{project.slug}/sources/upload",
+        data={"doc_type": "matrix"},
+        files={"upload": ("matrix.pdf", body, "application/pdf")},
+    )
+
+    assert preview.status_code == 200
+    assert 'name="completeness"' not in preview.text
+    assert "Which registered source is this a revision of?" not in preview.text

@@ -59,6 +59,7 @@ from corridor.pipeline import (
     record_routed_run,
 )
 from corridor.row_accounting import RowAccountingFailure
+from corridor.source_revision_declaration import SourceRevisionHeld
 
 # An extractor reads one Document and returns the Candidates it produced,
 # already added to the session. It raises `NoMatrixFound` when it cannot
@@ -304,7 +305,16 @@ def extract_project(
                 )
             )
             continue
-        except SequencingSemanticsDetected as exc:
+        except (SequencingSemanticsDetected, SourceRevisionHeld) as exc:
+            # Two different reasons for the one outcome a held document has.
+            # A sequencing document is held because Corridor does not model
+            # what it asserts; a delivered revision is held because nobody has
+            # said which revision it is, or because it is not the mapping this
+            # project registered (#825). Both are durable project-level facts
+            # that a later pass will reach again unchanged, which is exactly
+            # what separates them from a failed attempt, and neither writes
+            # anything partial: the savepoint above rolls back whatever the
+            # reader had started.
             run = record_routed_run(
                 session,
                 document,

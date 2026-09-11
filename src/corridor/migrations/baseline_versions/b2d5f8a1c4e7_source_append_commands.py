@@ -182,6 +182,7 @@ from corridor.migrations.source_append_commands import (
     resolve_delta,
     review_packets,
     scanned_observations,
+    source_revision_declaration,
     spend_authorization,
     unified_delivery,
     web_capability,
@@ -1501,6 +1502,13 @@ def upgrade() -> None:
     # nothing later in the revision names.
     product_upload_delivery.upgrade(op)
 
+    # --- #825 What a coordinator declared about one delivery --------------
+    # After the product upload delivery and before the sibling transitions: it
+    # names `source_deliveries` and the project composite key the blocks above
+    # established, and creates one relation nothing later in the revision
+    # names.
+    source_revision_declaration.upgrade(op)
+
     from corridor.migrations import email_spine
 
     email_spine.upgrade(op, APPEND_NATIVE_SOURCE_SEGMENTS, APPEND_FACT)
@@ -1560,9 +1568,14 @@ def downgrade() -> None:
     project_contacts.downgrade(op)
     email_spine.downgrade(op)
 
-    # --- #823 A product upload is a delivery, and its confirmation ---------
+    # --- #825 What a coordinator declared about one delivery --------------
     # First among the feature reversals, because the upgrade added it last,
-    # and before `unified_delivery` unwinds the family it constrains.
+    # and before the delivery ledger its composite foreign key names unwinds.
+    source_revision_declaration.downgrade(op)
+
+    # --- #823 A product upload is a delivery, and its confirmation ---------
+    # Next, mirroring its place second from the end of the upgrade, and before
+    # `unified_delivery` unwinds the family it constrains.
     product_upload_delivery.downgrade(op)
 
     # --- #811 One spend authorization the five assistant configurations name -
