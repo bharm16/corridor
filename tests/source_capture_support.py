@@ -107,6 +107,10 @@ class Rendition:
     column: str = "A"
     prompt_version: str = CAPTURE_PROMPT_VERSION
     doc_type: str = "matrix"
+    # The rendition's own file identity, when a test reads it: its retained
+    # digest, and the revision identity the source registry printed on it.
+    document_sha256: str | None = None
+    registry_id: str | None = None
     document: Document = field(init=False)
     run: ExtractionRun = field(init=False)
     _ordinals: dict[str, int] = field(default_factory=dict, init=False)
@@ -115,7 +119,9 @@ class Rendition:
     def __post_init__(self) -> None:
         self.document = Document(
             project_id=self.project.id,
-            sha256=sha256(f"{self.project.slug}:{self.name}".encode()).hexdigest(),
+            sha256=self.document_sha256
+            or sha256(f"{self.project.slug}:{self.name}".encode()).hexdigest(),
+            registry_id=self.registry_id,
             filename=self.name,
             doc_type=self.doc_type,
             numbering_scheme="project-unique",
