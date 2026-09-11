@@ -935,6 +935,11 @@ TEST_ACCEPTED_AUTHORITY_WRITES = frozenset({
     ("packet_review_support.py", "project_baseline_sources"),
     ("test_baseline_adoption.py", "project_baseline_format_manifests"),
     ("test_baseline_adoption.py", "project_baseline_sources"),
+    # The raw statement *is* what this one proves: a delta carrying two
+    # terminal relationships is a record no command can write (ADR-0101), and
+    # the only way to put the reader in front of one is to fabricate it as an
+    # import or a piece of old history would have.
+    ("test_capture_correction_retirement.py", "delta_dispositions"),
     ("test_database_authority.py", "delta_record_decisions"),
     ("test_database_authority.py", "fact_decisions"),
     ("test_delta_resolution.py", "delta_record_decisions"),
@@ -1794,6 +1799,12 @@ COUNTS_ONE_FAMILY_ACROSS_AN_ACT_THAT_WRITES = {
     "test_fact_materialization.test_a_hostile_model_response_enters_no_segment_and_no_fact": (
         "the counts are absolute zeroes, not a before-and-after; a relative "
         "reading would be the weaker claim"
+    ),
+    "test_capture_correction_retirement._one_competing_pair": (
+        "the two tables are the whole subject of the race -- the terminal "
+        "relationships a delta may carry exactly one of (ADR-0101) -- so this "
+        "counts what the competing acts produced rather than claiming the "
+        "record was left alone, which it was not: the winner wrote one"
     ),
     "test_source_intake._page_and_segment_counts": (
         "the two tables are the read's own output for one document -- the "

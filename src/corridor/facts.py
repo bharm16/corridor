@@ -1695,6 +1695,33 @@ def _append_fact_envelope(
     )
 
 
+def fact_identity_digest(
+    *,
+    run_identity: dict[str, object],
+    subject_kind: str,
+    subject_key: str,
+    value: MaterializedValue,
+    structured_value: object | None = None,
+) -> str:
+    """The Fact identity recipe, for a writer of captures outside this module.
+
+    #842's source-grounded re-capture appends a Source Fact the same way every
+    other capture is appended, and the digest is what makes an exact replay of
+    that correction the same Fact rather than a second one
+    (``uq_facts_content_sha256``). It reads this recipe rather than spelling
+    one of its own: a second digest recipe would give one capture two
+    identities, which is what the uniqueness constraint exists to prevent.
+    """
+
+    return _fact_digest(
+        run_identity=run_identity,
+        subject_kind=subject_kind,
+        subject_key=subject_key,
+        value=value,
+        structured_value=structured_value,
+    )
+
+
 def _fact_digest(
     *,
     run_identity: dict[str, object],

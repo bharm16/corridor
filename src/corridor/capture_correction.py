@@ -84,18 +84,23 @@ a model speculating about one: ``revision_change_explanation`` still refuses a
 narrated "extraction error" as a fabricated cause, and nothing here relaxes
 that -- the person reporting this read the cell themselves.
 
-**The no-change outcome has no recorded exit, and that is stated rather than
-invented.**  A correction may establish that nothing changed, which ADR-0100
+**The no-change outcome now has a recorded exit, and it is a relationship of
+its own.**  A correction may establish that nothing changed, which ADR-0100
 calls a truthful outcome rather than a failure.  The obsolete technical
-finding must then leave the actionable reading, and the two exits the schema
-offers are both false entries in the decision lineage ADR-0082 requires:
-``DeltaDisposition('reject')`` files a coordinator decision nobody made, and
-``DeltaSupersession`` is ADR-0083's *newer source version* coalescing, whose
-``ck_delta_supersessions_successor`` admits only a superseding delta, an
-inbound thread reading or a minutes capture -- none of which a re-read of the
-same version produces.  ``withdraw_for_no_change`` is the seam #842 calls and
-refuses with ``NO_CHANGE_EXIT_UNAVAILABLE``, so the missing relationship is
-named by a refusal rather than closed by an unannounced new disposition.
+finding must then leave the actionable reading, and the two exits ADR-0083's
+lifecycle offered were both false entries in the decision lineage ADR-0082
+requires: ``DeltaDisposition('reject')`` files a coordinator decision nobody
+made, and ``DeltaSupersession`` is ADR-0083's *newer source version*
+coalescing, whose ``ck_delta_supersessions_successor`` admits only a
+superseding delta, an inbound thread reading or a minutes capture -- none of
+which a re-read of the same version produces.  So this module refused with
+``NO_CHANGE_EXIT_UNAVAILABLE`` and asked the maintainer for the missing
+relationship rather than closing the gap with an unannounced disposition
+value.  ADR-0101 answered it: ``DeltaCaptureCorrection``, built in
+``capture_correction_retirement``, which is where a correction result and the
+retirement it establishes are now recorded.  The refusal is gone because the
+thing it was holding open exists; the sentence it carried is retained there as
+the module's own history.
 
 **No clock.**  Every instant is the caller's, as everywhere else on this
 screen's seam.
@@ -133,9 +138,9 @@ __all__ = [
     "CORRECTION_SUPPORTING_TEXT",
     "COMMAND_REFUSAL_TOKEN",
     "CaptureCorrectionRefused",
+    "command_refusal",
     "ChallengedCapture",
     "CorrectionRequest",
-    "NO_CHANGE_EXIT_UNAVAILABLE",
     "PassageChoice",
     "PassageChoices",
     "ReportedCorrection",
@@ -145,9 +150,9 @@ __all__ = [
     "offers_correction",
     "passage_choices",
     "record_correction_request",
+    "stored_challenged_capture",
     "reported_corrections",
     "resolve_challenged_capture",
-    "withdraw_for_no_change",
 ]
 
 
@@ -187,17 +192,6 @@ CAPTURE_NOT_RETAINED = (
     "cannot be opened against it."
 )
 
-# The relationship ADR-0083's lifecycle does not have, named rather than
-# implemented.  ADR-0100 instructs #836 to state it and bring it back as a
-# decision; the sentence is what ``withdraw_for_no_change`` refuses with.
-NO_CHANGE_EXIT_UNAVAILABLE = (
-    "a corrected capture that establishes no change has no recorded exit from "
-    "the Proposed Delta lifecycle: ADR-0083's supersession is a newer source "
-    "version coalescing and this is the same version read again, and closing "
-    "the delta as 'reject' would file a coordinator decision nobody made. The "
-    "relationship a withdrawn-on-correction finding needs is a decision "
-    "(#836), not a disposition this seam may invent."
-)
 
 
 class CaptureCorrectionRefused(refusals.Refusal, ValueError):
@@ -428,6 +422,46 @@ def build_correction_request(
     )
 
 
+def stored_challenged_capture(
+    session: Session, request: CaptureCorrectionRequest
+) -> ChallengedCapture:
+    """The capture a *retained* report names, read back by recorded identity.
+
+    Operations opens a report weeks after it was made, and the query the screen
+    reconstructs a capture from -- the newest Fact for this subject and field
+    in this delta's lineage -- has moved on by then. So the recorded
+    ``fact_id`` and ``source_segment_id`` are read directly and the digest the
+    report recorded is checked against the Fact's own, exactly as
+    ``resolve_challenged_capture`` does for an in-flight request. The two doors
+    build the same value from the same rows, which is what makes the
+    second-capture property true of both.
+    """
+
+    fact = session.get(Fact, int(request.fact_id))
+    if (
+        fact is None
+        or fact.content_sha256 != request.fact_content_sha256
+        or int(fact.project_id) != int(request.project_id)
+    ):
+        raise CaptureCorrectionRefused(
+            "capture_not_retained",
+            CAPTURE_NOT_RETAINED,
+            kind=refusals.STALE,
+            delta_id=int(request.delta_id),
+        )
+    segment = (
+        session.get(SourceSegment, int(request.source_segment_id))
+        if request.source_segment_id is not None
+        else None
+    )
+    document = (
+        session.get(Document, fact.document_id)
+        if fact.document_id is not None
+        else None
+    )
+    return _capture_of(int(request.delta_id), fact, segment, document)
+
+
 def resolve_challenged_capture(
     session: Session, request: CorrectionRequest
 ) -> ChallengedCapture:
@@ -464,31 +498,6 @@ def resolve_challenged_capture(
         else None
     )
     return _capture_of(named.delta_id, fact, segment, document)
-
-
-def withdraw_for_no_change(request: CorrectionRequest) -> None:
-    """The exit a no-change correction needs, which the lifecycle does not have.
-
-    ADR-0100 requires the obsolete technical finding to be removed or
-    superseded *through the declared lifecycle*, and instructs #836 to state
-    the missing relationship rather than quietly implement a new disposition
-    where the lifecycle cannot represent the transition.  It cannot: the
-    correction is a re-read of the same source version, so ADR-0083's
-    supersession does not describe it and ``ck_delta_supersessions_successor``
-    has no successor to name; and a ``reject`` would record a customer
-    rejection nobody performed.
-
-    So this seam refuses, in one place, rather than leaving #842 to pick one
-    of those two false entries.  Deciding the relationship -- what it is
-    called, what it records, and what a reader sees where the finding used to
-    be -- is the maintainer's, and this refusal is what asks for it.
-    """
-
-    raise CaptureCorrectionRefused(
-        "relationship_not_decided",
-        NO_CHANGE_EXIT_UNAVAILABLE,
-        delta_id=request.capture.delta_id,
-    )
 
 
 # --- Recording one, and reading back what stands ---------------------------
@@ -716,7 +725,7 @@ def record_correction_request(
             )
         ).scalar_one()
     except DBAPIError as exc:
-        raise _command_refusal(request, exc) from exc
+        raise command_refusal(request.capture.delta_id, exc) from exc
     session.expire_all()
     return session.get_one(CaptureCorrectionRequest, int(answer["request_id"]))
 
@@ -728,10 +737,13 @@ def record_correction_request(
 COMMAND_REFUSAL_TOKEN = re.compile(r"capture_correction:([a-z_]+)\s*")
 
 
-def _command_refusal(
-    request: CorrectionRequest, exc: DBAPIError
-) -> CaptureCorrectionRefused:
-    """The command's refusal, as this screen's refusal, with its own words."""
+def command_refusal(delta_id: int, exc: DBAPIError) -> CaptureCorrectionRefused:
+    """One command refusal, as this seam's refusal, in the command's own words.
+
+    Both doors into the ``capture_correction:`` family use it -- the report the
+    coordinator makes and the result operations records -- so neither grows a
+    second vocabulary in front of one rule.
+    """
 
     message = str(getattr(exc, "orig", exc)).strip().splitlines()[0]
     found = COMMAND_REFUSAL_TOKEN.search(message)
@@ -739,7 +751,7 @@ def _command_refusal(
         "refused" if found is None else found.group(1),
         COMMAND_REFUSAL_TOKEN.sub("", message, count=1).strip() or message,
         kind=refusals.CONFLICT,
-        delta_id=request.capture.delta_id,
+        delta_id=delta_id,
     )
 
 

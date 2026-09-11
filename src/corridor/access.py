@@ -918,6 +918,11 @@ PARTITIONED_RELATIONS: frozenset[str] = frozenset(
         "pipeline_selections",
         "candidates",
         "capture_correction_requests",
+        # ADR-0101 What one source-grounded correction established, and the
+        # proposal it retired. Both are one customer's own finding and answer
+        # #531's partition exactly as the Proposed Delta they are about does.
+        "capture_correction_results",
+        "delta_capture_corrections",
         # #827 The limited onboarding authorization a project holds, what
         # happened to it, the reading a coordinator approves, and the retained
         # proof that a permitted act committed while it was valid. All four are

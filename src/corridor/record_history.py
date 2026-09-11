@@ -97,6 +97,11 @@ from corridor.support_history import (
     native_publication_support_as_of_revision, support_scope_identities,
 )
 from corridor.outgoing_requests import RecordedRequest, read_correspondence
+from corridor import capture_correction_retirement
+from corridor.capture_correction_retirement import (
+    RetirementReading,
+    retirements_by_delta,
+)
 from corridor.presentation import field_label
 from corridor.record_projection import (
     CurrentRecordValue,
@@ -129,6 +134,10 @@ EDITED_AND_APPLIED = "Edited and applied"
 KEPT_CURRENT = "Keep current"
 SUPERSEDED = "Superseded by a later source revision"
 DEFERRED = "Deferred"
+# ADR-0101's third exit. The words are the approved sentence, so this column
+# describes what happened rather than naming a customer-facing type nobody
+# has defined; `capture_correction_retirement` owns them.
+CAPTURE_CORRECTED = capture_correction_retirement.STANDING_WORDS
 
 # `delta_dispositions.disposition` is the stored vocabulary; these are the
 # words for the same three states.
@@ -286,6 +295,12 @@ class DeltaReading:
     deferred_until: date | None
     deferral_reason: str | None
     packets: tuple[PacketReading, ...]
+    # Why this proposal left Review when its capture was corrected, with every
+    # identifier the approved sentences are linked to (ADR-0101). Present only
+    # for a retired proposal; a prior deferral receipt and any Follow-up
+    # history beside it are retained and still printed, because removing an
+    # invalid proposal from active work does not mean they never happened.
+    capture_correction: RetirementReading | None = None
 
     @property
     def settled(self) -> bool:
@@ -1067,6 +1082,9 @@ def _delta_history(
     ):
         deferrals[int(row.delta_id)] = row
     packets = _packets(session, project_id, delta_ids)
+    corrections = retirements_by_delta(
+        session, project_id=project_id, delta_ids=delta_ids
+    )
 
     readings: list[DeltaReading] = []
     for delta in deltas:
@@ -1076,6 +1094,7 @@ def _delta_history(
         disposition = dispositions.get(delta.id)
         decision = decisions.get(delta.id)
         deferral = deferrals.get(delta.id)
+        correction = corrections.get(int(delta.id))
         readings.append(
             DeltaReading(
                 delta_id=delta.id,
@@ -1093,7 +1112,9 @@ def _delta_history(
                 source_family=delta.source_family,
                 source_revision=delta.source_revision,
                 raised_at=delta.created_at,
-                standing=_standing(disposition, delta.id in superseded, deferral),
+                standing=_standing(
+                    disposition, delta.id in superseded, correction, deferral
+                ),
                 decided_by=(
                     (disposition.decided_by_principal or disposition.decided_by_policy)
                     if disposition
@@ -1110,6 +1131,7 @@ def _delta_history(
                 ),
                 deferral_reason=deferral.reason if deferral is not None else None,
                 packets=tuple(packets.get(delta.id, ())),
+                capture_correction=correction,
             )
         )
     return tuple(readings)
@@ -1118,6 +1140,7 @@ def _delta_history(
 def _standing(
     disposition: DeltaDisposition | None,
     superseded: bool,
+    correction: RetirementReading | None,
     deferral: DeltaDeferral | None,
 ) -> str:
     """One word for where this Proposed Delta stands, resolution first.
@@ -1125,12 +1148,20 @@ def _standing(
     A resolved delta keeps the words of its resolution even when a later source
     revision arrived afterwards, because the decision is what happened to the
     record; supersession only describes a delta nobody decided.
+
+    ADR-0101's retirement sits third, and before the deferral for the reason
+    ADR-0101 gives: a deferred proposal whose capture was corrected is retired
+    without being woken, so "Deferred" would be the wrong word for it and the
+    scheduling receipt it still carries is printed beside this one rather than
+    instead of it.
     """
 
     if disposition is not None:
         return _DISPOSITION_WORDS.get(disposition.disposition, disposition.disposition)
     if superseded:
         return SUPERSEDED
+    if correction is not None:
+        return CAPTURE_CORRECTED
     if deferral is not None:
         return DEFERRED
     return OPEN

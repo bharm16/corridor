@@ -6,7 +6,6 @@ amends:
   - ADR-0083
   - ADR-0084
   - ADR-0100
-migration: nothing here is built. #836 records the correction request and refuses the no-change exit by name rather than inventing one; #842 performs the receipted re-capture and the recomparison this relationship binds; the relationship itself, the shared reader rule, and the stale-Apply refusal are open.
 ---
 
 # A corrected capture retires its obsolete Proposed Delta through a dedicated append-only relationship

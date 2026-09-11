@@ -202,6 +202,13 @@ REPAIR_SOURCE_PROCESSING = "repair_source_processing"
 # or an unclassified historical one finally classified (#919). The hold row
 # keeps the release beside the reason; this is the act that made it.
 RELEASE_PROCESSING_HOLD = "release_processing_hold"
+# The third receipted operations procedure #842 names: one capture re-read
+# against the passage a coordinator reported, its recomparison, and whatever
+# that established (ADR-0100, ADR-0101). It is entered in the same transaction
+# as the correction result, so a rolled-back procedure records no claim that a
+# capture was corrected, and the source register prints it beside the other
+# two repairs on the row the source is on.
+CORRECT_CAPTURED_READING = "correct_captured_reading"
 # Nothing records these any more: the admission policies stopped asking
 # for a signature (ADR-0029). They stay named because the audit log is
 # append-only and still holds entries that carry them.
@@ -294,6 +301,7 @@ ACTIONS = frozenset(
         RECOVER_DOCUMENT_PARSE,
         REPAIR_SOURCE_PROCESSING,
         RELEASE_PROCESSING_HOLD,
+        CORRECT_CAPTURED_READING,
         AUTHORIZE_DEPENDENCY_ADMISSION,
         CLEAR_CONDITION,
         DISMISS_CONDITION,

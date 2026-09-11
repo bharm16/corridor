@@ -15,14 +15,22 @@ writing an unattributed record. The designation is not this command's to decide
 whose technical-operations designation was withdrawn is refused here for the
 same reason and by the same reader the product would refuse them by.
 
-``show`` writes nothing. It prints what the record already holds about one
-project's blocked sources, so an operator can see which document id to name
-before naming one.
+``show`` and ``reports`` write nothing. The first prints what the record
+already holds about one project's blocked sources, so an operator can see which
+document id to name before naming one; the second prints the extraction-error
+reports coordinators have made and what became of each, which is where the
+request id for ``correct-capture`` comes from.
+
+**The clock is this entry point's.** ``operations_repair`` takes every instant
+from its caller, as the rest of this seam does, so the runbook is the one place
+that reads a wall clock -- exactly as the web route that records a coordinator's
+own act does.
 """
 
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import json
 import sys
 
@@ -30,11 +38,15 @@ from sqlalchemy import select
 
 from corridor.config import settings
 from corridor.models import Document, Project
+from corridor.capture_correction import CaptureCorrectionRefused
+from corridor.capture_correction_retirement import results_by_request
+from corridor.models import CaptureCorrectionRequest
 from corridor.operations_repair import (
     CORRECTED_MAPPING,
     PROCEDURES,
     RETRY_PROCESSING,
     OperationsRepairRefused,
+    correct_captured_reading,
     repair_receipts,
     repair_source_processing,
 )
@@ -56,9 +68,20 @@ says the reason is the corrected field mapping this project has registered
 since, and is refused when no such registration post-dates the failed reading;
 registering one is #829's act under the project-coordination designation.
 
-The source-grounded re-capture #842 also names is not here. What it preserves
-and what it returns through is #832's decision, which is not accepted, so there
-is nothing yet for a runbook to perform.
+The source-grounded re-capture is the third procedure, and it takes a report
+rather than a document:
+  make operations-repair ARGS="reports <project-slug>"
+  make operations-repair ARGS="correct-capture <project-slug> --request-id=<id>"
+  make operations-repair ARGS="correct-capture <project-slug> --request-id=<id> \\
+      --unsubstantiated --finding='the cell is ambiguous'"
+
+It re-reads the capture from the passage the coordinator named and records what
+the ordinary comparison then established (ADR-0100, ADR-0101). It takes no
+value: a corrected reading comes out of the retained passage or it does not
+come at all. Where the corrected value matches the accepted record the obsolete
+proposal is retired; where it still differs a corrected proposal is raised for
+Review; and ``--unsubstantiated`` records an investigation that established
+neither, which retires nothing and leaves the proposal open.
 """
 
 
@@ -78,6 +101,16 @@ def _parser() -> argparse.ArgumentParser:
     repair.add_argument("project_slug")
     repair.add_argument("--document-id", required=True, type=int)
     repair.add_argument("--procedure", choices=PROCEDURES, default=RETRY_PROCESSING)
+
+    reports = commands.add_parser("reports")
+    reports.add_argument("project_slug")
+
+    correcting = commands.add_parser("correct-capture")
+    correcting.add_argument("project_slug")
+    correcting.add_argument("--request-id", required=True, type=int)
+    correcting.add_argument("--executed-by", default="")
+    correcting.add_argument("--unsubstantiated", action="store_true")
+    correcting.add_argument("--finding", default="")
     return parser
 
 
@@ -92,7 +125,73 @@ def main(argv: list[str] | None = None, *, session_factory=None) -> int:
         session_factory = WorkerSession
 
     try:
-        if args.command == "repair":
+        if args.command == "correct-capture":
+            principal = _principal()
+            with session_factory() as session:
+                with session.begin():
+                    project = _project(session, args.project_slug)
+                    report = session.get(CaptureCorrectionRequest, args.request_id)
+                    if report is None or report.project_id != project.id:
+                        raise OperationsRepairRefused(
+                            "unknown_request",
+                            f"extraction-error report {args.request_id} is not "
+                            f"{args.project_slug!r}'s.",
+                        )
+                    outcome = correct_captured_reading(
+                        session,
+                        request_id=args.request_id,
+                        principal=principal,
+                        performed_at=datetime.now(timezone.utc),
+                        executed_by=args.executed_by or None,
+                        substantiated=not args.unsubstantiated,
+                        finding=args.finding,
+                    )
+                    payload = {
+                        "command": args.command,
+                        "request_id": outcome.request_id,
+                        "delta_id": outcome.delta_id,
+                        "outcome": outcome.outcome,
+                        "result_id": outcome.result_id,
+                        "retirement_id": outcome.retirement_id,
+                        "corrected_fact_id": outcome.corrected_fact_id,
+                        "replacement_delta_id": outcome.replacement_delta_id,
+                        "finding": outcome.finding,
+                        "audit_id": outcome.audit_id,
+                    }
+        elif args.command == "reports":
+            with session_factory() as session:
+                project = _project(session, args.project_slug)
+                reports = list(
+                    session.scalars(
+                        select(CaptureCorrectionRequest)
+                        .where(CaptureCorrectionRequest.project_id == project.id)
+                        .order_by(CaptureCorrectionRequest.id)
+                    ).all()
+                )
+                found = results_by_request(
+                    session,
+                    project_id=project.id,
+                    request_ids=[int(row.id) for row in reports],
+                )
+                payload = {
+                    "command": args.command,
+                    "project_id": project.id,
+                    "reports": [
+                        {
+                            "request_id": int(row.id),
+                            "delta_id": int(row.delta_id),
+                            "document_id": int(row.document_id),
+                            "reported_by": row.reported_by_principal,
+                            "expected_interpretation": row.expected_interpretation,
+                            "outcomes": [
+                                result.outcome
+                                for result in found.get(int(row.id), ())
+                            ],
+                        }
+                        for row in reports
+                    ],
+                }
+        elif args.command == "repair":
             principal = _principal()
             with session_factory() as session:
                 with session.begin():
@@ -153,7 +252,7 @@ def main(argv: list[str] | None = None, *, session_factory=None) -> int:
                         if row.repair is not None
                     ],
                 }
-    except (OperationsRepairRefused, ValueError) as exc:
+    except (OperationsRepairRefused, CaptureCorrectionRefused, ValueError) as exc:
         print(str(exc), file=sys.stderr)
         return 1
 

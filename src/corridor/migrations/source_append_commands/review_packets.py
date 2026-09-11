@@ -373,6 +373,7 @@ create function public.record_delta_follow_up_plan(
                 raise exception 'review_packet:cross_project_delta Proposed Delta % is not this project''s to coordinate', p_delta_id
                     using errcode='23514';
             end if;
+            perform public.lock_proposed_delta_terminal(p_delta_id);
             if exists (
                 select 1 from delta_dispositions where delta_id = p_delta_id
             ) then
@@ -383,6 +384,13 @@ create function public.record_delta_follow_up_plan(
                 select 1 from delta_supersessions where prior_delta_id = p_delta_id
             ) then
                 raise exception 'review_packet:superseded_delta Proposed Delta % was superseded by a newer source version', p_delta_id
+                    using errcode='23514';
+            end if;
+            -- Opening a Follow-up Plan about a comparison whose capture was
+            -- corrected would ask an outside party about a question Corridor
+            -- has already withdrawn (ADR-0101).
+            if public.proposed_delta_capture_correction(p_delta_id) is not null then
+                raise exception 'review_packet:capture_corrected_delta Proposed Delta % left Review because its source reading was corrected', p_delta_id
                     using errcode='23514';
             end if;
             if not exists (

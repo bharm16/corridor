@@ -48,12 +48,42 @@ the same visible line an operator does, which is what the audit asked for.
   Source Segment, Proposed Delta or record decision, and takes no argument that
   could name a value.
 
-**The third procedure named in #842 is not here.** Operations may also perform
-the source-grounded re-capture, and what that re-capture preserves, what it may
-not overwrite, and what it returns through is #832's decision, drafted as
-ADR-0100 and not accepted. Building it against an unaccepted decision would fix
-the shape of a correction request before the maintainer had agreed one, so it
-waits. The two procedures below need no decision that is not already in force.
+**The third procedure named in #842 is here now**, because the decisions it
+depended on are accepted: ADR-0100 for the correction request and ADR-0101 for
+what a validated result may do to the obsolete proposal.
+``correct_captured_reading`` opens one retained report by its recorded
+identity, re-reads the capture from the passage the coordinator named, and
+records what the ordinary comparison then established. Three things about it
+are deliberate.
+
+- **It takes no value.** The corrected reading is materialized from the
+  selected passage's own retained text through ``materialize_segment_value``,
+  the same materializer every capture goes through. The coordinator's expected
+  interpretation is the reason an investigation happened and is never evidence
+  (ADR-0084, ADR-0100), and there is no argument here through which it could
+  become one.
+- **It invents no comparison.** The recomparison is
+  ``proposed_delta_comparison.compare_stated_subjects`` under the rule version
+  the original proposal was raised with, because two comparison rules mean a
+  value that agrees on one path and proposes a change on the other (ADR-0101).
+- **It decides nothing about the record.** It writes a Source Fact, its
+  Support Assessment, at most one replacement proposal, and the correction
+  result; no accepted value, no revision, no disposition. Where the corrected
+  value still differs, a coordinator decides it in Review as they always would.
+
+**Why this procedure asks a different gate from the two above.** A re-parse
+asks whether *document reading* is permitted. A re-capture reads the retained
+source and then writes a Source Fact from it, which is semantic extraction, so
+it asks ``processing_holds.assert_may_extract_semantics`` -- the same
+authoritative stage-aware check, asked for the stage this act actually
+performs. #919's rule that an operation needs both a valid permission and no
+applicable prohibiting hold is honoured with both halves: the permission for
+this act is the technical-operations designation read live from the roster, and
+the hold check is ``processing_holds``'. #827's onboarding permissions are not
+the applicable permission here and are deliberately not consulted: every one of
+``onboarding_authorization.ONBOARDING_OPERATIONS`` is a pre-activation act, and
+a Review item exists only after activation, so requiring an onboarding grant
+would fail closed on every project that can reach this seam.
 
 **A corrected-mapping repair names the mapping it reads under.**
 ``CORRECTED_MAPPING`` says the source is being read again because the
@@ -94,19 +124,36 @@ from typing import Sequence
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from corridor import access, audit, processing_holds, refusals
+from corridor import (
+    access,
+    audit,
+    capture_correction,
+    capture_correction_retirement,
+    processing_holds,
+    refusals,
+)
 from corridor.baseline_adoption import effective_baseline_formats
+from corridor.delta_resolution import current_accepted_revision_id
+from corridor.facts import fact_identity_digest
+from corridor.materializer import FactValidationError, materialize_segment_value
 from corridor.models import (
     AuditLog,
+    CaptureCorrectionRequest,
     Document,
+    Fact,
     ExtractionRun,
     PageProcessingFailure,
+    ProposedDelta,
+    SourceSegment,
 )
 from corridor.principals import HumanPrincipal, require_human_principal
+from corridor.proposed_deltas import create_proposed_delta_group
 from corridor.provider_authorization import (
     AUTHORIZATION_ABSENT,
     AUTHORIZATION_REFUSED,
 )
+from corridor.source_append import append_fact, append_support_assessment
+from corridor.source_segments import source_segment_locator_words
 
 
 # --- The procedures --------------------------------------------------------
@@ -119,6 +166,12 @@ from corridor.provider_authorization import (
 RETRY_PROCESSING = "retry_processing"
 CORRECTED_MAPPING = "corrected_mapping"
 PROCEDURES: tuple[str, ...] = (RETRY_PROCESSING, CORRECTED_MAPPING)
+
+#: #842's third procedure, which is not one of `PROCEDURES`: it takes a
+#: correction-request id rather than a document id, re-admits nothing to the
+#: standing pass, and leaves a receipt of its own. It is named here so the
+#: receipt and the register agree on one word for it.
+SOURCE_GROUNDED_RECAPTURE = "source_grounded_recapture"
 
 #: Why the standing pass had stopped taking this source, recorded on the
 #: receipt beside the procedure. These are ``_eligible_documents``'s own two
@@ -144,8 +197,11 @@ class OperationsRepairRefused(refusals.Refusal, ValueError):
     ``reason`` is a stable machine code and ``str(exc)`` is the sentence a
     person reads. The codes are ``unknown_document``, ``not_designated``,
     ``held_in_quarantine``, ``authorization_missing``, ``already_read``,
-    ``not_blocked``, ``unknown_procedure``, ``no_registered_mapping`` and
-    ``parse_not_recoverable``.
+    ``not_blocked``, ``unknown_procedure``, ``no_registered_mapping``,
+    ``parse_not_recoverable``, and the re-capture's own ``unknown_request``
+    and ``unknown_delta``. A refusal the record-decision command raised is a
+    ``capture_correction.CaptureCorrectionRefused`` carrying the command's own
+    sentence, not one of these.
     """
 
     refusal_kind = refusals.CONFLICT
@@ -316,7 +372,14 @@ def repair_receipts(
     newest = session.execute(
         select(AuditLog.entity_id, func.max(AuditLog.id))
         .where(
-            AuditLog.action == audit.REPAIR_SOURCE_PROCESSING,
+            # Both receipted procedures, because #842 asks that each appear on
+            # the source register and the register has one cell for "what
+            # operations last did to this source". `repaired_through` below is
+            # deliberately not widened: it decides re-admission to the standing
+            # pass, and a corrected capture re-admits nothing.
+            AuditLog.action.in_(
+                (audit.REPAIR_SOURCE_PROCESSING, audit.CORRECT_CAPTURED_READING)
+            ),
             AuditLog.entity_type == audit.DOCUMENT,
             AuditLog.entity_id.in_(ids),
         )
@@ -403,6 +466,376 @@ def _require_technical_operations(
             "principal does not hold that designation on this project.",
             kind=refusals.NOT_AUTHORIZED,
         )
+
+
+# --- ADR-0101's source-grounded re-capture (#842) ---------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class CaptureCorrectionOutcome:
+    """What one source-grounded re-capture established, and what it retired."""
+
+    request_id: int
+    delta_id: int
+    outcome: str
+    result_id: int
+    retirement_id: int | None
+    corrected_fact_id: int | None
+    replacement_delta_id: int | None
+    accepted_revision_id: int | None
+    comparison_rule_version: str
+    finding: str
+    authorized_by_principal: str
+    executed_by: str
+    audit_id: int
+
+    @property
+    def retired(self) -> bool:
+        return self.retirement_id is not None
+
+
+def correct_captured_reading(
+    session: Session,
+    *,
+    request_id: int,
+    principal: HumanPrincipal,
+    performed_at: datetime,
+    executed_by: str | None = None,
+    substantiated: bool = True,
+    finding: str = "",
+) -> CaptureCorrectionOutcome:
+    """Re-read one challenged capture from its own source, and record the result.
+
+    Runs in the caller's transaction, so a rolled-back caller leaves no
+    correction result, no retirement, and no claim that one happened. Every
+    refusal is raised before anything is written.
+
+    ``principal`` is the responsible operations actor, who must hold the
+    technical-operations designation; ``executed_by`` is the identity that
+    performed the work and defaults to that same person. They stay distinct
+    because a queued re-capture running under a service identity does not
+    become the author of the decision to correct (ADR-0101, ADR-0081).
+
+    ``substantiated=False`` records an investigation that could not be
+    substantiated, with operations' own ``finding``. It retires nothing and the
+    proposal stays open: "the source did not establish this assertion" is not
+    "the source matches the accepted value", and no Source Fact claiming
+    absence or equality is written (ADR-0101).
+    """
+
+    actor = require_human_principal(principal)
+    performer = (executed_by or actor.subject).strip() or actor.subject
+    request = session.get(CaptureCorrectionRequest, int(request_id))
+    if request is None:
+        raise OperationsRepairRefused(
+            "unknown_request",
+            f"extraction-error report {request_id} is not a recorded report.",
+            kind=refusals.NOT_OFFERED,
+        )
+    project_id = int(request.project_id)
+    document_id = int(request.document_id)
+    _require_technical_operations(session, actor, project_id)
+    # The one authoritative stage-aware check, called rather than restated
+    # (#919). A re-capture reads the retained source and writes a Source Fact
+    # from it, so the stage it asks about is semantic extraction -- which also
+    # answers the reading prohibition, because a document nobody may read is a
+    # document nobody may extract from.
+    _refuse_held_extraction(session, document_id)
+    _refuse_missing_customer_authorization(session, document_id)
+
+    # The exact capture the report named, by recorded identity with its digest
+    # checked, never by the query that reconstructs a capture for a screen.
+    capture = capture_correction.stored_challenged_capture(session, request)
+    delta = session.get(ProposedDelta, int(request.delta_id))
+    if delta is None or int(delta.project_id) != project_id:
+        raise OperationsRepairRefused(
+            "unknown_delta",
+            f"proposed change {request.delta_id} is not this project's.",
+            kind=refusals.NOT_OFFERED,
+        )
+    rule_version = delta.comparison_rule_version
+    accepted_revision_id = current_accepted_revision_id(
+        session,
+        project_id=project_id,
+        subject_identity=delta.target_subject_identity,
+        field_name=delta.target_field,
+    )
+
+    if not substantiated:
+        return _record_correction(
+            session,
+            request=request,
+            delta=delta,
+            capture=capture,
+            outcome=capture_correction_retirement.INCONCLUSIVE,
+            corrected_fact_id=None,
+            support_assessment_id=None,
+            accepted_revision_id=None,
+            replacement_delta_id=None,
+            rule_version=rule_version,
+            finding=finding.strip() or UNSUBSTANTIATED_FINDING,
+            actor=actor,
+            performer=performer,
+            performed_at=performed_at,
+        )
+
+    selected = session.get(SourceSegment, int(request.selected_source_segment_id))
+    challenged_capture_row = session.get(Fact, capture.fact_id)
+    field = delta.target_field or capture.field
+    try:
+        # The corrected value comes out of the retained passage's own text,
+        # through the materializer every capture goes through. There is no
+        # argument to this procedure a value could arrive by.
+        value = materialize_segment_value(session, field, selected)
+    except FactValidationError as exc:
+        # A passage that does not read as this field is not proof the source
+        # says something else; it is an investigation that could not be
+        # substantiated, recorded as itself.
+        return _record_correction(
+            session,
+            request=request,
+            delta=delta,
+            capture=capture,
+            outcome=capture_correction_retirement.INCONCLUSIVE,
+            corrected_fact_id=None,
+            support_assessment_id=None,
+            accepted_revision_id=None,
+            replacement_delta_id=None,
+            rule_version=rule_version,
+            finding=(
+                f"the reported passage does not read as {field}: {exc}. The "
+                "proposed change stays open."
+            ),
+            actor=actor,
+            performer=performer,
+            performed_at=performed_at,
+        )
+
+    corrected = append_fact(
+        session,
+        project_id=project_id,
+        document_id=document_id,
+        # The reading that was wrong. `ck_facts_source_binding` requires a
+        # document-bound Fact to name the run that read the document, and the
+        # honest answer is the run whose reading this corrects: the corrected
+        # capture then sits in the same source lineage the delta's own reading
+        # walks, so the screen finds it where it looks. What separates it from
+        # that run's own output is `recorded_by`, and the identity digest
+        # below, which names this report and this passage rather than a model.
+        extraction_run_id=(
+            None
+            if challenged_capture_row is None
+            else challenged_capture_row.extraction_run_id
+        ),
+        subject_kind="source_row",
+        subject_key=capture.subject_identity,
+        recorded_by=f"operations:{SOURCE_GROUNDED_RECAPTURE}",
+        content_sha256=fact_identity_digest(
+            # Not an Extraction Run: this capture's identity is the report it
+            # answers and the passage it was read from, which is stable and
+            # reproducible, so an exact replay of the same correction appends
+            # the same Fact rather than a second one.
+            run_identity={
+                "capture_correction_request_id": int(request.id),
+                "document_id": document_id,
+                "source_segment_id": int(selected.id),
+                "procedure": SOURCE_GROUNDED_RECAPTURE,
+            },
+            subject_kind="source_row",
+            subject_key=capture.subject_identity,
+            value=value,
+        ),
+        value=value,
+    )
+    # ADR-0082's source-backed class: the corrected capture is held to the
+    # retained passage by an effective Support Assessment, which is what the
+    # command checks before it retires anything.
+    support = append_support_assessment(
+        session,
+        project_id=project_id,
+        proposition_kind="source_fact",
+        fact_id=int(corrected.id),
+        extracted_proposal_id=None,
+        source_segment_ids=(int(selected.id),),
+        evidence_role="value_support",
+        assessment="supported",
+        human_principal=actor.subject,
+        released_policy=None,
+        ruleset_version=None,
+        assessed_at=performed_at,
+    )
+
+    recomparison = capture_correction_retirement.recompare_corrected_capture(
+        session,
+        delta,
+        corrected_value=value.scalar,
+        comparison_rule_version=rule_version,
+        accepted_revision_id=accepted_revision_id,
+    )
+    replacement_delta_id = None
+    if not recomparison.establishes_no_difference:
+        # The corrected result still differs, so the difference is proposed as
+        # an ordinary Proposed Delta and a coordinator decides it in Review.
+        # It is not a supersession of the original: the cause is a correction
+        # to a capture, not a newer source version (ADR-0101).
+        replacements = create_proposed_delta_group(
+            session,
+            project_id=project_id,
+            source_family=delta.source_family,
+            source_revision=delta.source_revision,
+            document_id=document_id,
+            deltas=recomparison.replacement,
+        )
+        replacement_delta_id = int(replacements[0].id) if replacements else None
+
+    return _record_correction(
+        session,
+        request=request,
+        delta=delta,
+        capture=capture,
+        outcome=recomparison.outcome,
+        corrected_fact_id=int(corrected.id),
+        support_assessment_id=int(support.id),
+        accepted_revision_id=accepted_revision_id,
+        replacement_delta_id=replacement_delta_id,
+        rule_version=rule_version,
+        finding=finding.strip() or _recomparison_finding(recomparison, selected),
+        actor=actor,
+        performer=performer,
+        performed_at=performed_at,
+    )
+
+
+#: What an investigation nobody could substantiate says when operations gave no
+#: words of their own. It claims no correction, which is the whole point.
+UNSUBSTANTIATED_FINDING = (
+    "the retained source did not establish the reported correction, so no "
+    "corrected capture was recorded and the proposed change stays open"
+)
+
+
+def _recomparison_finding(recomparison, selected: SourceSegment) -> str:
+    """What the recomparison established, in the words a later reader needs."""
+
+    where = source_segment_locator_words(selected)
+    if recomparison.establishes_no_difference:
+        return (
+            f"the capture was re-read from {where} and compared against the "
+            f"accepted record under rule "
+            f"{recomparison.comparison_rule_version}; the corrected value "
+            f"matches the accepted value, so there is no difference to propose"
+        )
+    return (
+        f"the capture was re-read from {where} and compared against the "
+        f"accepted record under rule {recomparison.comparison_rule_version}; "
+        f"the corrected value still differs, so a corrected proposal was "
+        f"raised for Review"
+    )
+
+
+def _record_correction(
+    session: Session,
+    *,
+    request: CaptureCorrectionRequest,
+    delta: ProposedDelta,
+    capture,
+    outcome: str,
+    corrected_fact_id: int | None,
+    support_assessment_id: int | None,
+    accepted_revision_id: int | None,
+    replacement_delta_id: int | None,
+    rule_version: str,
+    finding: str,
+    actor: HumanPrincipal,
+    performer: str,
+    performed_at: datetime,
+) -> CaptureCorrectionOutcome:
+    """Write the result and its receipt, in the caller's one transaction.
+
+    The result goes through the record-decision role's command, which is where
+    every one of ADR-0101's six conditions is established; the receipt is the
+    ordinary operations receipt, so this act leaves the same visible line on
+    the source register that the other two procedures leave.
+    """
+
+    recorded = capture_correction_retirement.record_correction_result(
+        session,
+        project_id=int(request.project_id),
+        request_id=int(request.id),
+        delta_id=int(delta.id),
+        challenged_fact_id=capture.fact_id,
+        challenged_fact_sha256=capture.fact_content_sha256,
+        corrected_fact_id=corrected_fact_id,
+        corrected_support_assessment_id=support_assessment_id,
+        accepted_revision_id=accepted_revision_id,
+        comparison_rule_version=rule_version,
+        outcome=outcome,
+        replacement_delta_id=replacement_delta_id,
+        finding=finding,
+        authorized_by_principal=actor.subject,
+        executed_by=performer,
+        recorded_at=performed_at,
+    )
+    entry = audit.record(
+        session,
+        principal=actor,
+        action=audit.CORRECT_CAPTURED_READING,
+        entity_type=audit.DOCUMENT,
+        entity_id=int(request.document_id),
+        after={
+            "procedure": SOURCE_GROUNDED_RECAPTURE,
+            "request_id": int(request.id),
+            "delta_id": int(delta.id),
+            "outcome": outcome,
+            "detail": finding,
+            "result_id": recorded.result_id,
+            "retirement_id": recorded.retirement_id,
+            "corrected_fact_id": corrected_fact_id,
+            "replacement_delta_id": replacement_delta_id,
+            "accepted_revision_id": accepted_revision_id,
+            "comparison_rule_version": rule_version,
+            # The responsible actor is the audit entry's own principal; the
+            # identity that performed the work is recorded beside it, because
+            # a worker executing part of the procedure is not its author.
+            "executed_by": performer,
+        },
+    )
+    return CaptureCorrectionOutcome(
+        request_id=int(request.id),
+        delta_id=int(delta.id),
+        outcome=outcome,
+        result_id=recorded.result_id,
+        retirement_id=recorded.retirement_id,
+        corrected_fact_id=corrected_fact_id,
+        replacement_delta_id=replacement_delta_id,
+        accepted_revision_id=accepted_revision_id,
+        comparison_rule_version=rule_version,
+        finding=finding,
+        authorized_by_principal=actor.subject,
+        executed_by=performer,
+        audit_id=int(entry.id),
+    )
+
+
+def _refuse_held_extraction(session: Session, document_id: int) -> None:
+    """A source nobody may extract from is not re-captured either.
+
+    The gate is ``processing_holds``', called rather than restated, and the
+    recorded reasons are the words a person reads. Nothing here releases a
+    restriction: clearing one has to cite the evidence or configuration change
+    that removed its cause, which is ``processing_holds.release_hold``'s act
+    and not this one (#919).
+    """
+
+    try:
+        processing_holds.assert_may_extract_semantics(session, document_id)
+    except processing_holds.ProcessingHoldInForce as exc:
+        raise OperationsRepairRefused(
+            "held_in_quarantine",
+            f"this source is held and is not processed: {exc}. Correcting a "
+            "capture does not release held bytes, and nothing here lifts a "
+            "hold.",
+        ) from exc
 
 
 def _refuse_held_bytes(session: Session, document_id: int) -> None:
@@ -524,6 +957,10 @@ def _registered_mapping(session: Session, document: Document) -> str:
 
 __all__ = [
     "CORRECTED_MAPPING",
+    "SOURCE_GROUNDED_RECAPTURE",
+    "UNSUBSTANTIATED_FINDING",
+    "CaptureCorrectionOutcome",
+    "correct_captured_reading",
     "FAILED_PARSE",
     "PERMANENT_FAILURE_OUTCOMES",
     "PROCEDURES",

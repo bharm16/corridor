@@ -430,6 +430,7 @@ from corridor.statement_lifecycle import (
 )
 from corridor.evidence_investigator_shadow import observe_shadow_review
 from corridor.consequence_levels import MUST_HANDLE
+from corridor.capture_correction_retirement import results_by_request
 from corridor.capture_correction import (
     CORRECTION_CONTROL,
     CORRECTION_SUPPORTING_TEXT,
@@ -5755,6 +5756,21 @@ def _correction_views(
         project_id=project.id,
         delta_ids=[child.delta_id for child in shown],
     )
+    # What operations found, for each report standing here. A result that
+    # retired the proposal took the change off this screen, so the one a
+    # coordinator meets beside their own report is the investigation that could
+    # not be substantiated -- which ADR-0101 says must leave a clarification
+    # path open rather than be recorded as a success. Retrieving it is what
+    # closes the loop for the person who made the report.
+    found = results_by_request(
+        session,
+        project_id=project.id,
+        request_ids=[
+            report.request_id
+            for reports in standing.values()
+            for report in reports
+        ],
+    )
     views = {}
     for child in shown:
         capture = challenged_capture(session, item, child)
@@ -5768,6 +5784,7 @@ def _correction_views(
                 matching=searched if child.delta_id == asked_about else "",
             ),
             "reported": standing.get(child.delta_id, ()),
+            "results": found,
         }
     return {"offered": views, "choices": offered if item.batched else ()}
 

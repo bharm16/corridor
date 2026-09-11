@@ -532,15 +532,34 @@ def _validate_child(
             **refresh_context(session, delta),
         )
     status = live_delta_status(session, delta.id)
-    if status in ("resolved", "superseded"):
+    if status in ("resolved", "superseded", "capture_corrected"):
         return Refusal(
             status=REFUSED,
-            reason=("already_resolved" if status == "resolved" else "superseded_delta"),
+            reason=(
+                "already_resolved"
+                if status == "resolved"
+                else (
+                    "superseded_delta"
+                    if status == "superseded"
+                    else "capture_corrected_delta"
+                )
+            ),
             detail=(
                 "the Proposed Delta is already resolved; correct it with a "
                 "later decision"
                 if status == "resolved"
-                else "a newer source version superseded this Proposed Delta"
+                else (
+                    "a newer source version superseded this Proposed Delta"
+                    if status == "superseded"
+                    # ADR-0101's approved words. A packet rendered before the
+                    # correction and submitted after it applies nothing, and
+                    # says so rather than dropping the child quietly.
+                    else (
+                        "This proposal can no longer be applied because its "
+                        "source reading was corrected. Nothing was applied. "
+                        "View the correction result."
+                    )
+                )
             ),
             delta_id=delta.id,
             **refresh_context(session, delta),

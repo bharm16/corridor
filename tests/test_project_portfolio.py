@@ -1446,7 +1446,12 @@ def test_one_bounded_read_produces_the_whole_portfolio(session, tmp_path, store)
     # learned that a preparation had failed (#675): one statement for every
     # project's newest preparation request, and a second only when one of them
     # exists, which is again the batched sibling of the single-project reader.
-    assert large <= 21, large
+    # It rose by one more when ADR-0101 gave the lifecycle a third exit: one
+    # statement for every project's capture-correction retirements, beside the
+    # three that already read dispositions, supersessions and deferrals, and
+    # again batched over the whole portfolio rather than asked per project --
+    # which is what the equality above proves.
+    assert large <= 22, large
 
 
 # --- how it reads ----------------------------------------------------------

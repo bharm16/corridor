@@ -634,6 +634,24 @@
       </tr>
         {%- endfor %}
       {% endcall %}
+      {#- What operations found. A correction that succeeded took this change
+          off the screen, so what is reachable here is the investigation that
+          could not be substantiated: the proposed change stays open, and the
+          person who reported it is told what was looked at rather than left
+          watching a report that never comes back. -#}
+        {%- for report in correction_view.reported %}
+          {%- for result in correction_view.results.get(report.request_id, ()) %}
+      <p class="quiet">
+        {%- if result.headline %}<strong>{{ result.headline }}</strong> {% endif -%}
+        {{ result.explanation }}
+        Correction result {{ result.result_id }} for report {{ result.request_id }},
+        recorded by {{ result.executed_by }} on {{ result.recorded_at }}.
+        {%- if result.replacement_delta_id %}
+        The corrected proposal is proposed change {{ result.replacement_delta_id }}.
+        {%- endif %}
+      </p>
+          {%- endfor %}
+        {%- endfor %}
       {%- endif %}
 
       {#- The passage that should have been read is not always beside the one

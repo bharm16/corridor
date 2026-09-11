@@ -148,6 +148,7 @@ from corridor.models import (
     PREPARATION_REFUSAL_REASONS,
     READY,
     READY_WITH_EXCEPTIONS,
+    DeltaCaptureCorrection,
     Document,
     ProjectRecordRevision,
     ProposedDelta,
@@ -1517,6 +1518,17 @@ def candidate_is_stale(
         ),
         current_package_id=None if package is None else int(package.id),
         formats=effective_baseline_formats(session, int(candidate.project_id)),
+        corrections_after_preparation=int(
+            session.scalar(
+                select(func.count())
+                .select_from(DeltaCaptureCorrection)
+                .where(
+                    DeltaCaptureCorrection.project_id == candidate.project_id,
+                    DeltaCaptureCorrection.retired_at > candidate.prepared_at,
+                )
+            )
+            or 0
+        ),
     )
 
 
@@ -1527,6 +1539,7 @@ def candidate_staleness_reasons(
     newest_revision_id: int,
     current_package_id: int | None,
     formats: Mapping[str, Any],
+    corrections_after_preparation: int = 0,
 ) -> tuple[str, ...]:
     """The staleness rule itself, over inputs the caller has already read.
 
@@ -1572,6 +1585,17 @@ def candidate_staleness_reasons(
         reasons.append(
             "a package was authorized after this candidate was prepared, so "
             "its comparison baseline is no longer the current one"
+        )
+    if corrections_after_preparation:
+        # ADR-0101's fifth term. A correction writes no accepted value and no
+        # revision, so the accepted-revision term above cannot see it -- and
+        # yet a configured report may disclose open proposals as open
+        # questions, so removing one changes what this candidate says. "The
+        # same accepted revision" is not the same thing as "still current".
+        reasons.append(
+            "Corridor corrected its reading of a source after this candidate "
+            "was prepared, so what it discloses as still open may no longer "
+            "be what this project is waiting on"
         )
     reasons.extend(replaced_format_reasons(candidate, formats))
     return tuple(reasons)

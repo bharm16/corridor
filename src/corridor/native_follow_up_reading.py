@@ -32,7 +32,7 @@ from typing import Any, Mapping, Sequence
 from sqlalchemy import select
 
 from corridor.models import (DeltaFollowUpPlan, DeltaFollowUpPlanClosure, ProposedDelta,
-    DeltaRecordDecision, DeltaSupersession, DeltaFollowUpPlanEvidence,
+    DeltaCaptureCorrection, DeltaRecordDecision, DeltaSupersession, DeltaFollowUpPlanEvidence,
     SupportAssessmentSource, DeltaReviewPacketChild, DeltaReviewPacketReversal)
 
 
@@ -151,6 +151,15 @@ def read_adopted_follow_up_plans(session, project_id, revision_id, *, current, a
         if as_of is not None:
             superseded = superseded.where(DeltaSupersession.superseded_at <= as_of)
         query = query.where(~DeltaFollowUpPlan.delta_id.in_(superseded))
+        # A plan about a comparison Corridor withdrew is no longer an outside
+        # ask either (ADR-0101). The plan and its correspondence are retained
+        # and readable as history -- this only stops it being counted as
+        # something the project is still waiting on.
+        corrected = select(DeltaCaptureCorrection.delta_id).where(
+            DeltaCaptureCorrection.project_id == project_id)
+        if as_of is not None:
+            corrected = corrected.where(DeltaCaptureCorrection.retired_at <= as_of)
+        query = query.where(~DeltaFollowUpPlan.delta_id.in_(corrected))
     if as_of is not None:
         if as_of.tzinfo is None:
             raise ValueError("Follow-up Plan reading cutoff must be timezone-aware")
