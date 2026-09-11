@@ -26,12 +26,12 @@ recoverable and idempotent:
    It covers every registered document and not only the extractable ones,
    because a source no extractor reads still has pages and segments a citation
    is replayed against, and a kind this act skipped would wait for a reader
-   that never came. A document under a hold is the one exception, and the
-   paragraph below says why that exception is temporary.
+   that never came. A document whose hold prohibits *reading* is the one
+   exception, and the paragraph below says which holds those are.
 2. Scope: load the project (refuse an unknown one before any model work) and
-   select the eligible extractable documents. Held (quarantined), superseded
-   (sealed), unread, unreadable, and permanently unreadable documents are
-   excluded here,
+   select the eligible extractable documents. Documents a recorded hold
+   prohibits extracting from, superseded (sealed), unread, unreadable, and
+   permanently unreadable documents are excluded here,
    before the model runs, and reported rather than silently retried (ADR-0034).
 3. Extraction: drive ``extract_project`` per eligible document. Each document's
    proposals and its terminal Extraction Run commit together; a completed run
@@ -46,21 +46,23 @@ recoverable and idempotent:
    but a prior crash left the watermark dirty — and is a no-op that appends no
    Policy Runs when the project is clean (ADR-0029, #342).
 
-**Act 1's hold check is temporary containment, not the intended design, and
-#919 is the decision that replaces it.** ``document_quarantines`` records a
-free-text reason and no machine-readable stage, so nothing on a held row says
-whether the hold forbids opening the bytes at all or only forbids taking
-meaning out of them — and the one gate that exists,
-``intake_hardening.assert_can_process_richly``, refuses every kind of rich
-processing for every hold. Until #919 gives a hold a stage the record actually
-carries, act 1 asks that gate and leaves a held document's bytes unopened.
-That is a conservative default over an **unclassified** restriction: it is not
-a finding that the file is dangerous, and every hold a production path writes
-today is an extraction hold rather than a hostile-bytes one. The cost is that
-a held document stays ``pending`` and is selected and skipped by every later
-pass, so this pass counts it every time rather than letting it fall out of
-both the parsed count and the failures; what ends that state is an
-attributable classification or repair, not another pass.
+**Act 1 asks which stage the hold prohibits, not merely whether one exists
+(#919).** A hold now says so: either document reading is prohibited, or only
+semantic extraction is. So the schedule workbook this pass used to skip is read
+into cells like any other source, keeping its exact locators and digests, while
+act 3 still never interprets the sequencing it asserts; and a document whose
+hold prohibits reading has its bytes left unopened. The answer is
+``processing_holds.assert_may_read_document``, called rather than restated, and
+it is one of two independent requirements — #827's onboarding permission is the
+other, and neither replaces the other.
+
+A document act 1 declines to read keeps the state it had, so it stays
+``pending`` and is selected and skipped by every later pass; this pass counts it
+every time rather than letting it fall out of both the parsed count and the
+failures. What ends that state is an attributable release or classification,
+not another pass. Where the hold is the unclassified historical kind the
+transition could not place, that count is a conservative default and not a
+finding that the file is dangerous.
 """
 
 from __future__ import annotations
@@ -82,8 +84,8 @@ from corridor.extract_project import (
 )
 from corridor.extraction_runs import completed_document_ids
 from corridor.ingest import parse_registered_document
-from corridor.intake_hardening import HostileContentRefused, assert_can_process_richly
-from corridor.models import Document, DocumentQuarantine, ExtractionRun, Project
+from corridor import processing_holds
+from corridor.models import Document, ExtractionRun, Project
 
 
 # An extraction run outcome that a later pass must not blindly re-read: an
@@ -115,13 +117,16 @@ class ProcessingPassResult:
     ``parsed_document_count`` is how many documents this pass read for the
     first time and *committed*, which is the one number that says a confirmed
     upload was picked up rather than left waiting (#893).
-    ``held_unread_count`` is how many it declined to read because a hold
-    forbids rich processing. It is counted apart from ``excluded`` rather than
-    added to it, because the two describe different documents and the same
-    document can be in both: ``excluded`` holds out extractable documents the
-    scope act rejected, while this counts documents the read act never opened,
-    including the kinds no extractor would take anyway. A held document
-    belongs in one of these numbers or the pass has lost it (#919).
+    ``held_unread_count`` is how many it declined to read because a recorded
+    restriction prohibits reading them (#919). A document restricted only
+    against semantic extraction is not one of them: this pass reads it, and the
+    scope act is where that restriction is felt. It is counted apart from
+    ``excluded`` rather than added to it, because the two describe different
+    documents and the same document can be in both: ``excluded`` holds out
+    extractable documents the scope act rejected, while this counts documents
+    the read act never opened, including the kinds no extractor would take
+    anyway. A held document belongs in one of these numbers or the pass has
+    lost it.
 
     ``eligible_document_count`` is how many documents this pass took to
     extraction, which is what it has always been and is now one filter
@@ -285,17 +290,18 @@ def _parse_landed_documents(
     failure is this pass's own, so it is reported as a processing failure and
     not as a held-out steady state.
 
-    **A held document is counted, never opened.** The gate is
-    ``intake_hardening.assert_can_process_richly``, called rather than restated
-    — the same one ``operations_repair`` asks before its own re-parse — and it
-    is asked inside the claim, so the answer is about the row this transaction
-    holds rather than about a snapshot taken before it. The document keeps the
-    state it had: still held, still ``pending``, and selected and skipped again
-    by every later pass. That is neither this pass's failure nor a finding
-    about the bytes, so it is returned as its own number and not folded into
-    either the parsed count or the failures. Why the check is here at all, what
-    it does *not* claim, and what replaces it is in the module docstring
-    (#919).
+    **A document nobody may read is counted, never opened.** The gate is
+    ``processing_holds.assert_may_read_document``, called rather than restated
+    — the same answer ``ingest`` asks before its own reader and
+    ``operations_repair`` asks before its re-parse — and it is asked inside the
+    claim, so it is about the row this transaction holds rather than about a
+    snapshot taken before it. It answers for the reading boundary only: a hold
+    that prohibits semantic extraction alone leaves this act free to read, and
+    act 3 is where that restriction is felt. A document this act declines keeps
+    the state it had: still held, still ``pending``, and selected and skipped
+    again by every later pass. That is neither this pass's failure nor a
+    finding about the bytes, so it is returned as its own number and not folded
+    into either the parsed count or the failures (#919).
 
     **Why the row is claimed and not merely re-checked.** Production scheduling
     does not keep two workers out of this loop. ``due_work.claim_due_work``
@@ -351,12 +357,14 @@ def _parse_landed_documents(
                         # here. Its commit is the one that counts.
                         continue
                     try:
-                        assert_can_process_richly(reading, document_id)
-                    except HostileContentRefused:
-                        # An unclassified restriction, not a judgement about
-                        # these bytes: nothing is written, nothing is read, and
-                        # the count below is what keeps the document visible
-                        # while it waits for #919.
+                        processing_holds.assert_may_read_document(
+                            reading, document_id
+                        )
+                    except processing_holds.ProcessingHoldInForce:
+                        # A recorded restriction on reading this document, not
+                        # a judgement about these bytes: nothing is written,
+                        # nothing is read, and the count below is what keeps
+                        # the document visible while the restriction stands.
                         held_unread += 1
                         continue
                     sha256 = document.sha256
@@ -440,8 +448,8 @@ def _eligible_documents(
     """Select the extractable documents a production pass may read.
 
     Excludes, before any model work: superseded documents (a sealed input can
-    never regain actionable proposals), quarantined documents (a held input is
-    deliberately unread), documents whose parse failed, documents nothing has
+    never regain actionable proposals), documents a recorded hold prohibits
+    extracting from, documents whose parse failed, documents nothing has
     read yet, and documents whose only terminal reading is a permanent
     unreadable/no-matrix outcome. Each exclusion is counted by reason for
     honest reporting. A sixth reason, ``extracting_elsewhere``, is opened here
@@ -449,6 +457,12 @@ def _eligible_documents(
     answer it: whether another live pass holds a document is true of the
     instant the reader is about to run, not of the instant this scope was taken
     (``_claim_for_extraction``, #925).
+
+    The hold exclusion is the effective permission and not the presence of a
+    row (#919): a restriction on reading prohibits extraction too, and a
+    restriction on extraction alone excludes the document here while act 1
+    reads it. ``extract_project`` asks the same answer again per document,
+    because a selector that filters rows does not bind a direct call.
 
     ``failed_parse`` and ``awaiting_parse`` are counted apart because they are
     owed to different people (#893). A failed parse waits for the bounded,
@@ -475,13 +489,14 @@ def _eligible_documents(
         .where(Document.project_id == project_id)
         .order_by(Document.doc_date, Document.id)
     ).all()
-    quarantined = set(
-        session.scalars(
-            select(DocumentQuarantine.document_id)
-            .join(Document, Document.id == DocumentQuarantine.document_id)
-            .where(Document.project_id == project_id)
-        ).all()
-    )
+    holds = processing_holds.open_holds_for_project(session, project_id)
+    held_out_of_extraction = {
+        document_id
+        for document_id, rows in holds.items()
+        if not processing_holds.permission_from(
+            document_id, rows
+        ).may_extract_semantics
+    }
     completed = completed_document_ids(session, project_id)
     permanently_failed = {
         int(document_id): int(run_id)
@@ -517,7 +532,7 @@ def _eligible_documents(
             continue
         if document.superseded_by is not None:
             excluded["superseded"] += 1
-        elif document.id in quarantined:
+        elif int(document.id) in held_out_of_extraction:
             excluded["held_quarantined"] += 1
         elif document.parse_status == "failed":
             excluded["failed_parse"] += 1

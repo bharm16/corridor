@@ -24,6 +24,7 @@ from openpyxl import Workbook
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import DBAPIError
 
+from corridor import processing_holds
 from corridor import access, audit, intake_hardening
 from corridor.baseline_adoption import (
     ANSWER_EFFECTS,
@@ -1005,16 +1006,14 @@ def test_a_held_source_is_refused_a_rich_onboarding_read(
         field_mapping=DEMO,
         images_dir=tmp_path / "images",
     )
-    intake_hardening.quarantine_document(
-        session, first.document_id, "unclassified pending #919"
-    )
+    _hold_reading(session, first.document_id)
     session.flush()
 
     staged = validate_and_stage(bytes_, "ucm.xlsx")
     assert staged.sha256 == first.content_sha256, (
         "the gate asks about these exact bytes, so the two stagings must agree"
     )
-    with refusal(session, intake_hardening.HostileContentRefused) as refused:
+    with refusal(session, processing_holds.ProcessingHoldInForce) as refused:
         prepare_baseline_reading(
             session,
             project=project,
@@ -1026,7 +1025,7 @@ def test_a_held_source_is_refused_a_rich_onboarding_read(
             field_mapping=DEMO,
             images_dir=tmp_path / "images",
         )
-    assert "quarantin" in str(refused.value)
+    assert "document reading is not permitted" in str(refused.value)
 
 
 def test_a_valid_permission_does_not_lift_a_hold_and_a_hold_is_not_a_permission(
@@ -1037,12 +1036,27 @@ def test_a_valid_permission_does_not_lift_a_hold_and_a_hold_is_not_a_permission(
         session, project_id=int(project.id), operation=INSPECT_COMPATIBILITY, at=AT
     ).permitted
     first = prepared(session, project, tmp_path)
-    intake_hardening.quarantine_document(session, first.document_id, "held")
+    _hold_reading(session, first.document_id)
     session.flush()
-    with refusal(session, intake_hardening.HostileContentRefused):
+    with refusal(session, processing_holds.ProcessingHoldInForce):
         intake_hardening.assert_staged_bytes_may_be_read_richly(
             session, project_id=int(project.id), sha256=first.content_sha256
         )
+
+
+def _hold_reading(session, document_id):
+    """One recorded restriction that prohibits reading this source (#919)."""
+
+    return processing_holds.impose_hold(
+        session,
+        document_id=document_id,
+        prohibited_stage=processing_holds.DOCUMENT_READING,
+        reason_code=processing_holds.INTAKE_SECURITY_FINDING,
+        reason="an intake check refused these bytes for rich reading",
+        authority=processing_holds.INTAKE_SECURITY,
+        imposed_by="tests.test_onboarding_authorization",
+        evidence=f"documents.id={document_id}",
+    )
 
 
 # --- the adoption itself ----------------------------------------------------

@@ -18,13 +18,13 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 
+from corridor import processing_holds
 from corridor import access
 from corridor.extraction_runs import record_extraction_run
 from corridor.models import (
     ActiveRunDeclaration,
     DocPage,
     Document,
-    DocumentQuarantine,
     ExtractionFailureDiagnosisConfiguration,
     ExtractionFailureDiagnosisRequest,
     ExtractionRun,
@@ -141,6 +141,21 @@ def _completed_run(session, document, *, prompt_version="reader-v1", model=None)
     )
     session.flush()
     return run
+
+
+def _hold(session, document_id):
+    """One recorded restriction on extracting from this source (#919)."""
+
+    return processing_holds.impose_hold(
+        session,
+        document_id=document_id,
+        prohibited_stage=processing_holds.SEMANTIC_EXTRACTION,
+        reason_code=processing_holds.UNMODELED_SEQUENCING_SEMANTICS,
+        reason="sequencing",
+        authority=processing_holds.PROCESSING_RULE,
+        imposed_by="tests.test_extraction_failure_diagnosis",
+        evidence=f"documents.id={document_id}",
+    )
 
 
 def _unreadable_document(session, project, **document_kwargs):
@@ -599,7 +614,7 @@ def test_stale_failure_context_refuses_without_a_model_call(
     state_token = _diagnose_token(body, document.id, run.id)
 
     # The document is quarantined after the operator saw the failure screen.
-    session.add(DocumentQuarantine(document_id=document.id, reason="sequencing"))
+    _hold(session, document.id)
     session.flush()
 
     response = client.post(
@@ -692,7 +707,7 @@ def test_diagnosis_changes_no_authoritative_state(
         )
         == 0
     )
-    assert session.get(DocumentQuarantine, document.id) is None
+    assert processing_holds.open_holds(session, document.id) == ()
 
 
 # --- access -----------------------------------------------------------------

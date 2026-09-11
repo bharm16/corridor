@@ -26,7 +26,7 @@
     This diagnosis is a model-drafted reading of the failure detail and the
     permitted source pages. It is <b>not the record</b>. It <b>does not retry</b>
     extraction, spend an extraction budget, change the document type, register
-    vocabulary, create a source, or lift a quarantine, and it does <b>not</b>
+    vocabulary, create a source, or release a processing hold, and it does <b>not</b>
     relabel the failure as a success or an abstention. Every observed fact below
     cites the failure detail or a permitted page you can check. The recovery
     decision stays yours.
@@ -38,7 +38,7 @@
 
   <h2>Deterministic failure detail</h2>
   <p class="muted">The retained processing receipt, unchanged by this diagnosis.</p>
-  {% if quarantine %}<p class="warning">Held input: {{ quarantine.reason }}. This source document is not eligible for a recovery run.</p>{% endif %}
+  {% for line in hold_lines %}<p class="warning">Held input &mdash; {{ line }}</p>{% endfor %}
   <section class="card">
     <table><tbody>
     {% for field, value in failure.items() %}<tr><th>{{ field }}</th><td><code>{{ value }}</code></td></tr>{% endfor %}

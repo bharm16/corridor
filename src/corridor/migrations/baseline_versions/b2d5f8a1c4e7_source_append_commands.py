@@ -173,6 +173,7 @@ from corridor.migrations.source_append_commands import (
     partition_declaration,
     partition_seal,
     preparation_supervisor,
+    processing_holds,
     product_upload_delivery,
     project_partition,
     public_privileges,
@@ -1549,6 +1550,14 @@ def upgrade() -> None:
     # revision names them.
     source_authorization.upgrade(op)
 
+    # --- #919 A hold says which processing stage it prohibits -------------
+    # Last of the feature blocks, and the only one that alters a relation the
+    # baseline created rather than adding one of its own. It runs here because
+    # its classification reads `documents` and `extraction_runs` from the
+    # baseline and `source_deliveries` as `unified_delivery` left it, and
+    # nothing later in the revision names `document_quarantines`.
+    processing_holds.upgrade(op)
+
     from corridor.migrations import email_spine
 
     email_spine.upgrade(op, APPEND_NATIVE_SOURCE_SEGMENTS, APPEND_FACT)
@@ -1608,8 +1617,15 @@ def downgrade() -> None:
     project_contacts.downgrade(op)
     email_spine.downgrade(op)
 
+    # --- #919 A hold says which processing stage it prohibits -------------
+    # First among the feature reversals, because the upgrade added it last. It
+    # refuses rather than collapsing a source held for several reasons, or
+    # resurrecting a released hold, into the one row per document the
+    # supported predecessor holds.
+    processing_holds.downgrade(op)
+
     # --- #886 The authorized source bindings a project takes delivery on --
-    # First among the feature reversals, because the upgrade added it last,
+    # Next, because the upgrade added it second from the end,
     # and before the partition function its two policies name unwinds.
     source_authorization.downgrade(op)
 

@@ -30,6 +30,7 @@ from corridor.due_work import (
     enqueue_due_work,
     run_due_work_once,
 )
+from corridor import processing_holds
 from corridor.intake_hardening import HostileContentRefused, inspect_byte_gate
 from corridor.models import (
     AuditLog,
@@ -37,7 +38,6 @@ from corridor.models import (
     Dependency,
     DocPage,
     Document,
-    DocumentQuarantine,
     ExternalOrg,
     ExtractionRun,
     Project,
@@ -898,22 +898,35 @@ def test_an_unreadable_source_fails_visibly_instead_of_waiting_for_ever(
         )
 
 
+def _hold_reading(session, document_id):
+    """One recorded restriction that prohibits reading this source (#919)."""
+
+    return processing_holds.impose_hold(
+        session,
+        document_id=document_id,
+        prohibited_stage=processing_holds.DOCUMENT_READING,
+        reason_code=processing_holds.INTAKE_SECURITY_FINDING,
+        reason="an intake check refused these bytes for rich reading",
+        authority=processing_holds.INTAKE_SECURITY,
+        imposed_by="tests.test_source_intake",
+        evidence=f"documents.id={document_id}",
+    )
+
+
 def test_a_held_upload_is_skipped_by_the_pass_and_reported_rather_than_lost(
     runtime_database, tmp_path, monkeypatch
 ):
-    """A hold recorded in the same request stops the read act opening the bytes.
+    """A restriction on *reading* stops the read act opening the bytes (#919).
 
-    `schedule` is an accepted kind on the confirmation route, and registration
-    records the unmodeled-sequencing hold in that same transaction, so the
-    document commits `pending` *and* held. The read act selects on `pending`,
-    so before the gate was consulted it rendered a file the one rich-processing
-    gate refuses — see #919 for why the record cannot yet say which stage a
-    hold forbids, and the module docstring for why skipping it is the
-    conservative reading rather than a finding about the file.
+    The read act selects on `pending`, so a document registered and restricted
+    in the same request is selected by the very next pass. It asks which stage
+    the restriction prohibits before it opens anything, and a restriction on
+    document reading is where it stops.
 
     Three things have to be true at once, which is why they are one test: the
-    held file is not opened, an ordinary sibling in the same pass still is, and
-    the held one is reported rather than silently missing from every count.
+    restricted file is not opened, an ordinary sibling in the same pass still
+    is, and the restricted one is reported rather than silently missing from
+    every count.
     """
 
     _stage_store(tmp_path, monkeypatch)
@@ -927,32 +940,34 @@ def test_a_held_upload_is_skipped_by_the_pass_and_reported_rather_than_lost(
             project_id,
             "sequencing.pdf",
             body=_matrix_pdf("Sequencing"),
-            doc_type="schedule",
         )
         ordinary = _confirm_upload(
             uploading, project_id, "ordinary.pdf", body=_matrix_pdf("Ordinary")
         )
+        _hold_reading(uploading, held.document_id)
         uploading.commit()
 
     # The state the person's request left behind: both registered and unread,
-    # and one of them already held.
+    # and one of them already restricted.
     with factory() as verify:
         assert verify.get(Document, held.document_id).parse_status == "pending"
-        assert verify.get(DocumentQuarantine, held.document_id) is not None
+        standing = processing_holds.permission(verify, held.document_id)
+        assert standing.may_read_document is False
 
     _declare_processing(factory, project_id, now)
     select_route, calls = _scripted_route({"ordinary.pdf": "FOC1-1"})
     result = _run_one_pass(factory, project_id, select_route, now)
 
     assert result.execution_outcome == "completed", result.error_code
-    # One read, one hold, and the hold is not this pass's failure.
+    # One read, one restriction, and the restriction is not this pass's failure.
     assert result.handler_result["parsed"] == 1
     assert result.handler_result["held_unread"] == 1
     assert result.handler_result["health"] == "healthy"
     assert calls["count"] == 1
 
     with factory() as verify:
-        # Nothing opened the held file: no status flip, no pages, no segments.
+        # Nothing opened the restricted file: no status flip, no pages, no
+        # segments.
         still_held = verify.get(Document, held.document_id)
         assert still_held.parse_status == "pending"
         assert still_held.pages == 0
@@ -969,13 +984,11 @@ def test_a_held_upload_is_skipped_by_the_pass_and_reported_rather_than_lost(
             verify, project_id=project_id
         )
         rows = {row.document_id: row for row in register.rows}
-        assert rows[held.document_id].state == "held_unmodeled"
+        assert rows[held.document_id].state == source_register.READING_HELD
         assert rows[held.document_id].state_words == (
-            "Held — its content is deliberately not read"
+            "On hold — document reading is not permitted"
         )
-        assert "work sequencing is not modeled" in (
-            rows[held.document_id].recorded_reason
-        )
+        assert "refused these bytes" in rows[held.document_id].recorded_reason
         # Its sibling went the whole way in the same pass.
         assert rows[ordinary.document_id].state == "processed"
 
@@ -987,8 +1000,8 @@ def test_a_held_document_stays_held_over_a_second_pass(
 
     The document the pass skipped is still `pending`, so the next pass selects
     it again. What must not happen is the skip quietly wearing off — and what
-    must not happen either is the second pass losing it, which is how a held
-    source becomes an invisible permanent pending state.
+    must not happen either is the second pass losing it, which is how a
+    restricted source becomes an invisible permanent pending state.
     """
 
     _stage_store(tmp_path, monkeypatch)
@@ -998,9 +1011,8 @@ def test_a_held_document_stays_held_over_a_second_pass(
     project_id = _project_with_org(factory, "stillheld")
 
     with factory() as uploading:
-        held = _confirm_upload(
-            uploading, project_id, "sequencing.pdf", doc_type="schedule"
-        )
+        held = _confirm_upload(uploading, project_id, "sequencing.pdf")
+        _hold_reading(uploading, held.document_id)
         uploading.commit()
 
     _declare_processing(factory, project_id, first_at)
@@ -1017,6 +1029,67 @@ def test_a_held_document_stays_held_over_a_second_pass(
         document = verify.get(Document, held.document_id)
         assert document.parse_status == "pending"
         assert _page_and_segment_counts(verify, held.document_id) == (0, 0)
+
+
+def test_a_schedule_held_against_extraction_is_read_by_the_pass(
+    runtime_database, tmp_path, monkeypatch
+):
+    """The reading the maintainer's ruling permits, on the worker path (#919).
+
+    `schedule` is an accepted kind on the confirmation route, and registration
+    records the unmodeled-sequencing restriction in the same transaction. That
+    restriction is on *interpreting* the document, not on opening it, so the
+    standing pass reads the file into pages and segments like any other source
+    — and the register says both halves: the document was read, and extraction
+    is on hold. The predecessor skipped it and left it permanently unread.
+    """
+
+    _stage_store(tmp_path, monkeypatch)
+    factory = runtime_database.session_factory
+    now = datetime(2026, 8, 29, 7, 0, tzinfo=timezone.utc)
+    project_id = _project_with_org(factory, "schedule")
+
+    with factory() as uploading:
+        schedule = _confirm_upload(
+            uploading,
+            project_id,
+            "sequencing.pdf",
+            body=_matrix_pdf("Sequencing"),
+            doc_type="schedule",
+        )
+        uploading.commit()
+
+    _declare_processing(factory, project_id, now)
+    select_route, calls = _scripted_route({})
+    result = _run_one_pass(factory, project_id, select_route, now)
+
+    assert result.execution_outcome == "completed", result.error_code
+    assert result.handler_result["parsed"] == 1
+    assert result.handler_result["held_unread"] == 0
+    assert result.handler_result["health"] == "healthy"
+    # Read, and never handed to an extractor.
+    assert calls["count"] == 0
+
+    with factory() as verify:
+        document = verify.get(Document, schedule.document_id)
+        assert document.parse_status == "parsed"
+        pages, segments = _page_and_segment_counts(verify, schedule.document_id)
+        assert pages == 1 and segments > 0
+        standing = processing_holds.permission(verify, schedule.document_id)
+        assert (standing.may_read_document, standing.may_extract_semantics) == (
+            True,
+            False,
+        )
+        register = source_register.read_source_register(
+            verify, project_id=project_id
+        )
+        rows = {row.document_id: row for row in register.rows}
+        assert rows[schedule.document_id].state == (
+            source_register.READ_EXTRACTION_HELD
+        )
+        assert rows[schedule.document_id].state_words == (
+            "Document read. Extraction is on hold."
+        )
 
 
 def test_nothing_is_visible_to_another_connection_before_the_confirm_commits(

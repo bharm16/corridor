@@ -20,6 +20,7 @@ from __future__ import annotations
 import pytest
 from sqlalchemy import select
 
+from corridor import processing_holds
 from corridor import audit
 from corridor.config import settings
 from corridor.extract_project import extract_project
@@ -31,7 +32,6 @@ from corridor.later_revision import (
 from corridor.models import (
     AuditLog,
     Document,
-    DocumentQuarantine,
     ExtractionRun,
     Fact,
     ProposedDelta,
@@ -510,9 +510,10 @@ def test_the_pass_records_a_held_delivery_as_a_held_document(
     )
 
     assert [outcome.status for outcome in outcomes] == ["quarantined"]
-    quarantine = session.get(DocumentQuarantine, confirmation.document_id)
-    assert quarantine is not None
-    assert "acts next" in quarantine.reason
+    [hold] = processing_holds.open_holds(session, confirmation.document_id)
+    assert hold.prohibited_stage == processing_holds.SEMANTIC_EXTRACTION
+    assert hold.reason_code == processing_holds.UNDECLARED_SOURCE_REVISION
+    assert "acts next" in hold.reason
     assert _deltas(session, project) == ()
 
 

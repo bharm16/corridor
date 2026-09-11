@@ -48,7 +48,6 @@ from corridor.ingest import SPREADSHEET_SUFFIXES
 from corridor.models import (
     Candidate,
     Document,
-    DocumentQuarantine,
     ExtractionRun,
     PipelineObservation,
     Project,
@@ -60,6 +59,7 @@ from corridor.pipeline import (
     record_routed_run,
 )
 from corridor.row_accounting import RowAccountingFailure
+from corridor import processing_holds
 from corridor.source_revision_declaration import SourceRevisionHeld
 
 # An extractor reads one Document and returns the Candidates it produced,
@@ -184,6 +184,27 @@ def extract_project(
         route = select_route(document)
         usage_before = usage_snapshot(route.usage_client)
         effective_prompt_version = route.effective_prompt_version
+        try:
+            # The one stage-aware answer, asked before any route runs (#919).
+            # The standing pass's scope act already selects held documents out,
+            # but a selector does not bind a direct call, and this is the last
+            # place before a semantic reader or a model sees the document.
+            processing_holds.assert_may_extract_semantics(session, int(document.id))
+        except processing_holds.ProcessingHoldInForce as held:
+            # The outcome a held source has always had here: not a failed
+            # attempt a later pass may repeat, because it reads exactly the
+            # same way until the restriction is released.
+            run = record_routed_run(
+                session, document, route, usage_before, candidate_count=0,
+                page_errors=1, outcome="quarantined", model=route.model,
+                error_detail=str(held),
+            )
+            if commit:
+                session.commit()
+            outcomes.append(Outcome(document.id, document.filename, "quarantined",
+                effective_prompt_version=effective_prompt_version, detail=str(held),
+                extraction_run_id=run.id))
+            continue
         try:
             if route.validate is not None:
                 route.validate(session, document)
@@ -327,10 +348,25 @@ def extract_project(
                 model=route.model,
                 error_detail=str(exc),
             )
-            if session.get(DocumentQuarantine, document.id) is None:
-                session.add(
-                    DocumentQuarantine(document_id=document.id, reason=str(exc))
-                )
+            # Both restrictions prohibit semantic extraction and neither
+            # prohibits reading: each was raised by a reader that had already
+            # opened the document, so the bytes are not what either is about
+            # (#919). They are separate reasons and separate rows, so one being
+            # settled later cannot clear the other.
+            processing_holds.impose_hold(
+                session,
+                document_id=int(document.id),
+                prohibited_stage=processing_holds.SEMANTIC_EXTRACTION,
+                reason_code=(
+                    processing_holds.UNMODELED_SEQUENCING_SEMANTICS
+                    if isinstance(exc, SequencingSemanticsDetected)
+                    else processing_holds.UNDECLARED_SOURCE_REVISION
+                ),
+                reason=str(exc),
+                authority=processing_holds.PROCESSING_RULE,
+                imposed_by="corridor.extract_project.extract_project",
+                evidence=f"extraction_runs.id={int(run.id)} outcome='quarantined'",
+            )
             if commit:
                 session.commit()
             outcomes.append(

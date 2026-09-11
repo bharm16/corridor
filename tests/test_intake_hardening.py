@@ -9,13 +9,12 @@ from corridor.intake_hardening import (
     CleanScanner,
     FakeMalwareScanner,
     HostileContentRefused,
-    assert_can_process_richly,
     inspect_byte_gate,
     inspect_sandboxed_structure,
-    quarantine_document,
     set_malware_scanner,
 )
-from corridor.models import Document, DocumentQuarantine, Project
+from corridor import processing_holds
+from corridor.models import Document, Project
 from corridor.source_intake import IntakeRefused, validate_and_stage
 
 
@@ -143,8 +142,13 @@ def test_xml_entity_bomb_refused() -> None:
         inspect_sandboxed_structure(zip_bytes, "matrix.xlsx")
 
 
-def test_rich_processing_gate_refuses_quarantined_documents(session) -> None:
-    """Quarantined documents are refused by assert_can_process_richly."""
+def test_rich_processing_gate_refuses_documents_nobody_may_read(session) -> None:
+    """Stage 3 is `processing_holds`' stage-aware answer, asked from here (#919).
+
+    The byte gate and the structural inspection stay this module's; the
+    question "may this document be read at all" is one recorded restriction
+    away, and a restriction that prohibits reading is what stops a parser.
+    """
     project = Project(
         slug=f"sec-test-{uuid4().hex[:8]}",
         name="Security Test Project",
@@ -162,15 +166,25 @@ def test_rich_processing_gate_refuses_quarantined_documents(session) -> None:
     session.add(doc)
     session.flush()
 
-    # Before quarantine: rich processing allowed
-    assert_can_process_richly(session, doc.id)
+    # Before any restriction: reading is permitted.
+    processing_holds.assert_may_read_document(session, doc.id)
 
-    # Place in quarantine
-    quarantine_document(session, doc.id, "Malware threat detected in stage 1")
+    processing_holds.impose_hold(
+        session,
+        document_id=doc.id,
+        prohibited_stage=processing_holds.DOCUMENT_READING,
+        reason_code=processing_holds.INTAKE_SECURITY_FINDING,
+        reason="malware threat detected in stage 1",
+        authority=processing_holds.INTAKE_SECURITY,
+        imposed_by="tests.test_intake_hardening",
+        evidence=f"documents.id={doc.id}",
+    )
 
-    # After quarantine: rich processing refused
-    with pytest.raises(HostileContentRefused, match="document_quarantined"):
-        assert_can_process_richly(session, doc.id)
+    with pytest.raises(
+        processing_holds.ProcessingHoldInForce,
+        match="document reading is not permitted",
+    ):
+        processing_holds.assert_may_read_document(session, doc.id)
 
 
 def test_validate_and_stage_integrates_security_gates() -> None:

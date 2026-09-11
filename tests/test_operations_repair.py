@@ -27,11 +27,10 @@ from sqlalchemy import func, select
 from corridor import access, audit, web_boundary
 from corridor.config import settings
 from corridor.extraction_runs import record_extraction_run
-from corridor.intake_hardening import quarantine_document
+from corridor import processing_holds
 from corridor.models import (
     AuditLog,
     Document,
-    DocumentQuarantine,
     Fact,
     PageProcessingFailure,
     ProposedDelta,
@@ -263,17 +262,24 @@ def test_repairing_a_source_needs_the_technical_operations_designation(
 
 
 def test_a_repair_does_not_release_a_held_document(session, project, store):
-    """Refusal one: a malware finding and every other hold keep their own act.
+    """Refusal one: a restriction on reading keeps its own owner and its own act.
 
-    The repair calls ``intake_hardening``'s existing gate rather than a second
-    opinion about what is held, and the quarantine row is still there
-    afterwards: there is no generic release-quarantine control here.
+    The repair calls ``processing_holds``' stage-aware answer rather than a
+    second opinion about what is held, and the restriction is still standing
+    afterwards: there is no generic release control here.
     """
 
     document = _source(session, project)
     _run(session, document, "unreadable")
-    quarantine_document(
-        session, document.id, "malware_detected: threat detected (EICAR-Test-Signature)"
+    processing_holds.impose_hold(
+        session,
+        document_id=document.id,
+        prohibited_stage=processing_holds.DOCUMENT_READING,
+        reason_code=processing_holds.INTAKE_SECURITY_FINDING,
+        reason="malware_detected: threat detected (EICAR-Test-Signature)",
+        authority=processing_holds.INTAKE_SECURITY,
+        imposed_by="tests.test_operations_repair",
+        evidence=f"documents.id={document.id}",
     )
     session.flush()
 
@@ -284,7 +290,7 @@ def test_a_repair_does_not_release_a_held_document(session, project, store):
 
     assert refused.value.reason == "held_in_quarantine"
     assert "malware_detected" in str(refused.value)
-    assert session.get(DocumentQuarantine, document.id) is not None
+    assert len(processing_holds.open_holds(session, document.id)) == 1
     assert _receipts(session, document) == 0
     # And the pass still will not take it, for the reason it always would not.
     assert _eligible_documents(session, project.id)[1]["held_quarantined"] == 1

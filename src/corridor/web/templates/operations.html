@@ -117,7 +117,8 @@
     <section class="card">
       <h3>{{ row.document.filename }}</h3>
       <p class="muted">{{ row.document.doc_type }} · parse {{ row.document.parse_status }}{% if row.document.doc_date %} · {{ row.document.doc_date }}{% endif %}{% if row.document.registry_id %} · {{ row.document.registry_id }}{% endif %}</p>
-      {% if row.quarantine %}<p>{{ ui.state(state_label('attention', 'Held input')) }} {{ row.quarantine.reason }}. This source document is not eligible for a recovery run.</p>{% endif %}
+      {% for hold in row.holds %}<p>{{ ui.state(state_label('attention', 'Held input')) }} {{ row.hold_lines[loop.index0] }} Recorded by {{ hold.imposed_by }}; evidence: {{ hold.evidence }}.</p>{% endfor %}
+      {% if not row.may_read_document %}<p class="muted">This source document is not eligible for a recovery run.</p>{% endif %}
       {% if row.active_run_id %}<p><b>Current Production Run:</b> #{{ row.active_run_id }}</p>{% else %}<p>{{ ui.state(state_label('attention', 'No Current Production Run has been declared')) }}</p>{% endif %}
       {% if row.runs %}
         <table><thead><tr><th>Run</th><th>Outcome</th><th>Purpose / completion</th><th>Prompt / model / configuration</th><th>Action</th></tr></thead><tbody>

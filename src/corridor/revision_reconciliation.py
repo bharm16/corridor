@@ -54,6 +54,7 @@ from functools import partial
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from corridor import processing_holds
 from corridor.automatic_carry_forward import (
     AutomaticCarryForwardResult,
     automatic_carry_forward_status,
@@ -62,7 +63,6 @@ from corridor.automatic_carry_forward import (
 from corridor.extraction_runs import active_run_for_document
 from corridor.models import (
     Document,
-    DocumentQuarantine,
     Project,
     RevisionReconciliationRequest,
 )
@@ -161,21 +161,22 @@ def discover_revision_pairs(
     if not predecessors:
         return ()
 
-    quarantined = set(
-        session.scalars(
-            select(DocumentQuarantine.document_id)
-            .join(Document, Document.id == DocumentQuarantine.document_id)
-            .where(Document.project_id == project_id)
-        ).all()
-    )
+    holds = processing_holds.open_holds_for_project(session, project_id)
+    held = {
+        document_id
+        for document_id, rows in holds.items()
+        if not processing_holds.permission_from(document_id, rows).may_extract_semantics
+    }
 
     pairs: list[RevisionPair] = []
     seen: set[tuple[int, int]] = set()
     for predecessor in predecessors:
         successor_id = predecessor.superseded_by
-        # A held input on either side is deliberately unread, so it is not a
-        # pair the machine may reconcile.
-        if predecessor.id in quarantined or successor_id in quarantined:
+        # Reconciling a pair compares what was extracted from each side, so
+        # an input nothing may extract from is not a pair the machine may
+        # reconcile -- whether the restriction is on reading it or only on
+        # taking meaning out of it (#919).
+        if predecessor.id in held or successor_id in held:
             continue
         predecessor_run = active_run_for_document(session, predecessor.id)
         successor_run = active_run_for_document(session, successor_id)

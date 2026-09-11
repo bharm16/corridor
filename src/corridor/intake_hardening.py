@@ -27,11 +27,16 @@ enforces three sequential security stages:
 3. **Rich Processing Gate**:
    Guarantees that no heavy parser (PyMuPDF rendering, Tesseract OCR, openpyxl,
    calamine, LLM extractors) can be invoked on bytes that have not passed stages
-   1 and 2 or on documents that are in quarantine.
+   1 and 2 or on a document a recorded hold prohibits reading.
 
-Quarantined documents are recorded in ``DocumentQuarantine``, visible in the
-operations view with an attributable reason, and completely inaccessible to
-ordinary project extraction readers.
+**Stage 3's answer moved to ``corridor.processing_holds`` (#919).** This module
+refused all rich processing for any quarantine row, which was wrong in both
+directions once holds acquired a stage: most holds prohibit semantic extraction
+only and permit a bounded read, and a reading prohibition has to stop a parser
+this module never saw. The typed holds, the authorities that may impose them,
+and the one stage-aware answer live there; what stays here is the byte gate,
+the sandboxed structural inspection, and the one seam below that resolves
+staged bytes to the document they belong to before asking that answer.
 """
 
 from __future__ import annotations
@@ -45,7 +50,8 @@ from typing import Protocol
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from corridor.models import Document, DocumentQuarantine
+from corridor import processing_holds
+from corridor.models import Document
 
 # Security bounds for intake processing
 MAX_FILE_BYTES = 64 * 1024 * 1024  # 64 MiB
@@ -311,22 +317,6 @@ def inspect_sandboxed_structure(body: bytes, filename: str) -> None:
 # Stage 3: Rich Processing Gate
 
 
-def assert_can_process_richly(session: Session, document_id: int) -> None:
-    """Stage 3: Refuse rich processing if document is quarantined or missing."""
-
-    quarantine = session.get(DocumentQuarantine, document_id)
-    if quarantine is not None:
-        raise HostileContentRefused(
-            "document_quarantined",
-            f"document {document_id} is in quarantine ({quarantine.reason}); "
-            "rich processing (OCR, LLM, rendering) is prohibited",
-        )
-
-    doc = session.get(Document, document_id)
-    if doc is None:
-        raise IntakeSecurityError(f"document {document_id} does not exist")
-
-
 def assert_staged_bytes_may_be_read_richly(
     session: Session, *, project_id: int, sha256: str
 ) -> None:
@@ -334,19 +324,18 @@ def assert_staged_bytes_may_be_read_richly(
 
     Onboarding reads a workbook before anything is registered: the bytes are
     staged by digest and the compatibility pass opens them with a rich reader.
-    ``assert_can_process_richly`` cannot answer for them, because it is keyed by
+    The hold family cannot answer for them, because a hold is keyed by
     ``document_id`` and there is no row.
 
-    **This is the seam, not the decision.** #919 owns the typed processing hold
-    and the stage-aware answer that goes with it -- an operation needs both a
-    valid permission and no applicable prohibiting hold, and neither mechanism
-    replaces the other. Until that design exists this function keeps the
-    conservative refusal the repository already has: if this project already
-    registered a Document over these exact bytes and that Document is held, the
-    same hold applies to the same bytes under a different name, and the rich
-    read is refused. When #919 lands its typed holds, they are consulted here
-    and the conservative rule below becomes one of the cases it answers -- not
-    a second, softer gate beside it.
+    **This is the seam, not the decision, and #919 landed the decision.** The
+    typed holds now say which stage each restriction prohibits, and this asks
+    ``processing_holds.assert_may_read_document`` for the answer rather than
+    keeping a second, softer rule beside it. What remains here is the
+    resolution the hold family cannot do for itself: if this project already
+    registered a Document over these exact bytes, the same restrictions apply
+    to the same bytes under a different name. The onboarding permission #827
+    proves is a separate requirement that the caller proves separately; an
+    operation needs both.
     """
 
     document = session.scalars(
@@ -356,15 +345,4 @@ def assert_staged_bytes_may_be_read_richly(
     ).first()
     if document is None:
         return
-    assert_can_process_richly(session, int(document.id))
-
-
-def quarantine_document(session: Session, document_id: int, reason: str) -> None:
-    """Place a document in quarantine, preventing any downstream extraction."""
-
-    existing = session.get(DocumentQuarantine, document_id)
-    if existing is None:
-        session.add(DocumentQuarantine(document_id=document_id, reason=reason))
-    else:
-        existing.reason = reason
-    session.flush()
+    processing_holds.assert_may_read_document(session, int(document.id))

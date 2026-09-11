@@ -27,7 +27,8 @@ from corridor.extract_project import (
 )
 from corridor.extraction_errors import SequencingSemanticsDetected
 from corridor.extractor_lineage import injected_extractor_config
-from corridor.models import Candidate, Document, DocumentQuarantine, ExtractionRun
+from corridor import processing_holds
+from corridor.models import Candidate, Document, ExtractionRun
 from corridor.pipeline import EXTRACTED_PROPOSALS, ExtractionRoute
 from corridor.row_accounting import (
     AccountedCandidates,
@@ -1313,7 +1314,8 @@ def test_detected_sequencing_semantics_quarantine_the_document_whole(
         ).all()
         == []
     )
-    quarantine = session.get(DocumentQuarantine, doc.id)
-    assert quarantine is not None
-    assert "Dependent Activity" in quarantine.reason
+    [hold] = processing_holds.open_holds(session, doc.id)
+    assert hold.prohibited_stage == processing_holds.SEMANTIC_EXTRACTION
+    assert hold.reason_code == processing_holds.UNMODELED_SEQUENCING_SEMANTICS
+    assert "Dependent Activity" in hold.reason
     assert "QUARANTINED" in render(project, PROMPT_VERSION, outcomes)

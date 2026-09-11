@@ -64,6 +64,7 @@ from corridor.extraction_failure_diagnosis import (
     failed_runs_among,
     failure_diagnosis_state_tokens,
 )
+from corridor import processing_holds
 from corridor.models import (
     ActiveExtractionRun,
     ActiveRunDeclaration,
@@ -131,7 +132,12 @@ class DocumentRow:
     active_run_id: int | None
     runs: tuple[ExtractionRun, ...]
     history: tuple[ActiveRunDeclaration, ...]
-    quarantine: DocumentQuarantine | None
+    holds: tuple[DocumentQuarantine, ...]
+    # What each standing restriction prohibits, in the words
+    # `processing_holds` owns, and whether this source may be read at all --
+    # which is what decides whether a recovery run could ever take it (#919).
+    hold_lines: tuple[str, ...]
+    may_read_document: bool
     offer_state: str
     competing_run_ids: tuple[int, ...]
     explanation_offered: bool
@@ -181,14 +187,10 @@ def operations_view(session: Session, *, project_id: int) -> OperationsView:
             .order_by(Document.doc_date, Document.id)
         )
     )
-    quarantines = {
-        row.document_id: row
-        for row in session.scalars(
-            select(DocumentQuarantine)
-            .join(Document, Document.id == DocumentQuarantine.document_id)
-            .where(Document.project_id == project_id)
-        )
-    }
+    # Every restriction standing on each of this project's documents, in one
+    # statement. A document may carry several independent ones at once (#919),
+    # so this is a tuple per document rather than one row.
+    quarantines = processing_holds.open_holds_for_project(session, project_id)
     declared = {
         row.document_id: row
         for row in session.scalars(
@@ -228,7 +230,7 @@ def operations_view(session: Session, *, project_id: int) -> OperationsView:
             active=declared.get(document.id),
             history=history_by_document.get(document.id, []),
             runs=runs_by_document.get(document.id, []),
-            quarantine=quarantines.get(document.id),
+            holds=quarantines.get(document.id, ()),
             failed_run_tokens=failure_tokens.get(document.id, {}),
         )
         for document in documents
@@ -265,7 +267,7 @@ def _document_row(
     active: ActiveExtractionRun | None,
     history: Sequence[ActiveRunDeclaration],
     runs: Sequence[ExtractionRun],
-    quarantine: DocumentQuarantine | None,
+    holds: Sequence[DocumentQuarantine],
     failed_run_tokens: dict[int, str],
 ) -> DocumentRow:
     competing = competing_runs_among(runs)
@@ -283,7 +285,11 @@ def _document_row(
         active_run_id=None if active is None else active.extraction_run_id,
         runs=tuple(runs),
         history=tuple(history),
-        quarantine=quarantine,
+        holds=tuple(holds),
+        hold_lines=tuple(processing_holds.hold_line(hold) for hold in holds),
+        may_read_document=processing_holds.permission_from(
+            int(document.id), tuple(holds)
+        ).may_read_document,
         offer_state=token,
         competing_run_ids=tuple(run.id for run in competing),
         # An explanation is offered only when there is an actual choice, and

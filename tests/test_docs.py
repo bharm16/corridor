@@ -6,10 +6,10 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
+from corridor import processing_holds
 from corridor.docs import get_page, list_documents
 from corridor.models import (
     Document,
-    DocumentQuarantine,
     DocumentRenditionDerivation,
     Project,
 )
@@ -924,13 +924,10 @@ def test_a_registered_schedule_document_carries_a_durable_quarantine(
         )
 
     [document] = documents
-    quarantines = session.scalars(
-        select(DocumentQuarantine).where(
-            DocumentQuarantine.document_id == document.id
-        )
-    ).all()
-    assert len(quarantines) == 1
-    assert "sequencing" in quarantines[0].reason
+    holds = processing_holds.open_holds(session, document.id)
+    assert len(holds) == 1
+    assert holds[0].prohibited_stage == processing_holds.SEMANTIC_EXTRACTION
+    assert "sequencing" in holds[0].reason
 
 
 def test_a_lock_entry_whose_store_file_is_missing_fails_soft_per_document(
