@@ -279,6 +279,7 @@ __all__ = [  # noqa: F405
     "SignInAttempt",
     "SignInToken",
     "SourceDelivery",
+    "SourceDeliveryConfirmation",
     "SourceFactAppendReceipt",
     "SourceFetchAttempt",
     "SourceIntakeDraftConfiguration",

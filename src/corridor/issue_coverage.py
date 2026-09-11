@@ -10,9 +10,10 @@ said a fresh candidate was needed and offered nothing that could make one.
 **The machine owns the facts and the person owns the declaration.**
 ``derive_coverage_reading`` answers what was and was not read for this issue
 from the effective issue profile, the persisted Source Delivery ledger, the
-processing receipts on the documents those deliveries produced, and the
-declared cutoff. The coordinator does not recreate any of it. What they may do
-is confirm that exact reading, attach a bounded annotation to a line, or record
+confirmations that admitted those deliveries to processing, the processing
+receipts on the documents they produced, and the declared cutoff. The
+coordinator does not recreate any of it. What they may do is
+confirm that exact reading, attach a bounded annotation to a line, or record
 an intentional exclusion with a reason where the project's configuration
 permits one. What they may never do is relabel a failed, quarantined,
 unprocessed or post-cutoff source as read: ``confirm_coverage`` refuses every
@@ -97,6 +98,7 @@ from corridor.source_delivery import (
     DISPOSITION_STORED,
     DISPOSITION_TERMINALLY_REFUSED,
     DISPOSITION_TRANSIENT_FAILURE,
+    confirmed_delivery_ids,
 )
 
 
@@ -300,6 +302,7 @@ def derive_coverage_reading(
         if document.source_delivery_id is not None:
             by_delivery.setdefault(int(document.source_delivery_id), document)
 
+    confirmed = confirmed_delivery_ids(session, project_id)
     watermark = _watermark(deliveries, cutoff)
     requires = any(
         requirement.requirement == COVERAGE_ALL_REQUIRED_SOURCES_READ
@@ -316,6 +319,7 @@ def derive_coverage_reading(
                 document=document,
                 requirement=requirement,
                 watermark=watermark,
+                confirmed=int(delivery.id) in confirmed,
             )
         )
     for document in documents:
@@ -362,6 +366,7 @@ def _delivery_line(
     document: Document | None,
     requirement: str,
     watermark: int | None,
+    confirmed: bool,
 ) -> CoverageLine:
     name = (
         document.filename
@@ -383,10 +388,21 @@ def _delivery_line(
     disposition = delivery.disposition
     if disposition in (DISPOSITION_STORED, DISPOSITION_DUPLICATE):
         if document is None:
-            state, detail = (
-                COVERAGE_FAILED,
-                "received, and no processing receipt records it being read",
-            )
+            # Stored says Corridor holds the bytes, which is not the same as
+            # somebody having admitted them to processing (#823). An upload
+            # staged and abandoned reads as exactly what it is, rather than as
+            # a source whose processing failed; the person who handed it over
+            # is what says a confirmation was the next step at all.
+            state = COVERAGE_FAILED
+            if confirmed:
+                detail = "confirmed, and no processing receipt records it being read"
+            elif delivery.delivered_by_principal:
+                detail = (
+                    "received and stored, and nobody has confirmed it for "
+                    "processing yet"
+                )
+            else:
+                detail = "received, and no processing receipt records it being read"
         elif document.parse_status == "parsed":
             state, detail = COVERAGE_READ, "received and processed"
         else:

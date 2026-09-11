@@ -18,6 +18,7 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     String,
@@ -45,6 +46,7 @@ __all__ = [
     "PushIntakeCredential",
     "SOURCE_FETCH_OUTCOMES",
     "SourceDelivery",
+    "SourceDeliveryConfirmation",
     "SourceFetchAttempt",
 ]
 
@@ -123,6 +125,12 @@ class SourceDelivery(Base):
     unique and the relation would be a log rather than a record.  Attempts are
     already recorded — the Due Work receipt for a pull pass, the transport's
     own delivery for a push — and what is missing is the delivery.
+
+    A push is not only a machine's (#823).  Somebody handing Corridor a file
+    through the product is handing it bytes it never asked for, which is what
+    push means, and the person's authenticated session is what admitted it.
+    The row therefore records *how* the transport authenticated — a credential
+    or a principal — rather than assuming a credential exists.
     """
 
     __tablename__ = "source_deliveries"
@@ -160,11 +168,27 @@ class SourceDelivery(Base):
             "'terminally_refused', 'transient_failure')",
             name="ck_source_delivery_disposition",
         ),
-        # A pushed delivery is bound by its credential and a pulled one is not;
-        # neither may borrow the other's binding.
+        # How the transport authenticated, stated once and checked here (#823).
+        # A pushed delivery is admitted by exactly one of the two things that
+        # can authenticate a push: a machine credential, or the signed-in
+        # person who handed the bytes over.  A pull authenticates neither way,
+        # because the connector configuration is the whole binding.  The
+        # predecessor required a credential outright, which is why a product
+        # upload could not be recorded here at all without either minting a
+        # live push secret for a person or calling their upload a pull.
         CheckConstraint(
-            "(transport = 'push') = (credential_id is not null)",
-            name="ck_source_delivery_push_credential",
+            "case transport"
+            " when 'pull' then credential_id is null"
+            "                and delivered_by_principal is null"
+            " when 'push' then (credential_id is not null)"
+            "                <> (delivered_by_principal is not null)"
+            " end",
+            name="ck_source_delivery_authentication",
+        ),
+        CheckConstraint(
+            "delivered_by_principal is null "
+            "or length(btrim(delivered_by_principal)) > 0",
+            name="ck_source_delivery_principal",
         ),
         CheckConstraint(
             "length(btrim(configuration_identity)) > 0",
@@ -187,6 +211,11 @@ class SourceDelivery(Base):
     credential_id: Mapped[int | None] = mapped_column(
         ForeignKey("push_intake_credentials.id")
     )
+    # The person whose authenticated session carried a pushed delivery, where
+    # one did (#823).  A machine push leaves it null and names its credential
+    # instead; the two are the transport's two authentication modes and the
+    # check constraint above admits exactly one of them.
+    delivered_by_principal: Mapped[str | None] = mapped_column(Text)
     customer: Mapped[str] = mapped_column(Text)
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
     transport: Mapped[str] = mapped_column(String(8))
@@ -218,6 +247,52 @@ class SourceDelivery(Base):
     disposition: Mapped[str] = mapped_column(String(24))
     refusal_reason: Mapped[str | None] = mapped_column(Text)
     received_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class SourceDeliveryConfirmation(Base):
+    """One person's admission of one delivery to processing (#823).
+
+    Storing the bytes and admitting them are two different acts by two
+    different parties, and the ledger row above records only the first: a
+    delivery is ``stored`` the moment Corridor holds the exact bytes, whether
+    or not anybody has decided they should be read.  For a product upload the
+    gap between the two is the whole staged-upload screen, and before this
+    relation existed the only trace of the second act was an audit entry about
+    the *Document* it produced — so an upload somebody staged and walked away
+    from was indistinguishable from one that failed to register.
+
+    One row per delivery, so replaying a confirmation converges on the act
+    already recorded rather than attributing the same admission twice.  It is
+    append-only for the same reason every other receipt here is: a later
+    correction is a separate act against the Document, never an edit of who
+    admitted what and when.
+    """
+
+    __tablename__ = "source_delivery_confirmations"
+    __table_args__ = (
+        UniqueConstraint(
+            "delivery_id", name="uq_source_delivery_confirmation_delivery"
+        ),
+        # The delivery is named with its project, so a confirmation recorded in
+        # one project can never name another customer's delivery (#675).
+        ForeignKeyConstraint(
+            ["delivery_id", "project_id"],
+            ["source_deliveries.id", "source_deliveries.project_id"],
+            name="fk_source_delivery_confirmation_delivery",
+        ),
+        CheckConstraint(
+            "length(btrim(confirmed_by_principal)) > 0",
+            name="ck_source_delivery_confirmation_principal",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    delivery_id: Mapped[int] = mapped_column(BigInteger)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    confirmed_by_principal: Mapped[str] = mapped_column(Text)
+    confirmed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
 

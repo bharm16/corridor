@@ -255,10 +255,11 @@ from corridor.source_intake import (
     ACCEPTED_DOC_TYPES,
     MAX_UPLOAD_BYTES,
     IntakeRefused,
+    UploadNotTaken,
     confirm_intake,
     list_confirmed_uploads,
     preview_intake,
-    validate_and_stage,
+    receive_upload,
 )
 from corridor.source_intake_draft import (
     PROMPT_VERSION as INTAKE_DRAFT_PROMPT_VERSION,
@@ -6729,19 +6730,25 @@ def source_upload_preview(
     # buffering all of it; the shared validator re-checks the true bound.
     body = upload.file.read(MAX_UPLOAD_BYTES + 1)
     try:
-        # The arrival observation is the only record this channel makes of a
-        # source having arrived — a human upload cannot yet be a row in the
-        # delivery ledger (see `source_intake`'s docstring for the exact
-        # constraints) — so it names the project it was uploaded into and the
-        # customer this deployment serves rather than leaving both unknown.
-        staged = validate_and_stage(
-            body,
-            upload.filename or "",
-            customer_id=settings.customer_id,
-            project_id=project.id,
+        # Taking delivery is what this route does, and every outcome of it is a
+        # ledger row (#823): the person's authenticated session is what admitted
+        # the bytes, so the delivery names them rather than a machine credential.
+        received = receive_upload(
+            session,
+            project=project,
+            body=body,
+            filename=upload.filename or "",
+            principal=principal,
+            customer=settings.customer_id,
         )
-        preview = preview_intake(session, project, staged, doc_type)
-    except IntakeRefused as exc:
+        preview = preview_intake(session, project, received.staged, doc_type)
+    except (IntakeRefused, UploadNotTaken) as exc:
+        # The refusal or the failed attempt is durable before the response that
+        # refuses the request; rolling it back with the response is exactly the
+        # loss ADR-0089 removed. The status keeps the two apart for a client as
+        # the ledger does for a reader: a refusal is about the file, and a
+        # storage or scanner failure is about Corridor on one attempt.
+        session.commit()
         return TEMPLATES.TemplateResponse(
             request,
             "source_upload.html",
@@ -6752,14 +6759,18 @@ def source_upload_preview(
                 "error": str(exc),
                 "selected_doc_type": doc_type,
             },
-            status_code=400,
+            status_code=503 if isinstance(exc, UploadNotTaken) else 400,
         )
+    # The delivery outlives an abandoned preview: the person may close the tab,
+    # and what arrived is recorded either way.
+    session.commit()
     return TEMPLATES.TemplateResponse(
         request,
         "source_preview.html",
         {
             "project": project,
             "preview": preview,
+            "source_delivery_id": received.delivery_id,
             # The optional, explicitly requested draft of source-bound
             # suggestions (#362). Offered only once bounded spend authority is
             # declared; requesting it is a separate, attributable act.
@@ -6768,7 +6779,7 @@ def source_upload_preview(
             )
             is not None,
             "draft_state_token": intake_draft_state_token(
-                session, project.id, staged.sha256
+                session, project.id, received.staged.sha256
             ),
         },
     )
@@ -6919,10 +6930,18 @@ def source_confirm(
     filename: str = Form(...),
     doc_type: str = Form(...),
     binding_fingerprint: str = Form(...),
+    source_delivery_id: int = Form(...),
     principal: HumanPrincipal = Depends(get_human_principal),
     session: Session = Depends(get_session),
 ):
-    """Bind the previewed source to the acting person and register it."""
+    """Bind the previewed source to the acting person and register it.
+
+    The delivery the person previewed is confirmed by identity rather than
+    looked up again from the bytes (#823): the posted row is re-proved against
+    this project, these bytes and the ``stored`` disposition before anything is
+    written, so a second definition of which delivery these bytes arrived on
+    never gets the chance to disagree with the ledger's.
+    """
     project = _project(session, slug, principal, designation=access.COORDINATION)
     confirm_intake(
         session,
@@ -6932,6 +6951,7 @@ def source_confirm(
         doc_type=doc_type,
         binding_fingerprint=binding_fingerprint,
         principal=principal,
+        source_delivery_id=source_delivery_id,
     )
     session.commit()
     return RedirectResponse(f"/projects/{slug}/sources", status_code=303)

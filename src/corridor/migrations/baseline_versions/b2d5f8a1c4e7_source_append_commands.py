@@ -170,6 +170,7 @@ from corridor.migrations.source_append_commands import (
     partition_declaration,
     partition_seal,
     preparation_supervisor,
+    product_upload_delivery,
     project_partition,
     public_privileges,
     push_intake,
@@ -1494,6 +1495,12 @@ def upgrade() -> None:
     # one relation nothing later in the revision names.
     spend_authorization.upgrade(op)
 
+    # --- #823 A product upload is a delivery, and its confirmation ---------
+    # After the spend authorization and before the sibling transitions: it
+    # re-states one `unified_delivery` constraint and creates one relation
+    # nothing later in the revision names.
+    product_upload_delivery.upgrade(op)
+
     from corridor.migrations import email_spine
 
     email_spine.upgrade(op, APPEND_NATIVE_SOURCE_SEGMENTS, APPEND_FACT)
@@ -1553,8 +1560,13 @@ def downgrade() -> None:
     project_contacts.downgrade(op)
     email_spine.downgrade(op)
 
+    # --- #823 A product upload is a delivery, and its confirmation ---------
+    # First among the feature reversals, because the upgrade added it last,
+    # and before `unified_delivery` unwinds the family it constrains.
+    product_upload_delivery.downgrade(op)
+
     # --- #811 One spend authorization the five assistant configurations name -
-    # First among the feature reversals, because the upgrade added it last.
+    # Next, mirroring its place second from the end of the upgrade.
     spend_authorization.downgrade(op)
 
     # --- #809 The observation an Unconfirmed reading was read out of -------

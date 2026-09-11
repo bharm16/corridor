@@ -70,7 +70,12 @@ EXPECTED_SCHEMA_SHA256 = (
     # #859 makes a Revision Comparison's execution identity unique: one
     # constraint and its index on `revision_comparison_runs`, and no new
     # relation, so the table and sequence counts are unchanged.
-    "51a40a0c0e8bfef83f92d9ec54b5976f6b3d7e118aafd0bbfbfaf2d13c3abb12"
+    # #823 adds `source_delivery_confirmations` (+1 table, +1 sequence, its
+    # immutability guard and partition policy) and replaces
+    # `ck_source_delivery_push_credential` with the authentication-mode pair
+    # `ck_source_delivery_authentication` and `ck_source_delivery_principal`
+    # over a new `source_deliveries.delivered_by_principal` column.
+    "1416594efdd6dcdec84e6b78a695942993afb5025d0883f7d8867e60429351f4"
 )
 
 pytestmark = [pytest.mark.slow, pytest.mark.migration]
@@ -192,6 +197,7 @@ COMPOSED_UPGRADE = (
     "outgoing_requests",
     "scanned_observations",
     "spend_authorization",
+    "product_upload_delivery",
     # The sibling transitions this revision has always carried at the end, and
     # the PUBLIC sweep that runs last of all because it reads the catalog every
     # block above has finished writing.
@@ -216,6 +222,7 @@ COMPOSED_DOWNGRADE = (
     "minutes_spine",
     "project_contacts",
     "email_spine",
+    "product_upload_delivery",
     "spend_authorization",
     "scanned_observations",
     "environment_binding",

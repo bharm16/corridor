@@ -164,6 +164,12 @@ def _preview(client, project, body, *, doc_type="matrix", filename="cover.xlsx")
     )
 
 
+def _delivery_id(preview_text: str) -> str:
+    match = re.search(r'name="source_delivery_id" value="(\d+)"', preview_text)
+    assert match, preview_text
+    return match.group(1)
+
+
 def _state_token(preview_text: str) -> str:
     match = re.search(r'name="state_token" value="([a-f0-9]{64})"', preview_text)
     assert match, preview_text
@@ -259,6 +265,7 @@ def test_confirm_registers_independently_after_a_draft(
     body = _cover_xlsx()
     sha = hashlib.sha256(body).hexdigest()
 
+    preview = _preview(client, project, body)
     assert _request_draft(client, project, body).status_code == 303
     # The ordinary confirmation reconstructs its binding from server inputs and
     # never trusts the draft.
@@ -271,6 +278,7 @@ def test_confirm_registers_independently_after_a_draft(
             "binding_fingerprint": source_intake._binding_fingerprint(
                 project.id, sha, "matrix", "cover.xlsx"
             ),
+            "source_delivery_id": _delivery_id(preview.text),
         },
         follow_redirects=False,
     )

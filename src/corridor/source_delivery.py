@@ -48,6 +48,14 @@ reverses it, because retention is not identity: deleting an old Due Work
 receipt would otherwise reset a live connector's external cursor, or land it
 on a stale token.  The current checkpoint is derived from the newest recorded
 advance and stored nowhere.
+
+Alongside the ledger sits one relation for the act the ledger deliberately
+does not record: ``confirm_delivery`` is a person admitting a stored delivery
+to processing (#823).  ``stored`` says Corridor holds the exact bytes, which
+it does from the moment they arrive and whether or not anybody has decided
+they should be read; a product upload sits between the two for as long as its
+preview is on screen, and one that is abandoned stays there rather than
+disappearing.
 """
 
 from __future__ import annotations
@@ -69,8 +77,10 @@ from corridor.models import (
     ConnectorCheckpointAdvance,
     ConnectorCheckpointAdvanceDelivery,
     SourceDelivery,
+    SourceDeliveryConfirmation,
     Project,
 )
+from corridor.principals import HumanPrincipal, require_human_principal
 from corridor.analytics import emit_event, source_arrival_event
 from corridor.measurement_collection import binding_for_source
 
@@ -117,6 +127,12 @@ class DeliveryBinding:
     reads the location's own item id and version and a pushed delivery gets its
     identity from the authenticated transport, and after that they are one
     family (ADR-0089).
+
+    A push says which of the two things authenticated it (#823).  A machine
+    push names the credential the transport presented; a product upload names
+    the signed-in person who handed the bytes over, because nothing else
+    authenticated that delivery and minting a push secret for a person would
+    open a real door into the project to record one.
     """
 
     customer: str
@@ -127,14 +143,22 @@ class DeliveryBinding:
     configuration_identity: str
     configuration_version: str = ""
     credential_id: int | None = None
+    delivered_by_principal: str = ""
 
     def __post_init__(self) -> None:
         if self.transport not in ("pull", "push"):
             raise SourceDeliveryRefused("a delivery is carried by pull or push")
-        if (self.transport == "push") != (self.credential_id is not None):
+        principal = str(self.delivered_by_principal or "").strip()
+        if self.transport == "pull":
+            if self.credential_id is not None or principal:
+                raise SourceDeliveryRefused(
+                    "a pulled delivery is bound by its connector configuration "
+                    "and authenticates neither way"
+                )
+        elif (self.credential_id is not None) == bool(principal):
             raise SourceDeliveryRefused(
-                "a pushed delivery names its bound credential and a pulled one "
-                "does not"
+                "a pushed delivery names the one thing that authenticated it: "
+                "a machine credential, or the person who handed it over"
             )
         if not str(self.configuration_identity).strip():
             raise SourceDeliveryRefused(
@@ -219,6 +243,7 @@ def record_delivery(
     identity, idempotency_key = delivery_identity_for(binding, observation)
     values = {
         "credential_id": binding.credential_id,
+        "delivered_by_principal": binding.delivered_by_principal or None,
         "customer": binding.customer,
         "project_id": binding.project_id,
         "transport": binding.transport,
@@ -343,6 +368,60 @@ def stored_delivery(
     ).first()
 
 
+def confirm_delivery(
+    session: Session, *, delivery: SourceDelivery, principal: HumanPrincipal
+) -> SourceDeliveryConfirmation:
+    """Record one person's admission of one stored delivery to processing.
+
+    Taking delivery and admitting it are two acts by two parties, and only the
+    first is what ``stored`` means: Corridor holds the exact bytes from the
+    moment they arrive, whether or not anybody has decided they should be read.
+    A product upload lives in the gap between the two for as long as the person
+    is looking at the preview, and an upload they abandon stays there.
+
+    Idempotent by delivery, through the same constraint the ledger itself uses
+    rather than a read-then-write: a retried confirmation converges on the act
+    already recorded, so one admission is never attributed twice or to two
+    people.
+    """
+
+    principal = require_human_principal(principal)
+    if delivery.disposition != DISPOSITION_STORED:
+        raise SourceDeliveryRefused(
+            "a delivery is confirmed for processing only where its exact bytes "
+            "are stored"
+        )
+    session.execute(
+        pg_insert(SourceDeliveryConfirmation)
+        .values(
+            delivery_id=int(delivery.id),
+            project_id=int(delivery.project_id),
+            confirmed_by_principal=principal.subject,
+        )
+        .on_conflict_do_nothing(
+            constraint="uq_source_delivery_confirmation_delivery"
+        )
+    )
+    return session.scalars(
+        select(SourceDeliveryConfirmation).where(
+            SourceDeliveryConfirmation.delivery_id == int(delivery.id)
+        )
+    ).one()
+
+
+def confirmed_delivery_ids(session: Session, project_id: int) -> frozenset[int]:
+    """Which of one project's deliveries a person has admitted to processing."""
+
+    return frozenset(
+        int(identifier)
+        for identifier in session.scalars(
+            select(SourceDeliveryConfirmation.delivery_id).where(
+                SourceDeliveryConfirmation.project_id == project_id
+            )
+        ).all()
+    )
+
+
 def binding_of_delivery(session: Session, row: SourceDelivery) -> DeliveryBinding:
     """The binding one retained delivery arrived under, read back from its row.
 
@@ -361,6 +440,7 @@ def binding_of_delivery(session: Session, row: SourceDelivery) -> DeliveryBindin
         configuration_identity=row.configuration_identity,
         configuration_version=row.configuration_version or "",
         credential_id=row.credential_id,
+        delivered_by_principal=row.delivered_by_principal or "",
     )
 
 

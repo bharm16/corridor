@@ -94,6 +94,7 @@
     <input type="hidden" name="doc_type" value="{{ preview.doc_type }}">
     <input type="hidden" name="binding_fingerprint"
            value="{{ preview.binding_fingerprint }}">
+    <input type="hidden" name="source_delivery_id" value="{{ source_delivery_id }}">
     <div class="actions">
       {% if not preview.type_conflict %}
         <button type="submit">Confirm registration</button>

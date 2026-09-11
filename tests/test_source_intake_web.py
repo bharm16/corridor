@@ -8,6 +8,7 @@ store is redirected to a temp directory so staging never touches the real corpus
 from __future__ import annotations
 
 import hashlib
+import re
 from uuid import uuid4
 
 import pytest
@@ -75,6 +76,14 @@ def _fingerprint(project, body, doc_type, filename):
     )
 
 
+def _delivery_id(preview_text: str) -> str:
+    """The delivery the preview says these bytes arrived on (#823)."""
+
+    match = re.search(r'name="source_delivery_id" value="(\d+)"', preview_text)
+    assert match, preview_text
+    return match.group(1)
+
+
 def test_upload_form_renders_without_a_path_or_command(client, project, store):
     r = client.get(f"/projects/{project.slug}/sources/upload")
     assert r.status_code == 200
@@ -102,7 +111,7 @@ def test_upload_shows_a_read_only_preview_before_confirm(client, project, store)
 
 def test_confirm_registers_and_lists_the_upload(client, session, project, store):
     body = _matrix_pdf()
-    client.post(
+    preview = client.post(
         f"/projects/{project.slug}/sources/upload",
         data={"doc_type": "matrix"},
         files={"upload": ("matrix.pdf", body, "application/pdf")},
@@ -114,6 +123,7 @@ def test_confirm_registers_and_lists_the_upload(client, session, project, store)
             "filename": "matrix.pdf",
             "doc_type": "matrix",
             "binding_fingerprint": _fingerprint(project, body, "matrix", "matrix.pdf"),
+            "source_delivery_id": _delivery_id(preview.text),
         },
         follow_redirects=False,
     )
@@ -176,6 +186,7 @@ def test_confirm_needs_a_signed_in_session(client_without_session, project, stor
             "filename": "matrix.pdf",
             "doc_type": "matrix",
             "binding_fingerprint": _fingerprint(project, body, "matrix", "matrix.pdf"),
+            "source_delivery_id": "1",
         },
         follow_redirects=False,
     )
@@ -185,13 +196,16 @@ def test_confirm_needs_a_signed_in_session(client_without_session, project, stor
 def test_confirm_refuses_a_cross_project_binding(client, session, project, store):
     """A source previewed for one project cannot be confirmed into another.
 
-    The bytes are staged the way `/sources/upload` stages them, by the same
-    call, instead of through an upload request: staging is all that request
+    The bytes are taken the way `/sources/upload` takes them, by the same call,
+    instead of through an upload request: taking delivery is all that request
     contributes here — `preview_intake` writes nothing — and the confirm is the
     act under test. That keeps the test to one request, which is what a
     transaction holding one project-authorization scope allows (#657, #662),
     and keeps the confirm's writes real, so "nothing was registered" is read
     from the database rather than from a rolled-back request.
+
+    The delivery named is the real one `project` took (#823), so what is
+    refused is the binding and not a delivery the confirm could not find.
     """
     other = Project(slug=f"other-{uuid4().hex[:8]}", name="Other", is_synthetic=True)
     session.add(other)
@@ -201,7 +215,14 @@ def test_confirm_refuses_a_cross_project_binding(client, session, project, store
     seed_membership(session, other, TEST_PRINCIPAL)
 
     body = _matrix_pdf()
-    source_intake.validate_and_stage(body, "matrix.pdf")
+    received = source_intake.receive_upload(
+        session,
+        project=project,
+        body=body,
+        filename="matrix.pdf",
+        principal=TEST_PRINCIPAL,
+        customer=settings.customer_id,
+    )
 
     # Confirm the source previewed for `project` against `other`.
     r = client.post(
@@ -211,6 +232,7 @@ def test_confirm_refuses_a_cross_project_binding(client, session, project, store
             "filename": "matrix.pdf",
             "doc_type": "matrix",
             "binding_fingerprint": _fingerprint(project, body, "matrix", "matrix.pdf"),
+            "source_delivery_id": str(received.delivery_id),
         },
         follow_redirects=False,
     )
@@ -231,18 +253,18 @@ def test_confirm_refuses_a_cross_project_binding(client, session, project, store
         )
 
 
-def test_an_upload_names_its_project_when_it_records_that_a_source_arrived(
+def test_an_upload_names_its_project_and_delivery_when_a_source_arrives(
     client, project, store
 ):
-    """The one arrival record an upload can make, and what it must carry.
+    """What an upload's arrival records now carry.
 
-    An upload cannot yet record a row in the delivery ledger — see
-    ``tests/test_source_delivery.py`` for the exact constraints that stop it —
-    so the arrival observation is all the delivery reading has for this channel.
-    It was emitted with no customer and no project at all, because the route
-    knew both and passed neither, which made an uploaded source invisible in
-    every per-project reading of what arrived. The event now names the project
-    the person uploaded into and the customer this deployment serves.
+    The observation was once all this channel had, because a human upload could
+    not be a row in the delivery ledger at all, and it was emitted with no
+    customer and no project — which made an uploaded source invisible in every
+    per-project reading of what arrived. #823 gives the channel a delivery, so
+    there are two observations of one arrival and they say different things:
+    the channel staged the exact bytes, and the ledger recorded the delivery
+    they arrived on. Only the second can name a delivery, and it does.
     """
 
     body = _matrix_pdf()
@@ -259,10 +281,16 @@ def test_an_upload_names_its_project_when_it_records_that_a_source_arrived(
         for event in collector.events
         if event.family == EventFamily.SOURCE_ARRIVAL
     ]
-    assert len(arrivals) == 1
-    assert arrivals[0].payload["project_id"] == project.id
-    assert arrivals[0].payload["customer_id"] == settings.customer_id
-    assert arrivals[0].payload["channel"] == "upload"
-    assert arrivals[0].payload["content_sha256"] == hashlib.sha256(body).hexdigest()
-    # No transport carried it, so it names no delivery rather than a guessed one.
+    assert [event.payload["outcome"] for event in arrivals] == ["staged", "recorded"]
+    for arrival in arrivals:
+        assert arrival.payload["project_id"] == project.id
+        assert arrival.payload["customer_id"] == settings.customer_id
+        assert arrival.payload["channel"] == source_intake.PRODUCT_UPLOAD_CHANNEL
+        assert (
+            arrival.payload["content_sha256"] == hashlib.sha256(body).hexdigest()
+        )
     assert arrivals[0].payload["source_delivery_id"] is None
+    assert arrivals[1].payload["source_delivery_id"] == int(
+        _delivery_id(response.text)
+    )
+    assert arrivals[1].payload["disposition"] == "stored"
