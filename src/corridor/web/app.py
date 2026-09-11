@@ -78,7 +78,7 @@ from corridor.web.customer_routing import (
     customer_session, set_customer_cookie, clear_customer_cookie,
     needs_customer_sign_in, clear_invalid_customer_cookies,
 )
-from corridor.object_storage import ObjectStore, content_store
+from corridor.object_storage import ObjectStore, StorageError, content_store
 from corridor.operational_health import ComponentHealth, runtime_report, serving_report
 from corridor import telemetry
 from corridor.telemetry import (
@@ -282,7 +282,12 @@ from corridor.source_intake_draft import (
     request_intake_draft,
 )
 from corridor.render_profiles import render_path_for_page
-from corridor.storage import staged_file
+from corridor.source_passage_view import (
+    SourcePassageNotFound,
+    log_source_bytes_retrieval_failure,
+    read_source_passage,
+)
+from corridor.storage import staged_file, stored_file
 from corridor.locator_validation import (
     evidence_link_locator_validation_status as locator_validation_status,
     evidence_link_verified,
@@ -7343,6 +7348,98 @@ _UPLOAD_STATUS_LABELS = {
     "parse_failed": "Failed to parse — the file could not be read",
     "processing_failed": "Processing failed — a later pass will retry",
     "held_unmodeled": "Held — its content is deliberately not read",
+}
+
+
+# --- The exact source behind one citation (#831) ---------------------------
+#
+# Every surface that prints a citation links to `source_passage`: a Review row,
+# a Record value, a follow-up bundle, the source register. One screen rather
+# than one per surface, because the thing being answered — what does the
+# document say around this quote — is the same question wherever it is asked,
+# and because the project gate, the Source Passage Check and the separation of
+# a storage failure from a finding about the document are exactly the parts
+# that must not be reimplemented four times.
+#
+# `source_document_original` is the other half: the registered bytes
+# themselves. It is deliberately a separate route from the view, because the
+# view is a page a coordinator reads and the original is the file itself, and
+# `tests/test_artifact_authorization.py` is entitled to find the second and
+# hold it to the byte-serving rules. The legacy `/page-image` route stays
+# outside the live-pilot manifest; nothing here revives it.
+
+
+@app.get("/sources/{slug}/passage/{segment_id}", response_class=HTMLResponse)
+def source_passage(
+    request: Request,
+    slug: str,
+    segment_id: int,
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """Open one cited passage at its place in the source it was read from."""
+    project = _project(session, slug, principal)
+    try:
+        view = read_source_passage(
+            session, project_id=project.id, segment_id=segment_id
+        )
+    except SourcePassageNotFound:
+        raise HTTPException(404, "no such source passage in this project") from None
+    return TEMPLATES.TemplateResponse(
+        request, "source_passage.html", {"project": project, "view": view}
+    )
+
+
+@app.get("/sources/{slug}/document/{document_id}/original")
+def source_document_original(
+    slug: str,
+    document_id: int,
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """Serve the registered original of one source document to its members.
+
+    The document is resolved inside the project gate rather than by id alone,
+    so a guessed id cannot reach another project's source. Bytes that cannot
+    be retrieved are a retrieval failure and answer as one; they are never
+    reported as something about the document itself.
+    """
+    project = _project(session, slug, principal)
+    document = session.get(Document, document_id)
+    if document is None or document.project_id != project.id:
+        raise HTTPException(404, "no such source document in this project")
+    try:
+        path = stored_file(document)
+    except (StorageError, OSError) as error:
+        path, failure = None, type(error).__name__
+    else:
+        failure = "ObjectMissing"
+    if path is None or not Path(path).exists():
+        log_source_bytes_retrieval_failure(
+            project_id=project.id,
+            document_id=int(document.id),
+            registered_sha256=document.sha256,
+            failure=failure,
+            detail="the registered original could not be retrieved for download",
+        )
+        raise HTTPException(404, "the registered original could not be retrieved")
+    return FileResponse(
+        path,
+        media_type=_ORIGINAL_MEDIA_TYPES.get(
+            Path(document.filename).suffix.lower(), "application/octet-stream"
+        ),
+        filename=document.filename,
+    )
+
+
+# The media types the product's own source classes arrive as. Anything else is
+# served as opaque bytes: guessing a type for an unknown suffix would invite a
+# browser to render a customer's file as markup.
+_ORIGINAL_MEDIA_TYPES = {
+    ".pdf": "application/pdf",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".xlsm": "application/vnd.ms-excel.sheet.macroEnabled.12",
+    ".csv": "text/csv",
 }
 
 

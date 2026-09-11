@@ -584,6 +584,42 @@ def test_every_field_the_ticket_names_is_on_the_screen(
         assert quote.attribution in body
 
 
+def test_each_citation_that_names_a_passage_opens_it(session, project, client):
+    """A citation the record resolves to a passage is a link to that passage.
+
+    #831 built one exact-source view and every surface opens it; a bundle's
+    own citations are one of those surfaces. What is asserted is the address
+    the *reading* resolved, so the screen cannot offer a passage the record
+    did not name, and a reference the record resolves to nothing prints as it
+    always did rather than acquiring a link the data does not support.
+    """
+
+    _cross_source(session, project)
+    _plan_every_child(session, project, return_date=RETURNS_AT)
+
+    reading = _reading(session, project)
+    body = client.get(f"/work/{project.slug}").text
+
+    named = {
+        segment_id
+        for bundle in reading.bundles
+        for reference in bundle.references
+        for segment_id in reference.source_segment_ids
+    }
+    assert named, "the fixture records no assessed passage to link to"
+    for segment_id in sorted(named):
+        assert f'href="/sources/{project.slug}/passage/{segment_id}"' in body
+    unresolved = [
+        reference
+        for bundle in reading.bundles
+        for reference in bundle.references
+        if not reference.source_segment_ids
+    ]
+    assert unresolved, "the fixture records no unresolvable citation to leave alone"
+    for reference in unresolved:
+        assert f"{reference.kind} {reference.identity}" in body
+
+
 # --- the brief is text, and nothing is sent --------------------------------
 
 

@@ -357,11 +357,17 @@ class IncomingCapture:
 
 @dataclass(frozen=True, slots=True)
 class SourceReference:
-    """Exactly where the incoming value was read, in words."""
+    """Exactly where the incoming value was read, in words.
+
+    ``source_segment_id`` is the same place as an address rather than as a
+    sentence: it is what the exact-source view opens (#831), so a screen links
+    to the passage instead of leaving the coordinator to find the file.
+    """
 
     document_filename: str
     locator: str | None = None
     exact_text: str | None = None
+    source_segment_id: int | None = None
 
     @property
     def location(self) -> str:
@@ -408,6 +414,7 @@ class SourceAnswer:
     document_filename: str
     location: str
     quote: str | None
+    source_segment_id: int | None
     value: str | None
     external_links: tuple[ExternalRecordLink, ...]
     not_ready_reason: str | None
@@ -699,6 +706,9 @@ class ItemReading(ActionableItem):
                     child.source.location if child.source is not None else NOT_CITED
                 ),
                 quote=child.source.exact_text if child.source is not None else None,
+                source_segment_id=(
+                    child.source.source_segment_id if child.source is not None else None
+                ),
                 value=child.incoming_value,
                 external_links=child.external_links,
                 not_ready_reason=child.not_ready_reason,
@@ -1266,6 +1276,7 @@ def _source_reference(capture: IncomingCapture | None) -> SourceReference | None
         document_filename=capture.document.filename,
         locator=source_segment_locator_words(segment) if segment is not None else None,
         exact_text=segment.exact_text if segment is not None else None,
+        source_segment_id=int(segment.id) if segment is not None else None,
     )
 
 
