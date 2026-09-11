@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 
 import pytest
 
@@ -14,6 +13,7 @@ from corridor.m8_acceptance import (
     VerificationResult,
 )
 from corridor.m8_acceptance_cli import ProductionExtractor, main
+from cli_support import json_output
 
 
 def _extractor(prompt_version, schema_version, extract_document=None):
@@ -31,12 +31,6 @@ def _extractor(prompt_version, schema_version, extract_document=None):
         schema_version=schema_version,
         extract_document=extract_document or unreached,
     )
-
-
-def _json_output(capsys) -> dict:
-    captured = capsys.readouterr()
-    assert captured.err == ""
-    return json.loads(captured.out)
 
 
 def test_capture_refuses_to_hide_an_unconfigured_model_path(
@@ -186,7 +180,7 @@ def test_live_capture_constructs_one_client_routes_the_production_extractor_and_
     assert config.schema_version == "matrix-candidate-shape-v3"
     assert config.expected_clean_git_revision == "abc123"
     assert seen[1] == ("extract", "session", "document", clients[0])
-    assert _json_output(capsys) == {
+    assert json_output(capsys) == {
         "candidate_count": 18,
         "command": "capture",
         "database_name": "corridor_disposable_m8_acceptance_1234_111111111111",
@@ -442,7 +436,7 @@ def test_replay_routes_model_free_without_constructing_a_client(
     assert config.expected_fixture_sha256 == "d4" * 32
     assert config.expected_transformations_sha256 == "e5" * 32
     assert config.expected_clean_git_revision == "abc123"
-    assert _json_output(capsys) == {
+    assert json_output(capsys) == {
         "abstention_counts": {"comparison_changed": 1},
         "assertions": [
             {
@@ -509,7 +503,7 @@ def test_replay_prints_failed_assertions_and_returns_nonzero(
     )
 
     assert status == 1
-    payload = _json_output(capsys)
+    payload = json_output(capsys)
     assert payload["assertions"] == [
         {
             "detail": None,
@@ -565,7 +559,7 @@ def test_verify_routes_only_through_the_public_bundle_verifier(
     ) == 0
 
     assert seen == [(bundle_dir, expected_manifest_sha256)]
-    assert _json_output(capsys) == {
+    assert json_output(capsys) == {
         "bundle_dir": str(bundle_dir),
         "canonical_content_sha256": "07" * 32,
         "command": "verify",

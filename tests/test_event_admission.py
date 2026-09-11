@@ -20,7 +20,6 @@ import hashlib
 import json
 from copy import deepcopy
 from datetime import date
-from pathlib import Path
 from threading import Event
 from uuid import uuid4
 
@@ -89,8 +88,8 @@ from corridor.models import (
     PolicyRun,
     Project,
 )
-from corridor.m8_acceptance_database import provision_disposable_postgres
 from corridor.principals import HumanPrincipal, InvalidHumanPrincipal
+from committed_scenario_support import delete_committed_project
 
 OPERATOR = HumanPrincipal("local:event-admission-operator")
 PIPELINE = "Event Admission Pipeline Co"
@@ -98,14 +97,10 @@ PROJECT_SIDE = "LJA"
 
 
 @pytest.fixture(scope="module")
-def event_admission_isolated_database():
+def event_admission_isolated_database(provision_isolated_database):
     """One migrated disposable database for cross-session and replay proofs."""
 
-    with provision_disposable_postgres(
-        settings.database_url,
-        repo_root=Path(__file__).resolve().parents[1],
-        label="event_admission_race",
-    ) as database:
+    with provision_isolated_database("event_admission_race") as database:
         yield database
 
 
@@ -1429,28 +1424,7 @@ def _delete_committed_event_admission_project(
 ) -> None:
     """Remove the exact immutable graph committed for a race test."""
 
-    with session_factory() as cleanup:
-        cleanup.execute(text("set local session_replication_role = replica"))
-        cleanup.execute(
-            text(
-                "delete from policy_activations "
-                "where project_id = :project_id "
-                "  and family = 'event_admission'"
-            ),
-            {"project_id": project_id},
-        )
-        cleanup.execute(
-            text(
-                "delete from event_admission_acceptance_receipts "
-                "where project_id = :project_id"
-            ),
-            {"project_id": project_id},
-        )
-        cleanup.execute(
-            text("delete from projects where id = :project_id"),
-            {"project_id": project_id},
-        )
-        cleanup.commit()
+    delete_committed_project(project_id, session_factory=session_factory)
 
 
 def test_failed_acceptance_receipt_cannot_activate_normal_processing(

@@ -16,7 +16,7 @@ review duration) is one shared reading, proved in
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta
+from datetime import timedelta
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
 from uuid import uuid4
@@ -27,7 +27,7 @@ from sqlalchemy import func, select
 from corridor.due_work import (
     EvidenceOutcomeCaptureDeclaration,
     HANDLER_EVIDENCE_OUTCOME_CAPTURE,
-    configure_evidence_outcome_capture,
+    configure_due_work,
     enqueue_due_work,
     run_due_work_once,
 )
@@ -60,6 +60,7 @@ from evidence_outcome_support import (
     record_disposition,
     unplaced_statement,
 )
+from clock_support import ControlledClock
 
 
 # --------------------------------------------------------------------------- #
@@ -274,14 +275,6 @@ def test_reconstruction_refuses_a_case_from_another_project(session, project):
 # --------------------------------------------------------------------------- #
 
 
-class ControlledClock:
-    def __init__(self, value: datetime):
-        self.value = value
-
-    def now(self) -> datetime:
-        return self.value
-
-
 def _committed_case(factory):
     """Freeze a case, record a Not Relevant decision, and enable capture.
 
@@ -318,7 +311,7 @@ def _committed_case(factory):
             _contract(case, cutoff=cutoff, protection_end=cutoff + (4 * HOUR)),
             now=frozen,
         )
-        schedule = configure_evidence_outcome_capture(
+        schedule = configure_due_work(
             setup,
             EvidenceOutcomeCaptureDeclaration.released_hourly(
                 project_id=project.id,

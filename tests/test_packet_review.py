@@ -82,10 +82,10 @@ from corridor.review_packets import (
     reverse_review_packet,
 )
 
+from harness_support import move_accepted_value
 from packet_review_support import (
     Rendition,
     accept_baseline_fact,
-    move_accepted_value,
     append_deltas,
     modify,
     new_subject,

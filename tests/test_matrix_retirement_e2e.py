@@ -15,9 +15,10 @@ from pathlib import Path
 
 import pytest
 from PIL import Image
-from sqlalchemy import func, select, text
+from sqlalchemy import func, select
 
 from corridor.config import Settings
+from corridor.db_roles import WORKER_CAPABILITY_LOGIN
 from corridor.evidence_citations import cite_source_segments, evidence_quotation
 from corridor.extract_project import extract_project
 from corridor.ingest import ingest_document
@@ -30,6 +31,7 @@ from corridor.pipeline_qualification import record_acceptance, select_qualified_
 from corridor.retained_history import replay_retained_reading
 from corridor.source_append import SegmentValues, append_source_segments
 from corridor.source_segments import dereference_source_segment
+from harness_support import as_role
 from test_native_matrix import project
 from test_native_pipeline import ACTOR
 from test_native_provider_boundary import RecordingTransport, _body, _experiment, _request
@@ -109,13 +111,9 @@ def test_corpus_ingest_selected_extraction_and_retained_citation_without_engines
 
     # The actual worker capability can read selection and append the native
     # capture, but cannot approve itself or change the accepted record.
-    with session.begin_nested():
-        session.execute(text("set local role corridor_worker"))
-        try:
-            with production_extraction_routes() as select_route:
-                [outcome] = extract_project(session, project, select_route=select_route, commit=False)
-        finally:
-            session.execute(text("reset role"))
+    with session.begin_nested(), as_role(session, WORKER_CAPABILITY_LOGIN):
+        with production_extraction_routes() as select_route:
+            [outcome] = extract_project(session, project, select_route=select_route, commit=False)
     if provider_refuses:
         from corridor.models import Candidate, Fact, ProcessingArtifact
 

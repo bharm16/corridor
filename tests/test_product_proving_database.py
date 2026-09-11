@@ -344,6 +344,10 @@ def test_public_fingerprint_discovers_all_current_tables_and_sequences_read_only
         parse_database_fingerprint(incomplete)
 
 
+# A fingerprint describes what Alembic produces, so every database this module
+# fingerprints replays the chain rather than copying a template of it. That is
+# the ask `provision_disposable_postgres` now expects from a caller whose
+# subject is the migration itself.
 @pytest.mark.slow
 def test_same_migration_head_schema_drift_changes_the_canonical_fingerprint():
     configured = make_url(settings.database_url)
@@ -355,6 +359,7 @@ def test_same_migration_head_schema_drift_changes_the_canonical_fingerprint():
         repo_root=REPO_ROOT,
         label=DISPOSABLE_DATABASE_LABEL,
         migration_revision=MIGRATION_HEAD,
+        reuse_migrated_template=False,
     ) as database:
         database_url = configured.set(database=database.name).render_as_string(
             hide_password=False
@@ -397,6 +402,7 @@ def test_fresh_databases_at_one_head_have_the_same_schema_fingerprint():
             repo_root=REPO_ROOT,
             label=f"{DISPOSABLE_DATABASE_LABEL}_{suffix}",
             migration_revision=MIGRATION_HEAD,
+            reuse_migrated_template=False,
         ) as database:
             database_url = configured.set(database=database.name).render_as_string(
                 hide_password=False
@@ -418,6 +424,7 @@ def test_quiescence_starts_its_snapshot_after_a_writer_commits_in_the_pid_window
         repo_root=REPO_ROOT,
         label=DISPOSABLE_DATABASE_LABEL,
         migration_revision=MIGRATION_HEAD,
+        reuse_migrated_template=False,
     ) as database:
         database_url = configured.set(database=database.name).render_as_string(
             hide_password=False

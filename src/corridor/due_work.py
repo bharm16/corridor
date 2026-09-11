@@ -642,39 +642,6 @@ def _evidence_outcome_capture_effectful(context: EffectfulContext) -> dict[str, 
     )
 
 
-def configure_processing_health(
-    session: Session,
-    declaration: ProcessingHealthDeclaration,
-    *,
-    now: datetime,
-) -> DueWorkSchedule:
-    """Validate and retain one enabled gate-7 processing-health declaration."""
-
-    return _configure(session, declaration, HANDLER_PROCESSING_HEALTH, now=now)
-
-
-def configure_project_processing(
-    session: Session,
-    declaration: ProjectProcessingDeclaration,
-    *,
-    now: datetime,
-) -> DueWorkSchedule:
-    """Validate and retain one enabled gate-7 project-processing declaration."""
-
-    return _configure(session, declaration, HANDLER_PROJECT_PROCESSING, now=now)
-
-
-def configure_revision_reconciliation(
-    session: Session,
-    declaration: RevisionReconciliationDeclaration,
-    *,
-    now: datetime,
-) -> DueWorkSchedule:
-    """Validate and retain one enabled gate-7 revision-reconciliation declaration."""
-
-    return _configure(session, declaration, HANDLER_REVISION_RECONCILIATION, now=now)
-
-
 def configure_location_discovery(
     session: Session,
     declaration: object,
@@ -686,72 +653,6 @@ def configure_location_discovery(
     return _configure(session, declaration, HANDLER_LOCATION_DISCOVERY, now=now)
 
 
-def configure_assignment_notification(
-    session: Session,
-    declaration: object,
-    *,
-    now: datetime,
-) -> DueWorkSchedule:
-    """Validate and retain one enabled gate-7 assignment-notification declaration."""
-
-    return _configure(session, declaration, HANDLER_ASSIGNMENT_NOTIFICATION, now=now)
-
-
-def configure_due_action_notification(
-    session: Session,
-    declaration: object,
-    *,
-    now: datetime,
-) -> DueWorkSchedule:
-    """Validate and retain one enabled gate-7 due-action-notification declaration."""
-
-    return _configure(session, declaration, HANDLER_DUE_ACTION_NOTIFICATION, now=now)
-
-
-def configure_document_notification(
-    session: Session,
-    declaration: object,
-    *,
-    now: datetime,
-) -> DueWorkSchedule:
-    """Validate and retain one enabled gate-7 document-notification declaration."""
-
-    return _configure(session, declaration, HANDLER_DOCUMENT_NOTIFICATION, now=now)
-
-
-def configure_event_admission_reproof(
-    session: Session,
-    declaration: object,
-    *,
-    now: datetime,
-) -> DueWorkSchedule:
-    """Validate and retain one enabled gate-7 stale-class re-proof declaration."""
-
-    return _configure(session, declaration, HANDLER_EVENT_ADMISSION_REPROOF, now=now)
-
-
-def configure_evidence_outcome_capture(
-    session: Session,
-    declaration: EvidenceOutcomeCaptureDeclaration,
-    *,
-    now: datetime,
-) -> DueWorkSchedule:
-    """Validate and retain one enabled gate-7 outcome-capture declaration."""
-
-    return _configure(session, declaration, HANDLER_EVIDENCE_OUTCOME_CAPTURE, now=now)
-
-
-def configure_report_publication(
-    session: Session,
-    declaration: object,
-    *,
-    now: datetime,
-) -> DueWorkSchedule:
-    """Validate and retain one enabled gate-7 report-publication declaration."""
-
-    return _configure(session, declaration, HANDLER_REPORT_PUBLICATION, now=now)
-
-
 def configure_connector_polling(
     session: Session,
     declaration: object,
@@ -761,50 +662,6 @@ def configure_connector_polling(
     """Validate and retain one enabled gate-7 connector-polling declaration."""
 
     return _configure(session, declaration, HANDLER_CONNECTOR_POLLING, now=now)
-
-
-def configure_delta_generation(
-    session: Session,
-    declaration: object,
-    *,
-    now: datetime,
-) -> DueWorkSchedule:
-    """Validate and retain one enabled gate-7 delta-generation declaration."""
-
-    return _configure(session, declaration, HANDLER_DELTA_GENERATION, now=now)
-
-
-def configure_report_preparation(
-    session: Session,
-    declaration: object,
-    *,
-    now: datetime,
-) -> DueWorkSchedule:
-    """Validate and retain one enabled gate-7 report-preparation declaration."""
-
-    return _configure(session, declaration, HANDLER_REPORT_PREPARATION, now=now)
-
-
-def configure_release_preparation(
-    session: Session,
-    declaration: object,
-    *,
-    now: datetime,
-) -> DueWorkSchedule:
-    """Validate and retain one project's enabled preparation supervisor."""
-
-    return _configure(session, declaration, HANDLER_RELEASE_PREPARATION, now=now)
-
-
-def configure_retention_sweep(
-    session: Session,
-    declaration: object,
-    *,
-    now: datetime,
-) -> DueWorkSchedule:
-    """Validate and retain one enabled gate-7 Class B retention-sweep declaration."""
-
-    return _configure(session, declaration, HANDLER_RETENTION_SWEEP, now=now)
 
 
 def configure_due_work(

@@ -16,14 +16,7 @@ from uuid import uuid4
 
 from corridor.due_work_cli import main
 from corridor.models import Project
-
-
-class ControlledClock:
-    def __init__(self, value):
-        self.value = value
-
-    def now(self):
-        return self.value
+from clock_support import ControlledClock
 
 
 def _configure_argv(project_slug: str, **overrides) -> list[str]:

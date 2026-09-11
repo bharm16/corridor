@@ -14,7 +14,7 @@ from pathlib import Path
 from corridor.migrations import policy
 from corridor.prompt_library import installed_prompt_path
 from makefile_support import entry_point, parser_description, targets as make_targets
-from ratchet_support import assert_ratchet
+from ratchet_support import Relocation, assert_ratchet, assert_reviewed_relocations
 from source_scan_support import (  # noqa: F401
     callers_of,
     imported_names,
@@ -200,11 +200,6 @@ AWAITING_CALLER = {
         "internal Report, kept as one delegation to `build_report` while "
         "ADR-0086/ADR-0091 move the customer's Coordination Report to "
         "`issue_rendering.render_weekly_report` (ADR-0081 stage 3)"
-    ),
-    "configure_release_preparation": (
-        "due_work.py:788 -- one of fourteen one-line handler configurations, "
-        "the only one with neither a caller nor a test; audit card A7 removes "
-        "it, and this entry is the placeholder until that lane lands"
     ),
     "due_action_inbox": (
         "notifications.py:1557 -- the recipient's own due-action inbox read, "
@@ -904,6 +899,129 @@ def test_no_application_module_constructs_an_accepted_authority_row():
     assert constructors == []
 
 
+# The test tree's own copy of the rule above. `tests/harness_support.py` is the
+# one module that writes an accepted-authority row directly, and every entry
+# here is a module that still does so for itself. The list may fall and may
+# never rise (`assert_ratchet`); each entry is one module writing one relation:
+#
+#   - the relation's own refusal walk, whose subject *is* the raw statement:
+#     `test_baseline_adoption`, `test_database_authority`, `test_delta_resolution`,
+#     `test_fact_decisions`, `test_permanent_state_deduplication`,
+#     `test_operating_mode`, `test_review_packets`;
+#   - `test_migration_baseline`, which seeds pre-migration rows on a disposable
+#     database so a migration has something to transform;
+#   - `test_project_partition_and_offboarding`, which writes as the schema owner
+#     with the record guards disabled, to give a deployment-wide sweep a row in
+#     every relation it must reach;
+#   - the Adopt Baseline *registration* family -- baseline sources, rows,
+#     formats and manifests -- in `packet_review_support` and
+#     `test_release_authorization`. These are a further act nobody has lifted
+#     yet, not one of the two `harness_support` already owns.
+TEST_ACCEPTED_AUTHORITY_WRITES = frozenset({
+    ("packet_review_support.py", "project_baseline_format_manifests"),
+    ("packet_review_support.py", "project_baseline_formats"),
+    ("packet_review_support.py", "project_baseline_source_rows"),
+    ("packet_review_support.py", "project_baseline_sources"),
+    ("test_baseline_adoption.py", "project_baseline_format_manifests"),
+    ("test_baseline_adoption.py", "project_baseline_sources"),
+    ("test_database_authority.py", "delta_record_decisions"),
+    ("test_database_authority.py", "fact_decisions"),
+    ("test_delta_resolution.py", "delta_record_decisions"),
+    ("test_fact_decisions.py", "fact_decisions"),
+    ("test_fact_decisions.py", "project_record_revisions"),
+    ("test_migration_baseline.py", "project_baseline_format_manifests"),
+    ("test_migration_baseline.py", "project_baseline_formats"),
+    ("test_migration_baseline.py", "project_record_revisions"),
+    ("test_operating_mode.py", "project_baseline_adoptions"),
+    ("test_permanent_state_deduplication.py", "delta_deferrals"),
+    ("test_permanent_state_deduplication.py", "fact_decisions"),
+    ("test_permanent_state_deduplication.py", "project_record_revisions"),
+    ("test_project_partition_and_offboarding.py", "fact_decisions"),
+    ("test_project_partition_and_offboarding.py", "project_record_revisions"),
+    ("test_release_authorization.py", "project_baseline_formats"),
+    ("test_review_packets.py", "delta_review_packet_receipts"),
+})
+
+
+def _accepted_authority_tables() -> dict[str, str]:
+    """Each accepted-authority relation, by the name a module constructs it as.
+
+    Read off the declarations rather than retyped, so renaming a relation
+    cannot leave the scan below matching a table that no longer exists.
+    """
+    import importlib
+
+    models = importlib.import_module("corridor.models")
+    return {
+        name: getattr(models, name).__tablename__
+        for name in sorted(ACCEPTED_AUTHORITY_MODELS)
+    }
+
+
+def _docstrings(source) -> set[ast.Constant]:
+    """Every docstring node, which describes a statement rather than running one."""
+    holders = (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+    return {
+        node.body[0].value
+        for node in source.nodes
+        if isinstance(node, holders)
+        and node.body
+        and isinstance(node.body[0], ast.Expr)
+        and isinstance(node.body[0].value, ast.Constant)
+        and isinstance(node.body[0].value.value, str)
+    }
+
+
+def test_a_test_module_writes_an_accepted_authority_row_only_through_the_harness():
+    """The rule above, on the tree that was writing around it.
+
+    `tests/` held sixteen hand-written inserts into `project_record_revisions`
+    and `fact_decisions` across nine modules -- each one a copy of a
+    record-decision command's SQL that nothing failed when the command changed,
+    and one of them (`tests/packet_review_support.py`) said so in a comment.
+    They live in `harness_support` now, behind the acts they were setting up,
+    and this holds that gain: a module may write these relations raw only where
+    the raw statement is what it is proving.
+
+    The ORM door is scanned beside the SQL one, because a fixture that binds
+    the schema owner can reach the relation either way.
+    """
+    tables = _accepted_authority_tables()
+    relations = "|".join(sorted(set(tables.values()), key=len, reverse=True))
+    pattern = re.compile(
+        r"(?:insert\s+into|update|delete\s+from)\s+(?:only\s+)?\"?(" + relations + r")\b",
+        re.IGNORECASE,
+    )
+    found: set[tuple[str, str]] = set()
+    for path in _module_paths(TEST_ROOT):
+        if path.name in ("harness_support.py", "test_architecture.py"):
+            continue
+        source = read_python(path)
+        described = _docstrings(source)
+        for node in source.nodes:
+            if (
+                isinstance(node, ast.Constant)
+                and isinstance(node.value, str)
+                and node not in described
+            ):
+                found.update(
+                    (path.name, table.lower()) for table in pattern.findall(node.value)
+                )
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id in tables
+            ):
+                found.add((path.name, tables[node.func.id]))
+
+    assert_ratchet(
+        "tests/test_architecture.py:TEST_ACCEPTED_AUTHORITY_WRITES",
+        measured=found,
+        recorded=TEST_ACCEPTED_AUTHORITY_WRITES,
+        as_measured=lambda listed: {tuple(entry) for entry in listed},
+    )
+
+
 def test_model_output_schemas_carry_references_not_values():
     """A strict model output holds ids, enumerations, and dispositions only (#446).
 
@@ -1181,6 +1299,28 @@ LEGACY_TABLE_CONSUMERS: dict[str, tuple[str, ...]] = {
 }
 
 
+# The one way a name may join the census above: an existing reading that moved
+# from one module to another. Lifting a screen's reading out of a 7k-line route
+# body adds the destination to the list, so the direction check refuses it like
+# any other new consumer -- and it is not a new consumer, it is the same reads
+# in a different file. Each line below is checked against the merge base by
+# `assert_reviewed_relocations`, which authorizes exactly the pairs it can
+# prove; nothing here is an entitlement to consume a legacy class, and writing
+# a line here buys nothing on its own.
+#
+# A relocation is not retirement progress. ADR-0081 stage 4 exits when no
+# reader imports a legacy table module, and a relocation leaves the census one
+# name longer than it found it; the census above goes on saying so. It does not
+# cross the freeze in either direction either: no legacy-only capability is
+# built by moving a reading, and no reader reaches the spine by changing files.
+#
+# Each declaration is spent by the merge that uses it. At the next merge base
+# the source reading no longer holds the dependency, the evidence check stops
+# passing, and the line has to go -- the destination is an ordinary consumer
+# from then on.
+RELOCATED_LEGACY_READINGS: tuple[Relocation, ...] = ()
+
+
 def _legacy_table_consumers() -> dict[str, tuple[str, ...]]:
     """Every source module that names one of the legacy ORM classes.
 
@@ -1232,6 +1372,12 @@ def test_the_legacy_table_consumer_list_may_fall_and_may_never_rise():
     against a constant the same commit may edit cannot see direction.
     `assert_ratchet` reads the list back out of the merge base and names the
     consumer that joined.
+
+    One name may still join, and only one way: a reviewed relocation, where an
+    existing reading moved to its own module and the merge base can be made to
+    prove it. `RELOCATED_LEGACY_READINGS` above declares those, and the pairs
+    that survive that proof come off both sides below so that the comparison is
+    unchanged for every other name. The list itself keeps counting them.
     """
 
     listed = {name: tuple(sorted(modules)) for name, modules in LEGACY_TABLE_CONSUMERS.items()}
@@ -1260,13 +1406,23 @@ def test_the_legacy_table_consumer_list_may_fall_and_may_never_rise():
 
     assert problems == {}
 
+    # The census above is already held exact by `problems`, so a relocation
+    # never hides its destination from the list. What comes back here is only
+    # the joining that the merge base proved is a move, dropped from both sides
+    # so the direction check below judges every other name as before.
+    relocated = assert_reviewed_relocations(
+        RELOCATED_LEGACY_READINGS,
+        consumers=found,
+        source_root=SOURCE_ROOT.relative_to(REPO_ROOT).as_posix(),
+    )
     pairs = lambda listed: {
         (name, module) for name, modules in listed.items() for module in modules
     }
     assert_ratchet(
         "tests/test_architecture.py:LEGACY_TABLE_CONSUMERS",
-        measured={(name, module) for name in listed for module in found[name]},
-        recorded=pairs(listed),
+        measured={(name, module) for name in listed for module in found[name]}
+        - relocated,
+        recorded=pairs(listed) - relocated,
         as_measured=pairs,
     )
 
@@ -1317,60 +1473,112 @@ def test_no_module_outside_the_schema_package_imports_the_legacy_family():
     assert sorted(importers) == []
 
 
-def test_every_spine_dependent_table_is_covered_by_the_committed_scenario_cleanup():
-    """A committed test scenario deletes the spine by name pattern (#521).
+# A committed test scenario may lift the append-only guard for a purpose
+# other than removing a project: to construct the corrupt pre-state the act
+# under test must reject, to model the disposal path a sweep can only
+# happen through, or to seed an append-only row on a disposable migration
+# database. Those are classified here, with the reason, so that a new
+# module reaching for the setting has to say which it is.
+LIFTS_THE_APPEND_ONLY_GUARD_WITHOUT_DELETING_A_PROJECT = {
+    "test_automatic_carry_forward": "builds the corrupt pre-insert state the receipt trigger must reject",
+    "test_connector_polling_runtime": "models the disposal path a receipt sweep can only happen through",
+    "test_migration_baseline": "seeds an append-only row on its own disposable database",
+    "test_supersession_review": "simulates pre-sealed legacy history before inverting two acts",
+}
 
-    Any table that references the spine roots, directly or through another
-    spine table, must match the pattern and carry project_id; otherwise a
-    committed scenario could leave its rows behind for a later module.
+_DELETES_A_PROJECT = re.compile(r"delete\(Project\)|delete\s+from\s+projects\b")
+
+
+def test_a_committed_test_scenario_is_torn_down_through_one_derived_cleanup():
+    """Only `committed_scenario_support` removes a committed project (#521).
+
+    Five modules used to hand-write "delete the project I committed" — 353
+    lines naming 19, 17, 7, 4 and 3 tables in five different orders, two of
+    them naming the same audit entity type as a constant in one file and as
+    a string literal in the other, and three of them removing no spine rows
+    at all. The invariant was remembered, and remembering it is what failed.
+
+    The derivation is the seam, so this rule is about its call sites: a
+    module that deletes a project reaches the derivation rather than listing
+    tables, and a module that lifts the append-only guard for some other
+    purpose says which purpose here.
+    """
+
+    guard = Path(__file__).resolve()
+    seam = TEST_ROOT / "committed_scenario_support.py"
+    deleting = []
+    for path in _module_paths(TEST_ROOT):
+        if path.resolve() == guard or path == seam:
+            continue
+        for number, line in enumerate(read_python(path).text.splitlines(), start=1):
+            if _DELETES_A_PROJECT.search(line):
+                deleting.append(f"{path.name}:{number}")
+
+    assert sorted(deleting) == [], (
+        "a test module deletes a committed project by hand; call "
+        "committed_scenario_support.delete_committed_project instead: "
+        f"{sorted(deleting)}"
+    )
+
+    lifting = {
+        path.stem
+        for path in mentions_of(["session_replication_role"], (TEST_ROOT,))[
+            "session_replication_role"
+        ]
+        if path != seam and path.resolve() != guard
+    }
+    unclassified = sorted(
+        lifting - set(LIFTS_THE_APPEND_ONLY_GUARD_WITHOUT_DELETING_A_PROJECT)
+    )
+    assert unclassified == [], (
+        "a test module lifts the append-only guard outside the committed-scenario "
+        "cleanup; delete the project through "
+        "committed_scenario_support.delete_committed_project, or classify the "
+        f"other purpose in test_architecture.py: {unclassified}"
+    )
+    stale = sorted(set(LIFTS_THE_APPEND_ONLY_GUARD_WITHOUT_DELETING_A_PROJECT) - lifting)
+    assert stale == [], (
+        f"these modules no longer lift the append-only guard: {stale}"
+    )
+
+
+def test_every_project_scoped_table_is_covered_by_the_committed_scenario_cleanup():
+    """The cleanup's table set is derived from the schema, never listed (#521).
+
+    `place_project_tables` raises on a table it cannot place, so importing
+    the seam already refuses a new table that is neither reachable from a
+    project nor classified as global. This states the same criterion where
+    `make check` reads it, and adds the ordering the deletion depends on:
+    a dependent is selected through the rows of the parent that places it,
+    so deleting the parent first would leave the dependent behind instead
+    of removing it.
     """
     import importlib
 
-    spine_support = importlib.import_module("spine_support")
+    support = importlib.import_module("committed_scenario_support")
     from corridor.models import Base
 
-    referencing: dict[str, set[str]] = {}
-    for table in Base.metadata.sorted_tables:
-        for fk in table.foreign_keys:
-            referencing.setdefault(fk.column.table.name, set()).add(table.name)
-    dependent: set[str] = set()
-    frontier = set(spine_support.SPINE_ROOTS)
-    while frontier:
-        name = frontier.pop()
-        for child in referencing.get(name, ()):
-            if child not in dependent:
-                dependent.add(child)
-                frontier.add(child)
-    covered = {table.name for table in spine_support.SPINE_TABLES}
-
-    # The entity-resolution subsystem also references source_segments but is
-    # not part of the human-decision spine dual-write, and no committed test
-    # scenario creates its rows; two of its tables are not even project-scoped.
-    # It is classified out explicitly so that a genuinely new spine table
-    # (a support-assessment, proposed-delta, or decision table) cannot be
-    # added without either matching the cleanup pattern or being classified
-    # here on purpose.
-    resolution_subsystem = {
-        "subject_resolution_attempts",
-        "subject_resolution_candidates",
-        "subject_resolution_decisions",
-        "subject_candidate_suggestions",
-    }
+    order, placements = support.place_project_tables(Base.metadata)
+    position = {name: index for index, name in enumerate(order)}
+    out_of_order = sorted(
+        (name, parent)
+        for name, found in placements.items()
+        for _, parent, _ in found
+        if position[name] >= position[parent]
+    )
     uncovered = sorted(
-        name
-        for name in (dependent | set(spine_support.SPINE_ROOTS))
-        if name not in covered and name not in resolution_subsystem
-    )
-    missing_project_id = sorted(
-        table.name for table in spine_support.SPINE_TABLES if "project_id" not in table.c
+        set(Base.metadata.tables) - set(order) - set(support.GLOBAL_TABLES)
     )
 
-    assert uncovered == [], (
-        "a new spine-dependent table is not covered by the committed-scenario "
-        f"cleanup; extend SPINE_TABLE_PATTERN in tests/spine_support.py or "
-        f"classify it in test_architecture.py: {uncovered}"
+    assert out_of_order == [], (
+        "these tables are deleted before the parent that places them can be "
+        f"read: {out_of_order}"
     )
-    assert missing_project_id == []
+    assert uncovered == [], (
+        "a new table is neither reachable from a project nor classified as "
+        "global in tests/committed_scenario_support.py: "
+        f"{uncovered}"
+    )
 
 
 def test_only_the_storage_interface_builds_a_path_into_the_content_store():

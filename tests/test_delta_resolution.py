@@ -15,7 +15,7 @@ question is answered from append-only identifiers.
 from __future__ import annotations
 
 import ast
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 from pathlib import Path
 from uuid import uuid4
@@ -75,13 +75,10 @@ from corridor.migrations.source_append_commands.resolve_delta import (
     RESOLVE_DELTA_REFUSAL_CODES,
 )
 from corridor.models import (
-    ActiveExtractionRun,
     DeltaDecisionSupport,
     DeltaDeferral,
     DeltaDisposition,
     DeltaRecordDecision,
-    Document,
-    ExtractionRun,
     Fact,
     FactDecision,
     FactSource,
@@ -98,7 +95,9 @@ from corridor.proposed_deltas import (
     ProposedSubjectTarget,
     create_proposed_delta_group,
 )
-from harness_support import adopt_baseline_fact
+from corridor.db_roles import RECORD_DECISION_ROLE
+from harness_support import adopt_baseline_facts, as_role
+from source_capture_support import Rendition
 from delta_supersession_support import record_delta_supersession
 from corridor.support_assessments import FactProposition, record_support_assessment
 
@@ -110,92 +109,10 @@ ASSESSED_AT = datetime(2026, 9, 3, 14, 0, tzinfo=timezone.utc)
 SUBJECT = "Utility Conflicts!7"
 
 
-class _Rendition:
-    """One document a source arrived as, and the Facts captured from it."""
+def _rendition(session: Session, project: Project, name: str) -> Rendition:
+    """One arriving workbook rendition, concerning this module's one subject."""
 
-    def __init__(self, session: Session, project: Project, name: str):
-        self.session = session
-        self.project = project
-        self.document = Document(
-            project_id=project.id,
-            sha256=sha256(f"{project.slug}:{name}".encode()).hexdigest(),
-            filename=name,
-            doc_type="matrix",
-            numbering_scheme="project-unique",
-            pages=1,
-            parse_status="parsed",
-        )
-        session.add(self.document)
-        session.flush()
-        self.run = ExtractionRun(
-            document_id=self.document.id,
-            prompt_version="resolve_delta_fixture_v1",
-            outcome="completed",
-            candidate_count=0,
-            page_errors=0,
-        )
-        session.add(self.run)
-        session.flush()
-        session.add(
-            ActiveExtractionRun(
-                document_id=self.document.id, extraction_run_id=self.run.id
-            )
-        )
-        self._ordinal = 0
-
-    def capture(
-        self,
-        *,
-        fact_type: str,
-        value: str,
-        subject_key: str = SUBJECT,
-        cell: str | None = None,
-        date_value: date | None = None,
-    ) -> tuple[Fact, SourceSegment]:
-        self._ordinal += 1
-        segment = SourceSegment(
-            project_id=self.project.id,
-            document_id=self.document.id,
-            kind="spreadsheet_cell",
-            exact_text=value,
-            content_sha256=sha256(value.encode()).hexdigest(),
-            ordinal=self._ordinal,
-            sheet_name="Utility Conflicts",
-            cell_range=cell or f"A{self._ordinal}",
-        )
-        self.session.add(segment)
-        self.session.flush()
-        fact = Fact(
-            project_id=self.project.id,
-            document_id=self.document.id,
-            extraction_run_id=self.run.id,
-            fact_type=fact_type,
-            subject_kind="source_row",
-            subject_key=subject_key,
-            text_value=None if date_value is not None else value,
-            date_value=date_value,
-            transformation=(
-                "iso_date_cell_v1" if date_value is not None else "trim_cell_text_v1"
-            ),
-            recorded_by="extractor:resolve_delta_fixture_v1",
-            content_sha256=sha256(
-                f"{self.document.filename}:{fact_type}:{subject_key}:{value}".encode()
-            ).hexdigest(),
-        )
-        self.session.add(fact)
-        self.session.flush()
-        self.session.add(
-            FactSource(
-                project_id=self.project.id,
-                document_id=self.document.id,
-                fact_id=fact.id,
-                source_segment_id=segment.id,
-                role="value_source",
-                ordinal=1,
-            )
-        )
-        self.session.flush()
-        return fact, segment
+    return Rendition(session, project, name, subject_key=SUBJECT)
 
 
 def _support(
@@ -261,7 +178,7 @@ def _delta(
 def _adopt(session: Session, project: Project, fact: Fact, key: str) -> int:
     """One accepted baseline decision, written as the record-decision role."""
 
-    return adopt_baseline_fact(session, project, fact, key)
+    return adopt_baseline_facts(session, project, fact, key=key)
 
 
 def _request(delta: ProposedDelta, **overrides) -> ChildDecisionRequest:
@@ -293,7 +210,7 @@ def _revision_count(session: Session, project: Project) -> int:
 def test_accept_records_the_incoming_proposition_as_the_effective_value(
     session: Session, project: Project
 ) -> None:
-    rendition = _Rendition(session, project, "ucm-rev-b.xlsx")
+    rendition = _rendition(session, project, "ucm-rev-b.xlsx")
     accepted_fact, accepted_segment = rendition.capture(
         fact_type="station_from", value="1149+00"
     )
@@ -346,7 +263,7 @@ def test_accept_records_the_incoming_proposition_as_the_effective_value(
 def test_edit_retains_the_incoming_proposition_delta_support_and_authority(
     session: Session, project: Project
 ) -> None:
-    rendition = _Rendition(session, project, "ucm-rev-c.xlsx")
+    rendition = _rendition(session, project, "ucm-rev-c.xlsx")
     accepted_fact, _ = rendition.capture(fact_type="station_from", value="1149+00")
     baseline = _adopt(session, project, accepted_fact, f"adopt-{project.id}")
     incoming, _ = rendition.capture(
@@ -394,7 +311,7 @@ def test_edit_retains_the_incoming_proposition_delta_support_and_authority(
 def test_reject_records_that_the_current_accepted_position_stands(
     session: Session, project: Project
 ) -> None:
-    rendition = _Rendition(session, project, "ucm-rev-d.xlsx")
+    rendition = _rendition(session, project, "ucm-rev-d.xlsx")
     accepted_fact, _ = rendition.capture(fact_type="station_from", value="1149+00")
     baseline = _adopt(session, project, accepted_fact, f"adopt-{project.id}")
     delta = _delta(session, project, baseline_revision=baseline)
@@ -428,7 +345,7 @@ def test_reject_records_that_the_current_accepted_position_stands(
 def test_defer_leaves_the_delta_open_and_writes_no_project_record_revision(
     session: Session, project: Project
 ) -> None:
-    rendition = _Rendition(session, project, "ucm-rev-e.xlsx")
+    rendition = _rendition(session, project, "ucm-rev-e.xlsx")
     accepted_fact, _ = rendition.capture(fact_type="station_from", value="1149+00")
     baseline = _adopt(session, project, accepted_fact, f"adopt-{project.id}")
     delta = _delta(session, project, baseline_revision=baseline)
@@ -476,7 +393,7 @@ def test_defer_leaves_the_delta_open_and_writes_no_project_record_revision(
 def test_a_deferred_delta_is_still_resolvable_when_it_returns(
     session: Session, project: Project
 ) -> None:
-    rendition = _Rendition(session, project, "ucm-rev-e2.xlsx")
+    rendition = _rendition(session, project, "ucm-rev-e2.xlsx")
     accepted_fact, _ = rendition.capture(fact_type="station_from", value="1149+00")
     baseline = _adopt(session, project, accepted_fact, f"adopt-{project.id}")
     incoming, segment = rendition.capture(
@@ -808,7 +725,7 @@ def test_a_packet_database_message_is_mapped_through_its_own_family() -> None:
 def test_a_stale_accepted_revision_is_refused_before_any_write(
     session: Session, project: Project
 ) -> None:
-    rendition = _Rendition(session, project, "ucm-rev-f.xlsx")
+    rendition = _rendition(session, project, "ucm-rev-f.xlsx")
     accepted_fact, _ = rendition.capture(fact_type="station_from", value="1149+00")
     stale_revision = _adopt(session, project, accepted_fact, f"adopt-{project.id}")
     incoming, segment = rendition.capture(
@@ -862,7 +779,7 @@ def test_the_database_refuses_a_stale_accepted_revision_on_its_own(
 ) -> None:
     """The Python check is the readable half; PostgreSQL is the authority."""
 
-    rendition = _Rendition(session, project, "ucm-rev-f2.xlsx")
+    rendition = _rendition(session, project, "ucm-rev-f2.xlsx")
     accepted_fact, _ = rendition.capture(fact_type="station_from", value="1149+00")
     baseline = _adopt(session, project, accepted_fact, f"adopt-{project.id}")
     incoming, segment = rendition.capture(
@@ -914,7 +831,7 @@ def test_the_database_refuses_a_stale_accepted_revision_on_its_own(
 def test_a_superseded_delta_is_refused(
     session: Session, project: Project
 ) -> None:
-    rendition = _Rendition(session, project, "ucm-rev-g.xlsx")
+    rendition = _rendition(session, project, "ucm-rev-g.xlsx")
     incoming, segment = rendition.capture(
         fact_type="station_from", value="1200+00"
     )
@@ -975,7 +892,7 @@ def test_an_invalid_action_is_refused(session: Session, project: Project) -> Non
 def test_a_delta_already_resolved_is_refused_and_corrected_by_a_later_decision(
     session: Session, project: Project
 ) -> None:
-    rendition = _Rendition(session, project, "ucm-rev-h.xlsx")
+    rendition = _rendition(session, project, "ucm-rev-h.xlsx")
     accepted_fact, _ = rendition.capture(fact_type="station_from", value="1149+00")
     baseline = _adopt(session, project, accepted_fact, f"adopt-{project.id}")
     incoming, segment = rendition.capture(
@@ -1051,7 +968,7 @@ def _segment_of(session: Session, fact: Fact) -> SourceSegment:
 def test_a_decision_without_named_support_is_refused(
     session: Session, project: Project
 ) -> None:
-    rendition = _Rendition(session, project, "ucm-rev-i.xlsx")
+    rendition = _rendition(session, project, "ucm-rev-i.xlsx")
     incoming, _ = rendition.capture(fact_type="station_from", value="1200+00")
     delta = _delta(session, project)
 
@@ -1073,7 +990,7 @@ def test_a_valid_source_passage_check_never_substitutes_for_support(
 ) -> None:
     """The quotation is exactly where it was cited, and that is not support."""
 
-    rendition = _Rendition(session, project, "ucm-rev-j.xlsx")
+    rendition = _rendition(session, project, "ucm-rev-j.xlsx")
     incoming, segment = rendition.capture(
         fact_type="station_from", value="1200+00"
     )
@@ -1107,7 +1024,7 @@ def test_a_valid_source_passage_check_never_substitutes_for_support(
 def test_a_contradicted_assessment_is_not_value_support(
     session: Session, project: Project
 ) -> None:
-    rendition = _Rendition(session, project, "ucm-rev-k.xlsx")
+    rendition = _rendition(session, project, "ucm-rev-k.xlsx")
     incoming, segment = rendition.capture(
         fact_type="station_from", value="1200+00"
     )
@@ -1135,7 +1052,7 @@ def test_a_contradicted_assessment_is_not_value_support(
 def test_an_edit_composes_supported_facts_under_a_named_transformation(
     session: Session, project: Project
 ) -> None:
-    rendition = _Rendition(session, project, "ucm-rev-l.xlsx")
+    rendition = _rendition(session, project, "ucm-rev-l.xlsx")
     first, _ = rendition.capture(fact_type="station_from", value="1200+00")
     second, _ = rendition.capture(
         fact_type="station_to", value="1260+00", cell="B9"
@@ -1169,7 +1086,7 @@ def test_an_edit_composes_supported_facts_under_a_named_transformation(
 def test_an_edit_whose_composition_does_not_replay_is_refused(
     session: Session, project: Project
 ) -> None:
-    rendition = _Rendition(session, project, "ucm-rev-m.xlsx")
+    rendition = _rendition(session, project, "ucm-rev-m.xlsx")
     first, _ = rendition.capture(fact_type="station_from", value="1200+00")
     second, _ = rendition.capture(
         fact_type="station_to", value="1260+00", cell="B9"
@@ -1201,11 +1118,17 @@ def test_an_edit_whose_composition_does_not_replay_is_refused(
 def test_an_edit_may_perform_a_proven_lossless_normalization(
     session: Session, project: Project
 ) -> None:
-    rendition = _Rendition(session, project, "ucm-rev-n.xlsx")
-    raw, _ = rendition.capture(fact_type="station_from", value="1200+00  ")
-    normalized, normalized_segment = rendition.capture(
-        fact_type="station_from", value="1200+00", cell="A12"
+    rendition = _rendition(session, project, "ucm-rev-n.xlsx")
+    raw, _ = rendition.capture(
+        fact_type="station_from", value="1200+00  to  1260+00"
     )
+    normalized, normalized_segment = rendition.capture(
+        fact_type="station_from", value="1200+00 to 1260+00", cell="A12"
+    )
+    # The captured values have to differ for the normalization to normalize
+    # anything: a cell's released transformation already trims its ends, so
+    # only internal spacing reaches a Fact for an edit to canonicalize.
+    assert raw.text_value != normalized.text_value
     assessment = _support(session, project, normalized, normalized_segment)
     delta = _delta(session, project)
 
@@ -1215,7 +1138,7 @@ def test_an_edit_may_perform_a_proven_lossless_normalization(
             delta,
             action=EDIT,
             edit_basis=LosslessNormalization(
-                normalization="trim_whitespace_v1",
+                normalization="collapse_internal_whitespace_v1",
                 input_fact_id=raw.id,
                 result_fact_id=normalized.id,
             ),
@@ -1225,13 +1148,13 @@ def test_an_edit_may_perform_a_proven_lossless_normalization(
 
     assert outcome.status == RESOLVED
     decision = session.get(DeltaRecordDecision, outcome.decision_id)
-    assert decision.edit_basis["normalization"] == "trim_whitespace_v1"
+    assert decision.edit_basis["normalization"] == "collapse_internal_whitespace_v1"
 
 
 def test_a_normalization_that_loses_a_value_is_refused(
     session: Session, project: Project
 ) -> None:
-    rendition = _Rendition(session, project, "ucm-rev-o.xlsx")
+    rendition = _rendition(session, project, "ucm-rev-o.xlsx")
     raw, _ = rendition.capture(fact_type="station_from", value="1200+00")
     different, different_segment = rendition.capture(
         fact_type="station_from", value="1300+00", cell="A12"
@@ -1260,8 +1183,8 @@ def test_a_normalization_that_loses_a_value_is_refused(
 def test_an_edit_may_cite_a_separately_attributable_source_origin(
     session: Session, project: Project
 ) -> None:
-    rendition = _Rendition(session, project, "ucm-rev-p.xlsx")
-    verbal_rendition = _Rendition(session, project, "call-notes.pdf")
+    rendition = _rendition(session, project, "ucm-rev-p.xlsx")
+    verbal_rendition = _rendition(session, project, "call-notes.pdf")
     stated, stated_segment = verbal_rendition.capture(
         fact_type="station_from", value="1212+00"
     )
@@ -1343,7 +1266,7 @@ def test_an_edit_without_any_basis_is_refused(
 def test_a_standalone_resolution_writes_exactly_one_revision(
     session: Session, project: Project
 ) -> None:
-    rendition = _Rendition(session, project, "ucm-rev-q.xlsx")
+    rendition = _rendition(session, project, "ucm-rev-q.xlsx")
     incoming, segment = rendition.capture(
         fact_type="station_from", value="1200+00"
     )
@@ -1374,7 +1297,7 @@ def test_a_standalone_resolution_writes_exactly_one_revision(
 def test_a_packet_child_contributes_to_one_revision_and_creates_none(
     session: Session, project: Project
 ) -> None:
-    rendition = _Rendition(session, project, "ucm-rev-r.xlsx")
+    rendition = _rendition(session, project, "ucm-rev-r.xlsx")
     first, first_segment = rendition.capture(
         fact_type="station_from", value="1200+00", subject_key="Utility Conflicts!7"
     )
@@ -1462,7 +1385,7 @@ def test_standalone_and_packet_children_are_semantically_identical(
 ) -> None:
     """The same input validates to the same decision content in both contexts."""
 
-    rendition = _Rendition(session, project, "ucm-rev-s.xlsx")
+    rendition = _rendition(session, project, "ucm-rev-s.xlsx")
     incoming, segment = rendition.capture(
         fact_type="station_from", value="1200+00"
     )
@@ -1499,7 +1422,7 @@ def test_standalone_and_packet_children_are_semantically_identical(
 def test_a_new_subject_creates_its_subject_and_initial_decisions_atomically(
     session: Session, project: Project
 ) -> None:
-    rendition = _Rendition(session, project, "ucm-rev-t.xlsx")
+    rendition = _rendition(session, project, "ucm-rev-t.xlsx")
     subject = "Utility Conflicts!99"
     owner, owner_segment = rendition.capture(
         fact_type="external_org", value="CenterPoint", subject_key=subject
@@ -1563,15 +1486,13 @@ def test_a_new_subject_creates_its_subject_and_initial_decisions_atomically(
 def test_a_timing_change_preserves_its_predecessor_lineage(
     session: Session, project: Project
 ) -> None:
-    rendition = _Rendition(session, project, "ucm-rev-u.xlsx")
+    rendition = _rendition(session, project, "ucm-rev-u.xlsx")
     promised, _ = rendition.capture(
-        fact_type="committed_date", value="2026-10-01", date_value=date(2026, 10, 1)
-    )
+        fact_type="committed_date", value="2026-10-01",)
     baseline = _adopt(session, project, promised, f"adopt-{project.id}")
     moved, moved_segment = rendition.capture(
         fact_type="committed_date",
         value="2026-11-15",
-        date_value=date(2026, 11, 15),
         cell="D9",
     )
     assessment = _support(session, project, moved, moved_segment)
@@ -1615,7 +1536,7 @@ def test_a_timing_change_preserves_its_predecessor_lineage(
 def test_an_organization_change_says_which_kind_it_was(
     session: Session, project: Project, change_kind: str
 ) -> None:
-    rendition = _Rendition(session, project, f"ucm-rev-v-{change_kind}.xlsx")
+    rendition = _rendition(session, project, f"ucm-rev-v-{change_kind}.xlsx")
     incoming, segment = rendition.capture(
         fact_type="external_org", value="CenterPoint Energy"
     )
@@ -1649,7 +1570,7 @@ def test_an_organization_change_says_which_kind_it_was(
 def test_an_organization_change_without_its_kind_is_refused(
     session: Session, project: Project
 ) -> None:
-    rendition = _Rendition(session, project, "ucm-rev-w.xlsx")
+    rendition = _rendition(session, project, "ucm-rev-w.xlsx")
     incoming, segment = rendition.capture(
         fact_type="external_org", value="CenterPoint Energy"
     )
@@ -1679,7 +1600,7 @@ def test_an_organization_change_without_its_kind_is_refused(
 def test_an_apparent_removal_records_disposition_without_deleting_anything(
     session: Session, project: Project
 ) -> None:
-    rendition = _Rendition(session, project, "ucm-rev-x.xlsx")
+    rendition = _rendition(session, project, "ucm-rev-x.xlsx")
     accepted_fact, accepted_segment = rendition.capture(
         fact_type="station_from", value="1149+00"
     )
@@ -1730,8 +1651,8 @@ def test_an_apparent_removal_records_disposition_without_deleting_anything(
 def test_a_contradiction_retains_every_proposition(
     session: Session, project: Project
 ) -> None:
-    workbook = _Rendition(session, project, "ucm-rev-y.xlsx")
-    email = _Rendition(session, project, "utility-email.pdf")
+    workbook = _rendition(session, project, "ucm-rev-y.xlsx")
+    email = _rendition(session, project, "utility-email.pdf")
     from_workbook, _ = workbook.capture(fact_type="station_from", value="1200+00")
     from_email, email_segment = email.capture(
         fact_type="station_from", value="1180+00"
@@ -1769,10 +1690,9 @@ def test_a_contradiction_retains_every_proposition(
 def test_a_schedule_key_date_creates_the_required_by_decision(
     session: Session, project: Project
 ) -> None:
-    rendition = _Rendition(session, project, "schedule-rev-b.xlsx")
+    rendition = _rendition(session, project, "schedule-rev-b.xlsx")
     required_by, segment = rendition.capture(
-        fact_type="need_date", value="2027-03-01", date_value=date(2027, 3, 1)
-    )
+        fact_type="need_date", value="2027-03-01",)
     assessment = _support(session, project, required_by, segment)
     delta = _delta(
         session,
@@ -1807,7 +1727,7 @@ def test_a_schedule_key_date_creates_the_required_by_decision(
 def test_a_closure_records_the_exact_supported_outcome_and_scope(
     session: Session, project: Project
 ) -> None:
-    rendition = _Rendition(session, project, "closure-letter.pdf")
+    rendition = _rendition(session, project, "closure-letter.pdf")
     marked, segment = rendition.capture(
         fact_type="marked_resolution", value="Relocated 2026-08-30"
     )
@@ -1871,7 +1791,7 @@ def test_a_delta_decision_cannot_be_written_outside_the_command(
 def test_a_delta_decision_cannot_be_updated_or_deleted(
     session: Session, project: Project
 ) -> None:
-    rendition = _Rendition(session, project, "ucm-rev-z.xlsx")
+    rendition = _rendition(session, project, "ucm-rev-z.xlsx")
     incoming, segment = rendition.capture(
         fact_type="station_from", value="1200+00"
     )
@@ -1906,18 +1826,17 @@ def test_a_delta_decision_cannot_be_updated_or_deleted(
         "update delta_record_decisions set disposition = 'reject' where id = :id",
         "delete from delta_record_decisions where id = :id",
     ):
-        with pytest.raises(DBAPIError) as role_write:
-            with session.begin_nested():
-                session.execute(text("set local role corridor_fact_decision_writer"))
-                session.execute(text(statement), {"id": outcome.decision_id})
+        with as_role(session, RECORD_DECISION_ROLE):
+            with pytest.raises(DBAPIError) as role_write:
+                with session.begin_nested():
+                    session.execute(text(statement), {"id": outcome.decision_id})
         assert "permission denied" in str(role_write.value)
-    session.execute(text("reset role"))
 
 
 def test_a_replay_of_the_same_act_returns_what_it_already_wrote(
     session: Session, project: Project
 ) -> None:
-    rendition = _Rendition(session, project, "ucm-rev-aa.xlsx")
+    rendition = _rendition(session, project, "ucm-rev-aa.xlsx")
     incoming, segment = rendition.capture(
         fact_type="station_from", value="1200+00"
     )
@@ -1976,7 +1895,7 @@ def _forced_replay(request, first):
 def test_every_decision_and_a_stale_refusal_emit_versioned_events(
     session: Session, project: Project
 ) -> None:
-    rendition = _Rendition(session, project, "ucm-rev-bb.xlsx")
+    rendition = _rendition(session, project, "ucm-rev-bb.xlsx")
     accepted_fact, _ = rendition.capture(fact_type="station_from", value="1149+00")
     baseline = _adopt(session, project, accepted_fact, f"adopt-{project.id}")
     incoming, segment = rendition.capture(
@@ -2073,7 +1992,7 @@ def test_every_decision_and_a_stale_refusal_emit_versioned_events(
 def test_incoming_source_facts_finds_the_deltas_exact_subject_and_field(
     session: Session, project: Project
 ) -> None:
-    rendition = _Rendition(session, project, "ucm-rev-cc.xlsx")
+    rendition = _rendition(session, project, "ucm-rev-cc.xlsx")
     wanted, _ = rendition.capture(fact_type="station_from", value="1200+00")
     rendition.capture(fact_type="station_to", value="1260+00", cell="B9")
     rendition.capture(
@@ -2096,7 +2015,7 @@ def test_every_structured_result_carries_what_a_reading_needs_to_refresh(
     re-reads on one of these never has to discard an unsaved selection.
     """
 
-    rendition = _Rendition(session, project, "ucm-rev-dd.xlsx")
+    rendition = _rendition(session, project, "ucm-rev-dd.xlsx")
     accepted_fact, _ = rendition.capture(fact_type="station_from", value="1149+00")
     baseline = _adopt(session, project, accepted_fact, f"adopt-{project.id}")
     incoming, segment = rendition.capture(
@@ -2200,7 +2119,7 @@ def test_every_structured_result_carries_what_a_reading_needs_to_refresh(
 def test_nothing_a_resolution_touches_is_ever_updated_or_deleted(
     session: Session, project: Project
 ) -> None:
-    rendition = _Rendition(session, project, "ucm-rev-ee.xlsx")
+    rendition = _rendition(session, project, "ucm-rev-ee.xlsx")
     incoming, segment = rendition.capture(
         fact_type="station_from", value="1200+00"
     )
@@ -2242,7 +2161,7 @@ def test_a_rejected_value_recurring_from_a_newer_source_is_a_new_open_delta(
 ) -> None:
     """Reject settles this occurrence; recurrence is #518's own lifecycle."""
 
-    rendition = _Rendition(session, project, "ucm-rev-ff.xlsx")
+    rendition = _rendition(session, project, "ucm-rev-ff.xlsx")
     accepted_fact, _ = rendition.capture(fact_type="station_from", value="1149+00")
     baseline = _adopt(session, project, accepted_fact, f"adopt-{project.id}")
     rejected = _delta(session, project, baseline_revision=baseline)

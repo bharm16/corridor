@@ -17,17 +17,15 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
-from hashlib import sha256
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import text
 
 from corridor.due_work import (
     HANDLER_REPORT_PREPARATION,
     DueWorkRefusal,
     ReportPreparationDeclaration,
-    configure_report_preparation,
+    configure_due_work,
     due_work_status,
     enqueue_due_work,
     run_due_work_once,
@@ -38,14 +36,9 @@ from corridor.delta_resolution import (
     resolve_delta,
 )
 from corridor.models import (
-    ActiveExtractionRun,
     DueWorkSchedule,
-    ExtractionRun,
-    Document,
     Fact,
-    FactSource,
     Project,
-    SourceSegment,
 )
 from corridor.principals import HumanPrincipal
 from corridor.proposed_deltas import (
@@ -56,15 +49,9 @@ from corridor.proposed_deltas import (
 )
 from corridor.support_assessments import FactProposition, record_support_assessment
 from corridor.report_preparation import execute_report_preparation
-from harness_support import as_record_decision_role
-
-
-class ControlledClock:
-    def __init__(self, value: datetime):
-        self.value = value
-
-    def now(self) -> datetime:
-        return self.value
+from clock_support import ControlledClock
+from harness_support import accepted_revision
+from source_capture_support import Rendition
 
 
 COORDINATOR = HumanPrincipal("local:coordinator")
@@ -78,66 +65,15 @@ def _supported_fact(session, project_id: int, subject: str, value: str):
     needs both to exist.
     """
 
-    document = Document(
-        project_id=project_id,
-        sha256=sha256(f"{project_id}:{subject}:{value}".encode()).hexdigest(),
-        filename=f"{subject}.xlsx",
-        doc_type="matrix",
-        numbering_scheme="project-unique",
-        pages=1,
-        parse_status="parsed",
-    )
-    session.add(document)
-    session.flush()
-    run = ExtractionRun(
-        document_id=document.id,
-        prompt_version="report_preparation_fixture_v1",
-        outcome="completed",
-        candidate_count=0,
-        page_errors=0,
-    )
-    session.add(run)
-    session.flush()
-    session.add(
-        ActiveExtractionRun(document_id=document.id, extraction_run_id=run.id)
-    )
-    segment = SourceSegment(
-        project_id=project_id,
-        document_id=document.id,
-        kind="spreadsheet_cell",
-        exact_text=value,
-        content_sha256=sha256(value.encode()).hexdigest(),
-        ordinal=1,
-        sheet_name="Utility Conflicts",
-        cell_range="A2",
-    )
-    session.add(segment)
-    session.flush()
-    fact = Fact(
-        project_id=project_id,
-        document_id=document.id,
-        extraction_run_id=run.id,
-        fact_type="station_from",
-        subject_kind="source_row",
+    rendition = Rendition(
+        session,
+        session.get_one(Project, project_id),
+        f"{subject}.xlsx",
         subject_key=subject,
-        text_value=value,
-        transformation="trim_cell_text_v1",
-        recorded_by="extractor:report_preparation_fixture_v1",
-        content_sha256=sha256(f"{subject}:{value}".encode()).hexdigest(),
     )
-    session.add(fact)
-    session.flush()
-    session.add(
-        FactSource(
-            project_id=project_id,
-            document_id=document.id,
-            fact_id=fact.id,
-            source_segment_id=segment.id,
-            role="value_source",
-            ordinal=1,
-        )
+    fact, segment = rendition.capture(
+        fact_type="station_from", value=value, cell="A2"
     )
-    session.flush()
     assessment = record_support_assessment(
         session,
         project_id=project_id,
@@ -186,26 +122,6 @@ def _reject(session, project_id: int, delta, at):
     return outcome
 
 
-def _accepted_revision(session, project_id: int, key: str) -> int:
-    """One Project Record revision, written as the record-decision role.
-
-    The Adopt Baseline importer that will write this in production is #509; the
-    reading only needs the revision its counts are stated against to exist.
-    """
-
-    with as_record_decision_role(session):
-        revision_id = session.scalar(
-            text(
-                "insert into project_record_revisions ("
-                "project_id, command_type, human_principal, idempotency_key"
-                ") values (:project_id, 'adopt_baseline', 'local:adopter', :key)"
-                " returning id"
-            ),
-            {"project_id": project_id, "key": key},
-        )
-    return int(revision_id)
-
-
 def _delta(session, project_id, subject, value, revision):
     (delta,) = create_proposed_delta_group(
         session,
@@ -237,11 +153,11 @@ def _seed_project(factory, now, *, with_revision=True):
         setup.add(project)
         setup.flush([project])
         revision = (
-            _accepted_revision(setup, project.id, f"adopt-{project.id}")
+            accepted_revision(setup, project.id, key=f"adopt-{project.id}")
             if with_revision
             else 0
         )
-        schedule = configure_report_preparation(
+        schedule = configure_due_work(
             setup,
             ReportPreparationDeclaration.released_weekly(
                 project_id=project.id,
@@ -444,8 +360,8 @@ def test_gate7_refuses_an_hourly_change_summary_reading(runtime_database):
             starts_at=now,
         )
         with pytest.raises(DueWorkRefusal, match="weekly UTC latest-only"):
-            configure_report_preparation(setup, replace(base, cadence="hourly"), now=now)
+            configure_due_work(setup, replace(base, cadence="hourly"), now=now)
         with pytest.raises(DueWorkRefusal, match="resource declaration is invalid"):
-            configure_report_preparation(
+            configure_due_work(
                 setup, replace(base, model_token_budget=1), now=now
             )

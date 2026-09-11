@@ -17,15 +17,26 @@ direction check, never the guard.
 
 Where the unit is a name rather than a count the comparison is containment: a
 name may leave and a name may not join, and the failure says which one joined
-rather than showing a total going up. A module split does add a name, so it
-fails here too -- as the two named lines it is, reviewed as one.
+rather than showing a total going up.
+
+Moving an existing reading into its own module adds a name without adding a
+dependency, and containment cannot tell that from a new dependency. That is
+the one case `assert_reviewed_relocations` below answers, and it answers it
+with evidence rather than with an allowlist: a named implementation at the
+merge base, a named implementation now, and the classes that moved between
+them. It authorizes exactly the pairs it can prove, the caller subtracts those
+from both sides of its own comparison, and `assert_ratchet` itself is as
+strict as it ever was.
 """
 
 from __future__ import annotations
 
 import ast
+from collections.abc import Collection, Mapping, Sequence
+from dataclasses import dataclass
 import os
 from pathlib import Path
+import re
 import subprocess
 from typing import Any, Callable
 
@@ -174,3 +185,267 @@ def assert_ratchet(
         "base. This number may fall and may never rise; lower the cause "
         "instead of raising the record"
     )
+
+
+# A card or pull request, written the way the rest of the repository writes
+# one. The reason a relocation is allowed lives there and is read by a person;
+# a declaration that names nowhere is not reviewed, it is just shorter.
+_CARD = re.compile(r"#\d+|https://\S+")
+
+
+@dataclass(frozen=True, slots=True)
+class Relocation:
+    """One reviewed extraction: these reads, serving this screen, moved here.
+
+    Every field narrows the permission to a single act. The two readings are
+    named implementations, not modules, so the claim is "this function's reads
+    are that function's now" and never "this new module may consume whatever
+    that old one did". `models` is exactly what moved. `card` is where the move
+    is explained.
+    """
+
+    source: str
+    source_reading: str
+    destination: str
+    destination_reading: str
+    models: tuple[str, ...]
+    card: str
+
+    def __str__(self) -> str:
+        return (
+            f"{self.source}.{self.source_reading} -> "
+            f"{self.destination}.{self.destination_reading} ({self.card})"
+        )
+
+
+def _module_file(source_root: str, module: str) -> str:
+    return f"{source_root}/{module.replace('.', '/')}.py"
+
+
+def _working_tree(path: Path) -> str | None:
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+
+
+def _executed(node: ast.AST):
+    """Every node the tree runs: all of it but the annotations, which do not.
+
+    `annotation` and `returns` are the two fields a type is written in, on
+    `arg`, on `AnnAssign` and on the function itself. Everything else --
+    decorators, defaults, the body -- runs.
+    """
+
+    yield node
+    for field, value in ast.iter_fields(node):
+        if field in ("annotation", "returns"):
+            continue
+        for child in value if isinstance(value, list) else (value,):
+            if isinstance(child, ast.AST):
+                yield from _executed(child)
+
+
+def _named_in(
+    source: str | None, reading: str, models: Collection[str]
+) -> tuple[int, frozenset[str], frozenset[str]]:
+    """One implementation's legacy classes: how many, which named, which run.
+
+    Scoped to the named function deliberately. The question a relocation asks
+    is what *that implementation* did, and a class named somewhere else in a
+    7k-line route module is not an answer to it. Both forms the legacy census
+    counts are read: the class itself in scope, and `models.X` off the imported
+    schema package.
+
+    Two answers, because a relocation asks two different questions of one
+    function. Whether the dependency was ever this implementation's is answered
+    by an argument's type as much as by a query, so the second value is
+    everything it names. Whether it still runs here is not, because an
+    annotation never ran, so the third value leaves them out -- which is how a
+    stub can delegate its whole implementation and still type what it is handed.
+    """
+
+    if source is None:
+        return 0, frozenset(), frozenset()
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return 0, frozenset(), frozenset()
+    wanted = set(models)
+    definitions = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name == reading
+    ]
+    legacy = lambda nodes: frozenset(
+        node.id if isinstance(node, ast.Name) else node.attr
+        for node in nodes
+        if (isinstance(node, ast.Name) and node.id in wanted)
+        or (
+            isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "models"
+            and node.attr in wanted
+        )
+    )
+    named: set[str] = set()
+    runs: set[str] = set()
+    for definition in definitions:
+        named |= legacy(ast.walk(definition))
+        runs |= legacy(_executed(definition))
+    return len(definitions), frozenset(named), frozenset(runs)
+
+
+def assert_reviewed_relocations(
+    relocations: Sequence[Relocation],
+    *,
+    consumers: Mapping[str, Sequence[str]],
+    source_root: str,
+    repository: Path = REPO_ROOT,
+) -> frozenset[tuple[str, str]]:
+    """The `(class, module)` pairs a reviewed extraction may add, and no others.
+
+    `assert_ratchet` refuses every name that joined since the merge base, which
+    is right for a new dependency and wrong for a move: lifting one screen's
+    reading out of a route module adds the destination to the consumer census
+    while the repository depends on nothing it did not already depend on. This
+    is the only way a name joins. It is not an exception list -- a declaration
+    buys nothing on its own, and neither does recording the destination in the
+    census; each `Relocation` has to survive four checks against the actual
+    merge base:
+
+    * **the dependency existed.** At the merge base, `source_reading` itself
+      named those classes -- in its own body or its own signature, an argument
+      it was handed being as much its dependency as a query it ran. An import
+      elsewhere in the source module is not evidence about this reading.
+    * **the reading landed.** `destination_reading` names them now.
+    * **it did not stay.** `source_reading` no longer *runs* any of them in the
+      working tree, whether it delegates or is gone; two executable copies are
+      a new consumer, not a move. An argument it still types is not a second
+      copy, and other uses of the same classes elsewhere in the source module
+      are none of this rule's business and are left alone.
+    * **the destination took nothing else.** Its whole legacy surface is the
+      reviewed extraction, so a module that already consumes a legacy class
+      cannot be a destination.
+
+    None of that says the reading still *means* what it meant. This reads
+    imported and referenced class names; it cannot see project scoping,
+    filters, ordering, missing-data behavior, or where authorization is
+    applied. That the read's contract survived is established by code review
+    and by focused behavior tests, and this guard is no evidence about it
+    whatsoever.
+
+    The permission is spent by the merge that uses it. At the next merge base
+    the source reading no longer holds the dependency, so the first check stops
+    passing and the declaration has to be deleted; from then on the destination
+    is an ordinary consumer, counted like every other. None of this is
+    progress: ADR-0081 stage 4 exits when no reader imports a legacy table
+    module, and a relocation leaves the census one name longer than it found
+    it. The census goes on reporting that.
+
+    Without a base ref there is no evidence to check and no direction check to
+    authorize, so this returns no pairs, exactly as `assert_ratchet` stops
+    comparing.
+    """
+
+    base = _merge_base(repository)
+    if base is None:
+        return frozenset()
+
+    legacy = set(consumers)
+    authorized: set[tuple[str, str]] = set()
+    transferred: dict[str, set[str]] = {}
+    moved: set[tuple[str, str]] = set()
+    for relocation in relocations:
+        assert _CARD.fullmatch(relocation.card), (
+            f"{relocation}: name the card or pull request the move is "
+            "explained in"
+        )
+        models = relocation.models
+        assert models and list(models) == sorted(set(models)), (
+            f"{relocation}: names the classes it transfers, sorted and once"
+        )
+        unknown = sorted(set(models) - legacy)
+        assert not unknown, (
+            f"{relocation}: {', '.join(unknown)} is not a legacy class this "
+            "census tracks"
+        )
+        reading = (relocation.source, relocation.source_reading)
+        assert reading not in moved, (
+            f"{relocation}: {relocation.source}.{relocation.source_reading} is "
+            "already declared relocated. One reading moves once, to one "
+            "destination; a spent declaration is not reusable"
+        )
+        moved.add(reading)
+
+        defined, before, _ = _named_in(
+            _git(
+                repository,
+                "show",
+                f"{base}:{_module_file(source_root, relocation.source)}",
+            ),
+            relocation.source_reading,
+            legacy,
+        )
+        assert defined == 1, (
+            f"{relocation}: {relocation.source} does not define exactly one "
+            f"{relocation.source_reading} at the merge base. A relocation "
+            "moves a reading that was there to move"
+        )
+        missing = sorted(set(models) - before)
+        assert not missing, (
+            f"{relocation}: at the merge base {relocation.source}."
+            f"{relocation.source_reading} does not name {', '.join(missing)}. "
+            f"An import elsewhere in {relocation.source} is not evidence about "
+            "this reading, and a relocation that has already landed is spent "
+            "-- delete the declaration"
+        )
+
+        defined, after, _ = _named_in(
+            _working_tree(
+                repository / _module_file(source_root, relocation.destination)
+            ),
+            relocation.destination_reading,
+            legacy,
+        )
+        assert defined == 1, (
+            f"{relocation}: {relocation.destination} does not define exactly "
+            f"one {relocation.destination_reading}"
+        )
+        absent = sorted(set(models) - after)
+        assert not absent, (
+            f"{relocation}: {relocation.destination}."
+            f"{relocation.destination_reading} does not name "
+            f"{', '.join(absent)}; the reading has to land in the "
+            "implementation the declaration names"
+        )
+
+        _, _, running = _named_in(
+            _working_tree(
+                repository / _module_file(source_root, relocation.source)
+            ),
+            relocation.source_reading,
+            legacy,
+        )
+        kept = sorted(running & set(models))
+        assert not kept, (
+            f"{relocation}: {relocation.source}.{relocation.source_reading} "
+            f"still reads {', '.join(kept)}. The relocated reading is gone or "
+            "delegating; two executable copies are a new consumer, not a move"
+        )
+
+        transferred.setdefault(relocation.destination, set()).update(models)
+        authorized.update((model, relocation.destination) for model in models)
+
+    for destination, approved in sorted(transferred.items()):
+        measured = {
+            model for model, modules in consumers.items() if destination in modules
+        }
+        assert measured == approved, (
+            f"{destination} consumes {', '.join(sorted(measured)) or 'nothing'} "
+            f"and the reviewed relocation transfers {', '.join(sorted(approved))}"
+            ". A relocation destination's whole legacy surface is the reads it "
+            "was approved to receive"
+        )
+    return frozenset(authorized)

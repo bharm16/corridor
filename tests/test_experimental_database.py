@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -16,18 +15,13 @@ from corridor.experimental_database import (
     experimental_session,
     require_experimental_database,
 )
-from corridor.m8_acceptance_database import provision_disposable_postgres
 from corridor.extraction_runs import record_extraction_run
 from corridor.models import Candidate, DocPage, Document, Project
 
 
 @pytest.fixture(scope="module")
-def disposable_database():
-    with provision_disposable_postgres(
-        settings.database_url,
-        repo_root=Path(__file__).resolve().parents[1],
-        label="experimental_guard",
-    ) as database:
+def disposable_database(provision_isolated_database):
+    with provision_isolated_database("experimental_guard") as database:
         yield database
 
 

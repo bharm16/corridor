@@ -23,14 +23,12 @@ from corridor.extraction_runs import (
 )
 from corridor.exceptions import evaluate as evaluate_exceptions
 from corridor.ledger import mark_satisfies
-from spine_support import delete_project_spine, project_spine_counts
+from committed_scenario_support import delete_committed_project
 
 from corridor.models import (
-    ActiveExtractionRun,
     Assertion,
     AuditLog,
     Candidate,
-    Dependency,
     DependencyEvidenceSufficiency,
     DocPage,
     Document,
@@ -38,12 +36,8 @@ from corridor.models import (
     ExternalOrg,
     ExtractionRun,
     OperativeSupport,
-    OrganizationIdentityActivation,
-    OrganizationIdentityReceipt,
     Project,
     ReconfirmationReceipt,
-    RevisionComparisonFinding,
-    RevisionComparisonRun,
 )
 from corridor.operative_support import designate_publication_support
 from corridor.principals import HumanPrincipal
@@ -445,131 +439,14 @@ def _prepare_terminal_revision(session, scenario, first):
 def _delete_committed_review_project(project_id: int) -> None:
     """Remove the committed rows used by the two-Session regression."""
 
+    delete_committed_project(project_id, session_factory=Session)
+    # The registry is global, not project-scoped: leaving the committed
+    # organization behind pollutes other files' registry-wide reads on the
+    # same guarded worker database (duplicate-name seeds, org counts, and
+    # deterministic resolution). Its dependencies are already gone above.
     with Session() as cleanup:
-        # These production receipts are deliberately append-only. The test
-        # commits only so a genuinely independent Session can observe the
-        # state. This transaction-local Postgres setting permits deletion of
-        # this exact synthetic project, then restores automatically at commit
-        # or rollback; it never weakens the schema for another Session.
-        cleanup.execute(text("set local session_replication_role = replica"))
-        document_ids = tuple(
-            cleanup.scalars(
-                select(Document.id).where(Document.project_id == project_id)
-            ).all()
-        )
-        dependency_ids = tuple(
-            cleanup.scalars(
-                select(Dependency.id).where(Dependency.project_id == project_id)
-            ).all()
-        )
-        candidate_ids = tuple(
-            cleanup.scalars(
-                select(Candidate.id).where(Candidate.project_id == project_id)
-            ).all()
-        )
-        comparison_ids = tuple(
-            cleanup.scalars(
-                select(RevisionComparisonRun.id).where(
-                    RevisionComparisonRun.project_id == project_id
-                )
-            ).all()
-        )
-
-        cleanup.execute(
-            delete(ReconfirmationReceipt).where(
-                ReconfirmationReceipt.dependency_id.in_(dependency_ids)
-            )
-        )
-        cleanup.execute(
-            delete(AuditLog).where(
-                AuditLog.entity_type == "dependency",
-                AuditLog.entity_id.in_(dependency_ids),
-            )
-        )
-        cleanup.execute(
-            delete(AuditLog).where(
-                AuditLog.entity_type == "candidate",
-                AuditLog.entity_id.in_(candidate_ids),
-            )
-        )
-        cleanup.execute(
-            delete(OperativeSupport).where(
-                OperativeSupport.dependency_id.in_(dependency_ids)
-            )
-        )
-        cleanup.execute(
-            delete(Assertion).where(Assertion.dependency_id.in_(dependency_ids))
-        )
-        cleanup.execute(
-            delete(EvidenceLink).where(
-                EvidenceLink.dependency_id.in_(dependency_ids)
-            )
-        )
-        cleanup.execute(
-            delete(RevisionComparisonFinding).where(
-                RevisionComparisonFinding.revision_comparison_run_id.in_(
-                    comparison_ids
-                )
-            )
-        )
-        cleanup.execute(
-            delete(RevisionComparisonRun).where(
-                RevisionComparisonRun.id.in_(comparison_ids)
-            )
-        )
-        # #345's acceptance path now records organization-identity provenance;
-        # these are project-scoped, so remove them with the rest of the project.
-        cleanup.execute(
-            delete(OrganizationIdentityReceipt).where(
-                OrganizationIdentityReceipt.project_id == project_id
-            )
-        )
-        cleanup.execute(
-            delete(OrganizationIdentityActivation).where(
-                OrganizationIdentityActivation.project_id == project_id
-            )
-        )
-        cleanup.execute(
-            delete(Candidate).where(Candidate.project_id == project_id)
-        )
-        cleanup.execute(
-            delete(Dependency).where(Dependency.project_id == project_id)
-        )
-        cleanup.execute(
-            delete(ActiveExtractionRun).where(
-                ActiveExtractionRun.document_id.in_(document_ids)
-            )
-        )
-        cleanup.execute(
-            delete(ExtractionRun).where(
-                ExtractionRun.document_id.in_(document_ids)
-            )
-        )
-        cleanup.execute(
-            update(Document)
-            .where(Document.project_id == project_id)
-            .values(
-                superseded_by=None,
-                superseded_on=None,
-                supersession_source_document_id=None,
-                supersession_source_page=None,
-            )
-        )
-        cleanup.execute(
-            delete(DocPage).where(DocPage.document_id.in_(document_ids))
-        )
-        cleanup.execute(delete(Document).where(Document.project_id == project_id))
-        delete_project_spine(cleanup, project_id)
-        cleanup.execute(delete(Project).where(Project.id == project_id))
-        # The registry is global, not project-scoped: leaving the committed
-        # organization behind pollutes other files' registry-wide reads on the
-        # same guarded worker database (duplicate-name seeds, org counts, and
-        # deterministic resolution). Its dependencies are already gone above.
         cleanup.execute(delete(ExternalOrg).where(ExternalOrg.name == "AT&T"))
         cleanup.commit()
-    with Session() as check:
-        leaked = project_spine_counts(check, project_id)
-        assert all(count == 0 for count in leaked.values()), leaked
 
 
 def test_registry_work_exists_before_extraction_or_comparison(session):

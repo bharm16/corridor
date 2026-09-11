@@ -17,14 +17,7 @@ from sqlalchemy import select
 from corridor.due_work_cli import main
 from corridor.models import DueWorkSchedule, Project
 from corridor.object_storage import LocalFilesystemStore
-
-
-class ControlledClock:
-    def __init__(self, value):
-        self.value = value
-
-    def now(self):
-        return self.value
+from clock_support import ControlledClock
 
 
 def _configure_argv(project_slug: str) -> list[str]:

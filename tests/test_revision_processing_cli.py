@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from datetime import date
-import json
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -30,6 +29,7 @@ from corridor.revision_comparison import (
 )
 from corridor.revision_processing_cli import main
 from corridor.supersession import SupersessionDeclaration, register_supersessions
+from cli_support import json_output
 
 
 REVIEWER = HumanPrincipal("local:revision-reviewer")
@@ -84,12 +84,6 @@ class _SessionFactory:
                 return False
 
         return Context()
-
-
-def _json_output(capsys) -> dict:
-    captured = capsys.readouterr()
-    assert captured.err == ""
-    return json.loads(captured.out)
 
 
 def _document(
@@ -277,7 +271,7 @@ def test_revision_process_cli_runs_exact_pair_and_reports_compact_json(session, 
         == 0
     )
 
-    payload = _json_output(capsys)
+    payload = json_output(capsys)
     assert payload == {
         "abstentions": {
             "count": 0,
@@ -317,9 +311,9 @@ def test_revision_process_cli_retry_reports_the_same_comparison(session, capsys)
     ]
 
     assert main(argv, session_factory=_OpenSession(session)) == 0
-    first = _json_output(capsys)
+    first = json_output(capsys)
     assert main(argv, session_factory=_OpenSession(session)) == 0
-    retried = _json_output(capsys)
+    retried = json_output(capsys)
 
     assert retried["comparison"] == first["comparison"]
     assert [
@@ -348,7 +342,7 @@ def test_revision_process_cli_runs_released_policy_without_project_authorization
         == 0
     )
 
-    payload = _json_output(capsys)
+    payload = json_output(capsys)
     assert payload["carried_count"] == 1
     assert payload["abstentions"] == {
         "count": 0,

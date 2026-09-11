@@ -24,19 +24,14 @@ from sqlalchemy.pool import NullPool
 
 from corridor.config import settings
 from corridor.models import (
-    ActiveExtractionRun,
     Candidate,
-    Document,
     ExtractedProposal,
     ExtractedProposalFact,
-    ExtractionRun,
-    Fact,
-    FactSource,
     Project,
-    SourceSegment,
     SupportAssessment,
     SupportAssessmentSource,
 )
+from source_capture_support import Rendition
 from corridor.principals import HumanPrincipal, InvalidHumanPrincipal
 from corridor.support_assessments import (
     ExtractedProposalProposition,
@@ -60,64 +55,21 @@ POLICY = ReleasedPolicy("structured-cell-support-v1", "ruleset-2026-09")
 def _rendition(session, project, name, values, prompt_version="support_fixture_v1"):
     """One document, one run, one segment and one Fact per value, one proposal."""
 
-    document = Document(
-        project_id=project.id,
-        sha256=sha256(name.encode()).hexdigest(),
-        filename=name,
-        doc_type="matrix",
-        numbering_scheme="project-unique",
-        pages=1,
-        parse_status="parsed",
-    )
-    session.add(document)
-    session.flush()
-    run = ExtractionRun(
-        document_id=document.id,
+    rendition = Rendition(
+        session,
+        project,
+        name,
+        document_sha256=sha256(name.encode()).hexdigest(),
         prompt_version=prompt_version,
-        outcome="completed",
-        candidate_count=0,
-        page_errors=0,
     )
-    session.add(run)
-    session.flush()
-    session.add(ActiveExtractionRun(document_id=document.id, extraction_run_id=run.id))
+    document, run = rendition.document, rendition.run
     segments, facts = [], []
     for ordinal, (cell, value) in enumerate(values, start=1):
-        segment = SourceSegment(
-            project_id=project.id,
-            document_id=document.id,
-            kind="spreadsheet_cell",
-            exact_text=value,
-            content_sha256=sha256(value.encode()).hexdigest(),
-            ordinal=ordinal,
-            sheet_name="Utility Conflicts",
-            cell_range=cell,
-        )
-        session.add(segment)
-        session.flush()
-        fact = Fact(
-            project_id=project.id,
-            document_id=document.id,
-            extraction_run_id=run.id,
+        fact, segment = rendition.capture(
             fact_type="utility_id",
-            subject_kind="source_row",
+            value=value,
             subject_key=f"Utility Conflicts!{ordinal + 1}",
-            text_value=value,
-            transformation="trim_cell_text_v1",
-            recorded_by=f"extractor:{prompt_version}",
-            content_sha256=sha256(f"{name}:{value}".encode()).hexdigest(),
-        )
-        session.add(fact)
-        session.flush()
-        session.add(
-            FactSource(
-                project_id=project.id,
-                document_id=document.id,
-                fact_id=fact.id,
-                source_segment_id=segment.id,
-                role="value_source",
-                ordinal=1,
-            )
+            cell=cell,
         )
         segments.append(segment)
         facts.append(fact)

@@ -51,18 +51,11 @@ from corridor.source_delivery import (
     record_checkpoint_advance,
     record_delivery,
 )
+from clock_support import ControlledClock
 
 
 TEST_CONNECTOR = "test-fixture-v1"
 SOURCE_URL = "https://example.test/shared/index"
-
-
-class ControlledClock:
-    def __init__(self, value: datetime):
-        self.value = value
-
-    def now(self) -> datetime:
-        return self.value
 
 
 class RecordingConnector:

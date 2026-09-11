@@ -9,7 +9,7 @@ from sqlalchemy import select
 
 from corridor import access
 from corridor.extraction_runs import record_extraction_run
-from corridor.due_work import ProjectProcessingDeclaration, configure_project_processing
+from corridor.due_work import ProjectProcessingDeclaration, configure_due_work
 from corridor.models import ActiveRunDeclaration, Document, Project
 from corridor.principals import HumanPrincipal
 from access_support import seed_membership
@@ -140,7 +140,7 @@ def test_operations_screen_shows_only_a_retained_gate7_processing_schedule(
         extractor_identity="deployed-matrix-v1",
         starts_at=datetime(2026, 8, 30, tzinfo=timezone.utc),
     )
-    configure_project_processing(
+    configure_due_work(
         session, declaration, now=datetime(2026, 8, 30, tzinfo=timezone.utc)
     )
 

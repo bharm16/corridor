@@ -93,7 +93,7 @@ from corridor.release_candidate import (
 )
 from corridor.report_preparation import AUTHORIZED_PACKAGE_COMPARISON
 
-from harness_support import as_record_decision_role
+from harness_support import accepted_revision
 from coverage_support import declare_coverage
 from later_revision_support import BASELINE_ROWS, adopt, workbook_bytes
 from packet_review_support import (
@@ -635,15 +635,13 @@ def test_the_profile_term_is_not_the_whole_staleness_contract(
     _, _, candidate = _prepare(session, adopted, store)
     assert candidate_is_stale(session, candidate, as_of=CUTOFF) == ()
 
-    with as_record_decision_role(session):
-        session.execute(
-            text(
-                "insert into project_record_revisions (project_id, command_type, "
-                "human_principal, idempotency_key) values (:project, 'test', "
-                "'local:coordinator', :key)"
-            ),
-            {"project": adopted.project.id, "key": f"later-{uuid4().hex[:8]}"},
-        )
+    accepted_revision(
+        session,
+        adopted.project.id,
+        command_type="test",
+        principal="local:coordinator",
+        key=f"later-{uuid4().hex[:8]}",
+    )
 
     reasons = candidate_is_stale(session, candidate, as_of=CUTOFF)
     assert any("accepted record moved" in reason for reason in reasons)
@@ -997,15 +995,13 @@ def test_an_accepted_record_that_moved_while_rendering_attaches_no_candidate(
         bound, template_bytes=adopted.template_bytes, session=session, store=store
     )
 
-    with as_record_decision_role(session):
-        session.execute(
-            text(
-                "insert into project_record_revisions (project_id, command_type, "
-                "human_principal, idempotency_key) values (:project, 'test', "
-                "'local:coordinator', :key)"
-            ),
-            {"project": adopted.project.id, "key": f"moved-{uuid4().hex[:8]}"},
-        )
+    accepted_revision(
+        session,
+        adopted.project.id,
+        command_type="test",
+        principal="local:coordinator",
+        key=f"moved-{uuid4().hex[:8]}",
+    )
 
     with pytest.raises(PreparationRefused) as refused:
         attach_candidate(
@@ -1541,7 +1537,6 @@ def _open_delta(session, adopted):
         fact_type="committed_date",
         value="2026-06-01",
         subject_key=subject(3),
-        date_value=date(2026, 6, 1),
     )
     return append_deltas(
         session,

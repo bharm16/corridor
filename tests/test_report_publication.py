@@ -22,7 +22,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import DBAPIError, IntegrityError
 
-from harness_support import as_record_decision_role
+from harness_support import accepted_revision
 from access_support import seed_membership
 from corridor.config import settings
 from corridor.db import Session, engine
@@ -31,7 +31,7 @@ from corridor.due_work import (
     HANDLER_REPORT_PUBLICATION,
     HandlerContract,
     ReportPublicationDeclaration,
-    configure_report_publication,
+    configure_due_work,
     due_work_status,
     enqueue_due_work,
     run_due_work_once,
@@ -44,7 +44,6 @@ from corridor.models import (
     ExternalReportArtifact,
     ExternalReportRelease,
     Project,
-    ProjectRecordRevision,
     ReleasePackage,
     ReportRun,
     ScheduledReportPublication,
@@ -77,17 +76,10 @@ from test_release_authorization import (
     configure as configure_issued_set,
     prepare as prepare_candidate,
 )
+from clock_support import ControlledClock
 
 
 RELEASER = HumanPrincipal("local:publication-releaser")
-
-
-class ControlledClock:
-    def __init__(self, value: datetime):
-        self.value = value
-
-    def now(self) -> datetime:
-        return self.value
 
 
 def _fake_pdf(html: str) -> bytes:
@@ -184,7 +176,7 @@ def _configure(session, project_id: int, now: datetime, **overrides):
     )
     if overrides:
         declaration = replace(declaration, **overrides)
-    return configure_report_publication(session, declaration, now=now)
+    return configure_due_work(session, declaration, now=now)
 
 
 def _scheduled_project(factory, now: datetime, *, released_on=None, **overrides):
@@ -755,16 +747,13 @@ def _seed_accepted_revision(session, project_id: int, key: str) -> int:
     """
 
     session.flush()
-    with as_record_decision_role(session):
-        revision = ProjectRecordRevision(
-            project_id=project_id,
-            command_type="record_verbal_statement",
-            human_principal="local:publication-reviewer",
-            idempotency_key=key,
-        )
-        session.add(revision)
-        session.flush()
-    return revision.id
+    return accepted_revision(
+        session,
+        project_id,
+        command_type="record_verbal_statement",
+        principal="local:publication-reviewer",
+        key=key,
+    )
 
 
 def test_a_retained_reading_names_the_accepted_revision_it_stands_on(

@@ -21,7 +21,7 @@ from corridor.due_work import (
     HANDLER_RETENTION_SWEEP,
     DueWorkRefusal,
     RetentionSweepDeclaration,
-    configure_retention_sweep,
+    configure_due_work,
     due_work_status,
     enqueue_due_work,
     run_due_work_once,
@@ -35,18 +35,11 @@ from corridor.models import (
 )
 from corridor.principals import HumanPrincipal
 from corridor.retention import open_reference, place_hold
+from clock_support import ControlledClock
 
 
 OPERATOR = HumanPrincipal("local:retention-operator")
 NOW = datetime(2026, 9, 3, 7, 0, tzinfo=timezone.utc)
-
-
-class ControlledClock:
-    def __init__(self, value: datetime):
-        self.value = value
-
-    def now(self) -> datetime:
-        return self.value
 
 
 def _project_with_due_content(session, *, due=True, slug_prefix="retention-sweep"):
@@ -103,7 +96,7 @@ def _project_with_due_content(session, *, due=True, slug_prefix="retention-sweep
 def _seed(factory, *, due=True):
     with factory() as setup:
         project, request = _project_with_due_content(setup, due=due)
-        configure_retention_sweep(
+        configure_due_work(
             setup,
             RetentionSweepDeclaration.released_weekly(
                 project_id=project.id,
@@ -265,12 +258,12 @@ def test_gate7_refuses_a_sweep_that_names_no_human_authority(runtime_database):
             starts_at=NOW,
         )
         with pytest.raises(DueWorkRefusal, match="human principal"):
-            configure_retention_sweep(
+            configure_due_work(
                 setup, replace(base, authorized_by="local:system"), now=NOW
             )
         with pytest.raises(DueWorkRefusal, match="human principal"):
-            configure_retention_sweep(
+            configure_due_work(
                 setup, replace(base, authorized_by="operations"), now=NOW
             )
         with pytest.raises(DueWorkRefusal, match="weekly UTC latest-only"):
-            configure_retention_sweep(setup, replace(base, cadence="hourly"), now=NOW)
+            configure_due_work(setup, replace(base, cadence="hourly"), now=NOW)

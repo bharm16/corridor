@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 
 import pytest
 from sqlalchemy import select
@@ -27,6 +26,7 @@ from corridor.event_admission_acceptance_cli import main
 from corridor.migrations.policy import SUPPORTED_FROM_REVISION
 from corridor.models import Project
 from corridor import policy
+from cli_support import json_output
 
 
 class _OpenSession:
@@ -44,12 +44,6 @@ class _OpenSession:
                 return False
 
         return Context()
-
-
-def _json_output(capsys) -> dict:
-    captured = capsys.readouterr()
-    assert captured.err == ""
-    return json.loads(captured.out)
 
 
 @pytest.fixture
@@ -164,7 +158,7 @@ def test_replay_reports_passing_proof_separately_from_suspension_veto(
         )
         == 0
     )
-    payload = _json_output(capsys)
+    payload = json_output(capsys)
     assert payload["status"] == "passed"
     assert payload["activated"] is False
     assert payload["receipt_id"] == 41
@@ -197,7 +191,7 @@ def test_status_reports_suspension_and_permitted_operations(session, project, ca
         )
         == 0
     )
-    payload = _json_output(capsys)
+    payload = json_output(capsys)
 
     assert payload["status"] == "suspended"
     assert payload["proof_status"] == "passed_current"
@@ -240,7 +234,7 @@ def test_lift_requires_a_human_principal_and_reactivates(session, project, capsy
         )
         == 0
     )
-    payload = _json_output(capsys)
+    payload = json_output(capsys)
 
     assert payload["command"] == "lift"
     assert payload["policy_version"] == UNKNOWN_SCOPE_POLICY_VERSION
@@ -307,7 +301,7 @@ def test_suspend_refuses_machine_identity_then_records_the_human_act(
         )
         == 0
     )
-    payload = _json_output(capsys)
+    payload = json_output(capsys)
     assert payload["command"] == "suspend"
     assert payload["recorded_by"] == "local:operations"
 
@@ -328,7 +322,7 @@ def test_status_reports_failed_newest_proof(session, project, capsys):
         )
         == 0
     )
-    payload = _json_output(capsys)
+    payload = json_output(capsys)
 
     assert payload["status"] == "failed_newest_proof"
     assert payload["latest_receipt"]["id"] == receipt.id

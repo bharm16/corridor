@@ -51,7 +51,7 @@ from corridor.proposed_deltas import (
     record_delta_deferral,
 )
 from corridor.source_append import SegmentValues, append_source_segments
-from harness_support import as_record_decision_role
+from harness_support import accepted_revision
 
 
 BASELINE_DIGEST = hashlib.sha256(b"ucm-baseline.xlsx").hexdigest()
@@ -83,17 +83,9 @@ def adopt(session, project, **overrides) -> BaselineAdoption:
 def _revision(session, project_id: int, key: str) -> ProjectRecordRevision:
     """One Project Record revision, written as the record-decision role."""
 
-    with as_record_decision_role(session):
-        revision_id = session.scalar(
-            text(
-                "insert into project_record_revisions ("
-                "project_id, command_type, human_principal, idempotency_key"
-                ") values (:project_id, 'adopt_baseline', 'local:adopter', :key)"
-                " returning id"
-            ),
-            {"project_id": project_id, "key": key},
-        )
-    return session.get_one(ProjectRecordRevision, int(revision_id))
+    return session.get_one(
+        ProjectRecordRevision, accepted_revision(session, project_id, key=key)
+    )
 
 
 # --- The mode is derived from an immutable receipt ------------------------
