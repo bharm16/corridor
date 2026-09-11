@@ -135,6 +135,20 @@ def other_reading(rows):
     return [row.label for row in rows]
 '''
 
+# The same reading after it stops consuming `Candidate` at all -- the state a
+# staged legacy retirement actually reaches, and the one a spent declaration
+# must not be able to reverse.
+_VIEW_WITHOUT_CANDIDATE = '''from corridor.models import Dependency
+
+
+def statement_reading(session, project):
+    return session.query(Dependency).filter(Dependency.project == project).all()
+
+
+def other_reading(rows):
+    return [row.label for row in rows]
+'''
+
 # A stub that delegates its whole implementation and goes on typing what it is
 # handed. The reading left; the signature did not, and a signature never read
 # anything.
@@ -210,11 +224,31 @@ def _census(consumers) -> str:
     ) + "}\n"
 
 
+def _declarations(relocations) -> str:
+    """The declaration constant as source, so a commit can hold it.
+
+    The mechanism reads its own constant out of the merge base, so a test that
+    hands it Python objects proves nothing about the lifecycle. Writing them is
+    what lets a declaration be *older* than the change under test.
+    """
+
+    return "RELOCATIONS = (\n" + "".join(
+        f"    Relocation(source={r.source!r}, source_reading={r.source_reading!r}, "
+        f"destination={r.destination!r}, destination_reading={r.destination_reading!r}, "
+        f"models={tuple(r.models)!r}, card={r.card!r}),\n"
+        for r in relocations
+    ) + ")\n"
+
+
 def _extraction(tmp_path, monkeypatch):
     """A repository whose merge base holds the screen's reading in `web.app`."""
     root = tmp_path / "repository"
     root.mkdir()
-    _write(root, {"census.py": _census(_BEFORE), "src/web/app.py": _APP_BEFORE})
+    _write(root, {
+        "census.py": _census(_BEFORE),
+        "relocations.py": _declarations(()),
+        "src/web/app.py": _APP_BEFORE,
+    })
     _run(root, "init", "-q", "-b", "main")
     _run(root, "config", "user.email", "guard@example.invalid")
     _run(root, "config", "user.name", "Guard")
@@ -247,11 +281,12 @@ def _census_holds(root, consumers, relocations):
     pairs = lambda listed: {
         (name, module) for name, modules in listed.items() for module in modules
     }
+    _write(root, {"relocations.py": _declarations(relocations)})
     relocated = assert_reviewed_relocations(
         relocations,
         consumers=consumers,
         source_root="src",
-        census="census.py:CONSUMERS",
+        declared="relocations.py:RELOCATIONS",
         repository=root,
     )
     assert_ratchet(
@@ -371,45 +406,91 @@ def test_one_reading_moves_once_and_a_spent_declaration_is_not_reusable(tmp_path
         _census_holds(root, consumers, (_MOVED, reused))
 
 
-def test_a_relocation_that_has_landed_is_spent_and_its_declaration_has_to_go(tmp_path, monkeypatch):
-    """The permission does not survive the merge that used it.
+def test_a_landed_declaration_is_historical_and_authorizes_nothing(tmp_path, monkeypatch):
+    """The permission is spent, and spending it is not an error.
 
-    Once the extraction is what the merge base holds, the destination is an
-    ordinary consumer the census counts like any other, and the declaration is
-    refused on that alone. The source reading has also stopped carrying the
-    dependency here -- it was deleted outright -- but that is not what spends
-    the permission, because a source left as a delegating stub would go on
-    satisfying every check that reads it.
+    Once the extraction is what the merge base holds, the declaration is
+    historical: it authorizes nothing, because the destination stands in the
+    recorded census on its own, and it does not fail, because the question this
+    guard answers is whether *this change* introduces an unauthorized
+    dependency. An earlier version refused a landed declaration, which made the
+    branch that introduced it go red the moment it merged.
     """
     root = _extraction(tmp_path, monkeypatch)
     _moved(root, _AFTER)
+    _write(root, {"relocations.py": _declarations((_MOVED,))})
     _commit(root, "extract the screen's reading")
     _run(root, "branch", "-qf", "main", "HEAD")
 
+    # Still declared, and green: no follow-up pull request is owed.
+    _census_holds(root, _AFTER, (_MOVED,))
+    # Deleting it later is equally fine -- it was authorizing nothing.
     _census_holds(root, _AFTER, ())
-    with pytest.raises(AssertionError, match="already consumes"):
-        _census_holds(root, _AFTER, (_MOVED,))
 
 
-def test_a_landed_relocation_is_spent_even_when_its_source_stayed_as_a_stub(
+def test_a_landed_declaration_is_historical_even_when_its_source_stayed_a_stub(
     tmp_path, monkeypatch
 ):
-    """The permission expires on the census, not on what the source became.
+    """Whatever the extraction left behind, the declaration is judged by its age.
 
-    Every check that reads `source_reading` goes on passing forever when the
-    extraction leaves a delegating stub behind: the annotation it still types
-    counts as naming the dependency, and an annotation never counts as running
-    one. Evidence and not-still-executing are both satisfied by the same line,
-    so a stub would hold the declaration open indefinitely. What spends it is
-    the destination joining the recorded census, which no stub can undo.
+    Every check that reads `source_reading` is satisfied forever by a delegating
+    stub -- the annotation it still types counts as naming the dependency and
+    never counts as running it -- so nothing that reads the source can decide
+    whether a declaration is historical. Its presence at the merge base can.
     """
     root = _extraction(tmp_path, monkeypatch)
     _moved(root, _AFTER, app=_APP_DELEGATING)
+    _write(root, {"relocations.py": _declarations((_MOVED,))})
     _commit(root, "extract the screen's reading, leaving a delegating stub")
     _run(root, "branch", "-qf", "main", "HEAD")
 
-    _census_holds(root, _AFTER, ())
-    with pytest.raises(AssertionError, match="already consumes"):
+    _census_holds(root, _AFTER, (_MOVED,))
+
+
+def test_a_landed_declaration_may_not_be_edited_to_authorize_more(tmp_path, monkeypatch):
+    """Broadening a spent authorization is a new relocation in old clothes."""
+    root = _extraction(tmp_path, monkeypatch)
+    _moved(root, _AFTER)
+    _write(root, {"relocations.py": _declarations((_MOVED,))})
+    _commit(root, "extract the screen's reading")
+    _run(root, "branch", "-qf", "main", "HEAD")
+
+    widened = replace(
+        _MOVED, models=("Candidate", "CommitmentLineage", "Dependency")
+    )
+    with pytest.raises(AssertionError, match="is not editable"):
+        _census_holds(root, _AFTER, (widened,))
+
+
+def test_a_landed_declaration_cannot_authorize_reintroducing_what_was_removed(
+    tmp_path, monkeypatch
+):
+    """The whole lifecycle, in the order it actually happens.
+
+    main -> declared extraction -> merged -> the dependency later removed ->
+    someone reintroduces it while the old declaration is still sitting there.
+    The last step must fail: a historical declaration authorizes nothing, so the
+    pair it once covered is an ordinary new consumer now.
+    """
+    root = _extraction(tmp_path, monkeypatch)
+    _moved(root, _AFTER)
+    _write(root, {"relocations.py": _declarations((_MOVED,))})
+    _commit(root, "extract the screen's reading")
+    _run(root, "branch", "-qf", "main", "HEAD")
+
+    # The reading later stops consuming the class altogether.
+    without = {
+        name: tuple(m for m in modules if m != "web.statement_view")
+        for name, modules in _AFTER.items()
+    }
+    _moved(root, without, app=_APP_DELEGATING, view=_VIEW_WITHOUT_CANDIDATE)
+    _census_holds(root, without, (_MOVED,))
+    _commit(root, "the reading stops consuming Candidate")
+    _run(root, "branch", "-qf", "main", "HEAD")
+
+    # And someone puts it back, with the spent declaration still in the file.
+    _moved(root, _AFTER)
+    with pytest.raises(AssertionError, match="joined since the merge base"):
         _census_holds(root, _AFTER, (_MOVED,))
 
 
