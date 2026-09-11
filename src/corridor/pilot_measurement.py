@@ -5,6 +5,19 @@ packets would quietly discard every interruption nobody answered. This reader
 starts from presentations and retains their exact children through a declared
 period close. It never writes a workflow, decision, record, or release.
 
+**An interruption is a presentation, not a property** (#887). The reader used
+to ask the *first* ``packet_surfacing`` record for its consequence level and
+treat that one answer as what the packet was. A level is derived per reading
+from the issue content configured at that cutoff (``consequence_levels``), so a
+packet shown as informational on Monday and at "Must handle before this issue"
+on Wednesday was recorded as never having interrupted anybody -- the same
+survivorship the child retention above exists to prevent, arriving through the
+other door. ``INTERRUPTING_CONSEQUENCE_LEVEL`` and the packet's
+``interrupting_presentation`` pin the operational rule instead: a packet is
+interrupting for a period when that period retains at least one presentation
+record that declared it at that heading, whatever it was shown as before or
+after, and however many times it was shown.
+
 Periods and sampling observations are declared analytical inputs, not product
 authority. Missing timing, cost, capture or cohort evidence stays unavailable.
 The report is input to #424 and #498; a fixture proves the software and cannot
@@ -23,10 +36,17 @@ import math
 from corridor import digests
 from corridor.analytics import AnalyticsBinding, AnalyticsEvent, EventFamily
 from corridor.measurement_collection import TIME_CATEGORIES, select_sampling_observations
+from corridor.pilot_observations import TriageOccurrence
 from corridor.project_portfolio import NO_ACTION
 
 
 REPORT_VERSION = "pilot-measurement-v1"
+
+# ADR-0085's "Must handle before this issue", spelled as
+# `consequence_levels.MUST_HANDLE` spells it and pinned against it by
+# `tests/test_pilot_measurement.py`. Named here rather than imported so this
+# analytical reader stays clear of the ORM subtree a level is derived through.
+INTERRUPTING_CONSEQUENCE_LEVEL = "must_handle_before_issue"
 
 
 @dataclass(frozen=True)
@@ -184,13 +204,16 @@ def _period_report(period: MeasurementPeriod, events: list[AnalyticsEvent]) -> d
         for child in packet_children:
             child["latency_seconds"] = _latencies(child, shown, history)
             child["material_field"] = child["target_field"] in period.material_fields
+        interruptions = [e for e in presentations
+                         if e.payload.get("consequence_level") == INTERRUPTING_CONSEQUENCE_LEVEL]
         packets.append({
             "item_key": key, "surfaced_at": shown.occurred_at.isoformat(),
             "event_id": shown.event_id, "child_ids": child_ids,
             "presentation_event_ids": [e.event_id for e in presentations],
             "opened": bool(opened),
             "outcomes": sorted({c["outcome"] for c in packet_children}) or ["ignored/open"],
-            "interrupting": shown.payload.get("consequence_level") == "must_handle_before_issue",
+            "interrupting": bool(interruptions),
+            "interrupting_presentation": _interruption(interruptions[0]) if interruptions else None,
         })
         children.extend(packet_children)
     arrivals = _source_events(relevant, EventFamily.SOURCE_ARRIVAL)
@@ -240,6 +263,25 @@ def _period_report(period: MeasurementPeriod, events: list[AnalyticsEvent]) -> d
         "time_saved_minutes": None,
         "time_saved_reason": "#424 needs matched partner work and complete recorded time; no savings inferred",
     }
+
+
+def _interruption(event: AnalyticsEvent) -> dict[str, Any]:
+    """The declared presentation that made this packet an interruption.
+
+    ``evidence_reference`` is `TriageOccurrence.identity` built from the
+    presentation record itself, so the denominator names the same occurrence a
+    contemporaneous judgment names (#846) and the two reconcile without either
+    being derived from the other.
+    """
+
+    occurrence = TriageOccurrence(
+        item_key=event.payload.get("item_key"),
+        cutoff=event.payload.get("cutoff"),
+        consequence_level=event.payload.get("consequence_level"),
+        consequence_rule_version=event.payload.get("consequence_rule_version"),
+    )
+    return {"event_id": event.event_id, "presented_at": event.occurred_at.isoformat(),
+            "evidence_reference": occurrence.identity}
 
 
 _OUTCOMES = {
