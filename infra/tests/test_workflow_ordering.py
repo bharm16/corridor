@@ -12,12 +12,26 @@ ordering is easy to break with an innocuous-looking edit.
 from __future__ import annotations
 
 import pathlib
+import re
 import subprocess
 
 import pytest
 import yaml
 
+from scripts import container_entrypoint
+
 WORKFLOWS = pathlib.Path(__file__).parents[2] / ".github" / "workflows"
+DEPLOYMENT_VALIDATOR = WORKFLOWS.parent / "scripts" / "validate-deployment-config.sh"
+
+# A configuration the validator accepts, so a test may vary one field at a
+# time. The sender's domain is part of the hostname, which keeps the SES
+# warning quiet.
+VALID_DEPLOYMENT_CONFIG = {
+    "CERTIFICATE_ARN": "arn:aws:acm:us-east-2:111111111111:certificate/00000000-0000-0000-0000-000000000000",
+    "PUBLIC_HOSTNAME": "pilot.example.com", "SIGN_IN_SENDER": "signin@example.com",
+    "CUSTOMER_ID": "synthetic-a", "CUSTOMER_ENVIRONMENT_ID": "synthetic-nonproduction",
+    "DEPLOYMENT_ID": "corridor-nonproduction", "DATA_CLASS": "synthetic",
+}
 
 # Anything that resolves or fetches a dependency.
 INSTALLERS = (
@@ -359,15 +373,46 @@ def test_a_release_failure_after_drain_keeps_both_services_stopped_for_recovery(
 
 @pytest.mark.parametrize("missing", ["CUSTOMER_ID", "CUSTOMER_ENVIRONMENT_ID", "DEPLOYMENT_ID", "DATA_CLASS"])
 def test_deployment_configuration_requires_an_explicit_synthetic_binding(missing):
-    env = {
-        "CERTIFICATE_ARN": "arn:aws:acm:us-east-2:111111111111:certificate/00000000-0000-0000-0000-000000000000",
-        "PUBLIC_HOSTNAME": "pilot.example.com", "SIGN_IN_SENDER": "signin@example.com",
-        "CUSTOMER_ID": "synthetic-a", "CUSTOMER_ENVIRONMENT_ID": "synthetic-nonproduction",
-        "DEPLOYMENT_ID": "corridor-nonproduction", "DATA_CLASS": "synthetic",
-    }
-    script = WORKFLOWS.parent / "scripts" / "validate-deployment-config.sh"
-    accepted = subprocess.run(["bash", str(script)], env=env, capture_output=True, text=True, check=False)
+    env = dict(VALID_DEPLOYMENT_CONFIG)
+    accepted = subprocess.run(
+        ["bash", str(DEPLOYMENT_VALIDATOR)], env=env, capture_output=True, text=True, check=False
+    )
     assert accepted.returncode == 0, accepted.stdout
     env.pop(missing)
-    refused = subprocess.run(["bash", str(script)], env=env, capture_output=True, text=True, check=False)
+    refused = subprocess.run(
+        ["bash", str(DEPLOYMENT_VALIDATOR)], env=env, capture_output=True, text=True, check=False
+    )
     assert refused.returncode != 0
+
+
+# Values that discriminate the bounded-identifier rule: which of them is
+# acceptable is decided by the pattern, not by this list.
+IDENTIFIER_CASES = (
+    "a", "A0", "synthetic-a", "corridor-nonproduction", "x_y.z:w/v", "a" * 128,
+    "", "-leading-hyphen", "_leading-underscore", ".leading-dot", "has space",
+    "semi;colon", "dollar$sign", "a" * 129, "caf\u00e9",
+)
+
+
+@pytest.mark.parametrize("candidate", IDENTIFIER_CASES)
+def test_the_deployment_validator_applies_the_identifier_rule_the_container_applies(candidate):
+    """The shell copy of the rule is verified by running it.
+
+    ``corridor.control_plane.identifier`` owns the rule, the container
+    entrypoint keeps a paired copy, and this script keeps a third as an ERE
+    because it runs before ``uv sync`` and before any AWS credential exists.
+    A shell copy cannot be compared to a Python pattern by equality, so it is
+    compared by verdict: every case below has to be accepted or refused by both.
+    """
+    expected = bool(re.fullmatch(container_entrypoint.STABLE_IDENTIFIER_PATTERN, candidate))
+
+    result = subprocess.run(
+        ["bash", str(DEPLOYMENT_VALIDATOR)],
+        env={**VALID_DEPLOYMENT_CONFIG, "CUSTOMER_ID": candidate},
+        capture_output=True, text=True, check=False,
+    )
+
+    assert (result.returncode == 0) is expected, (
+        f"the validator and the entrypoint disagree about {candidate!r}: "
+        f"{result.stdout}{result.stderr}"
+    )

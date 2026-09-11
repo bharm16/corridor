@@ -30,9 +30,18 @@ class RouteRefused(ValueError):
     """The customer environment cannot be established without guessing."""
 
 
+# What a customer id, customer environment id or deployment id may be. Written
+# out here once: the CDK stack refuses the same shape at synthesis, the
+# container entrypoint refuses it at start-up and the pre-credential shell
+# validator refuses it before a deploy, and none of those three may import this
+# module. They keep their own copies and their tests assert equality with this
+# one, the way the migration role names are paired.
+STABLE_IDENTIFIER_PATTERN = r"[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}"
+
+
 def identifier(value: str) -> str:
     if not isinstance(value, str) or not re.fullmatch(
-        r"[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}", value
+        STABLE_IDENTIFIER_PATTERN, value
     ):
         raise ValueError("a bounded stable identifier is required")
     return value

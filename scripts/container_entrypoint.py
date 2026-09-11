@@ -21,6 +21,14 @@ a URL pointing somewhere else entirely.
 Every connection requires TLS against the bundled RDS trust store. `verify-full`
 rather than `require`, because `require` encrypts without authenticating the
 server and so does not stop an interception.
+
+What the container consumes is declared here as data. The task definition
+supplies it, `corridor.config.Settings` must not claim the entrypoint-only
+names as settings of its own, and the infrastructure assertions check both --
+so all three were reasoning about one contract from their own copies of it,
+and two copies of the same list in the same test file had already diverged.
+`ENTRYPOINT_INPUTS` and `SETTINGS_COLLISIONS` are that contract; nothing here
+imports outside the standard library, so any of those callers can read it.
 """
 
 from __future__ import annotations
@@ -59,11 +67,64 @@ IDENTITY_INPUTS = (
     "CORRIDOR_CUSTOMER_ID", "CORRIDOR_CUSTOMER_ENVIRONMENT_ID", "CORRIDOR_DEPLOYMENT_ID",
 )
 
+# The connection parts each database arrives in. Named rather than spelled at
+# the call site so ENTRYPOINT_INPUTS below is the same list the composing
+# functions read.
+CUSTOMER_DB_INPUTS = ("CORRIDOR_DB_HOST", "CORRIDOR_DB_PORT", "CORRIDOR_DB_NAME")
+CONTROL_DB_INPUTS = (
+    "CORRIDOR_CONTROL_DB_HOST", "CORRIDOR_CONTROL_DB_PORT", "CORRIDOR_CONTROL_DB_NAME",
+)
+
 # The migration creates the two runtime logins and reads their passwords to set
 # them, so it is the one role that legitimately holds all three credentials.
 KEEP_FOR_MIGRATION = frozenset(
     {"CORRIDOR_WEB_DB_PASSWORD", "CORRIDOR_WORKER_DB_PASSWORD"}
 )
+
+# The same rule `corridor.control_plane.identifier` applies to a customer,
+# customer-environment or deployment identifier. This module may not import
+# `corridor` (see `tests/test_vocabulary_owners.py`), so it keeps its own copy
+# and that file asserts the copy still equals the owner's.
+STABLE_IDENTIFIER_PATTERN = r"[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}"
+
+
+def control_credential_inputs(capability: str) -> tuple[str, str]:
+    """The username and password variables that control-plane login arrives in."""
+
+    prefix = f"CORRIDOR_CONTROL_{capability.upper()}_DB"
+    return f"{prefix}_USERNAME", f"{prefix}_PASSWORD"
+
+
+# Every name this script reads from the container's environment, derived from
+# the tables above so a fourth role or control-plane capability cannot be added
+# without appearing here.
+ENTRYPOINT_INPUTS = frozenset({
+    "CORRIDOR_TASK_ROLE",
+    "CORRIDOR_MIGRATION_MODE",
+    "CORRIDOR_ENVIRONMENT",
+    "CORRIDOR_DB_SSLMODE",
+    "CORRIDOR_DB_ADMIN_USERNAME",
+    "CORRIDOR_CUSTOMER_ROUTING_KEY",
+    *CUSTOMER_DB_INPUTS,
+    *CONTROL_DB_INPUTS,
+    *IDENTITY_INPUTS,
+    *(password for _, password, _ in ROLES.values()),
+    *(name for capability in CONTROL_ROLES for name in control_credential_inputs(capability)),
+})
+
+# The inputs `corridor.config.Settings` reads too, deliberately: the deployment
+# identity the application records, the signing key it verifies sessions with,
+# the environment it reports, and the two runtime passwords the migration sets
+# the logins to. Every *other* member of ENTRYPOINT_INPUTS is consumed here and
+# never reaches Settings, so a collision means one of them has quietly become a
+# setting and the container is composing a URL from a name the application also
+# reads.
+SETTINGS_COLLISIONS = frozenset({
+    "CORRIDOR_ENVIRONMENT",
+    "CORRIDOR_CUSTOMER_ROUTING_KEY",
+    *IDENTITY_INPUTS,
+    *KEEP_FOR_MIGRATION,
+})
 
 
 class EntrypointError(RuntimeError):
@@ -87,9 +148,7 @@ def compose_url(env: dict[str, str], role: str) -> str:
     fixed_login, password_var, _ = ROLES[role]
     login = fixed_login or _require(env, "CORRIDOR_DB_ADMIN_USERNAME")
     password = _require(env, password_var)
-    host = _require(env, "CORRIDOR_DB_HOST")
-    port = _require(env, "CORRIDOR_DB_PORT")
-    name = _require(env, "CORRIDOR_DB_NAME")
+    host, port, name = (_require(env, part) for part in CUSTOMER_DB_INPUTS)
 
     return _database_url(env, login, password, host, port, name)
 
@@ -99,12 +158,10 @@ def compose_control_url(env: dict[str, str], capability: str) -> str:
 
     if capability not in CONTROL_ROLES:
         raise EntrypointError("unknown control-plane capability")
-    prefix = f"CORRIDOR_CONTROL_{capability.upper()}_DB"
+    username_var, password_var = control_credential_inputs(capability)
     return _database_url(
-        env, _require(env, f"{prefix}_USERNAME"), _require(env, f"{prefix}_PASSWORD"),
-        _require(env, "CORRIDOR_CONTROL_DB_HOST"),
-        _require(env, "CORRIDOR_CONTROL_DB_PORT"),
-        _require(env, "CORRIDOR_CONTROL_DB_NAME"),
+        env, _require(env, username_var), _require(env, password_var),
+        *(_require(env, part) for part in CONTROL_DB_INPUTS),
     )
 
 
@@ -174,7 +231,7 @@ def prepare_environment(env: dict[str, str], role: str) -> dict[str, str]:
     deployed = env.get("CORRIDOR_ENVIRONMENT", "development") not in LOCAL_ENVIRONMENTS
     if control_configured or deployed or mode == "operations":
         for name in IDENTITY_INPUTS:
-            if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}", _require(env, name)):
+            if not re.fullmatch(STABLE_IDENTIFIER_PATTERN, _require(env, name)):
                 raise EntrypointError(f"{name} must be a stable bounded identifier")
         capabilities = (
             ("operations",) if mode == "operations"
@@ -191,8 +248,8 @@ def prepare_environment(env: dict[str, str], role: str) -> dict[str, str]:
         if password_var in prepared and password_var not in keep:
             del prepared[password_var]
     for capability in CONTROL_ROLES:
-        for suffix in ("USERNAME", "PASSWORD"):
-            prepared.pop(f"CORRIDOR_CONTROL_{capability.upper()}_DB_{suffix}", None)
+        for name in control_credential_inputs(capability):
+            prepared.pop(name, None)
     prepared.pop("CORRIDOR_DB_ADMIN_USERNAME", None)
     if role != "web":
         prepared.pop("CORRIDOR_CUSTOMER_ROUTING_KEY", None)

@@ -57,6 +57,13 @@ from .network_stack import (
     CORRIDOR_VPC_CIDR,
 )
 
+# The rule `corridor.control_plane.identifier` owns, restated because this
+# project deliberately excludes the application's dependencies. The synthesis
+# guard below and the container entrypoint's start-up guard must refuse the
+# same shapes, so `infra/tests/test_stacks.py` asserts this copy equals the
+# entrypoint's, which `tests/test_vocabulary_owners.py` pins to the owner.
+STABLE_IDENTIFIER_PATTERN = r"[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}"
+
 
 class CorridorApplicationStack(Stack):
     def __init__(
@@ -124,7 +131,7 @@ class CorridorApplicationStack(Stack):
             ("customerId", customer_id), ("customerEnvironmentId", customer_environment_id),
             ("deploymentId", deployment_id),
         ):
-            if not value or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}", value):
+            if not value or not re.fullmatch(STABLE_IDENTIFIER_PATTERN, value):
                 raise ValueError(f"corridor:{name} must be an explicit stable identifier")
 
         if not image_tag or image_tag == "bootstrap":
