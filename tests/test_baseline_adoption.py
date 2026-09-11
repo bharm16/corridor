@@ -72,9 +72,9 @@ from corridor.operating_mode import (
     project_operating_mode,
 )
 from corridor.principals import HumanPrincipal
-from record_counts import nothing_written, project_record_counts
 from corridor.source_intake import validate_and_stage
 from corridor.support_assessments import FactProposition, current_support_assessments
+from record_counts import nothing_written, project_record_counts
 
 
 PRINCIPAL = HumanPrincipal("local:coordinator")
@@ -1271,5 +1271,3 @@ def test_the_adopted_baseline_cannot_be_written_around_the_command(
     assert adopted_baseline_source(session, project.id).customer == (
         "Lone Star Transit Authority"
     )
-
-
