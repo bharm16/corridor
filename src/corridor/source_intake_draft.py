@@ -75,6 +75,7 @@ from corridor.models import (
     SpendAuthorization,
 )
 from corridor.principals import HumanPrincipal, require_human_principal
+from corridor.prompt_library import installed_prompt, require_installed_prompt
 from corridor.spend_authorization import (
     RETENTION_POLICY,
     declare_spend_authorization,
@@ -84,9 +85,6 @@ from corridor_pdf_reader.execution import PdfiumExecutor
 
 
 PROMPT_VERSION = "source_intake_draft_v1"
-PROMPT = (
-    Path(__file__).resolve().parents[2] / "prompts" / "source_intake_draft_v1.md"
-)
 TOOL_CONTRACT_VERSION = "source-intake-draft-input-v1"
 VALIDATOR_VERSION = "source-intake-draft-validator-v1"
 
@@ -190,6 +188,8 @@ PROPOSALS_SCHEMA: dict = {
     },
 }
 
+PROMPT = installed_prompt(PROMPT_VERSION, schema=PROPOSALS_SCHEMA)
+
 
 class ConfigurationRequired(ValueError):
     """No declared, complete server configuration permits a model request."""
@@ -272,10 +272,9 @@ def declare_configuration(
         raise InvalidDraftConfiguration(
             "every intake-draft configuration field must be declared"
         )
-    if prompt_version != PROMPT_VERSION:
-        raise InvalidDraftConfiguration(
-            "the configured prompt is not the installed intake-draft prompt"
-        )
+    require_installed_prompt(
+        prompt_version, installed=PROMPT, error=InvalidDraftConfiguration, family="intake-draft"
+    )
     authorization = declare_spend_authorization(
         session,
         project_id=project_id,
@@ -863,9 +862,8 @@ def request_intake_draft(
         BoundedExplanationPlan(
             configuration=configuration,
             client_factory=client_factory,
-            system_prompt=PROMPT.read_text(),
+            prompt=PROMPT,
             user_message=_user_message(prepared),
-            schema=PROPOSALS_SCHEMA,
             is_current=lambda: _read_fingerprint(session, project_id, staged)
             == prepared.read_fingerprint,
             stale_reason=(

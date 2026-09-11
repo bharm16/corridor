@@ -26,7 +26,6 @@ source-wide trace, no chain of thought, no claim of human decision authorship.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Callable, Iterable, Sequence
 from uuid import uuid4
 
@@ -55,6 +54,7 @@ from corridor.models import (
     SpendAuthorization,
 )
 from corridor.principals import HumanPrincipal, require_human_principal
+from corridor.prompt_library import installed_prompt, require_installed_prompt
 from corridor.spend_authorization import (
     RETENTION_POLICY,
     declare_spend_authorization,
@@ -62,11 +62,6 @@ from corridor.spend_authorization import (
 
 
 PROMPT_VERSION = "production_run_explanation_v1"
-PROMPT = (
-    Path(__file__).resolve().parents[2]
-    / "prompts"
-    / "production_run_explanation_v1.md"
-)
 TOOL_CONTRACT_VERSION = "production-run-explanation-input-v1"
 VALIDATOR_VERSION = "production-run-explanation-validator-v1"
 
@@ -176,6 +171,8 @@ EXPLANATION_SCHEMA: dict = {
     },
 }
 
+PROMPT = installed_prompt(PROMPT_VERSION, schema=EXPLANATION_SCHEMA)
+
 
 class ConfigurationRequired(ValueError):
     """No declared, complete server configuration permits a model request."""
@@ -242,10 +239,9 @@ def declare_configuration(
         raise InvalidExplanationConfiguration(
             "every run-explanation configuration field must be declared"
         )
-    if prompt_version != PROMPT_VERSION:
-        raise InvalidExplanationConfiguration(
-            "the configured prompt is not the installed run-explanation prompt"
-        )
+    require_installed_prompt(
+        prompt_version, installed=PROMPT, error=InvalidExplanationConfiguration, family="run-explanation"
+    )
     authorization = declare_spend_authorization(
         session,
         project_id=project_id,
@@ -769,9 +765,8 @@ def request_run_explanation(
         BoundedExplanationPlan(
             configuration=configuration,
             client_factory=client_factory,
-            system_prompt=PROMPT.read_text(),
+            prompt=PROMPT,
             user_message=_user_message(prepared),
-            schema=EXPLANATION_SCHEMA,
             is_current=lambda: _read_fingerprint(
                 session,
                 document_id,

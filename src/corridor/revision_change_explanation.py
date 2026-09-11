@@ -37,7 +37,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
-from pathlib import Path
 from typing import Callable
 
 from uuid import uuid4
@@ -60,6 +59,7 @@ from corridor.models import (
     SpendAuthorization,
 )
 from corridor.principals import HumanPrincipal, require_human_principal
+from corridor.prompt_library import installed_prompt, require_installed_prompt
 from corridor.spend_authorization import (
     RETENTION_POLICY,
     declare_spend_authorization,
@@ -77,11 +77,6 @@ from corridor.support_update_routing import (
 
 
 PROMPT_VERSION = "revision_change_explanation_v1"
-PROMPT = (
-    Path(__file__).resolve().parents[2]
-    / "prompts"
-    / "revision_change_explanation_v1.md"
-)
 TOOL_CONTRACT_VERSION = "revision-change-explanation-input-v1"
 VALIDATOR_VERSION = "revision-change-explanation-validator-v1"
 
@@ -243,6 +238,8 @@ EXPLANATION_SCHEMA: dict = {
     },
 }
 
+PROMPT = installed_prompt(PROMPT_VERSION, schema=EXPLANATION_SCHEMA)
+
 
 class ConfigurationRequired(ValueError):
     """No declared, complete server configuration permits a model request."""
@@ -329,10 +326,9 @@ def declare_configuration(
         raise InvalidExplanationConfiguration(
             "every revision-change-explanation configuration field must be declared"
         )
-    if prompt_version != PROMPT_VERSION:
-        raise InvalidExplanationConfiguration(
-            "the configured prompt is not the installed revision-change prompt"
-        )
+    require_installed_prompt(
+        prompt_version, installed=PROMPT, error=InvalidExplanationConfiguration, family="revision-change"
+    )
     authorization = declare_spend_authorization(
         session,
         project_id=project_id,
@@ -843,9 +839,8 @@ def request_revision_change_explanation(
         BoundedExplanationPlan(
             configuration=configuration,
             client_factory=client_factory,
-            system_prompt=PROMPT.read_text(),
+            prompt=PROMPT,
             user_message=_user_message(prepared),
-            schema=EXPLANATION_SCHEMA,
             is_current=lambda: _still_current(session, prepared),
             stale_reason="the newer-document question changed during the request",
             validate=lambda result: validate_explanation(prepared, result),

@@ -20,14 +20,14 @@ Nothing here writes to the Ledger. Extractors produce Candidates only.
 from __future__ import annotations
 
 from collections.abc import Callable
-from pathlib import Path
 
 from corridor.candidates import dedupe_hint, propose
 from corridor.models import Candidate, DocPage, Document
+from corridor.prompt_library import installed_prompt
 from corridor.verify import quote_appears_on
 
 PROMPT_VERSION = "agreement_v3"
-PROMPT_PATH = Path("prompts/agreement_v3.md")
+PROMPT = installed_prompt(PROMPT_VERSION)
 
 # Below this there is nothing to read — a mostly-blank scan or a page of
 # furniture. Calling the model on it spends tokens to be told "no".
@@ -132,7 +132,7 @@ def main(
         doc_type="agreement",
         default_slug="nhhip-3c2",
         prompt_version=PROMPT_VERSION,
-        system=PROMPT_PATH.read_text(),
+        system=PROMPT.text,
         schema=SCHEMA,
         min_page_chars=MIN_PAGE_CHARS,
         to_candidate=_to_candidate,

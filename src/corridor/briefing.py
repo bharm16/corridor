@@ -35,7 +35,6 @@ from corridor.presentation import field_label
 
 from dataclasses import dataclass, field
 from datetime import date
-from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -60,6 +59,7 @@ from corridor.models import (
 )
 from corridor.project_reading import FrozenProjectReading, freeze_project_reading
 from corridor.presentation import label, provenance_label
+from corridor.prompt_library import installed_prompt
 from corridor.verify import quote_appears_on, threshold_for
 
 # Versioned like every extractor, and for the same reason (ADR-0003's
@@ -68,7 +68,6 @@ from corridor.verify import quote_appears_on, threshold_for
 # superseded successor rather than edited, because an overwritten prompt
 # cannot say what produced the output a reader is holding.
 PROMPT_VERSION = "briefing_v2"
-PROMPT = Path(__file__).resolve().parents[2] / "prompts" / "briefing_v2.md"
 
 SENTENCE_SCHEMA = {
     "type": "object",
@@ -92,6 +91,8 @@ SENTENCE_SCHEMA = {
         }
     },
 }
+
+PROMPT = installed_prompt(PROMPT_VERSION, schema=SENTENCE_SCHEMA)
 
 
 @dataclass(frozen=True)
@@ -268,7 +269,7 @@ def _brief(
         )
 
     result = client.complete(
-        system=PROMPT.read_text(),
+        system=PROMPT.text,
         user=_user_message(dependencies, citables, committed_dates, floor),
         schema=SENTENCE_SCHEMA,
     )

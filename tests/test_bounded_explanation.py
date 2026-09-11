@@ -1,6 +1,8 @@
 """Shared behavior for one bounded, non-authoritative explanation request."""
 
 from dataclasses import dataclass
+from hashlib import sha256
+from pathlib import Path
 
 import pytest
 
@@ -8,6 +10,7 @@ from corridor.bounded_explanation import (
     BoundedExplanationPlan,
     execute_bounded_explanation,
 )
+from corridor.prompt_library import Prompt
 
 from model_client_support import RecordedAdapter
 
@@ -32,13 +35,22 @@ class Client(RecordedAdapter):
         super().__init__(result, raises=error)
 
 
+def _prompt(text):
+    return Prompt(
+        version="bounded-explanation-test-v1",
+        path=Path("prompts/bounded_explanation_test_v1.md"),
+        data=text.encode(),
+        sha256=sha256(text.encode()).hexdigest(),
+        schema={"type": "object"},
+    )
+
+
 def _plan(client, *, is_current=lambda: True, validate=lambda value: (value, None)):
     return BoundedExplanationPlan(
         configuration=Configuration(max_input_tokens=100),
         client_factory=lambda _configuration: client,
-        system_prompt="system",
+        prompt=_prompt("system"),
         user_message="user",
-        schema={"type": "object"},
         is_current=is_current,
         stale_reason="the frozen input changed",
         validate=validate,
@@ -57,9 +69,8 @@ def test_input_budget_refuses_before_an_external_adapter_exists():
         BoundedExplanationPlan(
             configuration=Configuration(max_input_tokens=1),
             client_factory=client_factory,
-            system_prompt="system prompt that exceeds one token",
+            prompt=_prompt("system prompt that exceeds one token"),
             user_message="bounded input",
-            schema={"type": "object"},
             is_current=lambda: True,
             stale_reason="the frozen input changed",
             validate=lambda payload: (payload, None),
