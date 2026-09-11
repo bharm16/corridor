@@ -316,6 +316,7 @@ from corridor.organization_identity import (
 from corridor.work_decisions import (
     FOLLOW_UP_NEXT_ACTION_CHOICES,
     CoordinationSubject,
+    ExpectedNextAction,
     FollowUpPlanDraft,
     FollowUpPlanPredecessors,
     StaleFollowUpPlan,
@@ -5712,6 +5713,33 @@ def _optional_form_date(value: str) -> date | None:
         raise HTTPException(400, "a date field must be a valid date")
 
 
+EXPECTED_NEXT_ACTION_FIELD = "expected_next_action_decision_id"
+
+
+async def _stated_next_action(request: Request) -> ExpectedNextAction:
+    """Which Next Action this submission says its screen was showing.
+
+    A ``Form`` parameter cannot answer this. FastAPI reads an empty form value
+    as an absent one and substitutes the parameter's default, so a screen
+    reporting that it saw no Next Action and a body that never carried the
+    field at all arrive as the same ``None`` -- and ``None`` used to mean "do
+    not check", which closed or deferred whichever action happened to be
+    current. So the submission is read as it was sent.
+
+    Every screen that closes or defers renders the hidden field, empty when
+    the Constraint had no Next Action to show. A body without it did not come
+    from one and cannot say what its coordinator was looking at, which is a
+    malformed submission. An empty one came from a screen and says what it
+    saw: nothing. That answer is compared like any other.
+    """
+    submitted = (await request.form()).get(EXPECTED_NEXT_ACTION_FIELD)
+    if submitted is None:
+        raise HTTPException(
+            400, f"{EXPECTED_NEXT_ACTION_FIELD} must be submitted, even when empty"
+        )
+    return _optional_form_id(str(submitted))
+
+
 @app.post("/dependencies/{dependency_id}/action/{outcome}")
 def close_next_action(
     request: Request,
@@ -5724,7 +5752,7 @@ def close_next_action(
     successor_due_date: str = Form(""),
     successor_due_date_unknown_reason: str = Form(""),
     note: str = Form(""),
-    expected_next_action_decision_id: str = Form(""),
+    expected_next_action_decision_id: ExpectedNextAction = Depends(_stated_next_action),
     redirect_to: str = Form(""),
     principal: HumanPrincipal = Depends(get_human_principal),
     session: Session = Depends(get_session),
@@ -5750,9 +5778,7 @@ def close_next_action(
         ),
         no_follow_up_reason=no_follow_up_reason.strip() or None,
         note=note.strip() or None,
-        expected_next_action_decision_id=_optional_form_id(
-            expected_next_action_decision_id
-        ),
+        expected_next_action_decision_id=expected_next_action_decision_id,
         permitted_successor_actions=FOLLOW_UP_NEXT_ACTION_CHOICES,
     )
     try:
@@ -5784,7 +5810,7 @@ def defer_dependency_action(
     slug: str = Form(...),
     deferral_reason: str = Form(""),
     return_date: str = Form(""),
-    expected_next_action_decision_id: str = Form(""),
+    expected_next_action_decision_id: ExpectedNextAction = Depends(_stated_next_action),
     redirect_to: str = Form(""),
     principal: HumanPrincipal = Depends(get_human_principal),
     session: Session = Depends(get_session),
@@ -5810,9 +5836,7 @@ def defer_dependency_action(
             reason=deferral_reason.strip(),
             return_date=parsed_return_date,
             principal=principal,
-            expected_next_action_decision_id=_optional_form_id(
-                expected_next_action_decision_id
-            ),
+            expected_next_action_decision_id=expected_next_action_decision_id,
         )
     except StaleNextAction as exc:
         return _dependency_detail_response(

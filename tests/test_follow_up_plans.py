@@ -653,6 +653,147 @@ def test_the_constraint_page_refuses_a_free_text_successor(
     assert current_next_action_decision(session, dependency.id).id == action.id
 
 
+# --- what the screen said it saw, and whether it said anything at all --------
+
+
+def test_a_close_that_never_named_the_action_it_saw_is_refused_as_malformed(
+    session, project, dependency, roster_entry
+):
+    """A submission with no ``expected_next_action_decision_id`` field at all.
+
+    Every screen that closes an action renders that hidden field, empty when
+    it saw no Next Action, so a submission without it is not a screen of this
+    product. It used to read as "no expectation", which closed whatever action
+    happened to be current -- the exact thing the field exists to prevent.
+    """
+    save_follow_up_plan(session, _draft(dependency, roster_entry), principal=RECORDER)
+    action = current_next_action_decision(session, dependency.id)
+    try:
+        with _client(session) as client:
+            for outcome in ("complete", "cancel"):
+                refused = client.post(
+                    f"/dependencies/{dependency.id}/action/{outcome}",
+                    data={
+                        "slug": project.slug,
+                        "no_follow_up_reason": "no_immediate_follow_up",
+                        "cancellation_reason": "no_longer_needed",
+                    },
+                    follow_redirects=False,
+                )
+                assert refused.status_code == 400
+    finally:
+        _clear_overrides()
+    assert current_next_action_decision(session, dependency.id).id == action.id
+
+
+def test_a_close_that_saw_no_action_is_compared_against_the_one_that_appeared(
+    session, project, dependency, roster_entry
+):
+    """An empty field says the screen saw no Next Action, and that is checked.
+
+    A Constraint with no plan shows no action to close, so a coordinator who
+    submits from that screen after one has been recorded is as stale as one
+    whose action was replaced. Both used to close the new action instead.
+    """
+    save_follow_up_plan(session, _draft(dependency, roster_entry), principal=RECORDER)
+    action = current_next_action_decision(session, dependency.id)
+    try:
+        with _client(session) as client:
+            refused = client.post(
+                f"/dependencies/{dependency.id}/action/complete",
+                data={
+                    "slug": project.slug,
+                    "expected_next_action_decision_id": "",
+                    "no_follow_up_reason": "no_immediate_follow_up",
+                },
+                follow_redirects=False,
+            )
+            assert refused.status_code == 409
+    finally:
+        _clear_overrides()
+    assert current_next_action_decision(session, dependency.id).id == action.id
+
+
+def test_a_deferral_that_never_named_the_action_it_saw_is_refused_as_malformed(
+    session, project, dependency, roster_entry
+):
+    save_follow_up_plan(session, _draft(dependency, roster_entry), principal=RECORDER)
+    try:
+        with _client(session) as client:
+            refused = client.post(
+                f"/dependencies/{dependency.id}/defer",
+                data={
+                    "slug": project.slug,
+                    "deferral_reason": "waiting_for_information",
+                    "return_date": "2026-10-01",
+                },
+                follow_redirects=False,
+            )
+            assert refused.status_code == 400
+    finally:
+        _clear_overrides()
+    assert current_deferral_decision(session, dependency.id) is None
+
+
+def test_a_deferral_that_saw_no_action_is_recorded_while_there_is_still_none(
+    session, project, dependency
+):
+    """The legitimate empty field: a Constraint with no decision history yet.
+
+    Nothing has been planned, so the screen honestly saw no Next Action and
+    says so. That is not a malformed submission and must not be refused --
+    a deferral is a decision in its own right, not a step in a plan, and
+    refusing this would reject the first one on every Constraint.
+    """
+    assert current_next_action_decision(session, dependency.id) is None
+    try:
+        with _client(session) as client:
+            deferred = client.post(
+                f"/dependencies/{dependency.id}/defer",
+                data={
+                    "slug": project.slug,
+                    "expected_next_action_decision_id": "",
+                    "deferral_reason": "waiting_for_information",
+                    "return_date": "2026-10-01",
+                },
+                follow_redirects=False,
+            )
+            assert deferred.status_code == 303
+    finally:
+        _clear_overrides()
+    deferral = current_deferral_decision(session, dependency.id)
+    assert deferral.deferral_reason == "waiting_for_information"
+    assert deferral.deferral_return_date == date(2026, 10, 1)
+
+
+def test_a_deferral_that_saw_no_action_is_compared_against_the_one_that_appeared(
+    session, project, dependency, roster_entry
+):
+    """The same empty field, on a Constraint that now has an action.
+
+    The screen this came from no longer describes this Constraint, so the
+    deferral is as stale as one naming a replaced action. It used to be
+    recorded, because an unstated expectation and this one read alike.
+    """
+    save_follow_up_plan(session, _draft(dependency, roster_entry), principal=RECORDER)
+    try:
+        with _client(session) as client:
+            refused = client.post(
+                f"/dependencies/{dependency.id}/defer",
+                data={
+                    "slug": project.slug,
+                    "expected_next_action_decision_id": "",
+                    "deferral_reason": "waiting_for_external_party",
+                    "return_date": "2026-11-01",
+                },
+                follow_redirects=False,
+            )
+            assert refused.status_code == 409
+    finally:
+        _clear_overrides()
+    assert current_deferral_decision(session, dependency.id) is None
+
+
 def test_the_constraint_page_defers_with_a_reason_and_return_date(
     session, project, dependency, roster_entry
 ):

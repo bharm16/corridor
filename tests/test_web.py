@@ -2803,27 +2803,27 @@ def test_the_action_lifecycle_runs_from_the_record_view(session, client, project
     assert PLAN_ACTION in page
     assert "due 2026-09-01" in page
 
+    action = current_next_action_decision(session, dep.id)
+    close = {
+        "slug": project.slug,
+        "no_follow_up_reason": "return_condition_recorded",
+        # The record view renders this hidden field on every close, so the
+        # closure binds to the action the coordinator was looking at.
+        "expected_next_action_decision_id": str(action.id),
+    }
     done = client.post(
-        f"/dependencies/{dep.id}/action/complete",
-        data={
-            "slug": project.slug,
-            "no_follow_up_reason": "return_condition_recorded",
-        },
-        follow_redirects=False,
+        f"/dependencies/{dep.id}/action/complete", data=close, follow_redirects=False
     )
     assert done.status_code == 303
     page = client.get(f"/ledger/{project.slug}/{dep.id}").text
     assert "none recorded" in page
 
+    # Submitting the same close again names an action that is no longer the
+    # chain tail, so it refuses as stale rather than closing anything.
     again = client.post(
-        f"/dependencies/{dep.id}/action/complete",
-        data={
-            "slug": project.slug,
-            "no_follow_up_reason": "return_condition_recorded",
-        },
-        follow_redirects=False,
+        f"/dependencies/{dep.id}/action/complete", data=close, follow_redirects=False
     )
-    assert again.status_code == 400
+    assert again.status_code == 409
 
 
 # --- The rehearsal queue lane (#175) ----------------------------------------
