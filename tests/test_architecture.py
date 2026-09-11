@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import functools
 import hashlib
 import importlib.util
 import json
@@ -3885,6 +3886,113 @@ def test_every_frontend_receipt_route_is_a_route_the_application_serves():
         "these frontend receipt contracts name no route the application serves "
         "with one GET or POST method; remove them from "
         "corridor.frontend_request_receipts.ROUTE_CONTRACTS or restore the route"
+    )
+
+
+# --- The receipt registry, checked in both directions (#909) -----------------
+#
+# `record_frontend_request` raises when a route's name is not in
+# `ROUTE_CONTRACTS`, so a handler writing a receipt under an unregistered name
+# 500s on every request. The check above reads the registry against the router;
+# nothing read the *call sites*, and #837 built two routes that would both have
+# 500'd on first use. The scan below is the missing direction, and it reads the
+# application rather than one file's literals: `_project_workflow_response`
+# takes `route_name` as a parameter with a default, and seven routes write
+# their receipt through it, so a search for `route_name=` in `web/app.py` would
+# cover neither the default nor a future call site in another module.
+#
+# A name the scan cannot determine statically is a failure, never a call site
+# it drops: an unreadable registration is precisely the case where the 500
+# would still be waiting at runtime.
+
+
+@functools.lru_cache(maxsize=1)
+def _route_contracts_module():
+    """The guard, loaded once: it caches a scan the three checks below share."""
+
+    spec = importlib.util.spec_from_file_location(
+        "frontend_route_contracts", REPO_ROOT / "scripts" / "frontend_route_contracts.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_every_route_that_records_a_frontend_receipt_has_a_contract():
+    """A receipt written under an unregistered name is a 500, not a bad record.
+
+    `ROUTE_CONTRACTS.get(route_name)` returning `None` raises inside the
+    route's own transaction, so the whole request fails -- on every request,
+    for as long as the entry is missing. Nothing in `make check` said so, and
+    both halves of the failure were hit in one afternoon (#909).
+    """
+
+    from corridor.frontend_request_receipts import ROUTE_CONTRACTS
+
+    written, problems = _route_contracts_module().receipt_route_names()
+
+    assert problems == [], (
+        f"{problems}: a frontend receipt's route name cannot be read from the "
+        "source, so whether it has a contract cannot be decided here. Pass a "
+        "literal route name, or a parameter whose callers pass literals"
+    )
+    unregistered = sorted(
+        f"{name} (written at {', '.join(written[name])})"
+        for name in set(written) - set(ROUTE_CONTRACTS)
+    )
+    assert unregistered == [], (
+        f"{unregistered}: these routes record a Product Proving receipt and "
+        "have no entry in corridor.frontend_request_receipts.ROUTE_CONTRACTS, "
+        "so every request to them raises. Add the route and the statuses it "
+        "may return, then run `make route-contracts`"
+    )
+
+
+def test_the_receipt_scan_reaches_the_call_sites_it_is_written_for():
+    """The scan is worthless if it silently reads nothing.
+
+    Its reach is the point, and the interprocedural half of it especially:
+    `coordinator_home` is reachable only through `_project_workflow_response`'s
+    own default, and `authorize_project_issue` only through a caller's keyword
+    into that same helper. A scan of literal `route_name=` arguments beside
+    `record_frontend_request` would find neither.
+    """
+
+    from corridor.frontend_request_receipts import ROUTE_CONTRACTS
+
+    written, problems = _route_contracts_module().receipt_route_names()
+
+    assert problems == []
+    # Both halves of the resolution, exercised rather than theoretical.
+    assert {"coordinator_home", "authorize_project_issue"} <= set(written)
+    # And every contract is reached, so the scan is reading the application and
+    # not three easy literals. A contract no call site writes fails here too,
+    # which is the remaining way the registry and the routes fall out of step.
+    assert set(written) == set(ROUTE_CONTRACTS)
+    assert all(
+        site.startswith("src/corridor/") for sites in written.values() for site in sites
+    )
+
+
+def test_the_frontend_route_contract_documentation_is_current():
+    """Documentation generated from the registry, not authored beside it.
+
+    `product_proving_frontend_capture.py` used to keep a second, hand-written
+    copy of this table and raise at import when the two disagreed -- a drift
+    that cost three red CI jobs to discover, because `make check` never imports
+    that module. There is one registry now, and this is the readable page it
+    produces (#909).
+    """
+
+    contracts = _route_contracts_module()
+    text, problems = contracts.documentation()
+
+    assert problems == [], problems
+    assert contracts.DOCUMENT_PATH.read_text(encoding="utf-8") == text, (
+        f"{contracts.DOCUMENT_PATH.relative_to(REPO_ROOT)} no longer matches "
+        "corridor.frontend_request_receipts.ROUTE_CONTRACTS and the routes the "
+        "application serves; run `make route-contracts`"
     )
 
 
