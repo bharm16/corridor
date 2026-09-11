@@ -17,15 +17,15 @@ takes every role, and the call site names the role it borrows from
 ``corridor.db_roles`` so a rename cannot leave a test setting a role that no
 longer exists.
 
-The two acts below are the fixture setup those borrows existed for. ``tests/``
-held sixteen hand-written inserts into ``project_record_revisions`` and
-``fact_decisions`` across nine modules, each one a copy of a record-decision
-command's SQL that nothing failed when the command changed.
+The three acts below are the fixture setup those borrows existed for.
+``tests/`` held sixteen hand-written inserts into ``project_record_revisions``
+and ``fact_decisions`` across nine modules, each one a copy of a
+record-decision command's SQL that nothing failed when the command changed.
 ``tests/test_architecture.py`` forbids exactly that for ``src/corridor``, and
 now scans this tree too, with this module as the one place the SQL is written.
 
-Neither act can reach the command that writes its rows in production, and each
-docstring says why and what would fail if that command changed.
+None of the three can reach the command that writes its rows in production,
+and each docstring says why and what would fail if that command changed.
 """
 
 from __future__ import annotations
