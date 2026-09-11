@@ -284,6 +284,7 @@ __all__ = [  # noqa: F405
     "SourceFetchAttempt",
     "SourceIntakeDraftConfiguration",
     "SourceIntakeDraftRequest",
+    "SourceRevisionDeclaration",
     "SourceSegment",
     "SpendAuthorization",
     "SpendAuthorizedConfiguration",

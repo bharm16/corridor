@@ -84,7 +84,11 @@ EXPECTED_SCHEMA_SHA256 = (
     # no relation or sequence is added, so the digest and both counts are
     # unchanged. Recomputed against a fresh disposable database to say so
     # rather than assumed.
-    "1416594efdd6dcdec84e6b78a695942993afb5025d0883f7d8867e60429351f4"
+    # #825 adds `source_revision_declarations` (+1 table, +1 sequence, its
+    # immutability guard and partition policy): what a coordinator declared
+    # about one delivery, which the processing pass routes on. Recomputed
+    # against a fresh disposable database.
+    "c21fb792874dc98aac81e044b52ca5a51ecdf470f423d82191dce86cba2e6a1d"
 )
 
 pytestmark = [pytest.mark.slow, pytest.mark.migration]
@@ -207,6 +211,7 @@ COMPOSED_UPGRADE = (
     "scanned_observations",
     "spend_authorization",
     "product_upload_delivery",
+    "source_revision_declaration",
     # The sibling transitions this revision has always carried at the end, and
     # the PUBLIC sweep that runs last of all because it reads the catalog every
     # block above has finished writing.
@@ -231,6 +236,7 @@ COMPOSED_DOWNGRADE = (
     "minutes_spine",
     "project_contacts",
     "email_spine",
+    "source_revision_declaration",
     "product_upload_delivery",
     "spend_authorization",
     "scanned_observations",

@@ -45,6 +45,7 @@ from corridor.source_delivery import (
     take_delivery,
 )
 from corridor.source_intake import confirm_intake, preview_intake, validate_and_stage
+from corridor.source_revision_declaration import RevisionDeclaration
 
 from key_date_table_support import (
     KEY_DATE_ROWS,
@@ -153,7 +154,7 @@ def test_a_later_ucm_revision_names_the_delivery_it_arrived_on(
         project=project,
         staged=staged,
         envelope=envelope,
-        principal=PRINCIPAL,
+        declaration=RevisionDeclaration(declared_by=PRINCIPAL),
         images_dir=tmp_path / "images",
     )
 
@@ -298,7 +299,7 @@ def test_a_second_delivery_of_identical_bytes_never_relabels_the_first(
         project=project,
         staged=staged,
         envelope=first_envelope,
-        principal=PRINCIPAL,
+        declaration=RevisionDeclaration(declared_by=PRINCIPAL),
         images_dir=tmp_path / "images",
     )
     document = session.get(Document, capture.document_id)
@@ -360,7 +361,7 @@ def test_the_backfill_links_what_a_capture_receipt_proves(session, project, tmp_
         project=project,
         staged=staged,
         envelope=envelope,
-        principal=PRINCIPAL,
+        declaration=RevisionDeclaration(declared_by=PRINCIPAL),
         images_dir=tmp_path / "images",
     )
     document = session.get(Document, capture.document_id)
@@ -395,7 +396,7 @@ def test_the_backfill_leaves_a_receipt_naming_other_bytes_unknown(
         project=project,
         staged=staged,
         envelope=envelope,
-        principal=PRINCIPAL,
+        declaration=RevisionDeclaration(declared_by=PRINCIPAL),
         images_dir=tmp_path / "images",
     )
     _other_staged, other = deliver(
@@ -463,7 +464,7 @@ def test_the_backfill_leaves_an_ambiguous_receipt_unknown(session, project, tmp_
         project=project,
         staged=staged,
         envelope=envelope,
-        principal=PRINCIPAL,
+        declaration=RevisionDeclaration(declared_by=PRINCIPAL),
         images_dir=tmp_path / "images",
     )
     take_delivery(

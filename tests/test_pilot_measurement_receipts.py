@@ -200,6 +200,7 @@ def test_real_source_and_delta_producers_bind_fresh_native_receipts(session, ado
     from sqlalchemy import func, select
     from corridor.analytics import capture_events
     from corridor.later_revision import capture_later_revision
+    from corridor.source_revision_declaration import RevisionDeclaration
     from corridor.principals import HumanPrincipal
     from corridor.source_delivery import (DeliveryBinding, DeliveryObservation, envelope_for_delivery,
         record_delivery)
@@ -241,7 +242,7 @@ def test_real_source_and_delta_producers_bind_fresh_native_receipts(session, ado
         with session.begin_nested():
             result = capture_later_revision(session, project=adopted.project, staged=staged,
                                             envelope=envelope_for_delivery(session, delivered.delivery_id),
-                                            principal=HumanPrincipal("local:coordinator"))
+                                            declaration=RevisionDeclaration(declared_by=HumanPrincipal("local:coordinator")))
         session.commit()
     window = period(project_id=project_id, start=started, end=started + timedelta(hours=1), declared_at=started,
                     binding=deployment, database_identity=identity,
@@ -271,7 +272,7 @@ def test_real_source_and_delta_producers_bind_fresh_native_receipts(session, ado
                                  service_identity="fixture-connector", run_identity="retry")
         replay = capture_later_revision(session, project=adopted.project, staged=staged,
                                         envelope=envelope_for_delivery(session, reused.delivery_id),
-                                        principal=HumanPrincipal("local:coordinator"))
+                                        declaration=RevisionDeclaration(declared_by=HumanPrincipal("local:coordinator")))
         assert replay.delta_ids == result.delta_ids
         refused = record_delivery(session, delivery_binding,
                                    replace(observation, external_identity="refused-delivery", bytes_reference=""),
@@ -288,7 +289,7 @@ def test_real_source_and_delta_producers_bind_fresh_native_receipts(session, ado
                                          service_identity="fixture-connector", run_identity="rolled-back")
         ghost = capture_later_revision(session, project=adopted.project, staged=ghost_staged,
                                        envelope=envelope_for_delivery(session, ghost_delivery.delivery_id),
-                                       principal=HumanPrincipal("local:coordinator"))
+                                       declaration=RevisionDeclaration(declared_by=HumanPrincipal("local:coordinator")))
         rollback.rollback()
         session.commit()
     for family in (EventFamily.SOURCE_ARRIVAL, EventFamily.SOURCE_CAPTURE, EventFamily.PROPOSED_DELTA_CREATION):

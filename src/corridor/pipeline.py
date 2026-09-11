@@ -2,6 +2,19 @@
 
 Extractors never write to the Ledger — they only create Candidates, and the
 single path onward is a human keystroke in `corridor.adjudicate`.
+
+`extraction_route` chose a reader from the document alone: its declared kind,
+and for everything else the file suffix. That was enough while every reader was
+a property of the bytes. It stopped being enough when the record acquired an
+accepted baseline (ADR-0076): the same `.xlsx` is a legacy matrix on one
+project and the next revision of a registered source on another, and only the
+project's operating mode and its registered field mapping say which. So the
+route now reads the session the document is attached to before it reaches the
+suffix test — `corridor.source_revision_declaration` owns that decision, and a
+delivery it declines is the ordinary spreadsheet reading this module always
+did. Minutes, email, PDF matrices and every document that arrived through no
+transport are untouched: they are still chosen by kind and suffix, because
+nothing about them turns on a project's record (#825).
 """
 
 from __future__ import annotations
@@ -16,7 +29,7 @@ from urllib.parse import urlparse
 from uuid import uuid4
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, object_session
 
 from corridor.email_spine import (
     PROMPT_VERSION as EMAIL_THREAD_PROMPT_VERSION,
@@ -37,6 +50,8 @@ from corridor.extract_sheet import (
 )
 from corridor.extraction_runs import append_source_facts, record_extraction_run
 from corridor.facts import require_source_fact_class
+from corridor.baseline_workbook import IMPORTER_VERSION as WORKBOOK_IMPORTER_VERSION
+from corridor.later_revision import LaterRevisionRefused, capture_later_revision
 from corridor.llm import OpenAIClient
 from corridor.minutes_spine import capture_minutes, minutes_extractor_config
 from corridor.native_pipeline import (
@@ -73,6 +88,15 @@ from corridor.models import (
     Project,
 )
 from corridor.row_accounting import RowAccountingFailure
+from corridor.source_revision_declaration import (
+    CORRIDOR_OPERATIONS,
+    HOLD,
+    RETAIN_RENDITION,
+    HeldSource,
+    SourceRevisionHeld,
+    route_delivered_revision,
+    staged_delivered_source,
+)
 from corridor.storage import stored_file
 from corridor.supersession import SupersessionDeclaration, register_supersessions
 
@@ -430,6 +454,116 @@ class CapturedReading:
         )
 
 
+def _delivered_revision_route(document: Document) -> ExtractionRoute | None:
+    """The reader for one delivered workbook on an adopted project, or none.
+
+    `None` is the ordinary spreadsheet reading and the common case: a legacy
+    project, a document that arrived through no transport, the adopted
+    baseline's own bytes, or a document not attached to a session at all. The
+    session comes from the document because that is where the project's
+    operating mode and its registered field mapping are readable, and because
+    every caller of `extraction_route` already loaded the document through one;
+    `extract_project.extractable_document` reads adoption the same way.
+
+    The three routes this can return are the three things a delivered workbook
+    can be, and each is declared before its reader runs rather than discovered
+    from what the reader produced:
+
+    * a declared later revision, read by `later_revision.capture_later_revision`
+      with the coordinator's declarations and this worker's service identity;
+    * a declared additional rendition, whose own Source Segments are retained
+      and whose values are deliberately not compared — ADR-0069 makes it one
+      more rendition of a revision already delivered, so reading it again would
+      be a second logical revision of one revision and the same actionable
+      changes twice;
+    * a held source, which raises before any Fact, Segment or Delta is written.
+    """
+
+    session = object_session(document) if isinstance(document, Document) else None
+    if session is None:
+        return None
+    routing = route_delivered_revision(session, document)
+    if routing is None:
+        return None
+
+    configuration = deployed_extractor_config("baseline", client=None)
+
+    if routing.disposition == HOLD:
+        held = routing.held
+
+        def refuse_held(session: Session, doc: Document):
+            raise SourceRevisionHeld(held)
+
+        return ExtractionRoute(
+            effective_prompt_version=WORKBOOK_IMPORTER_VERSION,
+            schema_version=WORKBOOK_IMPORTER_VERSION,
+            extract=refuse_held,
+            # Nothing completes, so nothing is appended; the class is declared
+            # for the reading this would have been.
+            output=SOURCE_FACTS,
+            extractor_config=configuration,
+        )
+
+    if routing.disposition == RETAIN_RENDITION:
+
+        def retain_rendition(session: Session, doc: Document) -> list[Candidate]:
+            # Registration already appended this rendition's own spreadsheet
+            # cell segments, and `append_source_facts` re-appends them
+            # idempotently, so its exact evidence and locators are retained and
+            # no Fact is captured over them.
+            return []
+
+        return ExtractionRoute(
+            effective_prompt_version=WORKBOOK_IMPORTER_VERSION,
+            schema_version=WORKBOOK_IMPORTER_VERSION,
+            extract=retain_rendition,
+            output=SOURCE_FACTS,
+            extractor_config=configuration,
+        )
+
+    declaration = routing.declaration
+
+    def capture_revision(session: Session, doc: Document) -> CapturedReading:
+        staged = staged_delivered_source(doc)
+        if staged is None:
+            raise ExtractionFailed(
+                "the delivered revision is no longer in the content store"
+            )
+        try:
+            capture = capture_later_revision(
+                session,
+                project=session.get_one(Project, doc.project_id),
+                staged=staged,
+                envelope=envelope_for_delivery(session, doc.source_delivery_id),
+                declaration=declaration,
+                document_id=doc.id,
+            )
+        except LaterRevisionRefused as exc:
+            # The reader re-proves the registered mapping and the bound
+            # delivery for itself. A refusal it raises after the screen
+            # resolved them is a held source too, owned by the same party.
+            raise SourceRevisionHeld(
+                HeldSource(
+                    reason=str(exc),
+                    responsible_party=CORRIDOR_OPERATIONS,
+                    next_action=(
+                        "Corridor operations settles the registered mapping "
+                        "and this delivery. Nothing is read from this file "
+                        "until then."
+                    ),
+                )
+            ) from exc
+        return CapturedReading(session.get_one(ExtractionRun, capture.extraction_run_id))
+
+    return ExtractionRoute(
+        effective_prompt_version=WORKBOOK_IMPORTER_VERSION,
+        schema_version=WORKBOOK_IMPORTER_VERSION,
+        extract=capture_revision,
+        output=CAPTURED_READING,
+        extractor_config=configuration,
+    )
+
+
 def extraction_route(
     document: Document, *, client=None, native_runtime: NativeMatrixRuntime | None = None,
 ) -> ExtractionRoute:
@@ -494,6 +628,9 @@ def extraction_route(
 
     path = getattr(document, "_stored_path", None) or stored_file(document)
     if path is not None and Path(path).suffix.lower() in SPREADSHEET_SUFFIXES:
+        delivered = _delivered_revision_route(document)
+        if delivered is not None:
+            return delivered
         return ExtractionRoute(
             effective_prompt_version=SHEET_PROMPT_VERSION,
             schema_version=SHEET_SCHEMA_VERSION,
@@ -678,6 +815,22 @@ def extract_any(
             model=route.model,
             error_detail=str(exc),
             row_accounting_json=exc.receipt,
+        )
+        raise
+    except SourceRevisionHeld as exc:
+        # The same outcome `extract_project` records, for the same reason: a
+        # held source is not a failed attempt a later pass may repeat, and
+        # recording it as one would promise a retry that changes nothing.
+        record_routed_run(
+            session,
+            document,
+            route,
+            usage_before,
+            candidate_count=0,
+            page_errors=1,
+            outcome="quarantined",
+            model=route.model,
+            error_detail=str(exc),
         )
         raise
     except NoMatrixFound as exc:
