@@ -295,8 +295,13 @@ remote-tracking ref outlives the work it carried.
   leases, competing workers, or restart recovery — uses only the harness-owned
   `runtime_database` fixture in `tests/conftest.py`. Ordinary database tests
   remain rollback-scoped; test modules do not provision their own databases.
-  The harness copies these databases from one migrated per-process template;
-  database upgrade tests cover one fresh baseline and the single supported
+  A module that needs an isolated database of its own asks the harness's
+  `provision_isolated_database` for one instead of calling
+  `provision_disposable_postgres` itself. Either way the harness copies the
+  single migrated template its run has already built, so nothing replays
+  Alembic per fixture; only a test whose subject *is* the migration asks for a
+  replay, with `reuse_migrated_template=False`.
+  Database upgrade tests cover one fresh baseline and the single supported
   released-head-to-current transition. A migration test expires after every
   supported database has advanced past its starting revision; current behavior
   stays in ordinary tests.
