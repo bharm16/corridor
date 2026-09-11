@@ -484,7 +484,7 @@ class RecordedRequest:
 
 
 def read_correspondence(
-    session: Session, *, project_id: int, as_of: datetime
+    session: Session, *, project_id: int, as_of: datetime | None
 ) -> tuple[RecordedRequest, ...]:
     """Every retained request for this project as of a declared cutoff.
 
@@ -497,14 +497,27 @@ def read_correspondence(
     ``as_of`` is the caller's declared cutoff and the only time this reading
     knows. A request sent after it is not yet retained as of this reading, and
     an observation received after it has not arrived yet.
+
+    ``as_of=None`` is a caller that is reading *history* rather than reading as
+    of a moment, and is answered with everything retained. A history surface
+    has no cutoff to declare and must not invent one: the record page exists so
+    that correspondence stays reachable after the follow-up it advanced is over
+    (#837), and a page that quietly clipped the last request at a cutoff it
+    read off a clock would be the same unreachability in a subtler form. It is
+    required rather than defaulted, so declaring no cutoff stays a decision the
+    caller makes in as many words.
     """
 
-    cutoff = as_of.date()
+    cutoff = as_of.date() if as_of is not None else None
     requests = session.scalars(
         select(OutgoingRequest)
         .where(
             OutgoingRequest.project_id == project_id,
-            OutgoingRequest.sent_on <= cutoff,
+            *(
+                (OutgoingRequest.sent_on <= cutoff,)
+                if cutoff is not None
+                else ()
+            ),
         )
         .order_by(OutgoingRequest.sent_on, OutgoingRequest.id)
     ).all()
@@ -544,7 +557,7 @@ def read_correspondence(
     }
     by_request: dict[int, list[RecordedResponse]] = {}
     for row in observations:
-        if row.received_on > cutoff:
+        if cutoff is not None and row.received_on > cutoff:
             continue
         by_request.setdefault(row.request_id, []).append(
             RecordedResponse(

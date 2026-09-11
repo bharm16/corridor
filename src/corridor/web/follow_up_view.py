@@ -40,6 +40,20 @@ here. ``CorrespondenceView`` composes what was recorded; it decides nothing
 about plans, and #835 owns plan update, cancellation, return-date change and
 early resume, so no control here competes with those.
 
+**The same words also compose the Record history page's correspondence.**
+A follow-up bundle is built from the plans a week is *still* asking about, so
+once every plan one message advanced has closed, that message has no bundle
+left to hang on and the week renders it nowhere — the record survived in
+``read_correspondence`` and in the database and reached nobody (#837, #910).
+``correspondence_history`` is the composition the read-only Record history page
+renders instead, and it lives here rather than in a second module because it
+prints the same facts about the same records: a second set of sentences for
+"they acknowledged" or "this is what it was linked to" is how one surface comes
+to say something the other does not. What differs is what surrounds them — the
+history rendering carries no bundle, no coverage sentence, no band and no
+control, and it names each Follow-up Plan the message advanced together with
+the closure that ended it, because on that page the closure is the point.
+
 **A request covering three of a bundle's five plans says three.** One
 communication advances as many Follow-up Plans as the coordinator addressed in
 it, so the section names the covered ones and names the ones left uncovered
@@ -88,8 +102,10 @@ from corridor.follow_up_bundles import (
     FollowUpReading,
     plan_ids_of,
 )
+from corridor.follow_up_plan_lifecycle import CANCELLATION_REASON_WORDS
 from corridor.outgoing_requests import RecordedRequest
 from corridor.presentation import label
+from corridor.record_history import NamedFollowUpPlan, RetainedCorrespondence
 from corridor.web.ui_primitives import NOT_RECORDED, StateLabel
 
 
@@ -122,10 +138,76 @@ REPLIES_BY_COMPLETENESS = {
 # append-only correction that hid what it corrected would be a rewrite.
 CORRECTED = StateLabel("attention", "Corrected by a later record")
 AWAITING_REPLY = StateLabel("attention", "Nothing recorded back yet")
+# How one Follow-up Plan a retained message named has ended, on the history
+# page. The tone is neutral in both closed cases on purpose: a question that
+# was cancelled or corrected is finished, and printing it in the tone the week
+# uses for work still owed would turn a closed ask back into a chase. The words
+# are the ones the closure act itself prints (#835), not new ones.
+PLAN_CANCELLED = StateLabel("neutral", "No longer an outside ask")
+PLAN_SUPERSEDED = StateLabel("neutral", "Replaced by a corrected Follow-up Plan")
+PLAN_NOT_CLOSED = StateLabel(
+    "attention", "No closure is recorded for this Follow-up Plan"
+)
+PLAN_STATES_BY_CLOSURE = {
+    "cancelled": PLAN_CANCELLED,
+    "superseded": PLAN_SUPERSEDED,
+}
+
+# What recording a reply did not do. The accepted #652 contract says it in as
+# many words, and the history page is where a reader is most likely to read a
+# recorded reply as an answer, because by then the follow-up is often over.
+SETTLES_NOTHING = (
+    "A recorded reply stops the no-response finding. It does not settle the "
+    "question, resolve the proposed change, or change an accepted value."
+)
 
 # The one heading a bundle's anchor is built from, so the section, the test and
 # a link into it all spell the same id.
 ANCHOR_PREFIX = "follow-up-bundle"
+
+
+# --- the sentences both surfaces print --------------------------------------
+#
+# The week and the Record history page say the same things about the same
+# retained records, so each of these is written once. A property below returns
+# one of them; nothing composes a second version of it.
+
+
+def sender_sentence(request: RecordedRequest) -> str:
+    """Who sent it and who says so, kept apart even when they are one person."""
+
+    if request.recorded_by_the_sender:
+        return f"Sent by {request.sent_by_principal}, who recorded it."
+    return (
+        f"Sent by {request.sent_by_principal}; recorded here by "
+        f"{request.recorded_by_principal}."
+    )
+
+
+def correction_sentence(request: RecordedRequest) -> str | None:
+    """What this request corrected, and why, when it is a correction."""
+
+    if request.corrects_request_id is None:
+        return None
+    return (
+        f"Corrects the request recorded as {request.corrects_request_id}: "
+        f"{request.correction_reason}"
+    )
+
+
+def request_state(request: RecordedRequest) -> StateLabel:
+    """What this retained request amounts to right now, in one label.
+
+    A correction wins over a reply: a record a later one corrected is not the
+    record of what came back, whatever came back against it.
+    """
+
+    if not request.stands:
+        return CORRECTED
+    standing = request.standing_responses
+    if standing:
+        return REPLIES_BY_COMPLETENESS[standing[-1].completeness]
+    return AWAITING_REPLY
 
 
 @dataclass(frozen=True, slots=True)
@@ -200,25 +282,13 @@ class RequestView:
     def sender_sentence(self) -> str:
         """Who sent it and who says so, kept apart even when they are one person."""
 
-        if self.request.recorded_by_the_sender:
-            return (
-                f"Sent by {self.request.sent_by_principal}, who recorded it."
-            )
-        return (
-            f"Sent by {self.request.sent_by_principal}; recorded here by "
-            f"{self.request.recorded_by_principal}."
-        )
+        return sender_sentence(self.request)
 
     @property
     def correction_sentence(self) -> str | None:
         """What this corrected, and why, when it is a correction."""
 
-        if self.request.corrects_request_id is None:
-            return None
-        return (
-            f"Corrects the request recorded as {self.request.corrects_request_id}: "
-            f"{self.request.correction_reason}"
-        )
+        return correction_sentence(self.request)
 
 
 @dataclass(frozen=True, slots=True)
@@ -448,13 +518,6 @@ def _request_view(
 ) -> RequestView:
     named = frozenset(request.covered_plan_ids)
     replies = tuple(_reply_view(reply) for reply in request.responses)
-    standing = [reply for reply in request.responses if reply.stands]
-    if not request.stands:
-        state = CORRECTED
-    elif standing:
-        state = REPLIES_BY_COMPLETENESS[standing[-1].completeness]
-    else:
-        state = AWAITING_REPLY
     return RequestView(
         request=request,
         covered=tuple(plan_id for plan_id in plan_ids if plan_id in named),
@@ -466,7 +529,7 @@ def _request_view(
             for plan_id in request.covered_plan_ids
             if plan_id not in plan_ids and plan_id not in live
         ),
-        state=state,
+        state=request_state(request),
         replies=replies,
     )
 
@@ -510,6 +573,141 @@ def _evidence_sentence(reply: Any) -> str:
     return (
         f"{reply.observed_by_principal} recorded what they were told: "
         f"{reply.observation} — {reply.source_reference}"
+    )
+
+
+# --- the correspondence the Record history page renders ----------------------
+#
+# Everything below composes the same retained records the section above does,
+# for the read-only surface that still has them when no bundle does. It builds
+# no bundle, no band and no control: the Record history page decides nothing,
+# and a closed ask rendered with a chase's vocabulary would be a chase.
+
+
+@dataclass(frozen=True, slots=True)
+class NamedPlanView:
+    """One Follow-up Plan a retained message named, and how that ask ended."""
+
+    plan: NamedFollowUpPlan
+    state: StateLabel
+
+    @property
+    def closure_sentence(self) -> str | None:
+        """Who closed this ask, when, and by what act. ``None`` while open.
+
+        It reports the closure relation's own row. Whether the plan would be
+        on somebody's week today is ``outstanding_follow_up``'s to say, and
+        this page does not ask it: an absent closure is printed as an absent
+        closure, not as a live ask.
+        """
+
+        plan = self.plan
+        if plan.closure_kind is None:
+            return None
+        closed = f"Closed on {plan.closed_at.date()} by {plan.closed_by_principal}"
+        if plan.closure_kind == "superseded":
+            return (
+                f"{closed}, replaced by Follow-up Plan {plan.successor_plan_id}. "
+                "The question was corrected, not abandoned."
+            )
+        # The relation constrains the reason to this vocabulary, so an
+        # unknown one is a defect to raise rather than a token to print at a
+        # coordinator (#835, ``models.delta.CANCELLATION_REASONS``).
+        reason = CANCELLATION_REASON_WORDS[plan.cancellation_reason]
+        return f"{closed}: {reason.lower()}."
+
+
+@dataclass(frozen=True, slots=True)
+class HistoryRequestView:
+    """One retained request as the Record history page reads it.
+
+    The four facts an acknowledgement leaves independently true (#652 decision
+    of 2026-09-04) are four separate readings here, so none of them can be
+    inferred from another: ``state`` and ``replies`` say what came back,
+    ``plans`` say what became of each question it asked about,
+    ``answer_sentence`` says whether the answer itself is still outstanding,
+    and ``settles_nothing`` says what recording any of it did not do.
+    """
+
+    request: RecordedRequest
+    plans: tuple[NamedPlanView, ...]
+    state: StateLabel
+    replies: tuple[ReplyView, ...]
+    covered_subjects: tuple[str, ...]
+
+    @property
+    def sender_sentence(self) -> str:
+        return sender_sentence(self.request)
+
+    @property
+    def correction_sentence(self) -> str | None:
+        return correction_sentence(self.request)
+
+    @property
+    def settles_nothing(self) -> str:
+        return SETTLES_NOTHING
+
+    @property
+    def answer_sentence(self) -> str:
+        """Whether the substance of the answer is still outstanding.
+
+        Separate from ``state`` because they are separate facts. An
+        acknowledgement stops "they have not replied" being true and leaves
+        the answer exactly as outstanding as it was, and a page that printed
+        only the reply would let a reader take the one for the other.
+        """
+
+        standing = self.request.standing_responses
+        if not standing:
+            return "Nothing has been recorded back against this request."
+        answered = [
+            one for one in standing if one.completeness == "substantive"
+        ]
+        if answered:
+            return f"The ask was answered on {answered[-1].received_on}."
+        if any(one.completeness == "partial" for one in standing):
+            return (
+                "Part of the ask is recorded as answered; the rest of the "
+                "answer is still outstanding."
+            )
+        return (
+            "An acknowledgement is recorded and nothing more; the answer "
+            "itself is still outstanding."
+        )
+
+
+def correspondence_history(
+    recorded: Sequence[RetainedCorrespondence],
+) -> tuple[HistoryRequestView, ...]:
+    """Every retained request this project holds, ready for the history page.
+
+    Nothing is filtered. A request whose plans have all closed is exactly the
+    one this composition exists for, and one corrected by a later record is
+    kept beside its correction for the reason ``read_correspondence`` keeps
+    both: hiding the original would be rewriting history rather than appending
+    to it.
+    """
+
+    return tuple(
+        HistoryRequestView(
+            request=entry.request,
+            plans=tuple(_named_plan_view(plan) for plan in entry.plans),
+            state=request_state(entry.request),
+            replies=tuple(_reply_view(reply) for reply in entry.request.responses),
+            covered_subjects=entry.covered_subjects,
+        )
+        for entry in recorded
+    )
+
+
+def _named_plan_view(plan: NamedFollowUpPlan) -> NamedPlanView:
+    return NamedPlanView(
+        plan=plan,
+        state=(
+            PLAN_NOT_CLOSED
+            if plan.closure_kind is None
+            else PLAN_STATES_BY_CLOSURE[plan.closure_kind]
+        ),
     )
 
 

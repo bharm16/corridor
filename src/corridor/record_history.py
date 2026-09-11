@@ -67,6 +67,8 @@ from corridor.models import (
     BaselineSourceRow,
     DeltaDeferral,
     DeltaDisposition,
+    DeltaFollowUpPlan,
+    DeltaFollowUpPlanClosure,
     DeltaRecordDecision,
     DeltaReviewPacketChild,
     DeltaReviewPacketReceipt,
@@ -94,6 +96,7 @@ from corridor.support_history import (
     NativePublicationSupport, native_publication_support,
     native_publication_support_as_of_revision, support_scope_identities,
 )
+from corridor.outgoing_requests import RecordedRequest, read_correspondence
 from corridor.presentation import field_label
 from corridor.record_projection import (
     CurrentRecordValue,
@@ -378,6 +381,56 @@ class RetainedHistoryReading:
 
 
 @dataclass(frozen=True, slots=True)
+class NamedFollowUpPlan:
+    """One Follow-up Plan a retained message named, and how it ended.
+
+    ``closure_kind`` is the closure relation's own word (#835) and is ``None``
+    while no closure is recorded.  Nothing here decides whether the plan is
+    still an outside ask: ``outstanding_follow_up`` decides that, for the week
+    that acts on it, and a second opinion composed here is exactly how two
+    renderings of one plan came to be able to disagree.  This reports what was
+    recorded — the question asked, and the closure that ended it if one was
+    written — which is what a history reading is for.
+    """
+
+    plan_id: int
+    delta_id: int
+    open_question: str
+    responsible: str | None
+    closure_kind: str | None
+    cancellation_reason: str | None
+    successor_plan_id: int | None
+    closed_by_principal: str | None
+    closed_at: datetime | None
+
+    @property
+    def closed(self) -> bool:
+        """Whether a closure was recorded against this plan."""
+
+        return self.closure_kind is not None
+
+
+@dataclass(frozen=True, slots=True)
+class RetainedCorrespondence:
+    """One retained outgoing request and the Follow-up Plans it named.
+
+    The plans are carried whether or not they are still an outside ask.  A
+    request whose every plan has closed has no follow-up bundle left to hang
+    on, which is precisely why it is read here: the record survived in the
+    reader and in the database and was rendered nowhere (#837, #910).
+    """
+
+    request: RecordedRequest
+    plans: tuple[NamedFollowUpPlan, ...]
+    #: The Utility Conflicts the message named, in the customer's own words
+    #: where this project knows them. The retained subject keys stay on the
+    #: request itself; this page reads them the way it reads every other
+    #: subject on it, because a history nobody can match to a conflict they
+    #: recognise answers the question it was opened to answer only halfway.
+    covered_subjects: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class RecordHistory:
     """One read-only investigation of one adopted project's record."""
 
@@ -401,6 +454,7 @@ class RecordHistory:
     publication_support_as_of: tuple[NativePublicationSupport, ...] = ()
     publication_support_gaps: tuple[str, ...] = ()
     retained_history: RetainedHistoryReading | None = None
+    correspondence: tuple[RetainedCorrespondence, ...] = ()
 
     @property
     def truncated(self) -> bool:
@@ -496,7 +550,87 @@ def read_record_history(
         publication_support_as_of=tuple(earlier_publication[key] for key in sorted(earlier_publication, key=lambda key: (key[0], key[1] or ""))),
         publication_support_gaps=support_gaps,
         retained_history=retained,
+        correspondence=_correspondence(session, project_id, names),
         )
+
+
+def _correspondence(
+    session: Session, project_id: int, names: Mapping[str, str]
+) -> tuple[RetainedCorrespondence, ...]:
+    """Every retained outgoing request, with the Follow-up Plans it named.
+
+    ``as_of=None`` because this is the history reading and has no cutoff to
+    declare.  The one thing this section exists to prevent is a request
+    becoming unreachable, so clipping it at a moment would defeat it.
+
+    The search terms deliberately do not narrow this, exactly as they do not
+    narrow the revisions, the releases or the audit trail: those readings are
+    complete histories and a search that hid part of one would answer a
+    question nobody asked.
+    """
+
+    recorded = read_correspondence(session, project_id=project_id, as_of=None)
+    if not recorded:
+        return ()
+    named = {
+        plan_id
+        for request in recorded
+        for plan_id in request.covered_plan_ids
+    }
+    plans = {
+        plan.id: plan
+        for plan in session.scalars(
+            select(DeltaFollowUpPlan).where(
+                DeltaFollowUpPlan.project_id == project_id,
+                DeltaFollowUpPlan.id.in_(named),
+            )
+        )
+    }
+    closures = {
+        closure.plan_id: closure
+        for closure in session.scalars(
+            select(DeltaFollowUpPlanClosure).where(
+                DeltaFollowUpPlanClosure.project_id == project_id,
+                DeltaFollowUpPlanClosure.plan_id.in_(named),
+            )
+        )
+    }
+    return tuple(
+        RetainedCorrespondence(
+            request=request,
+            plans=tuple(
+                _named_plan(plans[plan_id], closures.get(plan_id))
+                for plan_id in request.covered_plan_ids
+                if plan_id in plans
+            ),
+            covered_subjects=tuple(
+                names.get(key, key) for key in request.covered_subject_keys
+            ),
+        )
+        for request in recorded
+    )
+
+
+def _named_plan(
+    plan: DeltaFollowUpPlan, closure: DeltaFollowUpPlanClosure | None
+) -> NamedFollowUpPlan:
+    return NamedFollowUpPlan(
+        plan_id=plan.id,
+        delta_id=plan.delta_id,
+        open_question=plan.open_question,
+        responsible=plan.responsible_organization or plan.responsible_principal,
+        closure_kind=closure.closure_kind if closure is not None else None,
+        cancellation_reason=(
+            closure.cancellation_reason if closure is not None else None
+        ),
+        successor_plan_id=(
+            closure.successor_plan_id if closure is not None else None
+        ),
+        closed_by_principal=(
+            closure.closed_by_principal if closure is not None else None
+        ),
+        closed_at=closure.closed_at if closure is not None else None,
+    )
 
 
 # --- native coordination and original source-decision provenance -----------

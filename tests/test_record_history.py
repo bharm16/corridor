@@ -882,7 +882,17 @@ def test_every_section_is_a_region_bound_to_its_own_heading(session, project, cl
 
     body = client.get(f"/record/{project.slug}").text
 
-    for name in ("search", "values", "deltas", "revisions", "releases", "audit"):
+    for name in (
+        "search",
+        "values",
+        "deltas",
+        # #837's retained correspondence, which the week can only show while a
+        # follow-up bundle still carries the plans one message advanced.
+        "correspondence",
+        "revisions",
+        "releases",
+        "audit",
+    ):
         assert f'aria-labelledby="{name}-heading"' in body
         assert f'<h2 id="{name}-heading">' in body
 
@@ -921,7 +931,7 @@ def test_every_search_control_carries_a_visible_bound_label(
         assert f'aria-describedby="{control}-hint"' in body
     assert 'role="search"' in body
     # Every named landing place stays focusable for a later return (§4).
-    assert body.count('tabindex="-1"') == 6
+    assert body.count('tabindex="-1"') == 7
 
 
 def test_native_coordination_current_and_revision_history_preserve_original_authority(session, project, client):
