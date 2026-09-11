@@ -60,8 +60,8 @@ from corridor.release_candidate import ARTIFACT_SUFFIXES
 
 #: What a download is of. Part of the file name, so a saved candidate artifact
 #: and a saved approved one are told apart in a downloads folder.
-CANDIDATE = "candidate"
-ISSUE = "issue"
+CANDIDATE_DOWNLOAD = "candidate"
+ISSUE_DOWNLOAD = "issue"
 
 #: The extension every retained artifact has no entry for.
 UNKNOWN_SUFFIX = ".bin"

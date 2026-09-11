@@ -87,6 +87,14 @@ PRINCIPAL_DEPENDENCY = "get_human_principal"
 #: fixture: proof that the refusals below are refusals of something.
 BYTES_WITHOUT_A_FIXTURE = "/internal-report/{slug}/workbook.xlsx"
 
+#: Modules beside ``app.py`` whose whole purpose is to build a response
+#: carrying artifact bytes, and whose builders ``app.py`` imports by name.
+#: The reading above judges a response by the media type *written in the
+#: call*, and a builder that chooses one from a table writes none, so the
+#: closure is seeded with every response these modules build instead (#830).
+#: A module here is a module that may not build a page.
+ARTIFACT_RESPONSE_MODULES = ("artifact_downloads",)
+
 #: How this guard addresses each path parameter an artifact route declares.
 #: A parameter missing from here fails ``test_every_artifact_route_is_
 #: addressable`` by name, which is the instruction to teach the guard rather
@@ -97,6 +105,15 @@ PARAMETER_VALUES = {
     "release_id": NO_SUCH_ID,
     "document_id": "a document of that project",
     "page_no": "1",
+    # #830: a prepared candidate's row id, an approved issue's number in its
+    # project's release chain, and one member of the configured set. The
+    # first two are ids no row has, for the reason NO_SUCH_ID exists; the
+    # artifact type is the one every issue must contain, so a route that
+    # answered a stranger would be answering about a real member of a real
+    # set rather than about a type nothing configures.
+    "candidate_id": NO_SUCH_ID,
+    "issue_number": NO_SUCH_ID,
+    "artifact_type": "updated_ucm",
 }
 
 
@@ -129,6 +146,32 @@ def _called_names(node: ast.AST) -> set[str]:
         for call in ast.walk(node)
         if isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
     }
+
+
+def _builds_a_response(node: ast.AST) -> bool:
+    """Whether this body constructs any response at all.
+
+    Used only for the modules in ``ARTIFACT_RESPONSE_MODULES``, which build
+    nothing else, so "a response" and "a response carrying artifact bytes"
+    are the same statement there.
+    """
+
+    return any(name.endswith("Response") for name in _called_names(node))
+
+
+def _helper_emitters() -> set[str]:
+    """Response builders defined beside ``app.py`` and imported into it."""
+
+    found: set[str] = set()
+    for module in ARTIFACT_RESPONSE_MODULES:
+        path = APP_SOURCE.parent / f"{module}.py"
+        functions = _functions(ast.parse(path.read_text(encoding="utf-8")))
+        found |= {
+            name
+            for name, node in functions.items()
+            if _emits_artifact_bytes(node) or _builds_a_response(node)
+        }
+    return found
 
 
 def _emits_artifact_bytes(node: ast.AST) -> bool:
@@ -178,6 +221,7 @@ def artifact_byte_routes() -> tuple[tuple[str, str, str], ...]:
     tree = ast.parse(APP_SOURCE.read_text(encoding="utf-8"))
     functions = _functions(tree)
     emitters = {name for name, node in functions.items() if _emits_artifact_bytes(node)}
+    emitters |= _helper_emitters()
     while True:
         grown = {
             name
@@ -188,7 +232,9 @@ def artifact_byte_routes() -> tuple[tuple[str, str, str], ...]:
             break
         emitters |= grown
     routes = []
-    for name in sorted(emitters):
+    # Intersected with ``app.py``'s own functions, because the seed above
+    # names builders that live in another module and decorate no route.
+    for name in sorted(emitters & functions.keys()):
         for method, path in _route_paths(functions[name]):
             routes.append((method, path, name))
     return tuple(sorted(routes))
@@ -387,6 +433,13 @@ def test_the_scan_finds_the_routes_that_hand_out_bytes():
     }
     assert ("GET", "/reports/{slug}/prepared/{artifact_id}/download") in served
     assert ("GET", "/page-image/{document_id}/{page_no}") in served
+    # #830's downloads build their response in a helper module, which is the
+    # case ``ARTIFACT_RESPONSE_MODULES`` exists for.
+    assert (
+        "GET",
+        "/work/{slug}/issue/packages/{issue_number}/artifacts/{artifact_type}",
+    ) in served
+    assert ("GET", "/work/{slug}/issue/packages/{issue_number}/bundle") in served
 
 
 def test_every_artifact_route_is_addressable(two_projects):

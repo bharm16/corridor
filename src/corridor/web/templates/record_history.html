@@ -521,16 +521,16 @@
     <p>{{ ui.state(state_label("attention",
         "Only the most recent " ~ history.audit|length ~ " entries are shown.")) }}</p>
     <p>
-      <a href="{{ search_query }}&amp;audit_before={{ history.audit[-1].entry_id }}">
+      <a href="/record/{{ project.slug }}?{{ audit_query }}&amp;audit_before={{ history.audit[-1].entry_id }}">
         Entries recorded before this one &rarr;</a>
     </p>
     {%- endif %}
     {%- if history.audit_before %}
-    <p><a href="{{ search_query }}">&larr; Back to the most recent entries</a></p>
+    <p><a href="/record/{{ project.slug }}?{{ audit_query }}">&larr; Back to the most recent entries</a></p>
     {%- endif %}
     {%- elif history.audit_before %}
     <p>There is no audit entry older than the page you came from.</p>
-    <p><a href="{{ search_query }}">&larr; Back to the most recent entries</a></p>
+    <p><a href="/record/{{ project.slug }}?{{ audit_query }}">&larr; Back to the most recent entries</a></p>
     {%- else %}
     <p>No project-scoped audit entry has been recorded yet.</p>
     {%- endif %}

@@ -88,7 +88,13 @@ from corridor.telemetry import (
 )
 from corridor import access
 from corridor import web_boundary
-from corridor.web import artifact_downloads
+from corridor.web.artifact_downloads import (
+    CANDIDATE_DOWNLOAD,
+    ISSUE_DOWNLOAD,
+    bundle_bytes,
+    download_name,
+    download_response,
+)
 from corridor.web import auth
 from corridor.web import ui_primitives
 from corridor.check_configuration import (
@@ -4311,11 +4317,11 @@ def download_candidate_artifact(
         data = retrieve_candidate_artifact(session, candidate, artifact_type)
     except LookupError as exc:
         raise HTTPException(404, str(exc)) from exc
-    return artifact_downloads.download_response(
+    return download_response(
         data,
-        filename=artifact_downloads.download_name(
+        filename=download_name(
             project_slug=project.slug,
-            kind=artifact_downloads.CANDIDATE,
+            kind=CANDIDATE_DOWNLOAD,
             number=int(candidate.id),
             artifact_type=artifact_type,
         ),
@@ -4346,11 +4352,11 @@ def download_issue_artifact(
         data = retrieve_released_artifact(session, package, artifact_type)
     except LookupError as exc:
         raise HTTPException(404, str(exc)) from exc
-    return artifact_downloads.download_response(
+    return download_response(
         data,
-        filename=artifact_downloads.download_name(
+        filename=download_name(
             project_slug=project.slug,
-            kind=artifact_downloads.ISSUE,
+            kind=ISSUE_DOWNLOAD,
             number=int(package.sequence_number),
             artifact_type=artifact_type,
         ),
@@ -4378,11 +4384,11 @@ def download_issue_bundle(
     project = _project(session, slug, principal)
     package = _issue_package(session, project, issue_number)
     members = retrieve_released_package(session, package)
-    return artifact_downloads.download_response(
-        artifact_downloads.bundle_bytes(members),
-        filename=artifact_downloads.download_name(
+    return download_response(
+        bundle_bytes(members),
+        filename=download_name(
             project_slug=project.slug,
-            kind=artifact_downloads.ISSUE,
+            kind=ISSUE_DOWNLOAD,
             number=int(package.sequence_number),
         ),
     )
@@ -4647,11 +4653,13 @@ def record_history_screen(
             "project": project,
             "history": history,
             "refused_revision": refused_revision,
-            # This same reading without an audit page, so the one capped
-            # section can offer its older entries without dropping the
-            # question the rest of the page is answering (#830).
-            "search_query": f"/record/{project.slug}?"
-            + urlencode(
+            # The search this page is answering, as a query string, so the
+            # one capped section can offer its older entries without dropping
+            # the question the rest of the page is asking (#830). The path is
+            # written in the template beside it rather than composed here: a
+            # link whose whole target is an expression is one
+            # `tests/test_manifest_page_links.py` cannot read.
+            "audit_query": urlencode(
                 {
                     "conflict": history.terms.conflict,
                     "source": history.terms.source,
