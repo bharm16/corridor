@@ -15,7 +15,6 @@ from __future__ import annotations
 
 from collections import Counter
 from datetime import date, datetime, timedelta, timezone
-from hashlib import sha256
 import random
 from typing import Sequence
 from uuid import uuid4
@@ -31,15 +30,10 @@ from corridor.delta_resolution import (
     resolve_delta,
 )
 from corridor.models import (
-    ActiveExtractionRun,
-    Document,
     ExternalPartyStatement,
-    ExtractionRun,
     Fact,
-    FactSource,
     Project,
     ProposedDelta,
-    SourceSegment,
 )
 from corridor.principals import HumanPrincipal
 from corridor.proposed_deltas import (
@@ -50,6 +44,7 @@ from corridor.proposed_deltas import (
     record_delta_deferral,
 )
 from harness_support import adopt_baseline_fact
+from source_capture_support import Rendition
 from delta_supersession_support import record_delta_supersession
 from corridor.review_packet_reading import (
     ACTIONABLE,
@@ -139,83 +134,14 @@ def _delta(
     return row
 
 
-class _Capture:
+class _Capture(Rendition):
     """One document and the Source Facts captured from it."""
 
-    def __init__(self, session: Session, project: Project, name: str):
-        self.session = session
-        self.project = project
-        self.document = Document(
-            project_id=project.id,
-            sha256=sha256(f"{project.slug}:{name}".encode()).hexdigest(),
-            filename=name,
-            doc_type="matrix",
-            numbering_scheme="project-unique",
-            pages=1,
-            parse_status="parsed",
-        )
-        session.add(self.document)
-        session.flush()
-        self.run = ExtractionRun(
-            document_id=self.document.id,
-            prompt_version="packet_reading_fixture_v1",
-            outcome="completed",
-            candidate_count=0,
-            page_errors=0,
-        )
-        session.add(self.run)
-        session.flush()
-        session.add(
-            ActiveExtractionRun(
-                document_id=self.document.id, extraction_run_id=self.run.id
-            )
-        )
-        self._ordinal = 0
-
     def fact(self, *, fact_type: str, value: str, subject_key: str) -> Fact:
-        dated = fact_type in ("committed_date", "action_due_date", "need_date")
-        self._ordinal += 1
-        segment = SourceSegment(
-            project_id=self.project.id,
-            document_id=self.document.id,
-            kind="spreadsheet_cell",
-            exact_text=value,
-            content_sha256=sha256(f"{uuid4().hex}:{value}".encode()).hexdigest(),
-            ordinal=self._ordinal,
-            sheet_name="Utility Conflicts",
-            cell_range=f"A{self._ordinal}",
+        captured, _segment = self.capture(
+            fact_type=fact_type, value=value, subject_key=subject_key
         )
-        self.session.add(segment)
-        self.session.flush()
-        row = Fact(
-            project_id=self.project.id,
-            document_id=self.document.id,
-            extraction_run_id=self.run.id,
-            fact_type=fact_type,
-            subject_kind="source_row",
-            subject_key=subject_key,
-            text_value=None if dated else value,
-            date_value=date.fromisoformat(value) if dated else None,
-            transformation="iso_date_cell_v1" if dated else "trim_cell_text_v1",
-            recorded_by="extractor:packet_reading_fixture_v1",
-            content_sha256=sha256(
-                f"{uuid4().hex}:{fact_type}:{value}".encode()
-            ).hexdigest(),
-        )
-        self.session.add(row)
-        self.session.flush()
-        self.session.add(
-            FactSource(
-                project_id=self.project.id,
-                document_id=self.document.id,
-                fact_id=row.id,
-                source_segment_id=segment.id,
-                role="value_source",
-                ordinal=1,
-            )
-        )
-        self.session.flush()
-        return row
+        return captured
 
 
 def _accept(session: Session, project: Project, fact: Fact) -> int:

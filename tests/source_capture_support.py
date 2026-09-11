@@ -140,24 +140,15 @@ class Rendition:
         )
         self.session.flush()
 
-    def capture(
-        self,
-        *,
-        fact_type: str,
-        value: str,
-        subject_key: str | None = None,
-        cell: str | None = None,
-    ) -> tuple[Fact, SourceSegment]:
-        """Append one cell of this rendition and the Source Fact it materializes.
+    def segment(self, value: str, *, cell: str | None = None) -> SourceSegment:
+        """Append one cell of this rendition, with no Source Fact captured from it.
 
-        ``value`` is the cell's exact text.  What the Fact says is whatever
-        that text materializes to under the Fact type's released
-        transformation, so a caller cannot state a value its own cell does not
-        reproduce.  Capturing one cell twice replays: the commands return the
-        segment and the Fact they already wrote rather than a second copy.
+        A replacement revision carries the same passage at a new locator, so a
+        reading that has to find the passage in the successor needs the cell
+        without a second Fact over it.  Appending one cell twice replays: the
+        command returns the segment it already wrote rather than a second copy.
         """
 
-        subject = subject_key if subject_key is not None else self.subject_key
         locator = cell if cell is not None else f"{self.column}{self._sequence + 1}"
         ordinal = self._ordinals.get(locator)
         if ordinal is None:
@@ -180,6 +171,28 @@ class Rendition:
                     ),
                 ),
             )
+        return segment
+
+    def capture(
+        self,
+        *,
+        fact_type: str,
+        value: str,
+        subject_key: str | None = None,
+        cell: str | None = None,
+    ) -> tuple[Fact, SourceSegment]:
+        """Append one cell of this rendition and the Source Fact it materializes.
+
+        ``value`` is the cell's exact text.  What the Fact says is whatever
+        that text materializes to under the Fact type's released
+        transformation, so a caller cannot state a value its own cell does not
+        reproduce.  Capturing one cell twice replays: the commands return the
+        segment and the Fact they already wrote rather than a second copy.
+        """
+
+        subject = subject_key if subject_key is not None else self.subject_key
+        segment = self.segment(value, cell=cell)
+        with _as_capability_login(self.session):
             materialized = materialize_segment_value(self.session, fact_type, segment)
             fact = append_fact(
                 self.session,
