@@ -69,6 +69,11 @@ _Avoid_: rejection of the underlying statement, Processing Failure, a hidden tim
 An attempt that did not complete the required processing contract, including transport failure, exhausted resource budget, or invalid output, with its failure record preserved.
 _Avoid_: successful Abstention, successful processing because the Project Record did not change
 
+**Capture Correction Retirement**:
+The recorded relationship that ends a Proposed Delta's actionable life because the capture it depended on was corrected, identifying the correction request, the challenged and corrected captures, the accepted revision and comparison rule the recomparison used, and its executing identity. The proposal leaves active Review and stays in history with any prior Defer receipt and Follow-up history; a Technical Operations actor authorizes and executes it, and no accepted value changes. A Corridor-specific relationship, internally `DeltaCaptureCorrection`, not an established construction term and not a verbatim W3C PROV concept ([ADR-0101](../adr/0101-a-corrected-capture-retires-its-obsolete-proposed-delta-through-a-dedicated-append-only-relationship.md), [terminology research](../research/capture-correction-retirement-terminology-2026-09-11.md)).
+_Customer label_: described in plain words, such as Corridor corrected its reading of this source, and never named to a customer as a type
+_Avoid_: Keep current, a rejected proposed change, a newer source version superseding it, a Defer, deletion, erasing the proposal from history
+
 **Statement Needing Clarification**:
 An extracted External Party Statement whose attribution, timing, or affected Constraints still needs a permitted human decision before the relevant fact can be recorded.
 _Customer label_: Statement to review, naming the missing fact
