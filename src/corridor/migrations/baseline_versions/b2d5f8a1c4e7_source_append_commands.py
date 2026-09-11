@@ -160,6 +160,7 @@ from corridor.migrations.source_append_commands import (
     baseline_format_manifest,
     baseline_record,
     capture_correction,
+    capture_correction_retirement,
     coverage_preparation,
     delta_deduplication,
     environment_binding,
@@ -1558,6 +1559,14 @@ def upgrade() -> None:
     # nothing later in the revision names `document_quarantines`.
     processing_holds.upgrade(op)
 
+    # --- ADR-0101 What a corrected capture established, and what it retires -
+    # After `capture_correction`, whose request relation its composite foreign
+    # key names, and after `review_packets` and the spine relations the rest of
+    # the binding resolves against. Before the sibling transitions, because
+    # `email_spine` and `minutes_spine` create the bulk supersession sweeps
+    # that skip a delta this block's relation has retired.
+    capture_correction_retirement.upgrade(op)
+
     from corridor.migrations import email_spine
 
     email_spine.upgrade(op, APPEND_NATIVE_SOURCE_SEGMENTS, APPEND_FACT)
@@ -1617,8 +1626,14 @@ def downgrade() -> None:
     project_contacts.downgrade(op)
     email_spine.downgrade(op)
 
+    # --- ADR-0101 What a corrected capture established, and what it retires -
+    # First among the feature reversals, because the upgrade added it last,
+    # and before the request relation and the Proposed Delta relations its
+    # composite foreign keys name unwind.
+    capture_correction_retirement.downgrade(op)
+
     # --- #919 A hold says which processing stage it prohibits -------------
-    # First among the feature reversals, because the upgrade added it last. It
+    # Next, because the upgrade added it second from the end. It
     # refuses rather than collapsing a source held for several reasons, or
     # resurrecting a released hold, into the one row per document the
     # supported predecessor holds.

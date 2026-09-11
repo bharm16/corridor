@@ -306,6 +306,35 @@
           {%- if delta.deferred_until %}
           <p class="quiet">Deferred until {{ delta.deferred_until }}.</p>
           {%- endif %}
+          {#- ADR-0101's approved words, and the proof each is linked to: the
+              retained report, the capture that was challenged, the corrected
+              capture and its Support Assessment, and the comparison this
+              conclusion was drawn under. The item left active Review; it did
+              not leave the record. -#}
+          {%- if delta.capture_correction %}
+          <p class="quiet">
+            <strong>{{ delta.capture_correction.headline }}</strong>
+            {{ delta.capture_correction.explanation }}
+          </p>
+          <p class="quiet">
+            Reported as extraction-error report {{ delta.capture_correction.request_id }}
+            against capture {{ delta.capture_correction.challenged_fact_id }}.
+            {%- if delta.capture_correction.corrected_fact_id %}
+            The corrected capture is {{ delta.capture_correction.corrected_fact_id }},
+            held to this source by Support Assessment
+            {{ delta.capture_correction.corrected_support_assessment_id }}.
+            {%- endif %}
+            Compared under rule {{ delta.capture_correction.comparison_rule_version }}
+            {%- if delta.capture_correction.accepted_revision_id %} against revision
+            {{ delta.capture_correction.accepted_revision_id }}{% endif %},
+            authorized by {{ delta.capture_correction.authorized_by_principal }}
+            and performed by {{ delta.capture_correction.executed_by }}.
+            {%- if delta.capture_correction.replacement_delta_id %}
+            The corrected proposal is proposed change
+            {{ delta.capture_correction.replacement_delta_id }}.
+            {%- endif %}
+          </p>
+          {%- endif %}
           {%- for packet in delta.packets %}
           <p class="quiet">
             Answered {{ packet.outcome }} in

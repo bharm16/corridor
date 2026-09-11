@@ -286,8 +286,15 @@ def test_public_fingerprint_discovers_all_current_tables_and_sequences_read_only
     # `document_quarantines` primary key moves off `document_id` onto a
     # surrogate `id`, so one document may carry several independent
     # restrictions. One sequence, no new table.
-    assert fingerprint.table_count == 233
-    assert fingerprint.sequence_count == 212
+    # ADR-0101 adds the two relations the correction lifecycle needs --
+    # `capture_correction_results`, the whole proof one source-grounded
+    # correction rests on, and `delta_capture_corrections`, the append-only
+    # relationship that retires the obsolete proposal -- each keyed by its own
+    # bigserial: two tables, two sequences. Its command, the two helper
+    # functions every terminal writer calls, and the guards that refuse every
+    # other write are schema objects the digest reads and neither count does.
+    assert fingerprint.table_count == 235
+    assert fingerprint.sequence_count == 214
     assert fingerprint.schema_object_count > 0
     assert len(fingerprint.schema_sha256) == 64
     assert [item.name for item in fingerprint.tables] == sorted(

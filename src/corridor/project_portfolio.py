@@ -132,6 +132,7 @@ from corridor.release_candidate import (
 from corridor.review_packet_reading import (
     PARTITION_RULE_VERSION,
     accepted_revision_ids_by_project,
+    capture_corrected_delta_ids_by_project,
     live_deferrals_by_project,
     proposed_deltas_by_project,
     resolved_delta_ids_by_project,
@@ -343,6 +344,7 @@ def derive_standings(
     deltas = proposed_deltas_by_project(session, project_ids)
     resolved = resolved_delta_ids_by_project(session, project_ids)
     superseded = superseding_delta_ids_by_project(session, project_ids)
+    corrected = capture_corrected_delta_ids_by_project(session, project_ids)
     schedules = live_deferrals_by_project(session, project_ids)
     standing = standing_accepted_revisions_by_project(session, project_ids)
     accepted = accepted_revision_ids_by_project(session, project_ids)
@@ -352,6 +354,7 @@ def derive_standings(
             deltas.get(project_id, ()),
             resolved=resolved.get(project_id, set()),
             superseded_by=superseded.get(project_id, {}),
+            capture_corrected=corrected.get(project_id, set()),
             schedules=schedules.get(project_id, {}),
             standing=standing.get(project_id, {}),
             as_of=as_of,

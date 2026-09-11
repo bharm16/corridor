@@ -409,6 +409,10 @@ create function public.defer_proposed_delta(
             if found then
                 return deferral_id;
             end if;
+            -- One delta carries at most one terminal relationship, and a
+            -- concurrent competing act serialises here rather than each
+            -- reading an empty table (ADR-0101).
+            perform public.lock_proposed_delta_terminal(p_delta_id);
             if exists (
                 select 1 from delta_dispositions where delta_id = p_delta_id
             ) then
@@ -419,6 +423,12 @@ create function public.defer_proposed_delta(
                 select 1 from delta_supersessions where prior_delta_id = p_delta_id
             ) then
                 raise exception 'resolve_delta:superseded_delta Proposed Delta % was superseded by a newer source version', p_delta_id
+                    using errcode='23514';
+            end if;
+            -- A scheduled return to a comparison that no longer exists is a
+            -- return to nothing (ADR-0101).
+            if public.proposed_delta_capture_correction(p_delta_id) is not null then
+                raise exception 'resolve_delta:capture_corrected_delta Proposed Delta % left Review because its source reading was corrected, so there is nothing to schedule a return to', p_delta_id
                     using errcode='23514';
             end if;
             insert into delta_deferrals (

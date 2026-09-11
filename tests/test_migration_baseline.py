@@ -156,7 +156,23 @@ EXPECTED_SCHEMA_SHA256 = (
     # that one release. No relation is added, so the table count is unchanged
     # and the sequence count rises by one. Recomputed against a fresh
     # disposable database with template reuse off.
-    "9d20e431a4abcc4b65ce6a32ead2bd018d02b2ebff2830ee830ab35a8dac4a86"
+    # ADR-0101 adds the correction lifecycle the `withdraw_for_no_change`
+    # refusal was holding open: `capture_correction_results`, the whole proof
+    # one source-grounded correction rests on, and `delta_capture_corrections`,
+    # the append-only relationship that retires the obsolete proposal, with one
+    # row per delta so a retry is the same act and two competing retirements
+    # serialise on the index. Two relations and two sequences, their command,
+    # the guard that refuses every other write, and a partition policy each.
+    # Two further functions, called by commands created earlier in the
+    # revision: `lock_proposed_delta_terminal`, the advisory lock every
+    # terminal writer takes so a competing pair cannot both commit, and
+    # `proposed_delta_capture_correction`, the one predicate they all ask
+    # instead of four copies. `resolve_proposed_delta_decision`,
+    # `defer_proposed_delta` and `record_delta_follow_up_plan` each gain that
+    # lock and that refusal, and the two bulk supersession sweeps skip a
+    # retired delta. Recomputed against a fresh disposable database with
+    # template reuse off.
+    "91fff0728ca264910756e5be59c69183c227d5fc1080d11393f4653fcdb459f8"
 )
 
 pytestmark = [pytest.mark.slow, pytest.mark.migration]
@@ -285,6 +301,7 @@ COMPOSED_UPGRADE = (
     "onboarding_authorization",
     "source_authorization",
     "processing_holds",
+    "capture_correction_retirement",
     # The sibling transitions this revision has always carried at the end, and
     # the PUBLIC sweep that runs last of all because it reads the catalog every
     # block above has finished writing.
@@ -309,6 +326,7 @@ COMPOSED_DOWNGRADE = (
     "minutes_spine",
     "project_contacts",
     "email_spine",
+    "capture_correction_retirement",
     "processing_holds",
     "source_authorization",
     "onboarding_authorization",

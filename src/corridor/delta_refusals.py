@@ -96,6 +96,17 @@ REFUSAL_VOCABULARY: tuple[RefusalCode, ...] = (
     ),
     RefusalCode("ambiguous_effective_decision", REFUSED, DATABASE_ONLY),
     RefusalCode("append_only", REFUSED, DATABASE_ONLY),
+    # ADR-0101's stale Apply, in the words the maintainer approved.  The
+    # middle sentence is the one that cannot be dropped: silence, a generic
+    # conflict, or a page that quietly drops the row all leave a person
+    # believing they applied something they did not.
+    RefusalCode(
+        "capture_corrected_delta",
+        REFUSED,
+        BOTH,
+        "This proposal can no longer be applied because its source reading "
+        "was corrected. Nothing was applied. View the correction result.",
+    ),
     RefusalCode("constrained_edit", CONSTRAINED_EDIT, PYTHON_PRECHECK),
     RefusalCode("cross_project_delta", REFUSED, BOTH),
     RefusalCode(
@@ -184,6 +195,7 @@ REVIEW_PACKET_VOCABULARY: tuple[RefusalCode, ...] = (
     RefusalCode("already_closed", REFUSED, DATABASE_ONLY),
     RefusalCode("already_resolved", REFUSED, BOTH),
     RefusalCode("already_reversed", REFUSED, DATABASE_ONLY),
+    RefusalCode("capture_corrected_delta", REFUSED, BOTH),
     RefusalCode("child_identity_mismatch", REFUSED, DATABASE_ONLY),
     RefusalCode("cross_project_delta", REFUSED, BOTH),
     RefusalCode("cross_project_plan", REFUSED, DATABASE_ONLY),

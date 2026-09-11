@@ -38,6 +38,7 @@ __all__ = [
     "DELTA_EFFECT_KINDS",
     "DELTA_ORGANIZATION_CHANGE_KINDS",
     "DELTA_TARGET_TYPES",
+    "DeltaCaptureCorrection",
     "DeltaDecisionSupport",
     "DeltaDeferral",
     "DeltaDisposition",
@@ -52,8 +53,10 @@ __all__ = [
     "DeltaReviewPacketSupport",
     "DeltaSupersession",
     "CANCELLATION_REASONS",
+    "CAPTURE_CORRECTION_OUTCOMES",
     "CLOSURE_KINDS",
     "CaptureCorrectionRequest",
+    "CaptureCorrectionResult",
     "OutgoingRequest",
     "OutgoingRequestPlan",
     "OutgoingRequestResponse",
@@ -1338,6 +1341,212 @@ class CaptureCorrectionRequest(Base):
     reported_by_principal: Mapped[str] = mapped_column(String(128))
     reported_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     idempotency_key: Mapped[str] = mapped_column(String(160))
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+# --- ADR-0101's correction lifecycle (#836, #842) --------------------------
+
+#: What one source-grounded correction investigation concluded. Spelled here
+#: beside the relation so the Python and the command's own check constraint
+#: cannot name different sets.
+CAPTURE_CORRECTION_OUTCOMES = ("no_change", "still_differs", "inconclusive")
+
+
+class CaptureCorrectionResult(Base):
+    """What one source-grounded correction established, with its whole proof (#842).
+
+    ADR-0101 is explicit that a corrected Source Fact alone does not prove "no
+    difference": that conclusion also depends on which accepted revision was
+    read and which comparison rule was applied. So this row carries the
+    complete proof rather than a pair of foreign keys -- the request that
+    caused the investigation, the exact challenged capture by immutable
+    identity and digest, the corrected capture with the Support Assessment
+    holding it to the retained source, the accepted revision, the comparison
+    rule version, the conclusion, the replacement proposal where there is one,
+    the responsible operations actor beside the identity that executed the
+    work, and an idempotency identity.
+
+    ``outcome`` is one of ``CAPTURE_CORRECTION_OUTCOMES``. ``inconclusive`` is
+    a result and not a failure to record: ADR-0101 forbids claiming a
+    successful correction from missing or ambiguous evidence, so that outcome
+    carries no corrected capture, no accepted revision and no replacement, and
+    retires nothing.
+
+    Written only by ``record_capture_correction_result``, the record-decision
+    role's command; a guard trigger refuses every other write.
+    """
+
+    __tablename__ = "capture_correction_results"
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id", "id", name="uq_capture_correction_results_project_id"
+        ),
+        UniqueConstraint(
+            "project_id",
+            "idempotency_key",
+            name="uq_capture_correction_results_key",
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "request_id"],
+            [
+                "capture_correction_requests.project_id",
+                "capture_correction_requests.id",
+            ],
+            name="fk_capture_correction_results_request",
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "delta_id"],
+            ["proposed_deltas.project_id", "proposed_deltas.id"],
+            name="fk_capture_correction_results_delta",
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "replacement_delta_id"],
+            ["proposed_deltas.project_id", "proposed_deltas.id"],
+            name="fk_capture_correction_results_replacement",
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "document_id", "challenged_fact_id"],
+            ["facts.project_id", "facts.document_id", "facts.id"],
+            name="fk_capture_correction_results_challenged_capture",
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "document_id", "corrected_fact_id"],
+            ["facts.project_id", "facts.document_id", "facts.id"],
+            name="fk_capture_correction_results_corrected_capture",
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "corrected_support_assessment_id"],
+            ["support_assessments.project_id", "support_assessments.id"],
+            name="fk_capture_correction_results_support",
+        ),
+        CheckConstraint(
+            "challenged_fact_sha256 ~ '^[0-9a-f]{64}$'",
+            name="ck_capture_correction_results_challenged_digest",
+        ),
+        CheckConstraint(
+            "outcome in ('no_change', 'still_differs', 'inconclusive')",
+            name="ck_capture_correction_results_outcome",
+        ),
+        CheckConstraint(
+            "(outcome = 'no_change'"
+            " and corrected_fact_id is not null"
+            " and corrected_support_assessment_id is not null"
+            " and accepted_revision_id is not null"
+            " and replacement_delta_id is null)"
+            " or (outcome = 'still_differs'"
+            " and corrected_fact_id is not null"
+            " and corrected_support_assessment_id is not null"
+            " and replacement_delta_id is not null)"
+            " or (outcome = 'inconclusive'"
+            " and corrected_fact_id is null"
+            " and corrected_support_assessment_id is null"
+            " and accepted_revision_id is null"
+            " and replacement_delta_id is null)",
+            name="ck_capture_correction_results_outcome_shape",
+        ),
+        CheckConstraint(
+            "length(btrim(comparison_rule_version)) > 0",
+            name="ck_capture_correction_results_rule",
+        ),
+        CheckConstraint(
+            "length(btrim(finding)) > 0 and length(finding) <= 2000",
+            name="ck_capture_correction_results_finding",
+        ),
+        CheckConstraint(
+            "length(btrim(authorized_by_principal)) > 0",
+            name="ck_capture_correction_results_authorized_by",
+        ),
+        CheckConstraint(
+            "length(btrim(executed_by)) > 0",
+            name="ck_capture_correction_results_executed_by",
+        ),
+        CheckConstraint(
+            "length(btrim(idempotency_key)) > 0",
+            name="ck_capture_correction_results_key_text",
+        ),
+        Index(
+            "ix_capture_correction_results_delta_id", "project_id", "delta_id"
+        ),
+        Index(
+            "ix_capture_correction_results_request_id", "project_id", "request_id"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    request_id: Mapped[int] = mapped_column(BigInteger)
+    delta_id: Mapped[int] = mapped_column(BigInteger)
+    document_id: Mapped[int] = mapped_column(BigInteger)
+    challenged_fact_id: Mapped[int] = mapped_column(BigInteger)
+    challenged_fact_sha256: Mapped[str] = mapped_column(String(64))
+    corrected_fact_id: Mapped[int | None] = mapped_column(BigInteger)
+    corrected_support_assessment_id: Mapped[int | None] = mapped_column(BigInteger)
+    accepted_revision_id: Mapped[int | None] = mapped_column(
+        ForeignKey("project_record_revisions.id")
+    )
+    comparison_rule_version: Mapped[str] = mapped_column(String(64))
+    outcome: Mapped[str] = mapped_column(String(32))
+    replacement_delta_id: Mapped[int | None] = mapped_column(BigInteger)
+    finding: Mapped[str] = mapped_column(Text)
+    authorized_by_principal: Mapped[str] = mapped_column(String(128))
+    executed_by: Mapped[str] = mapped_column(String(128))
+    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    written_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    idempotency_key: Mapped[str] = mapped_column(String(160))
+
+
+class DeltaCaptureCorrection(Base):
+    """This proposal is no longer an actionable comparison; its capture was corrected.
+
+    ADR-0101's ``DeltaCaptureCorrection``, and the whole of its assertion. It
+    is not a decision about what the record should show, not a claim that a
+    coordinator concluded anything, and not a newer source version arriving --
+    which is why it is neither a ``DeltaDisposition`` nor a
+    ``DeltaSupersession``, both of which would have been false entries.
+
+    One row per Proposed Delta, held by ``uq_delta_capture_corrections_delta``:
+    that is what makes an exact retry the same act rather than a second one,
+    and it is the index two competing retirements serialise on. The row is
+    append-only; a retirement recorded in error is answered by the
+    recomparison that follows a further corrected capture, not by an edit.
+
+    Standing stays derived, so this is read the way the other three terminal
+    relationships are read: a row exists, or it does not.
+    """
+
+    __tablename__ = "delta_capture_corrections"
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id", "id", name="uq_delta_capture_corrections_project_id"
+        ),
+        UniqueConstraint("delta_id", name="uq_delta_capture_corrections_delta"),
+        ForeignKeyConstraint(
+            ["project_id", "delta_id"],
+            ["proposed_deltas.project_id", "proposed_deltas.id"],
+            name="fk_delta_capture_corrections_delta",
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "result_id"],
+            [
+                "capture_correction_results.project_id",
+                "capture_correction_results.id",
+            ],
+            name="fk_delta_capture_corrections_result",
+        ),
+        Index(
+            "ix_delta_capture_corrections_result_id", "project_id", "result_id"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    delta_id: Mapped[int] = mapped_column(BigInteger)
+    result_id: Mapped[int] = mapped_column(BigInteger)
+    retired_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     recorded_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

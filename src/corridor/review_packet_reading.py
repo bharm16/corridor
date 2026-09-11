@@ -133,6 +133,7 @@ from corridor.delta_resolution import (
     ChildDecisionRequest,
 )
 from corridor.models import (
+    DeltaCaptureCorrection,
     DeltaDeferral,
     DeltaDisposition,
     DeltaGroup,
@@ -167,7 +168,18 @@ SUPPORTED_RULE_VERSIONS = frozenset({PARTITION_RULE_VERSION})
 # one word never means two things across the seam.
 ACTIONABLE = "actionable"
 SUPERSEDED = "superseded"
-STANDINGS = (ACTIONABLE, DEFERRED, STALE, SUPERSEDED, RESOLVED)
+# ADR-0101's third exit, spelled the way `delta_resolution.live_delta_status`
+# and the shadow seal's SQL re-derivation spell it, so one word never means two
+# things across the seam.
+CAPTURE_CORRECTED = "capture_corrected"
+STANDINGS = (
+    ACTIONABLE,
+    DEFERRED,
+    STALE,
+    SUPERSEDED,
+    CAPTURE_CORRECTED,
+    RESOLVED,
+)
 
 # Why a scheduled Proposed Delta is back in immediate work (ADR-0084, #835).
 # A deferral holds a delta out until *something* happens, and until #835 the
@@ -538,13 +550,20 @@ def current_deltas(
 
 
 def open_deltas(session: Session, *, project_id: int) -> tuple[ProposedDelta, ...]:
-    """Current and unresolved: ADR-0083's open state, deferrals included."""
+    """Current and unresolved: ADR-0083's open state, deferrals included.
+
+    A delta whose capture was corrected is not open either (ADR-0101): it is
+    out of the actionable set for a reason of its own, and a per-document
+    "still unresolved" count that included it would send a coordinator looking
+    for a comparison Corridor has already withdrawn.
+    """
 
     resolved = _resolved_ids(session, project_id)
+    corrected = _capture_corrected_ids(session, project_id)
     return tuple(
         delta
         for delta in current_deltas(session, project_id=project_id)
-        if delta.id not in resolved
+        if delta.id not in resolved and delta.id not in corrected
     )
 
 
@@ -616,6 +635,31 @@ def superseding_delta_ids_by_project(
         ).where(DeltaSupersession.project_id.in_(ids))
     ).all():
         found[int(project_id)][int(prior)] = int(superseding) if superseding is not None else None
+    return found
+
+
+def capture_corrected_delta_ids_by_project(
+    session: Session, project_ids: Sequence[int]
+) -> dict[int, set[int]]:
+    """Every delta retired because the capture it rested on was corrected.
+
+    ADR-0101's ``DeltaCaptureCorrection``, read the way the other three
+    terminal relationships are read: a row exists, or it does not. It is a
+    terminal reason and not a schedule, so there is nothing here to compare
+    against a cutoff -- a comparison whose basis is gone is gone whatever the
+    reading's as-of instant is.
+    """
+
+    ids, any_ids = _by_project(project_ids)
+    found: dict[int, set[int]] = {project_id: set() for project_id in ids}
+    if not any_ids:
+        return found
+    for project_id, delta_id in session.execute(
+        select(
+            DeltaCaptureCorrection.project_id, DeltaCaptureCorrection.delta_id
+        ).where(DeltaCaptureCorrection.project_id.in_(ids))
+    ).all():
+        found[int(project_id)].add(int(delta_id))
     return found
 
 
@@ -766,6 +810,7 @@ def standing_sets(
     *,
     resolved: set[int],
     superseded_by: Mapping[int, int | None],
+    capture_corrected: set[int] = frozenset(),
     schedules: Mapping[int, DeltaDeferral],
     standing: Mapping[tuple[str, str], int],
     as_of: datetime,
@@ -775,13 +820,21 @@ def standing_sets(
     Pure: it opens no session and reads no clock.  ``as_of`` is the cutoff its
     caller declared, and "a newer source version arrived" is answered from
     append-only identifier order exactly as ADR-0084 requires.
+
+    ``capture_corrected`` is ADR-0101's third exit, and it is applied with the
+    other two rather than after scheduling: a deferred delta whose capture was
+    corrected is retired *without being woken*, because a scheduled return to a
+    comparison that no longer exists is a return to nothing.
     """
 
-    # Open under ADR-0083, before scheduling and staleness are considered.
+    # Open under ADR-0083 as ADR-0101 amends it, before scheduling and
+    # staleness are considered.
     open_rows = [
         delta
         for delta in deltas
-        if delta.id not in resolved and delta.id not in superseded_by
+        if delta.id not in resolved
+        and delta.id not in superseded_by
+        and delta.id not in capture_corrected
     ]
     stale_ids = frozenset(
         delta.id for delta in open_rows if is_stale(delta, standing)
@@ -958,6 +1011,7 @@ def read_open_deltas(
 
     resolved = _resolved_ids(session, project_id)
     superseded_by = _superseded_by(session, project_id)
+    capture_corrected = _capture_corrected_ids(session, project_id)
     schedules = _live_deferrals(session, project_id)
     standing = standing_accepted_revisions(session, project_id=project_id)
 
@@ -965,6 +1019,7 @@ def read_open_deltas(
         deltas,
         resolved=resolved,
         superseded_by=superseded_by,
+        capture_corrected=capture_corrected,
         schedules=schedules,
         standing=standing,
         as_of=as_of,
@@ -1007,6 +1062,13 @@ def read_open_deltas(
                     standing=SUPERSEDED,
                     superseded_by_delta_id=superseded_by[delta.id],
                 )
+            )
+        elif delta.id in capture_corrected:
+            # ADR-0101's order: after a disposition and a supersession, and
+            # before a live deferral, because a deferred delta whose capture
+            # was corrected is retired without being woken.
+            standings.append(
+                DeltaStanding(delta_id=delta.id, standing=CAPTURE_CORRECTED)
             )
         elif delta.id in stale_ids:
             standings.append(
@@ -1467,3 +1529,9 @@ def _superseded_by(session: Session, project_id: int) -> dict[int, int | None]:
 
 def _live_deferrals(session: Session, project_id: int) -> dict[int, DeltaDeferral]:
     return live_deferrals_by_project(session, (project_id,)).get(project_id, {})
+
+
+def _capture_corrected_ids(session: Session, project_id: int) -> set[int]:
+    return capture_corrected_delta_ids_by_project(session, (project_id,)).get(
+        project_id, set()
+    )

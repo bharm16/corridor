@@ -98,6 +98,7 @@ from corridor.models import (
     DeltaRecordDecision,
     DeltaReviewPacketChild,
     DeltaReviewPacketReversal,
+    DeltaCaptureCorrection,
     DeltaSupersession,
     Fact,
     FactDecision,
@@ -159,6 +160,32 @@ EXTERNAL_FACT_FIELDS = frozenset(
 # The outcome statuses, the refusal codes, their declared customer sentences,
 # and which half of the write boundary raises each one live in `delta_refusals`
 # and are imported above, so no raise site here writes a status of its own.
+
+
+class ContradictoryDeltaStanding(RuntimeError):
+    """One Proposed Delta carries more than one terminal relationship.
+
+    A delta is resolved, superseded, or retired because its capture was
+    corrected -- never two of those (ADR-0101).  Every write command takes
+    ``lock_proposed_delta_terminal`` and refuses under it, so this cannot
+    arise from concurrent acts; what it can arise from is an import, or
+    retained history written before the guards existed.
+
+    It is raised rather than resolved by precedence because the honest answer
+    is that the record contradicts itself and a person has to look.  Returning
+    the first word the order happens to reach would hide the contradiction in
+    exactly the place a reader would trust it most.
+    """
+
+    def __init__(self, delta_id: int, carried: tuple[str, ...]) -> None:
+        self.delta_id = delta_id
+        self.carried = carried
+        super().__init__(
+            f"Proposed Delta {delta_id} carries {len(carried)} terminal "
+            f"relationships at once ({', '.join(carried)}); a delta has at "
+            "most one, so this record contradicts itself and the precedence "
+            "order must not be asked to settle it"
+        )
 
 
 class DeltaResolutionRefused(ValueError):
@@ -433,25 +460,56 @@ def delta_effect_kind(delta: ProposedDelta, *, contradiction: bool = False) -> s
 
 
 def live_delta_status(session: Session, delta_id: int) -> str:
-    """open, resolved, superseded, or deferred, derived and never stored.
+    """open, resolved, superseded, capture_corrected, or deferred, derived and never stored.
 
     Deliberately clockless: this answers whether an act on the delta is
     lawful, and that answer must not change with the hour.  Whether a
     deferred delta is *visible* on this week's Work List is the reading's
     question, not this one's, and it belongs to #494 with the return date
     (ADR-0084, ADR-0085).
+
+    The order is ADR-0101's, and the retirement sits third deliberately: a
+    deferred delta whose capture was corrected is retired *without being
+    woken*, because a scheduled return to a comparison that no longer exists is
+    a return to nothing.  The order is how a reader picks one word for valid
+    history; it is not what stops two terminal relationships being written, and
+    ADR-0101 is explicit that it must not be asked to be.  That is enforced at
+    every write, by the advisory lock `lock_proposed_delta_terminal` and by the
+    guards each command takes under it.
     """
 
-    if session.scalar(
-        select(DeltaDisposition.id).where(DeltaDisposition.delta_id == delta_id)
-    ):
-        return "resolved"
-    if session.scalar(
-        select(DeltaSupersession.id).where(
-            DeltaSupersession.prior_delta_id == delta_id
+    resolved, superseded, corrected = session.execute(
+        select(
+            select(DeltaDisposition.id)
+            .where(DeltaDisposition.delta_id == delta_id)
+            .exists(),
+            select(DeltaSupersession.id)
+            .where(DeltaSupersession.prior_delta_id == delta_id)
+            .exists(),
+            select(DeltaCaptureCorrection.id)
+            .where(DeltaCaptureCorrection.delta_id == delta_id)
+            .exists(),
         )
-    ):
-        return "superseded"
+    ).one()
+    # All three are read before any is returned, deliberately.  Reading them
+    # in precedence order and returning the first would make the order the
+    # thing that decides what a contradictory record means, which is exactly
+    # what ADR-0101 forbids: "the shared readers may use the order to present
+    # valid history; they should not be the mechanism that makes contradictory
+    # writes appear harmless."
+    carried = tuple(
+        name
+        for name, present in (
+            ("resolved", resolved),
+            ("superseded", superseded),
+            ("capture_corrected", corrected),
+        )
+        if present
+    )
+    if len(carried) > 1:
+        raise ContradictoryDeltaStanding(int(delta_id), carried)
+    if carried:
+        return carried[0]
     if session.scalar(
         select(DeltaDeferral.id)
         .where(DeltaDeferral.delta_id == delta_id)
@@ -561,7 +619,7 @@ def validate_child_decision(
         )
 
     status = live_delta_status(session, delta.id)
-    if status in ("resolved", "superseded"):
+    if status in ("resolved", "superseded", "capture_corrected"):
         return _delta_state_refusal(session, delta, status)
 
     effect_kind = delta_effect_kind(delta, contradiction=request.contradiction)
@@ -668,10 +726,21 @@ def refresh_context(session: Session, delta: ProposedDelta) -> dict[str, Any]:
 
 
 def _delta_state_refusal(
-    session: Session, delta: ProposedDelta, status: str
+    session: Session, delta: ProposedDelta, status: str, *, detail: str | None = None
 ) -> Refusal:
+    """Why this delta is no longer one to act on, in the declared vocabulary.
+
+    ``detail`` is passed only where the declared sentence is the wrong voice
+    for the act: the approved words for a corrected capture say that nothing
+    was *applied*, which is exactly right for Apply and wrong for scheduling a
+    return date.
+    """
+
     return _refusal(
-        "already_resolved" if status == "resolved" else "superseded_delta",
+        "already_resolved"
+        if status == "resolved"
+        else ("superseded_delta" if status == "superseded" else "capture_corrected_delta"),
+        detail=detail,
         delta_id=delta.id,
         **refresh_context(session, delta),
     )
@@ -1138,8 +1207,18 @@ def defer_delta(
             refusal=refusal,
         )
     status = live_delta_status(session, delta.id)
-    if status in ("resolved", "superseded"):
-        refusal = _delta_state_refusal(session, delta, status)
+    if status in ("resolved", "superseded", "capture_corrected"):
+        refusal = _delta_state_refusal(
+            session,
+            delta,
+            status,
+            detail=(
+                "this proposed change left Review because its source reading "
+                "was corrected, so there is nothing to schedule a return to"
+                if status == "capture_corrected"
+                else None
+            ),
+        )
         _emit_refusal(binding, request, refusal)
         return ResolutionOutcome(
             status=REFUSED, delta_id=delta.id, action=DEFER, refusal=refusal

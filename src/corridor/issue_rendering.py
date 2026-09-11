@@ -117,6 +117,7 @@ from corridor.models import (
     DeltaDeferral,
     DeltaDisposition,
     DeltaRecordDecision,
+    DeltaCaptureCorrection,
     DeltaSupersession,
     FactDecision,
     FactSource,
@@ -1325,6 +1326,16 @@ def _unaccepted_deltas(
         DeltaDisposition.project_id == reading.project_id,
         DeltaDisposition.disposition.in_(ACCEPTED_DISPOSITIONS),
     )
+    # A proposal Corridor withdrew because it had misread the source is not an
+    # unaccepted proposed change an issue owes the reader (ADR-0101). It is a
+    # comparison that turned out to have no valid basis, so it leaves the
+    # disclosure rather than joining it under a new state word: nobody deferred
+    # it, nobody kept the current value, and no newer revision replaced it. The
+    # correction result and the retirement are in the record history, which is
+    # where a reader who remembers the item goes looking for it.
+    capture_corrected = select(DeltaCaptureCorrection.delta_id).where(
+        DeltaCaptureCorrection.project_id == reading.project_id
+    )
     ceiling = int(reading.preparation.get("through_delta_id") or 0)
     deltas = tuple(
         session.scalars(
@@ -1333,6 +1344,7 @@ def _unaccepted_deltas(
                 ProposedDelta.project_id == reading.project_id,
                 ProposedDelta.id <= ceiling,
                 ProposedDelta.id.not_in(accepted),
+                ProposedDelta.id.not_in(capture_corrected),
             )
             .order_by(ProposedDelta.id)
         ).all()

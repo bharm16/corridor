@@ -53,6 +53,7 @@ from corridor.migrations.source_append_commands.roles import (
 RESOLVE_DELTA_REFUSAL_CODES = (
     "already_effective",
     "already_resolved",
+    "capture_corrected_delta",
     "ambiguous_effective_decision",
     "append_only",
     "cross_project_delta",
@@ -357,6 +358,13 @@ create function public.resolve_proposed_delta_decision(
                 raise exception 'resolve_delta:cross_project_delta Proposed Delta % is not this project''s to resolve', p_delta_id
                     using errcode='23514';
             end if;
+            -- One delta carries at most one terminal relationship, and the
+            -- order the readers present them in is not what enforces that
+            -- (ADR-0101).  Every command that writes one takes this lock
+            -- before it looks, so a decision racing a capture-correction
+            -- retirement serialises: one wins and the other reads the
+            -- winner's row below.
+            perform public.lock_proposed_delta_terminal(p_delta_id);
             if exists (
                 select 1 from delta_dispositions where delta_id = p_delta_id
             ) then
@@ -367,6 +375,13 @@ create function public.resolve_proposed_delta_decision(
                 select 1 from delta_supersessions where prior_delta_id = p_delta_id
             ) then
                 raise exception 'resolve_delta:superseded_delta Proposed Delta % was superseded by a newer source version', p_delta_id
+                    using errcode='23514';
+            end if;
+            -- ADR-0101's stale Apply.  A form rendered while this comparison
+            -- existed, submitted after operations corrected the capture it
+            -- rested on, applies nothing and is told why.
+            if public.proposed_delta_capture_correction(p_delta_id) is not null then
+                raise exception 'resolve_delta:capture_corrected_delta This proposal can no longer be applied because its source reading was corrected. Nothing was applied. View the correction result.'
                     using errcode='23514';
             end if;
 
@@ -613,6 +628,7 @@ create function public.defer_proposed_delta(
                 raise exception 'resolve_delta:cross_project_delta Proposed Delta % is not this project''s to defer', p_delta_id
                     using errcode='23514';
             end if;
+            perform public.lock_proposed_delta_terminal(p_delta_id);
             if exists (
                 select 1 from delta_dispositions where delta_id = p_delta_id
             ) then
@@ -623,6 +639,12 @@ create function public.defer_proposed_delta(
                 select 1 from delta_supersessions where prior_delta_id = p_delta_id
             ) then
                 raise exception 'resolve_delta:superseded_delta Proposed Delta % was superseded by a newer source version', p_delta_id
+                    using errcode='23514';
+            end if;
+            -- Scheduling a retired proposal would put a return date on a
+            -- comparison that no longer exists (ADR-0101).
+            if public.proposed_delta_capture_correction(p_delta_id) is not null then
+                raise exception 'resolve_delta:capture_corrected_delta Proposed Delta % left Review because its source reading was corrected, so there is nothing to schedule a return to', p_delta_id
                     using errcode='23514';
             end if;
             insert into delta_deferrals (

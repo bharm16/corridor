@@ -157,7 +157,12 @@ begin
       and d.source_family = 'email-thread:' || p_thread::text
       and d.id is distinct from p_delta
       and not exists (select 1 from delta_dispositions where delta_id = d.id)
-      and not exists (select 1 from delta_supersessions where prior_delta_id = d.id);
+      and not exists (select 1 from delta_supersessions where prior_delta_id = d.id)
+      -- A delta retired because its capture was corrected is not superseded by
+      -- a newer reading either; it already left the actionable set with its own
+      -- explanation, and this sweep passes over it exactly as it passes over a
+      -- decided one (ADR-0101).
+      and public.proposed_delta_capture_correction(d.id) is null;
     return reading_id;
 end; $$;
 alter function append_email_thread_reading(bigint,bigint,bigint,text,bigint,bigint,bigint,jsonb,text,text)

@@ -34,6 +34,7 @@ declare
     disposition record;
     supersession record;
     deferral record;
+    correction_result bigint;
     sealed_deltas jsonb := '[]'::jsonb;
     frozen_at timestamptz;
     watermark bigint;
@@ -106,9 +107,13 @@ begin
            or (item->>'created_at')::timestamptz is distinct from native_row.created_at then
             raise exception 'shadow delta differs from native values' using errcode='23514';
         end if;
-        -- Preserve #518's disposition > supersession > active deferral order.
+        -- Preserve #518's disposition > supersession > capture-correction
+        -- retirement > active deferral order (ADR-0101). The SQL re-derivation
+        -- moves with the Python: a reader that answers "is this delta
+        -- actionable?" answers it the same way everywhere.
         state := jsonb_build_object('delta_id',native_row.id,'status','open',
-          'disposition',null,'deferred_until',null,'wake_condition',null,'superseded_by_delta_id',null);
+          'disposition',null,'deferred_until',null,'wake_condition',null,'superseded_by_delta_id',null,
+          'capture_correction_result_id',null);
         select * into disposition from public.delta_dispositions where delta_id=native_row.id;
         if found then
             state := state || jsonb_build_object('status','resolved','disposition',disposition.disposition);
@@ -117,9 +122,14 @@ begin
             if found then
                 state := state || jsonb_build_object('status','superseded','superseded_by_delta_id',supersession.superseding_delta_id);
             else
-                select * into deferral from public.delta_deferrals where delta_id=native_row.id order by id desc limit 1;
-                if found and (deferral.deferred_until is null or deferral.deferred_until > frozen_at) then
-                    state := state || jsonb_build_object('status','deferred','deferred_until',deferral.deferred_until,'wake_condition',deferral.wake_condition);
+                correction_result := public.proposed_delta_capture_correction(native_row.id);
+                if correction_result is not null then
+                    state := state || jsonb_build_object('status','capture_corrected','capture_correction_result_id',correction_result);
+                else
+                    select * into deferral from public.delta_deferrals where delta_id=native_row.id order by id desc limit 1;
+                    if found and (deferral.deferred_until is null or deferral.deferred_until > frozen_at) then
+                        state := state || jsonb_build_object('status','deferred','deferred_until',deferral.deferred_until,'wake_condition',deferral.wake_condition);
+                    end if;
                 end if;
             end if;
         end if;

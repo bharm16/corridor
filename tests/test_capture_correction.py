@@ -15,9 +15,10 @@ that decision turns on:
   capture and its original evidence;
 * nothing the request records overwrites the disputed Source Fact or its
   Source Segment; and
-* a correction that establishes no change has no exit in the declared Proposed
-  Delta lifecycle, so the seam refuses and names the missing relationship
-  rather than inventing a disposition.
+* a correction that establishes no change cannot leave through either exit
+  the declared Proposed Delta lifecycle offered, which is why ADR-0101 gave it
+  a relationship of its own; the lifecycle half is proved in
+  ``tests/test_capture_correction_retirement.py``.
 
 The fixture is an organization change, which the partition holds out of its
 source revision's batch.  That makes it a focused item carrying exactly one
@@ -49,7 +50,6 @@ from corridor.capture_correction import (
     CONTROL_PASSAGE,
     CORRECTION_CONTROL,
     CORRECTION_SUPPORTING_TEXT,
-    NO_CHANGE_EXIT_UNAVAILABLE,
     PASSAGE_MATCH_LIMIT,
     CaptureCorrectionRefused,
     build_correction_request,
@@ -60,7 +60,6 @@ from corridor.capture_correction import (
     record_correction_request,
     reported_corrections,
     resolve_challenged_capture,
-    withdraw_for_no_change,
 )
 from corridor.delta_resolution import live_delta_status
 from corridor.models import (
@@ -540,30 +539,27 @@ def test_an_incomplete_request_names_the_control_that_holds_it(
     assert refused.value.delta_id == child.delta_id
 
 
-# --- the no-change outcome, and the relationship that does not exist -------
+# --- the no-change outcome, and why its exit is a relationship of its own ---
 
 
-def test_a_correction_that_establishes_no_change_has_no_recorded_exit(
+def test_neither_lifecycle_exit_can_carry_a_no_change_correction(
     session: Session, project: Project
 ):
-    """ADR-0100 instructs #836 to state the missing relationship, so it is named.
+    """Why ADR-0101 added a relationship instead of reusing one of the two.
 
-    The refusal is the statement, and the second half is the evidence for it:
-    the only exit the lifecycle offers that is not a coordinator decision is
-    ``DeltaSupersession``, and PostgreSQL refuses one that names no superseding
-    delta, inbound thread reading or minutes capture -- which is every
-    correction of the same source version.
+    This module's own refusal is gone, because the thing it was holding open
+    now exists (``capture_correction_retirement``, and the properties ADR-0101
+    requires are proved in ``tests/test_capture_correction_retirement.py``).
+    What stays here is the evidence that asked for it, because it is evidence
+    about *this* seam: the only exit the lifecycle offered that is not a
+    coordinator decision is ``DeltaSupersession``, and PostgreSQL refuses one
+    that names no superseding delta, inbound thread reading or minutes
+    capture -- which is every correction of the same source version. A later
+    change that thinks it can reuse supersession fails here first.
     """
 
     built = Misread(session, project)
     request = built.request()
-
-    with pytest.raises(CaptureCorrectionRefused) as refused:
-        withdraw_for_no_change(request)
-
-    assert refused.value.reason == "relationship_not_decided"
-    assert str(refused.value) == NO_CHANGE_EXIT_UNAVAILABLE
-    assert refused.value.delta_id == request.capture.delta_id
 
     with pytest.raises(IntegrityError, match="ck_delta_supersessions_successor"):
         with session.begin_nested():

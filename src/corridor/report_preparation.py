@@ -63,6 +63,7 @@ from corridor.due_work_contract import (
     validate_scheduling,
 )
 from corridor.models import (
+    DeltaCaptureCorrection,
     DeltaDeferral,
     DeltaDisposition,
     DeltaSupersession,
@@ -148,9 +149,12 @@ def execute_report_preparation(
         or 0
     )
 
-    # An open delta is one no disposition resolved and no newer revision
-    # superseded. ADR-0084 keeps a live deferral out of the actionable count
-    # without pretending the delta was resolved.
+    # An open delta is one no disposition resolved, no newer revision
+    # superseded, and no capture correction retired. ADR-0084 keeps a live
+    # deferral out of the actionable count without pretending the delta was
+    # resolved; ADR-0101 keeps a proposal whose capture was corrected out of
+    # both counts, because a prepared package must not go on claiming an open
+    # question that no longer exists.
     open_ids = set(
         session.scalars(
             select(ProposedDelta.id).where(
@@ -158,6 +162,7 @@ def execute_report_preparation(
                 ProposedDelta.id <= delta_ceiling,
                 ~ProposedDelta.id.in_(select(DeltaDisposition.delta_id)),
                 ~ProposedDelta.id.in_(select(DeltaSupersession.prior_delta_id)),
+                ~ProposedDelta.id.in_(select(DeltaCaptureCorrection.delta_id)),
             )
         ).all()
     )
