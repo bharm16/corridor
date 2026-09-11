@@ -499,7 +499,9 @@ def delta_effect_kind(delta: ProposedDelta, *, contradiction: bool = False) -> s
 # --- Reading the delta and its accepted context ---------------------------
 
 
-def reversed_disposition_ids(*, through_revision_id: int | None = None):
+def reversed_disposition_ids(
+    *, through_revision_id: int | None = None, as_of: datetime | None = None
+):
     """Every disposition a packet Undo has taken out of force (#948, ADR-0035).
 
     ADR-0035 says Undo "reverses every result of that guided Save and returns
@@ -512,9 +514,15 @@ def reversed_disposition_ids(*, through_revision_id: int | None = None):
 
     ``through_revision_id`` bounds it for an as-of reading: a reversal takes
     effect in the compensating Project Record revision it opened, so a reading
-    frozen at an earlier revision still sees the decision standing.  A
-    deferral-only reversal opens no revision, and it can never name a
-    disposition, so nothing is lost by excluding it from a bounded reading.
+    frozen at an earlier revision still sees the decision standing.  ``as_of``
+    bounds it on the wall-clock axis the same way ``undone_follow_up_plan_ids``
+    bounds the plan-creating reversal, for a reader whose revision and instant
+    diverge: a prepared issue reads the current accepted revision as of an
+    earlier source cutoff, and a decision undone *after* that cutoff was still
+    standing at it, so its plan must not reappear early.  A caller bounded on
+    one axis passes only that one.  A deferral-only reversal opens no revision,
+    and it can never name a disposition, so nothing is lost by excluding it from
+    a bounded reading.
 
     A standalone resolution belongs to no packet, so no reversal can name it
     and it stays in force -- which is what that command has always done.
@@ -535,6 +543,8 @@ def reversed_disposition_ids(*, through_revision_id: int | None = None):
         query = query.where(
             DeltaReviewPacketReversal.revision_id <= through_revision_id
         )
+    if as_of is not None:
+        query = query.where(DeltaReviewPacketReversal.reversed_at <= as_of)
     return query
 
 

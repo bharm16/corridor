@@ -31,6 +31,7 @@ from typing import Any, Mapping, Sequence
 
 from sqlalchemy import select
 
+from corridor.delta_resolution import reversed_disposition_ids
 from corridor.models import (DeltaFollowUpPlan, DeltaFollowUpPlanClosure, ProposedDelta,
     DeltaCaptureCorrection, DeltaRecordDecision, DeltaSupersession, DeltaFollowUpPlanEvidence,
     SupportAssessmentSource, DeltaReviewPacketChild, DeltaReviewPacketReversal)
@@ -141,8 +142,24 @@ def read_adopted_follow_up_plans(session, project_id, revision_id, *, current, a
         ProposedDelta, (ProposedDelta.id == DeltaFollowUpPlan.delta_id)
         & (ProposedDelta.project_id == DeltaFollowUpPlan.project_id)).where(
         DeltaFollowUpPlan.project_id == project_id, DeltaFollowUpPlan.revision_id <= revision_id)
+    # A decision the coordinator undid is retained history and settles nothing,
+    # so the question it answered is the customer's to answer again (#948, #961,
+    # ADR-0035). This reading reads a reversed decision the way
+    # ``live_delta_status`` and ``effective_dispositions`` read one -- an undone
+    # decision resolves nothing -- rather than seeing the retained decision row
+    # and calling the delta resolved forever, which left a still-live plan out
+    # of the reading after an Undo. The reversal is bounded on both axes this
+    # reading is: its compensating revision, so a reading frozen at an earlier
+    # revision still sees the decision standing; and its wall clock, so a
+    # prepared issue reading the current revision as of an earlier source cutoff
+    # does not surface a plan a reversal after that cutoff returned.
     resolved = select(DeltaRecordDecision.delta_id).where(
-        DeltaRecordDecision.project_id == project_id, DeltaRecordDecision.revision_id <= revision_id)
+        DeltaRecordDecision.project_id == project_id,
+        DeltaRecordDecision.revision_id <= revision_id,
+        ~DeltaRecordDecision.disposition_id.in_(
+            reversed_disposition_ids(through_revision_id=revision_id, as_of=as_of)
+        ),
+    )
     if as_of is not None:
         resolved = resolved.where(DeltaRecordDecision.decided_at <= as_of)
     query = query.where(~DeltaFollowUpPlan.delta_id.in_(resolved))

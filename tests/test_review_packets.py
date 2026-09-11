@@ -38,6 +38,7 @@ from corridor.delta_resolution import (
     UNSUPPORTED,
     CapturedSupport,
     ChildDecisionRequest,
+    ContradictoryDeltaResolution,
     FreeText,
     RecordEffect,
     live_delta_status,
@@ -1156,6 +1157,64 @@ def test_undo_reverses_the_complete_packet_when_no_later_act_depends_on_it(
     assert live_delta_status(session, deferred.id) == "open"
     assert session.get(DeltaDeferral, saved.children[1].deferral_id) is not None
     assert live_delta_status(session, applied.id) == "open"
+
+
+def test_the_batched_resolved_reading_refuses_two_effective_decisions(
+    session: Session, project: Project
+) -> None:
+    """The bulk resolved set reads a contradiction the way its siblings do (#961).
+
+    ``resolved_delta_ids_by_project`` is what the portfolio counts its offer
+    from, and it collected delta ids into a set -- so two decisions in force on
+    one delta collapsed into one ordinary "resolved" entry, exactly the
+    integrity fault ``effective_dispositions`` and ``live_delta_status`` refuse
+    to answer by taking whichever the order reaches first.  Only the
+    record-decision role or a corrupt import can write the second row; no
+    command will.
+    """
+
+    delta = _delta(session, project)
+    saved = resolve_review_packet(
+        session,
+        _packet(
+            project,
+            (
+                PacketChildRequest(
+                    delta_id=delta.id,
+                    outcome=KEEP_CURRENT,
+                    observed_source_revision=delta.source_revision,
+                ),
+            ),
+        ),
+    )
+    assert saved.status == SAVED
+    # One effective disposition: the delta is in the resolved set exactly once.
+    assert resolved_delta_ids_by_project(session, (project.id,)) == {
+        project.id: {delta.id}
+    }
+
+    # A second in-force disposition on the same delta, written as the only
+    # principal the guard trigger admits.
+    with as_role(session, RECORD_DECISION_ROLE):
+        session.execute(
+            text(
+                "insert into delta_dispositions ("
+                "project_id, delta_id, generation, disposition,"
+                " decided_by_principal, decided_at"
+                ") values (:project_id, :delta_id, 1, 'reject', :principal, :at)"
+            ),
+            {
+                "project_id": project.id,
+                "delta_id": delta.id,
+                "principal": ALICE.subject,
+                "at": DECIDED_AT,
+            },
+        )
+
+    with pytest.raises(ContradictoryDeltaResolution) as contradiction:
+        resolved_delta_ids_by_project(session, (project.id,))
+    assert contradiction.value.delta_id == delta.id
+    assert contradiction.value.generations == (0, 1)
 
 
 def test_undo_of_a_deferral_only_packet_writes_no_revision(

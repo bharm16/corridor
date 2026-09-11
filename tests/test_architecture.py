@@ -955,6 +955,11 @@ TEST_ACCEPTED_AUTHORITY_WRITES = frozenset({
     ("test_project_partition_and_offboarding.py", "fact_decisions"),
     ("test_project_partition_and_offboarding.py", "project_record_revisions"),
     ("test_release_authorization.py", "project_baseline_formats"),
+    # The raw statement *is* what this one proves too: two dispositions in force
+    # on one delta is a record no command writes (#948), and the only way to put
+    # the batched resolved reader in front of the contradiction is to fabricate
+    # the second row as an import or old history would have.
+    ("test_review_packets.py", "delta_dispositions"),
     ("test_review_packets.py", "delta_review_packet_receipts"),
 })
 
