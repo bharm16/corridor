@@ -20,6 +20,7 @@ import httpx
 import pytest
 from sqlalchemy import func, select
 
+from corridor import processing_holds
 from corridor import audit
 from corridor import source_intake
 from corridor.config import settings
@@ -52,7 +53,6 @@ from corridor.models import (
     AuditLog,
     DiscoveredReference,
     Document,
-    DocumentQuarantine,
     Project,
     SourceFetchAttempt,
 )
@@ -477,7 +477,16 @@ def test_operations_view_keeps_cases_visible_with_reason_and_next_step(session, 
     )
     session.add(schedule_doc)
     session.flush()
-    session.add(DocumentQuarantine(document_id=schedule_doc.id, reason="work sequencing is not modeled"))
+    processing_holds.impose_hold(
+        session,
+        document_id=schedule_doc.id,
+        prohibited_stage=processing_holds.SEMANTIC_EXTRACTION,
+        reason_code=processing_holds.UNMODELED_SEQUENCING_SEMANTICS,
+        reason="work sequencing is not modeled",
+        authority=processing_holds.PROCESSING_RULE,
+        imposed_by="tests.test_location_discovery",
+        evidence=f"documents.id={schedule_doc.id} doc_type='schedule'",
+    )
     _failed_document(session, project, _pdf(), filename="broken.pdf")
     session.flush()
 
@@ -486,7 +495,10 @@ def test_operations_view_keeps_cases_visible_with_reason_and_next_step(session, 
     kinds = {i.kind for i in view.held_documents}
     assert {"held_quarantined", "parse_failed"} <= kinds
     quarantined = next(i for i in view.held_documents if i.kind == "held_quarantined")
-    assert "sequencing" in quarantined.permitted_next_step and "matrix" not in quarantined.reason
+    assert quarantined.permitted_next_step == (
+        "held; the document may be read and not interpreted"
+    )
+    assert "matrix" not in quarantined.reason
     parse_failed = next(i for i in view.held_documents if i.kind == "parse_failed")
     assert parse_failed.permitted_next_step == "run the bounded parse recovery"
 

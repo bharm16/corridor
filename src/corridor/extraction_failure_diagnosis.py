@@ -46,6 +46,7 @@ from corridor.bounded_explanation import (
     execute_bounded_explanation,
     sanitize_text,
 )
+from corridor import processing_holds
 from corridor.models import (
     DocPage,
     Document,
@@ -349,10 +350,23 @@ def failed_extraction_runs(
     )
 
 
-def _quarantine_reason(quarantine: DocumentQuarantine | None) -> str:
-    if quarantine is None:
+def _quarantine_reason(holds: Sequence[DocumentQuarantine]) -> str:
+    """Every standing restriction, each with the stage it prohibits (#919).
+
+    A document may be held for several independent reasons at once, so this
+    reads them all rather than one. The prohibited stage travels with the
+    reason, because "held" on its own no longer says what is prohibited.
+    """
+
+    if not holds:
         return "none"
-    return sanitize_text(quarantine.reason, max_len=_MAX_TEXT)
+    return sanitize_text(
+        "; ".join(
+            f"{hold.prohibited_stage}: {hold.reason}"
+            for hold in sorted(holds, key=lambda hold: hold.id)
+        ),
+        max_len=_MAX_TEXT,
+    )
 
 
 def _page_state(pages: Iterable[DocPage]) -> list[dict]:
@@ -373,7 +387,7 @@ def _failure_state_token(
     document_id: int,
     superseded_by: object,
     run: ExtractionRun,
-    quarantine: DocumentQuarantine | None,
+    holds: Sequence[DocumentQuarantine],
     pages: Iterable[DocPage],
 ) -> str:
     return _sha(
@@ -384,7 +398,7 @@ def _failure_state_token(
             "outcome": run.outcome,
             "page_errors": run.page_errors,
             "has_error_detail": run.error_detail is not None,
-            "quarantine_reason": _quarantine_reason(quarantine),
+            "quarantine_reason": _quarantine_reason(holds),
             "pages": _page_state(pages),
         }
     )
@@ -404,7 +418,7 @@ def failure_diagnosis_state_token(
         document_id=document_id,
         superseded_by=document.superseded_by if document is not None else None,
         run=run,
-        quarantine=session.get(DocumentQuarantine, document_id),
+        holds=processing_holds.open_holds(session, document_id),
         pages=session.scalars(
             select(DocPage)
             .where(DocPage.document_id == document_id)
@@ -417,7 +431,7 @@ def failure_diagnosis_state_tokens(
     session: Session,
     *,
     documents: Sequence[Document],
-    quarantines: Mapping[int, DocumentQuarantine],
+    quarantines: Mapping[int, Sequence[DocumentQuarantine]],
     runs_by_document: Mapping[int, Sequence[ExtractionRun]],
 ) -> dict[int, dict[int, str]]:
     """Every failed attempt's token for a whole project, in one page query.
@@ -442,7 +456,7 @@ def failure_diagnosis_state_tokens(
                 document_id=document.id,
                 superseded_by=document.superseded_by,
                 run=run,
-                quarantine=quarantines.get(document.id),
+                holds=quarantines.get(document.id, ()),
                 pages=pages_by_document.get(document.id, ()),
             )
             for run in failed_runs_among(runs_by_document.get(document.id, ()))
@@ -452,7 +466,7 @@ def failure_diagnosis_state_tokens(
 
 
 def _failure_snapshot(
-    run: ExtractionRun, document: Document, quarantine: DocumentQuarantine | None
+    run: ExtractionRun, document: Document, holds: Sequence[DocumentQuarantine]
 ) -> dict:
     def _s(value: object) -> str:
         return "unknown" if value is None else sanitize_text(value, max_len=_MAX_TEXT)
@@ -468,7 +482,7 @@ def _failure_snapshot(
         "document_doc_type": _s(document.doc_type),
         "document_parse_status": _s(document.parse_status),
         "document_page_count": _s(document.pages),
-        "quarantine_reason": _quarantine_reason(quarantine),
+        "quarantine_reason": _quarantine_reason(holds),
         "completed_at": _s(
             run.completed_at.isoformat() if run.completed_at is not None else None
         ),
@@ -540,7 +554,7 @@ def _retained_context(
 
 def _read_fingerprint(session: Session, document_id: int, run: ExtractionRun) -> str:
     document = session.get(Document, document_id)
-    quarantine = session.get(DocumentQuarantine, document_id)
+    holds = processing_holds.open_holds(session, document_id)
     pages = session.scalars(
         select(DocPage)
         .where(DocPage.document_id == document_id)
@@ -553,7 +567,7 @@ def _read_fingerprint(session: Session, document_id: int, run: ExtractionRun) ->
         "doc_type": document.doc_type if document is not None else None,
         "parse_status": document.parse_status if document is not None else None,
         "page_count": document.pages if document is not None else None,
-        "quarantine_reason": _quarantine_reason(quarantine),
+        "quarantine_reason": _quarantine_reason(holds),
         "run": {
             "id": run.id,
             "outcome": run.outcome,
@@ -612,8 +626,8 @@ def prepare_failure_diagnosis(
         raise FailureDiagnosisRefused(
             "stale_input", "the failure context changed; refresh first"
         )
-    quarantine = session.get(DocumentQuarantine, document_id)
-    failure = _failure_snapshot(run, document, quarantine)
+    holds = processing_holds.open_holds(session, document_id)
+    failure = _failure_snapshot(run, document, holds)
     pages = _page_snapshots(session, document_id)
     input_sha256 = _sha(_model_input(document_id, run.id, failure, pages))
     read_fingerprint = _read_fingerprint(session, document_id, run)

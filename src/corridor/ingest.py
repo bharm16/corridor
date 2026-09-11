@@ -61,11 +61,11 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from corridor import processing_holds
 from corridor.models import (
     NUMBERING_SCHEMES,
     DocPage,
     Document,
-    DocumentQuarantine,
     PageProcessingFailure,
     ProcessingArtifact,
     SourceDelivery,
@@ -333,10 +333,17 @@ def ingest_document(
         # and that pass now really does take it: `_parse_landed_documents`
         # selects exactly this state (`corridor.project_processing`).
         # One document it selects and does not read: a held one, which that
-        # act skips rather than opening while #919 is unfinished. The register
-        # reads the hold before `pending` for the same reason, so such a
-        # document never prints the sentence above.
+        # act skips rather than opening: one whose hold prohibits reading
+        # (#919). The register reads that hold before `pending` for the same
+        # reason, so such a document never prints the sentence above.
         return document
+
+    # Direct parsing ingest asks the same stage-aware answer the standing pass
+    # asks, because a selector that filters rows does not bind a direct call
+    # (#919). A schedule registered a few lines above is held against semantic
+    # extraction and not against reading, so it still parses here; a document
+    # whose hold prohibits reading does not reach the reader at all.
+    processing_holds.assert_may_read_document(session, int(document.id))
 
     token_dir = Path(images_dir) / sha256
     pages = _read_document(document, path, token_dir)
@@ -468,6 +475,9 @@ def _backfill_registered_provenance(
     if numbering_scheme is not None:
         existing.numbering_scheme = numbering_scheme
     if parse:
+        # Re-registration of identical bytes still opens them with a rich
+        # reader, so it asks the same gate the first registration asked (#919).
+        processing_holds.assert_may_read_document(session, int(existing.id))
         if path.suffix.lower() == ".pdf":
             ingest_native_reader(
                 session, document=existing, path=path, images_dir=images_dir
@@ -532,6 +542,13 @@ def reparse_document(
 
     if document.parse_status == "parsed":
         raise ValueError("a successfully parsed document is never re-parsed as a retry")
+    # Every route into a rich read passes here -- the standing pass through
+    # `parse_registered_document`, the bounded recovery an operator runs, and
+    # the repair that re-admits a source -- so the stage-aware answer is asked
+    # here rather than in each of them (#919). The pass asks it once more of
+    # its own, inside the row claim it holds, because the answer it acts on has
+    # to be about the row that transaction locked.
+    processing_holds.assert_may_read_document(session, int(document.id))
     path = Path(path)
     token_dir = Path(images_dir) / document.sha256
     pages = _read_document(document, path, token_dir)
@@ -1127,25 +1144,37 @@ def _as_datetime(value: str | datetime | None) -> datetime | None:
 
 
 def _quarantine_unmodeled_semantics(session, document) -> None:
-    """Record the durable outcome for a document Corridor must not read.
+    """Record the durable outcome for a document Corridor must not interpret.
 
     A schedule's rows relate to each other — one work item must complete
     before another may start — and Corridor has no model for that relation
     (#149). The document is registered and visible; this row is the
-    project-level fact that it is deliberately unread, surviving process
-    exit rather than living in an operator's memory. Idempotent, so
-    re-ingest never duplicates it.
+    project-level fact that its relationships are deliberately not
+    interpreted, surviving process exit rather than living in an operator's
+    memory. Idempotent, so re-ingest never duplicates it.
+
+    **It prohibits semantic extraction, not reading (#919).** The rule this
+    writer applies establishes that the relationships cannot be interpreted
+    under the current contract; it establishes nothing at all about the bytes.
+    So the workbook is read into cells like any other, and its values keep
+    their exact locators and digests, while nothing takes meaning out of the
+    sequencing it asserts. Saying that on the row is the whole of #919's fix
+    here: the predecessor wrote a hold that the one gate over it read as a
+    prohibition on opening the file.
     """
     if document.doc_type != "schedule":
         return
-    if session.get(DocumentQuarantine, document.id) is None:
-        session.add(
-            DocumentQuarantine(
-                document_id=document.id,
-                reason=(
-                    "document-asserted work sequencing is not modeled; rows "
-                    "would keep their values and lose their relationships "
-                    "(#149)"
-                ),
-            )
-        )
+    processing_holds.impose_hold(
+        session,
+        document_id=int(document.id),
+        prohibited_stage=processing_holds.SEMANTIC_EXTRACTION,
+        reason_code=processing_holds.UNMODELED_SEQUENCING_SEMANTICS,
+        reason=(
+            "document-asserted work sequencing is not modeled; rows "
+            "would keep their values and lose their relationships "
+            "(#149)"
+        ),
+        authority=processing_holds.PROCESSING_RULE,
+        imposed_by="corridor.ingest._quarantine_unmodeled_semantics",
+        evidence=f"documents.id={int(document.id)} doc_type='schedule'",
+    )

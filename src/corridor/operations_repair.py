@@ -31,10 +31,12 @@ the same visible line an operator does, which is what the audit asked for.
 
 **Three things a repair may not do, and one it cannot.**
 
-- It may not release held bytes. ``intake_hardening.assert_can_process_richly``
-  is the existing gate over a quarantined document, and this calls it rather
-  than restating it; a malware finding keeps its own owner and its own act, and
-  nothing here deletes a ``document_quarantines`` row.
+- It may not release a recorded hold. ``processing_holds`` owns the
+  stage-aware answer over a held document, and this calls it rather than
+  restating it; a restriction keeps its own owner and its own act, and nothing
+  here releases one. A repair re-reads a source, so what it asks is whether
+  document reading is permitted: a source held only against semantic extraction
+  is not what this procedure is about, and its own exclusion is act 2's.
 - It may not supply a customer authorization. A source whose retained Processing
   Failures name the provider boundary's ``authorization-absent`` or
   ``authorization-refused`` is not a mechanical failure: reading it again reads
@@ -92,12 +94,8 @@ from typing import Sequence
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from corridor import access, audit, refusals
+from corridor import access, audit, processing_holds, refusals
 from corridor.baseline_adoption import effective_baseline_formats
-from corridor.intake_hardening import (
-    HostileContentRefused,
-    assert_can_process_richly,
-)
 from corridor.models import (
     AuditLog,
     Document,
@@ -408,20 +406,21 @@ def _require_technical_operations(
 
 
 def _refuse_held_bytes(session: Session, document_id: int) -> None:
-    """A document held out of processing keeps its own owner and its own act.
+    """A document nobody may read keeps its own owner and its own act.
 
-    The gate is ``intake_hardening``'s, called rather than restated, and its
-    sentence is the one a person reads. Nothing here removes the quarantine: a
-    generic release control over every hold is exactly what #842 refuses, and a
-    malware finding is not a mechanical failure to retry.
+    The gate is ``processing_holds``', called rather than restated, and the
+    recorded reasons are the words a person reads. Nothing here releases a
+    restriction: a generic release control over every hold is exactly what #842
+    refuses, and the act that lifts one is ``processing_holds.release_hold``,
+    which needs the evidence that removed its cause (#919).
     """
 
     try:
-        assert_can_process_richly(session, document_id)
-    except HostileContentRefused as exc:
+        processing_holds.assert_may_read_document(session, document_id)
+    except processing_holds.ProcessingHoldInForce as exc:
         raise OperationsRepairRefused(
             "held_in_quarantine",
-            f"this source is held and is not processed: {exc.reason} A repair "
+            f"this source is held and is not processed: {exc}. A repair "
             "does not release held bytes, and nothing here lifts a hold.",
         ) from exc
 

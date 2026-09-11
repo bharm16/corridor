@@ -22,7 +22,7 @@ from sqlalchemy import select
 
 from corridor.config import settings
 from corridor.extraction_runs import record_extraction_run
-from corridor.intake_hardening import quarantine_document
+from corridor import processing_holds, source_register
 from corridor.models import Document, SourceDelivery
 from corridor.principals import HumanPrincipal
 from corridor.proposed_deltas import (
@@ -107,6 +107,26 @@ def _upload_and_confirm(
         principal=UPLOADER,
         source_delivery_id=received.delivery_id,
         parse=parse,
+    )
+
+
+def _hold_reading(session, document_id):
+    """One recorded restriction that prohibits reading this source (#919).
+
+    An intake-security finding rather than the schedule rule, because the two
+    now read differently on this page and the cases below are about the one
+    nothing may be read from.
+    """
+
+    return processing_holds.impose_hold(
+        session,
+        document_id=document_id,
+        prohibited_stage=processing_holds.DOCUMENT_READING,
+        reason_code=processing_holds.INTAKE_SECURITY_FINDING,
+        reason="an intake check refused these bytes for rich reading",
+        authority=processing_holds.INTAKE_SECURITY,
+        imposed_by="tests.test_source_register",
+        evidence=f"documents.id={document_id}",
     )
 
 
@@ -221,11 +241,7 @@ def test_the_processing_state_of_each_source_is_derived_from_its_own_receipts(
         allow_unsealed_legacy=True,
     )
     session.get(Document, failed.document_id).parse_status = "failed"
-    quarantine_document(
-        session,
-        held.document_id,
-        "document-asserted work sequencing is not modeled (#149)",
-    )
+    _hold_reading(session, held.document_id)
     session.flush()
 
     rows, _register = _rows(session, project)
@@ -234,7 +250,7 @@ def test_the_processing_state_of_each_source_is_derived_from_its_own_receipts(
     assert by_document[pending.document_id].state == "pending"
     assert by_document[processed.document_id].state == "processed"
     assert by_document[failed.document_id].state == "parse_failed"
-    assert by_document[held.document_id].state == "held_unmodeled"
+    assert by_document[held.document_id].state == source_register.READING_HELD
 
 
 def test_a_held_source_the_pass_will_skip_does_not_read_as_waiting_for_it(
@@ -263,9 +279,14 @@ def test_a_held_source_the_pass_will_skip_does_not_read_as_waiting_for_it(
     by_document = {row.document_id: row for row in rows.values()}
 
     assert session.get(Document, held.document_id).parse_status == "pending"
-    assert by_document[held.document_id].state == "held_unmodeled"
+    # The hold a schedule upload writes prohibits extraction and not reading,
+    # so the row reports both halves of the combined reading (#919): the pass
+    # really will read it, and extraction really is restricted.
+    assert by_document[held.document_id].state == (
+        source_register.PENDING_EXTRACTION_HELD
+    )
     assert by_document[held.document_id].state_words == (
-        "Held — its content is deliberately not read"
+        "Queued for document reading. Extraction is on hold."
     )
     assert "work sequencing is not modeled" in (
         by_document[held.document_id].recorded_reason
@@ -297,7 +318,7 @@ def test_a_source_no_extractor_reads_says_so_rather_than_waiting_forever(
 
     assert by_document[plan.document_id].state == NOT_EXTRACTED
     assert by_document[plan.document_id].state_words == (
-        "Registered — no extractor reads this kind of document"
+        "Document read. No extraction is required for this document type."
     )
     # Nothing is wrong and nobody has to act, so the row names nobody.
     assert by_document[plan.document_id].is_blocked is False
@@ -368,11 +389,7 @@ def test_a_blocked_row_names_one_owner_and_the_next_action(
     """Two owners, and a held file says what would change it rather than who."""
 
     _, held = _upload_and_confirm(session, project, marker="Held")
-    quarantine_document(
-        session,
-        held.document_id,
-        "document-asserted work sequencing is not modeled (#149)",
-    )
+    _hold_reading(session, held.document_id)
     _receive(session, project, _matrix_pdf("Staged"), filename="staged.pdf")
     session.flush()
 
@@ -381,14 +398,18 @@ def test_a_blocked_row_names_one_owner_and_the_next_action(
         row for row in rows.values() if row.state == AWAITING_CONFIRMATION
     )
     quarantined = next(
-        row for row in rows.values() if row.state == "held_unmodeled"
+        row for row in rows.values() if row.state == source_register.READING_HELD
     )
 
     assert waiting.owner == OWNER_YOU
     assert "confirm it there" in waiting.next_action
     assert quarantined.owner == OWNER_CORRIDOR_OPERATIONS
-    assert "models the relationship" in quarantined.next_action
-    assert "work sequencing is not modeled" in quarantined.recorded_reason
+    # The sentence says what is prohibited and who records the change. It does
+    # not assert why, which is the defect #920 surfaced and #919 owns: the
+    # predecessor claimed a cause that was already untrue of other holds.
+    assert "Nothing is read from this source" in quarantined.next_action
+    assert "models the relationship" not in quarantined.next_action
+    assert "an intake check refused these bytes" in quarantined.recorded_reason
     # A row nobody is waiting on names nobody.
     _, read = _upload_and_confirm(session, project, marker="Ordinary")
     ordinary = next(

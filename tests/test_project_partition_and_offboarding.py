@@ -1597,11 +1597,11 @@ PILOT_DOCUMENT_CHILD_RELATIONS = (
     "extraction_runs",
 )
 
-#: The column that names one row of each, because one of them is keyed by the
-#: document it belongs to rather than by a surrogate of its own.
+#: The column that names one row of each. Both are keyed by a surrogate of
+#: their own: #919 gave `document_quarantines` an `id`, because one document
+#: may carry several independent restrictions at once.
 PILOT_DOCUMENT_CHILD_KEYS = {
-    relation: "document_id" if relation == "document_quarantines" else "id"
-    for relation in PILOT_DOCUMENT_CHILD_RELATIONS
+    relation: "id" for relation in PILOT_DOCUMENT_CHILD_RELATIONS
 }
 
 # Every table privilege PostgreSQL can grant. A capability denied SELECT and
@@ -1730,8 +1730,13 @@ def _seed_pilot_partitioned_rows(owner, project_id: int, slug: str) -> dict[str,
     ).scalar_one()
     ids["document_quarantines"] = owner.execute(
         text(
-            "insert into document_quarantines (document_id, reason) "
-            "values (:document_id, cast(:slug as text)) returning document_id"
+            "insert into document_quarantines ("
+            "document_id, prohibited_stage, reason_code, reason, "
+            "imposed_by_authority, imposed_by, evidence"
+            ") values (:document_id, 'semantic_extraction', "
+            "'unmodeled_sequencing_semantics', cast(:slug as text), "
+            "'processing_rule', 'tests.partition_fixture', "
+            "cast(:slug as text)) returning id"
         ),
         {"document_id": document, "slug": slug},
     ).scalar_one()

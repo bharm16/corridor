@@ -198,6 +198,10 @@ RECOVER_DOCUMENT_PARSE = "recover_document_parse"
 # and the source register read, so an engineer who quietly fixed a project by
 # hand leaves the same visible receipt an operator does.
 REPAIR_SOURCE_PROCESSING = "repair_source_processing"
+# One recorded processing restriction lifted, citing what removed its cause,
+# or an unclassified historical one finally classified (#919). The hold row
+# keeps the release beside the reason; this is the act that made it.
+RELEASE_PROCESSING_HOLD = "release_processing_hold"
 # Nothing records these any more: the admission policies stopped asking
 # for a signature (ADR-0029). They stay named because the audit log is
 # append-only and still holds entries that carry them.
@@ -289,6 +293,7 @@ ACTIONS = frozenset(
         AUTHORIZE_DISCOVERED_REFERENCE,
         RECOVER_DOCUMENT_PARSE,
         REPAIR_SOURCE_PROCESSING,
+        RELEASE_PROCESSING_HOLD,
         AUTHORIZE_DEPENDENCY_ADMISSION,
         CLEAR_CONDITION,
         DISMISS_CONDITION,

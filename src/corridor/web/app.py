@@ -91,6 +91,7 @@ from corridor.telemetry import (
 )
 from corridor import access
 from corridor import project_processing_banner
+from corridor import processing_holds
 from corridor import source_register
 from corridor import web_boundary
 from corridor.web.artifact_downloads import (
@@ -385,7 +386,6 @@ from corridor.models import (
     DueWorkReceipt,
     DueWorkSchedule,
     DependencyAdmissionOutcome,
-    DocumentQuarantine,
     ExtractionRun,
     OutgoingRequest,
     PolicyRun,
@@ -3830,7 +3830,10 @@ def read_failure_diagnosis(
             "receipt": receipt,
             "failure": (receipt.source_context_json or {}).get("failure", {}),
             "pages": (receipt.source_context_json or {}).get("pages", []),
-            "quarantine": session.get(DocumentQuarantine, document.id),
+            "hold_lines": tuple(
+                processing_holds.hold_line(hold)
+                for hold in processing_holds.open_holds(session, int(document.id))
+            ),
         },
     )
 
@@ -9875,12 +9878,13 @@ def prepare_baseline(
             if isinstance(refused, refusals.Refusal)
             else 409,
         )
-    except HostileContentRefused as held:
+    except processing_holds.ProcessingHoldInForce as held:
         return _onboarding_page(
             request, project, membership, session, now=now,
             refusal=(
                 "This source is held and cannot be read further until Corridor "
-                "operations releases it."
+                "operations records what removes the restriction: "
+                + "; ".join(processing_holds.hold_line(hold) for hold in held.holds)
             ),
             status_code=409,
         )

@@ -198,7 +198,7 @@ class HeldSource:
     def sentence(self) -> str:
         """The three facts as one durable sentence, composed here.
 
-        ``DocumentQuarantine.reason`` is one column, so the three have to reach
+        A recorded hold's ``reason`` is one column, so the three have to reach
         a reader through it. The module that owns the words composes them; a
         processing pass or a template joining them would be minting a customer
         sentence away from the state it describes.

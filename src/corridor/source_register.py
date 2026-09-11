@@ -82,19 +82,25 @@ anything.  A read that fails leaves ``parse_failed`` here, which does name an
 owner -- that is the difference between unread and unreadable, and this page is
 where a coordinator sees it.
 
-**A held source is asked about before "waiting" is, because the pass will not
-take it.**  The hold used to be read after the parse status, so a source that
-was registered, unread and held printed "waiting for the processing pass" --
-and now that the read act asks the one rich-processing gate before it opens
-any bytes, that pass selects such a source and skips it, which turns the
-sentence into a promise nothing will keep.  The hold is read first, so the row
-says **Held** and names the act that would change it.  It says nothing more
-than that on purpose.  ``document_quarantines`` carries a free-text reason and
-no machine-readable stage, so what the row reports is an **unclassified**
-restriction: the recorded reason is printed as the record wrote it, and
-nothing here promotes an unclassified hold into a claim that the file is
-dangerous.  #919 decides what a hold may say about itself, and this reading
-changes with it.
+**A held source reports what is actually prohibited, combined with how far
+the reading got (#919).**  The hold used to be read after the parse status, so
+a registered, unread, held source printed "waiting for the processing pass"
+even where that pass would skip it.  Reading the hold first fixed the promise
+and introduced a different untruth: one word, *Held*, for two restrictions that
+mean opposite things to a coordinator.  A hold now says which stage it
+prohibits, so the register reads the two together.  A source nobody may read
+says so and names no reading.  A source held only against extraction says
+whether its reading is queued or done, *and* that extraction is on hold, because
+an extraction restriction is not a failure to read and a pending read does not
+erase the restriction.  A read that actually failed keeps its own words, except
+where reading is now prohibited outright -- there the failure's owner would be
+promising a re-read that the restriction refuses, which is the same lie in a
+different place.
+
+None of these sentences asserts *why* the source is held.  The recorded reason
+is printed beside the row exactly as its writer wrote it, and where a hold's
+scope was never recorded the row is an **unclassified** restriction rather than
+a claim that the file is dangerous.
 
 **No clock.**  Every ordering and every filter is read from the rows' own
 recorded times and from the caller's declared bounds, so two readings of the
@@ -112,13 +118,14 @@ from sqlalchemy.orm import Session
 
 from corridor.models import (
     DeltaGroup,
-    DocumentQuarantine,
     Document,
     ExtractionRun,
     Fact,
     SourceDelivery,
     SourceDeliveryConfirmation,
 )
+from corridor import processing_holds
+from corridor.processing_holds import ProcessingPermission
 from corridor.extraction_run_queries import extractable_document
 from corridor.operations_repair import (
     CORRECTED_MAPPING,
@@ -352,7 +359,7 @@ class _DocumentContext:
     number of deliveries.
     """
 
-    quarantines: Mapping[int, str]
+    holds: Mapping[int, ProcessingPermission]
     runs: Mapping[int, ExtractionRun]
     facts: Mapping[int, int]
     proposed: Mapping[int, int]
@@ -371,13 +378,17 @@ class _DocumentContext:
         if not ids:
             return cls({}, {}, {}, {}, {}, {}, {}, {}, {})
 
-        quarantines = {
-            int(document_id): str(reason)
-            for document_id, reason in session.execute(
-                select(
-                    DocumentQuarantine.document_id, DocumentQuarantine.reason
-                ).where(DocumentQuarantine.document_id.in_(ids))
-            ).all()
+        # Every restriction standing on each of these sources, as the one
+        # effective permission each row is read through (#919). A document may
+        # carry several independent ones, and the register reports what they
+        # permit together rather than the newest of them.
+        on_this_page = set(ids)
+        holds = {
+            document_id: processing_holds.permission_from(document_id, rows)
+            for document_id, rows in processing_holds.open_holds_for_project(
+                session, project_id
+            ).items()
+            if document_id in on_this_page
         }
         newest = session.execute(
             select(
@@ -443,7 +454,7 @@ class _DocumentContext:
             )
             replaces[int(successor)] = document.filename
         return cls(
-            quarantines=quarantines,
+            holds=holds,
             runs=runs,
             facts=facts,
             proposed=proposed,
@@ -488,6 +499,13 @@ CONFIRMED_NOT_REGISTERED = "confirmed_not_registered"
 # one source is left out of one issue, which is a human act at a cutoff rather
 # than a fact about the kind of document this is.
 NOT_EXTRACTED = "not_extracted"
+# The three readings a recorded restriction produces (#919). They are one state
+# each rather than one "held" state with a qualifier, because the filter above
+# the table selects on the state and a coordinator looking for what is actually
+# stopped must not have to open rows to find out which kind each one is.
+READING_HELD = "reading_held"
+PENDING_EXTRACTION_HELD = "pending_extraction_held"
+READ_EXTRACTION_HELD = "read_extraction_held"
 
 STATE_WORDS: Mapping[str, str] = {
     REFUSED_AT_INTAKE: "Refused at intake and not processed",
@@ -506,8 +524,14 @@ STATE_WORDS: Mapping[str, str] = {
     "unreadable": "Unreadable — the reader could not use it",
     "parse_failed": "Failed to parse — the file could not be read",
     "processing_failed": "Processing failed — a later pass will retry",
-    "held_unmodeled": "Held — its content is deliberately not read",
-    NOT_EXTRACTED: "Registered — no extractor reads this kind of document",
+    READING_HELD: "On hold — document reading is not permitted",
+    PENDING_EXTRACTION_HELD: (
+        "Queued for document reading. Extraction is on hold."
+    ),
+    READ_EXTRACTION_HELD: "Document read. Extraction is on hold.",
+    NOT_EXTRACTED: (
+        "Document read. No extraction is required for this document type."
+    ),
 }
 
 # The order the filter offers them in: what arrived, then what is waiting, then
@@ -519,7 +543,9 @@ STATE_ORDER: tuple[str, ...] = (
     "processed",
     ALREADY_RECEIVED,
     NOT_EXTRACTED,
-    "held_unmodeled",
+    PENDING_EXTRACTION_HELD,
+    READ_EXTRACTION_HELD,
+    READING_HELD,
     HELD_AT_INTAKE,
     REFUSED_AT_INTAKE,
     DELIVERY_INCOMPLETE,
@@ -543,7 +569,12 @@ _TONES: Mapping[str, str] = {
     "unreadable": "refused",
     "parse_failed": "refused",
     "processing_failed": "attention",
-    "held_unmodeled": "neutral",
+    # A deliberate extraction restriction is a settled fact about a source and
+    # nobody is waiting on it; an unclassified or security restriction on
+    # reading is something somebody owes an answer about, so it is not neutral.
+    PENDING_EXTRACTION_HELD: "neutral",
+    READ_EXTRACTION_HELD: "neutral",
+    READING_HELD: "attention",
     NOT_EXTRACTED: "neutral",
 }
 
@@ -601,11 +632,31 @@ _NEXT_ACTIONS: Mapping[str, tuple[str, str]] = {
         "A later pass retries this. Corridor Operations owns that retry, and "
         "nothing on this page changes it.",
     ),
-    "held_unmodeled": (
+    # None of the three asserts a cause. The sentence the predecessor carried
+    # here -- "Corridor does not model what this document asserts" -- was
+    # already untrue of a held delivered revision on the day it was written,
+    # because it named one hold's reason as though it were every hold's. What
+    # a row says now is what is prohibited and who records the change; the
+    # reason itself is printed beside the row from the record (#919).
+    READING_HELD: (
         OWNER_CORRIDOR_OPERATIONS,
-        "Corridor does not model what this document asserts, so it is "
-        "registered and deliberately unread. That changes when Corridor "
-        "models the relationship, not when the file is supplied again.",
+        "Nothing is read from this source while the recorded restriction "
+        "beside this row stands. Corridor Operations records what removes it, "
+        "or classifies it where its scope was never recorded. Nothing on this "
+        "page releases a hold, and supplying the file again does not.",
+    ),
+    PENDING_EXTRACTION_HELD: (
+        OWNER_CORRIDOR_OPERATIONS,
+        "Corridor reads this source on the standing pass; nobody has to do "
+        "anything for that. Nothing is extracted from it while the recorded "
+        "restriction beside this row stands, and Corridor Operations records "
+        "what removes it.",
+    ),
+    READ_EXTRACTION_HELD: (
+        OWNER_CORRIDOR_OPERATIONS,
+        "This source has been read and its passages are retained. Nothing is "
+        "extracted from it while the recorded restriction beside this row "
+        "stands, and Corridor Operations records what removes it.",
     ),
 }
 
@@ -766,7 +817,7 @@ def _document_row(document: Document, *, context: _DocumentContext) -> RegisterR
         state=state,
         tone=_tone(state, output),
         state_words=_words(state, output),
-        recorded_reason=context.quarantines.get(int(document.id), ""),
+        recorded_reason=_recorded_reason(document, context),
         owner=_NEXT_ACTIONS.get(state, ("", ""))[0],
         next_action=_NEXT_ACTIONS.get(state, ("", ""))[1],
         confirmed_by="",
@@ -800,8 +851,8 @@ def _delivery_state(
     if disposition == DISPOSITION_DUPLICATE and document is None:
         return ALREADY_RECEIVED, ""
     if document is not None:
-        return _document_state(document, context), context.quarantines.get(
-            int(document.id), ""
+        return _document_state(document, context), _recorded_reason(
+            document, context
         )
     if confirmation is not None:
         return CONFIRMED_NOT_REGISTERED, ""
@@ -813,29 +864,51 @@ def _delivery_state(
     return NOT_REGISTERED, ""
 
 
+def _recorded_reason(document: Document, context: _DocumentContext) -> str:
+    """Every standing restriction's own recorded words, unchanged.
+
+    Composed from the record rather than from the state, so a row that reports
+    two independent restrictions prints both. This page never parses these
+    words to work out what is permitted -- the permission is on the rows.
+    """
+
+    standing = context.holds.get(int(document.id))
+    return "" if standing is None else standing.recorded_reason
+
+
 def _document_state(document: Document, context: _DocumentContext) -> str:
     """The honest processing state of one registered source.
 
-    Derived, never stored: a failed parse reads as failed, a quarantined
-    document as held, an unreadable extraction as unreadable, and one the
-    standing pass has not reached yet as pending. None is ever relabelled a
-    success.
+    Derived, never stored, and read as one combined condition rather than as a
+    list of independent checks: what the recorded restrictions prohibit, and
+    how far the reading actually got. None is ever relabelled a success.
 
-    The hold is asked before ``pending``, and the order is the whole point: the
-    pass "waiting for the processing pass" names now skips a held source
-    instead of reading it, so deriving ``pending`` first printed a promise
-    nothing would keep. It is asked after ``parse_failed``, which is left
-    exactly where it was -- which of the two a source that failed *and* is held
-    should read as is part of what #919 settles, and inventing an answer here
-    is how a containment measure becomes a design. See the module docstring.
+    **The precedence, and why it falls this way (#919).** A prohibition on
+    reading comes first, ahead of ``parse_failed``, because the failure's own
+    sentence sends the coordinator to a re-read that the restriction refuses --
+    which is the same broken promise ``pending`` used to make, in a different
+    row. Below that, a failed parse keeps its own words even where extraction
+    is restricted, because an extraction restriction is not a claim that the
+    file could not be read. And a restriction on extraction alone never hides
+    the reading: the row says whether the read is queued or done *and* that
+    extraction is on hold, because a pending read does not erase the
+    restriction and the restriction does not mean the read failed.
     """
 
+    standing = context.holds.get(int(document.id))
+    if standing is not None and not standing.may_read_document:
+        return READING_HELD
+    extraction_held = standing is not None and not standing.may_extract_semantics
     if document.parse_status == "failed":
         return "parse_failed"
-    if int(document.id) in context.quarantines:
-        return "held_unmodeled"
     if document.parse_status != "parsed":
-        return "pending"
+        return PENDING_EXTRACTION_HELD if extraction_held else "pending"
+    if extraction_held:
+        # Asked before the run, because the run a held source carries is the
+        # `quarantined` receipt the restriction itself produced, and reading
+        # the state off that receipt would report the restriction as a
+        # processing failure a later pass retries.
+        return READ_EXTRACTION_HELD
     run = context.runs.get(int(document.id))
     if run is None:
         # "Waiting for the processing pass" is only true of a document a pass

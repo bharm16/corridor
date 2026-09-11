@@ -400,23 +400,56 @@ class DocumentRenditionDerivation(Base):
 
 
 class DocumentQuarantine(Base):
-    """The durable project-level fact that a registered document is held out.
+    """One recorded restriction on what may be done with one registered document.
 
     A document whose relationship semantics Corridor does not model — a
     Utility Work Schedule's Dependent Activity chain (#149) — is registered,
-    visible, and deliberately unread. This row is why: durable, queryable,
-    and never only in an operator's memory or a process's logs.
+    visible, and deliberately not interpreted. This row is why: durable,
+    queryable, and never only in an operator's memory or a process's logs.
+
+    **Each row names the processing stage it prohibits (#919).** Either
+    document reading is prohibited — no ordinary rich parsing, rendering, OCR
+    or downstream extraction — or semantic extraction alone is, in which case
+    authorized, bounded reading and Source Segment creation may proceed. The
+    row used to be keyed by ``document_id`` with one free-text ``reason``, so a
+    second restriction could only be recorded by overwriting the first and a
+    mapping repair could silently clear a safety finding. Several independent
+    restrictions now coexist as several rows, and the effective permission is
+    their intersection.
+
+    The row is append-only, and PostgreSQL enforces it: the one change a hold
+    accepts is the attributable release below, written once, with the evidence
+    that removes the restriction's cause. ``corridor.processing_holds`` is the
+    one module that reads and writes this relation — no caller builds the row
+    itself, because the stage, the authority permitted to impose it and the
+    evidence it must carry are that module's rules.
     """
 
     __tablename__ = "document_quarantines"
 
-    document_id: Mapped[int] = mapped_column(
-        ForeignKey("documents.id"), primary_key=True
-    )
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    document_id: Mapped[int] = mapped_column(ForeignKey("documents.id"), index=True)
+    # Which processing stage this restriction prohibits, in the maintainer's
+    # own two boundaries: ``document_reading`` or ``semantic_extraction``.
+    prohibited_stage: Mapped[str] = mapped_column(String(32))
+    # Why, machine-readably. The explanatory ``reason`` below is for people and
+    # is never parsed to recover a permission.
+    reason_code: Mapped[str] = mapped_column(String(64))
     reason: Mapped[str] = mapped_column(Text)
+    imposed_by_authority: Mapped[str] = mapped_column(String(32))
+    imposed_by: Mapped[str] = mapped_column(String(128))
+    evidence: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+    released_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=None
+    )
+    released_by_authority: Mapped[str | None] = mapped_column(
+        String(32), default=None
+    )
+    released_by: Mapped[str | None] = mapped_column(String(128), default=None)
+    release_evidence: Mapped[str | None] = mapped_column(Text, default=None)
 
 
 class DocPage(Base):

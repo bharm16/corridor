@@ -21,6 +21,7 @@ from uuid import uuid4
 
 from sqlalchemy import func, select
 
+from corridor import processing_holds
 from corridor.adjudicate import accept_candidate
 from corridor.extraction_runs import declare_active_run, record_extraction_run
 from corridor.ledger import mark_satisfies
@@ -29,7 +30,6 @@ from corridor.models import (
     Candidate,
     DocPage,
     Document,
-    DocumentQuarantine,
     EvidenceLink,
     ExternalOrg,
     PolicyRun,
@@ -283,11 +283,15 @@ def test_a_pair_without_a_declared_active_run_is_not_discovered(session):
 
 def test_a_held_document_yields_no_pair(session):
     scenario = _seed_transition(session)
-    session.add(
-        DocumentQuarantine(
-            document_id=scenario["successor_document_id"],
-            reason="dependent-activity chain not modelled",
-        )
+    processing_holds.impose_hold(
+        session,
+        document_id=scenario["successor_document_id"],
+        prohibited_stage=processing_holds.SEMANTIC_EXTRACTION,
+        reason_code=processing_holds.UNMODELED_SEQUENCING_SEMANTICS,
+        reason="dependent-activity chain not modelled",
+        authority=processing_holds.PROCESSING_RULE,
+        imposed_by="tests.test_revision_reconciliation",
+        evidence="documents.doc_type='schedule'",
     )
     session.flush()
     assert discover_revision_pairs(session, scenario["project_id"]) == ()

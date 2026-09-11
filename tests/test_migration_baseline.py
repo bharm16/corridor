@@ -144,7 +144,19 @@ EXPECTED_SCHEMA_SHA256 = (
     # `source_channel` / `source_configuration` pair is gone, which is why a
     # product upload was refused on a mailbox-activated deployment. Recomputed
     # against a fresh disposable database with template reuse off.
-    "304b1b4327d794375293a5524f050d31478343ede05878ae8ab59775f0d64916"
+    # #919 types the hold relation `document_quarantines` rather than adding a
+    # second list of blocked documents. It gains a surrogate `id` (+1 sequence,
+    # and the primary key moves off `document_id`, so one document may carry
+    # several independent restrictions), the prohibited stage, the
+    # machine-readable reason code, the authority and rule or actor that
+    # imposed it, the supporting evidence, and the four columns one
+    # attributable release writes. A partial unique index holds one open
+    # restriction per document and reason; `enforce_document_hold_write` and
+    # its two triggers refuse every delete, every truncate and every update but
+    # that one release. No relation is added, so the table count is unchanged
+    # and the sequence count rises by one. Recomputed against a fresh
+    # disposable database with template reuse off.
+    "9d20e431a4abcc4b65ce6a32ead2bd018d02b2ebff2830ee830ab35a8dac4a86"
 )
 
 pytestmark = [pytest.mark.slow, pytest.mark.migration]
@@ -272,6 +284,7 @@ COMPOSED_UPGRADE = (
     "capture_correction",
     "onboarding_authorization",
     "source_authorization",
+    "processing_holds",
     # The sibling transitions this revision has always carried at the end, and
     # the PUBLIC sweep that runs last of all because it reads the catalog every
     # block above has finished writing.
@@ -296,6 +309,7 @@ COMPOSED_DOWNGRADE = (
     "minutes_spine",
     "project_contacts",
     "email_spine",
+    "processing_holds",
     "source_authorization",
     "onboarding_authorization",
     "capture_correction",
@@ -503,6 +517,38 @@ def test_the_supported_database_upgrades_to_the_current_head_and_back(tmp_path):
             )
             old_fact_and_authority = _fact_and_revision_bytes(session, historical_fact)
 
+            # #919 classifies the holds a retained database already carries,
+            # from retained rows and never from the free-text reason. Two
+            # documents, one of each reachable outcome: the first has the
+            # producer evidence -- an Extraction Run the reader recorded
+            # `quarantined`, which only a reader that had already opened the
+            # document can write -- and the second has none at all.
+            extraction_held_document = session.scalar(text(
+                "insert into documents (project_id, sha256, filename, doc_type, "
+                "parse_status) values (:project_id, :digest, 'schedule.xlsx', "
+                "'schedule', 'parsed') returning id"
+            ), {"project_id": project_id, "digest": "e" * 64})
+            held_run_id = session.scalar(text(
+                "insert into extraction_runs (document_id, prompt_version, "
+                "candidate_count, page_errors, outcome) values "
+                "(:document_id, 'historical-v1', 0, 1, 'quarantined') returning id"
+            ), {"document_id": extraction_held_document})
+            session.execute(text(
+                "insert into document_quarantines (document_id, reason) "
+                "values (:document_id, :reason)"
+            ), {"document_id": extraction_held_document,
+                "reason": "document-asserted work sequencing is not modeled (#149)"})
+            unclassified_document = session.scalar(text(
+                "insert into documents (project_id, sha256, filename, doc_type, "
+                "parse_status) values (:project_id, :digest, 'unknown.xlsx', "
+                "'schedule', 'pending') returning id"
+            ), {"project_id": project_id, "digest": "f" * 64})
+            session.execute(text(
+                "insert into document_quarantines (document_id, reason) "
+                "values (:document_id, :reason)"
+            ), {"document_id": unclassified_document,
+                "reason": "held by an operator whose rule nothing retained"})
+
         upgraded = _alembic(database_url, "upgrade", "head")
         assert upgraded.returncode == 0, upgraded.stderr
         assert _migration_head(database.session_factory) == CURRENT_HEAD
@@ -525,6 +571,52 @@ def test_the_supported_database_upgrades_to_the_current_head_and_back(tmp_path):
             assert session.scalar(text("select retirement_report_run_watermark_id from legacy_ledger_archives where id=:id"), {"id": historical_archive}) is None
             assert session.scalar(text("select retirement_archive_id from report_runs where id=:id"), {"id": historical_report}) is None
             assert session.scalar(text("select count(*) from proposed_delta_impact_derivations")) == 0
+            # The three classification outcomes #919's rule declares, on the
+            # exact transformed rows. Two are reachable on this transition: the
+            # delivery ledger the security branch reads is born in this very
+            # revision, so no historical hold can carry a quarantined delivery
+            # and that branch is a no-op here by construction.
+            classified = session.execute(text(
+                "select document_id, prohibited_stage, reason_code, "
+                "imposed_by_authority, imposed_by, evidence, reason, released_at "
+                "from document_quarantines order by document_id"
+            )).all()
+            assert [tuple(row) for row in classified] == [
+                (
+                    extraction_held_document,
+                    "semantic_extraction",
+                    "extraction_refused_by_rule",
+                    "migration",
+                    "migration:b2d5f8a1c4e7:quarantined_extraction_run",
+                    f"extraction_runs.id={held_run_id} outcome=quarantined",
+                    "document-asserted work sequencing is not modeled (#149)",
+                    None,
+                ),
+                (
+                    unclassified_document,
+                    "document_reading",
+                    "unclassified_historical_hold",
+                    "migration",
+                    "migration:b2d5f8a1c4e7:unclassified",
+                    "no retained delivery disposition or extraction run "
+                    "establishes what this hold prohibited",
+                    "held by an operator whose rule nothing retained",
+                    None,
+                ),
+            ]
+            # A recorded hold is append-only: the release columns are the only
+            # thing that may move, and a delete is refused outright.
+            with pytest.raises(DBAPIError, match="document_hold:immutable"):
+                with session.begin_nested():
+                    session.execute(text(
+                        "update document_quarantines set reason = 'rewritten' "
+                        "where document_id = :id"
+                    ), {"id": unclassified_document})
+            with pytest.raises(DBAPIError, match="document_hold:immutable"):
+                with session.begin_nested():
+                    session.execute(text(
+                        "delete from document_quarantines where document_id = :id"
+                    ), {"id": unclassified_document})
             for role in ("corridor_web", "corridor_worker"):
                 assert session.scalar(text("select has_table_privilege(:role, 'proposed_delta_impact_derivations', 'SELECT')"), {"role": role})
                 assert not session.scalar(text("select has_table_privilege(:role, 'proposed_delta_impact_derivations', 'INSERT')"), {"role": role})
@@ -550,6 +642,19 @@ def test_the_supported_database_upgrades_to_the_current_head_and_back(tmp_path):
             ), {"id": segment_id}).one()
             assert tuple(restored) == old_segment
             assert _fact_and_revision_bytes(session, historical_fact) == old_fact_and_authority
+            # Every hold crosses back with the words it was written with. One
+            # reason per document is exactly what the predecessor can hold, so
+            # this seeding is representable; two open reasons on one document,
+            # or any released one, is what the downgrade refuses.
+            assert session.execute(text(
+                "select document_id, reason from document_quarantines "
+                "order by document_id"
+            )).all() == [
+                (extraction_held_document,
+                 "document-asserted work sequencing is not modeled (#149)"),
+                (unclassified_document,
+                 "held by an operator whose rule nothing retained"),
+            ]
 
         # A recorded native reading cannot be discarded to make a downgrade
         # succeed. Exercise the same supported transition, with actual source

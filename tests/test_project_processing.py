@@ -21,13 +21,13 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.orm import SessionTransaction
 
+from corridor import processing_holds
 from corridor.extract_project import extract_project
 from corridor.models import (
     Candidate,
     Dependency,
     DocPage,
     Document,
-    DocumentQuarantine,
     ExternalOrg,
     ExtractionRun,
     PolicyRun,
@@ -412,7 +412,16 @@ def test_held_superseded_and_unparsed_documents_are_excluded_before_model_work(
     _matrix(factory, project_id, "unreadable.pdf", parse_status="failed",
             doc_date=date(2025, 1, 3))
     with factory() as hold:
-        hold.add(DocumentQuarantine(document_id=quarantined, reason="sequencing"))
+        processing_holds.impose_hold(
+            hold,
+            document_id=quarantined,
+            prohibited_stage=processing_holds.SEMANTIC_EXTRACTION,
+            reason_code=processing_holds.UNMODELED_SEQUENCING_SEMANTICS,
+            reason="sequencing",
+            authority=processing_holds.PROCESSING_RULE,
+            imposed_by="tests.test_project_processing",
+            evidence=f"documents.id={quarantined}",
+        )
         hold.commit()
 
     route = ScriptedRoute(

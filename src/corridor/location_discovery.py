@@ -76,10 +76,10 @@ from corridor.due_work_contract import (
     validate_scheduling,
 )
 from corridor.ingest import ingest_document, reparse_document
+from corridor import processing_holds
 from corridor.models import (
     DiscoveredReference,
     Document,
-    DocumentQuarantine,
     DueWorkSchedule,
     ExtractionRun,
     SourceFetchAttempt,
@@ -1569,14 +1569,7 @@ def _held_documents(session: Session, project_id: int) -> tuple[OperationsItem, 
     """Held, failed-parse, and permanently unreadable documents, kept visible."""
 
     items: list[OperationsItem] = []
-    quarantined = {
-        row.document_id: row.reason
-        for row in session.scalars(
-            select(DocumentQuarantine)
-            .join(Document, Document.id == DocumentQuarantine.document_id)
-            .where(Document.project_id == project_id)
-        ).all()
-    }
+    holds = processing_holds.open_holds_for_project(session, project_id)
     permanent = {
         row.document_id: row.outcome
         for row in session.scalars(
@@ -1594,14 +1587,21 @@ def _held_documents(session: Session, project_id: int) -> tuple[OperationsItem, 
         .order_by(Document.id)
     ).all()
     for document in documents:
-        if document.id in quarantined:
+        if int(document.id) in holds:
+            standing = processing_holds.permission_from(
+                int(document.id), holds[int(document.id)]
+            )
             items.append(
                 OperationsItem(
                     kind="held_quarantined",
                     identity=document.filename,
-                    reason=quarantined[document.id],
+                    reason=standing.recorded_reason,
+                    # What is actually prohibited, from the row rather than
+                    # from an assumption about why every hold exists (#919).
                     permitted_next_step=(
-                        "held; its sequencing is deliberately unread and not a matrix"
+                        "held; document reading is not permitted"
+                        if not standing.may_read_document
+                        else "held; the document may be read and not interpreted"
                     ),
                     document_id=document.id,
                 )

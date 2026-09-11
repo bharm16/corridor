@@ -98,6 +98,7 @@ from typing import Any, Sequence
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from corridor import processing_holds
 from corridor import audit
 from corridor.analytics import AnalyticsBinding
 from corridor.measurement_collection import binding_for_source
@@ -439,9 +440,17 @@ def capture_later_revision(
     pass supplies it, because registration and confirmation are that person's
     act and already happened; a caller that registers nothing itself — the
     shadow lane — omits it and the exact bytes are registered here instead.
+
+    Where a Document is named, the stage-aware answer is asked before the
+    workbook is opened (#919).  This is dedicated revision capture: it reads the
+    file richly and it captures meaning from it, so it needs both boundaries
+    permitted.  A caller that names no Document — the shadow lane, in its own
+    isolated database — has no row to ask about and registers the bytes itself.
     """
 
     actor = require_human_principal(declaration.declared_by)
+    if document_id is not None:
+        processing_holds.assert_may_extract_semantics(session, int(document_id))
     is_complete_enumerative_source = declaration.is_complete_enumerative_source
     row_accounting_sealed = declaration.row_accounting_sealed
     delivery = _refuse_unbound_delivery(session, project, staged, envelope)
