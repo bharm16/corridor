@@ -49,9 +49,12 @@ from sqlalchemy.orm import Session
 import corridor.web.app
 from corridor.follow_up_bundles import (
     UNANSWERED_REQUEST_BAND,
+    RetainedOutgoingRequest,
+    SourceReference,
     read_follow_up_bundles,
     read_retained_outgoing_requests,
 )
+from corridor.follow_up_plan_lifecycle import cancel_follow_up_plan
 from corridor.models import (
     DeltaDisposition,
     DeltaFollowUpPlan,
@@ -620,6 +623,142 @@ def test_a_reply_with_no_reference_is_refused(session, project):
         _reply(session, project, request_id=row.id, source_reference="   ")
 
 
+# --- a retired plan retires the ask, not the record (#835 x #837) -----------
+
+
+def _cancel(session, project, *, plan_id):
+    """Retire one Follow-up Plan through #835's own lifecycle command."""
+
+    outcome = cancel_follow_up_plan(
+        session,
+        project_id=project.id,
+        plan_id=plan_id,
+        principal=COORDINATOR,
+        cancellation_reason="no_longer_needed",
+        closed_at=LATER,
+        idempotency_key=f"close:{uuid4().hex[:10]}",
+    )
+    assert outcome.closed, outcome
+    session.expire_all()
+    return outcome
+
+
+def test_a_cancelled_plan_stops_the_ask_and_keeps_the_record(session, project):
+    """Cancelling the question ends the chase; it does not unsend the message.
+
+    Both halves are the point. A chase list that kept telling a coordinator to
+    telephone City Water about a question they explicitly cancelled is the
+    failure ADR-0090 retired ``STALE`` for, rebuilt from the other end. And a
+    record that vanished with the plan would be asserting that nobody was ever
+    asked, which is false and unrecoverable.
+    """
+
+    plans = _planned(session, project)
+    row = _retain(session, project, plans=plans)
+
+    # Past the boundary with nothing back: the finding exists.
+    before = read_follow_up_bundles(
+        session, project_id=project.id, as_of=LATER
+    )
+    assert any(
+        bundle.band == UNANSWERED_REQUEST_BAND for bundle in before.bundles
+    )
+
+    for plan_id in plans:
+        _cancel(session, project, plan_id=plan_id)
+
+    after = read_follow_up_bundles(session, project_id=project.id, as_of=LATER)
+    assert all(
+        bundle.band != UNANSWERED_REQUEST_BAND for bundle in after.bundles
+    ), "a request whose every plan was retired is still raising an ask"
+
+    # The record is untouched: still retained, still unanswered, still
+    # readable, with the exact content it was sent with.
+    assert after.retained_outgoing_requests == 1
+    (recorded,) = read_correspondence(
+        session, project_id=project.id, as_of=LATER
+    )
+    assert recorded.request_id == row.id
+    assert not recorded.answered
+    assert read_sent_content(recorded).decode("utf-8") == MESSAGE
+
+
+def test_a_request_covering_a_retired_plan_and_a_live_one_names_both(
+    session, project
+):
+    """The mixed case, where the request-to-plans relation earns its keep.
+
+    One message advanced two questions and one of them has since been retired.
+    The ask survives for the other, and the follow-up says plainly that the
+    message also covered something nobody is waiting on any more -- which a
+    single ``follow_up_plan_id`` could not have said at all.
+    """
+
+    plans = _planned(session, project)
+    assert len(plans) == 2
+    _retain(session, project, plans=plans)
+    _cancel(session, project, plan_id=plans[0])
+
+    reading = read_follow_up_bundles(
+        session, project_id=project.id, as_of=LATER
+    )
+    assert any(
+        bundle.band == UNANSWERED_REQUEST_BAND for bundle in reading.bundles
+    ), "one live plan still owes an answer, so the finding stands"
+
+    view = chase_view(
+        reading,
+        read_correspondence(session, project_id=project.id, as_of=LATER),
+        {plans[1]: "U-042 — Promised for: which date does the utility hold to?"},
+    )
+    bundle = next(one for one in view.bundles if one.correspondence.plan_ids)
+    (recorded,) = bundle.correspondence.requests
+
+    assert recorded.covered == (plans[1],)
+    assert recorded.uncovered == ()
+    assert recorded.retired == (plans[0],)
+    assert recorded.coverage_sentence == (
+        "Covers 1 of the 1 Follow-up Plans in this follow-up: all of them. It "
+        f"also named 1 Follow-up Plan since retired: {plans[0]}."
+    )
+
+
+def test_a_hand_built_request_with_no_plans_is_left_alone(session, project):
+    """The injection port keeps working, and the reason is written down.
+
+    ``append_outgoing_request`` refuses a request that advances nothing, so a
+    request with no plans can only have come from the reading's own injection
+    kwarg. It has no plan liveness to inherit and is not filtered on one.
+    """
+
+    _planned(session, project)
+    injected = RetainedOutgoingRequest(
+        request_identity="letter-2026-09-01",
+        organization=WATER,
+        subject_identities=(subject(FIRST),),
+        question="Which date do you hold to?",
+        sent_on=SENT_ON,
+        expected_response_by=EXPECTED_BY,
+        reference=SourceReference(
+            kind="outgoing_request",
+            identity="letter-2026-09-01",
+            detail="a request handed to the reading",
+        ),
+    )
+
+    reading = read_follow_up_bundles(
+        session,
+        project_id=project.id,
+        as_of=LATER,
+        outgoing_requests=[injected],
+    )
+
+    assert injected.follow_up_plan_ids == ()
+    assert any(
+        bundle.band == UNANSWERED_REQUEST_BAND for bundle in reading.bundles
+    )
+
+
 # --- correction is an append -------------------------------------------------
 
 
@@ -776,30 +915,41 @@ def test_recording_a_send_from_the_page_writes_the_relation(
     assert read_sent_content(recorded).decode("utf-8") == MESSAGE
 
 
-def test_a_send_with_no_expected_date_is_refused_by_the_form(
+def test_a_send_with_no_usable_expected_date_records_nothing(
     session, project, client
 ):
-    """The date is explicit or there is no request; nothing is derived quietly."""
+    """The date is explicit or there is no request; nothing is derived quietly.
+
+    Two shapes, because the form is not the only way a POST arrives. A field
+    the request never carried is refused by the route signature before the
+    handler runs, and a field carrying something that is not a date is refused
+    by the seam, on the week, in the coordinator's own words. Neither retains
+    anything, which is the half that matters: a request whose boundary nobody
+    set could later be used to say somebody failed to answer.
+    """
 
     plans = _planned(session, project)
     session.expire_all()
+    submission = {
+        "follow_up_plan_id": [str(plan) for plan in plans],
+        "covered_subject_key": [subject(FIRST)],
+        "external_organization": WATER,
+        "question": "Which date do you hold to?",
+        "sent_content": MESSAGE,
+        "sent_on": SENT_ON.isoformat(),
+        "sent_by": "local:coordinator",
+    }
 
-    posted = client.post(
+    omitted = client.post(f"/work/{project.slug}/follow-up/sent", data=submission)
+    assert omitted.status_code == 422, omitted.text
+
+    malformed = client.post(
         f"/work/{project.slug}/follow-up/sent",
-        data={
-            "follow_up_plan_id": [str(plan) for plan in plans],
-            "covered_subject_key": [subject(FIRST)],
-            "external_organization": WATER,
-            "question": "Which date do you hold to?",
-            "sent_content": MESSAGE,
-            "sent_on": SENT_ON.isoformat(),
-            "sent_by": "local:coordinator",
-            "expected_response_by": "",
-        },
+        data={**submission, "expected_response_by": "whenever they get to it"},
     )
+    assert malformed.status_code == 409, malformed.text
+    assert "is a date" in unescape(page_without_shell(malformed.text))
 
-    assert posted.status_code == 409, posted.text
-    assert "is a date" in unescape(page_without_shell(posted.text))
     assert read_correspondence(session, project_id=project.id, as_of=NOW) == ()
 
 
@@ -914,9 +1064,14 @@ def test_nothing_on_the_follow_up_section_sends_anything(
     actions = set(
         re.findall(r'<form[^>]*action="([^"]+)"', page_without_shell(markup))
     )
+    # Every form the week can carry, named: the Issue section's two, #835's
+    # plan lifecycle and scheduling, and #837's two recordings. A send would be
+    # a seventh, and none exists to render.
     assert actions <= {
         f"/work/{project.slug}/issue/authorize",
         f"/work/{project.slug}/issue/prepare",
+        f"/work/{project.slug}/schedule",
+        f"/work/{project.slug}/follow-up/close",
         f"/work/{project.slug}/follow-up/sent",
         f"/work/{project.slug}/follow-up/response",
     }, actions

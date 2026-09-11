@@ -898,8 +898,8 @@ def test_the_only_production_writer_is_the_follow_up_section():
     }
 
     assert callers == {
-        "retain_outgoing_request": ["app.py", "outgoing_requests.py"],
-        "record_outgoing_request_response": ["app.py", "outgoing_requests.py"],
+        "retain_outgoing_request": ["app.py"],
+        "record_outgoing_request_response": ["app.py"],
     }, (
         "the retained-correspondence seam has a producer outside the follow-up "
         "section; #837 put both acts on one surface on purpose"
@@ -1207,22 +1207,33 @@ def test_a_replayed_retention_returns_the_row_it_already_wrote(session, project)
 
 
 def test_a_boundary_before_the_send_day_is_refused(session, project):
-    """Silence before the boundary is not a finding, and the boundary follows the send."""
+    """Silence before the boundary is not a finding, and the boundary follows the send.
+
+    PostgreSQL is what refuses it, and since #837 the refusal reaches the
+    caller as its own sentence rather than as a lost transaction: the command
+    runs inside a savepoint, so a week that was about to be re-rendered around
+    the refusal still can be.
+    """
 
     _cross_source(session, project)
     _plan_every_child(session, project, return_date=RETURNS_AT)
     plan_id = _first_plan_id(session, project)
 
-    with pytest.raises(DBAPIError):
-        with session.begin_nested():
-            _retain(
-                session,
-                project,
-                plan_ids=(plan_id,),
-                sent_on=date(2026, 8, 15),
-                expected_response_by=date(2026, 8, 1),
-                sent_content=b"the request",
-            )
+    with pytest.raises(OutgoingRequestRefused) as refused:
+        _retain(
+            session,
+            project,
+            plan_ids=(plan_id,),
+            sent_on=date(2026, 8, 15),
+            expected_response_by=date(2026, 8, 1),
+            sent_content=b"the request",
+        )
+
+    assert "on or after the day the request went out" in str(refused.value)
+    # The session survived the refusal, which is the point of the savepoint.
+    assert read_retained_outgoing_requests(
+        session, project_id=project.id, as_of=NOW
+    ) == ()
 
 
 def test_a_retained_request_past_its_declared_boundary_is_a_no_response(

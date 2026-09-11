@@ -115,6 +115,7 @@ from corridor.models import (
     DeltaFollowUpPlan,
     DeltaFollowUpPlanEvidence,
     OutgoingRequest,
+    OutgoingRequestPlan,
     OutgoingRequestResponse,
     Project,
     ProposedDelta,
@@ -473,6 +474,10 @@ class RetainedOutgoingRequest:
     sent_on: date
     expected_response_by: date
     reference: SourceReference
+    #: The Follow-up Plans this one communication advanced (#837). Empty only
+    #: for a request handed to the reading through the injection kwarg below:
+    #: the command refuses to retain one that advances nothing.
+    follow_up_plan_ids: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -599,6 +604,16 @@ def read_retained_outgoing_requests(
         )
         .order_by(OutgoingRequest.expected_response_by, OutgoingRequest.id)
     ).all()
+    advanced: dict[int, list[int]] = {}
+    for request_id, plan_id in session.execute(
+        select(OutgoingRequestPlan.request_id, OutgoingRequestPlan.follow_up_plan_id)
+        .where(
+            OutgoingRequestPlan.project_id == project_id,
+            OutgoingRequestPlan.request_id.in_(tuple(row.id for row in rows)),
+        )
+        .order_by(OutgoingRequestPlan.follow_up_plan_id)
+    ) if rows else ():
+        advanced.setdefault(request_id, []).append(plan_id)
     return tuple(
         RetainedOutgoingRequest(
             request_identity=str(row.id),
@@ -615,6 +630,7 @@ def read_retained_outgoing_requests(
                     f"{row.sent_by_principal}"
                 ),
             ),
+            follow_up_plan_ids=tuple(advanced.get(row.id, ())),
         )
         for row in rows
     )
@@ -699,7 +715,10 @@ def read_follow_up_bundles(
     )
     items.extend(
         _retained_request_items(
-            requests, projection, identities, today=today
+            _still_asked(requests, plans_still_asked(needs)),
+            projection,
+            identities,
+            today=today,
         )
     )
 
@@ -977,6 +996,57 @@ def _plan_items(
             )
         )
     return tuple(made)
+
+
+def plans_still_asked(needs: Sequence[FollowUpNeed]) -> frozenset[int]:
+    """The Follow-up Plans somebody outside is still owed an answer on.
+
+    ``outstanding_follow_up`` is the one authority for that, and this is a
+    reading of it rather than a second join: a plan is absent here for any of
+    the three reasons that retire one — its Proposed Delta stopped being open,
+    the packet act that recorded it was reversed, or it was superseded or
+    cancelled through the plan lifecycle (#835).
+
+    **The open question, which is with the maintainer.** A ``superseded``
+    closure re-records the same question as a successor plan, and today a
+    request that asked the *old* wording stops raising a finding along with the
+    plan it named — on the reading that a message asking a question nobody is
+    asking any more does not evidence an unanswered current one. If that comes
+    back the other way, this set gains the ``successor_plan_id`` of every
+    ``superseded`` closure, which is one term added to the expression below and
+    nothing else anywhere.
+    """
+
+    return frozenset(need.plan_id for need in needs)
+
+
+def _still_asked(
+    requests: Sequence[RetainedOutgoingRequest], asked: frozenset[int]
+) -> tuple[RetainedOutgoingRequest, ...]:
+    """The retained requests that can still raise a no-response finding.
+
+    A retained request is a fact about correspondence and it stays one: it
+    keeps its retained content, its recorded replies and its place in
+    ``read_correspondence`` whatever happens to the plans afterwards, because
+    cancelling a plan does not mean the message was never sent. What it stops
+    being is an *ask*. A finding is an instruction to go and chase somebody,
+    and when every Follow-up Plan a request advanced has been retired there is
+    nobody left to chase — a chase list that kept telling a coordinator to
+    telephone City Water about a question they explicitly cancelled is the
+    ``STALE``/``ORPHAN`` failure ADR-0090 retired, rebuilt from the other end.
+
+    A request naming no plan at all is left alone: only the injection kwarg can
+    produce one, since ``append_outgoing_request`` refuses to retain a request
+    that advances nothing, and a test's hand-built request has no plan
+    liveness to inherit.
+    """
+
+    return tuple(
+        request
+        for request in requests
+        if not request.follow_up_plan_ids
+        or asked & frozenset(request.follow_up_plan_ids)
+    )
 
 
 def _retained_request_items(

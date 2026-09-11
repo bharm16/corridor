@@ -161,6 +161,11 @@ class RequestView:
     request: RecordedRequest
     covered: tuple[int, ...]
     uncovered: tuple[int, ...]
+    #: Plans this message named that are no longer an outside ask at all --
+    #: settled, reversed, superseded or cancelled (#835). They are printed
+    #: because the message did cover them: a follow-up that shrank after the
+    #: fact must not make the record of what was asked shrink with it.
+    retired: tuple[int, ...]
     state: StateLabel
     replies: tuple[ReplyView, ...]
 
@@ -173,11 +178,21 @@ class RequestView:
             f"Covers {len(self.covered)} of the {total} Follow-up Plans in this "
             "follow-up"
         )
-        if not self.uncovered:
-            return f"{covered}: all of them."
+        if self.uncovered:
+            sentence = (
+                f"{covered}. Not covered by this request: "
+                + ", ".join(str(plan_id) for plan_id in self.uncovered)
+                + "."
+            )
+        else:
+            sentence = f"{covered}: all of them."
+        if not self.retired:
+            return sentence
+        count = len(self.retired)
         return (
-            f"{covered}. Not covered by this request: "
-            + ", ".join(str(plan_id) for plan_id in self.uncovered)
+            f"{sentence} It also named {count} Follow-up "
+            f"Plan{'' if count == 1 else 's'} since retired: "
+            + ", ".join(str(plan_id) for plan_id in self.retired)
             + "."
         )
 
@@ -405,10 +420,14 @@ def _correspondence(
 
     plan_ids = plan_ids_of(bundle)
     mine = frozenset(plan_ids)
+    # A plan still on somebody's week is live whichever follow-up it sits in;
+    # `plans` is the week's own outstanding set, so a plan a request named that
+    # is absent from it was retired rather than merely bundled elsewhere.
+    live = frozenset(plans or {})
     return CorrespondenceView(
         plan_ids=plan_ids,
         requests=tuple(
-            _request_view(request, plan_ids)
+            _request_view(request, plan_ids, live)
             for request in recorded
             if mine & frozenset(request.covered_plan_ids)
         ),
@@ -423,7 +442,9 @@ def _correspondence(
 
 
 def _request_view(
-    request: RecordedRequest, plan_ids: tuple[int, ...]
+    request: RecordedRequest,
+    plan_ids: tuple[int, ...],
+    live: frozenset[int] = frozenset(),
 ) -> RequestView:
     named = frozenset(request.covered_plan_ids)
     replies = tuple(_reply_view(reply) for reply in request.responses)
@@ -439,6 +460,11 @@ def _request_view(
         covered=tuple(plan_id for plan_id in plan_ids if plan_id in named),
         uncovered=tuple(
             plan_id for plan_id in plan_ids if plan_id not in named
+        ),
+        retired=tuple(
+            plan_id
+            for plan_id in request.covered_plan_ids
+            if plan_id not in plan_ids and plan_id not in live
         ),
         state=state,
         replies=replies,

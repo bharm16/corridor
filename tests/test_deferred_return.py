@@ -50,6 +50,7 @@ from corridor.models import (
     DeltaDeferral,
     DeltaFollowUpPlan,
     DeltaReviewPacketReceipt,
+    OutgoingRequest,
     Project,
     ProjectRecordRevision,
 )
@@ -739,17 +740,19 @@ def test_a_retried_schedule_says_so_rather_than_announcing_a_date_twice(
 def test_needs_coordination_waits_past_its_date_and_is_settled_later(
     session, project, clock, client
 ):
-    """Needs coordination, the visit after its date, then the settlement.
+    """Needs coordination, the reply, the visit after its date, the settlement.
 
-    The half this walk cannot yet take is the reply itself.  A reply from an
-    External Organization is Corridor-originated correspondence and a distinct
-    fact from the record question being answered: ``outgoing_requests`` holds
-    the relation and ``record_outgoing_request_response`` the operation, and
-    #837 owns giving a coordinator a way to record one.  Until it does, the
-    week can prove that the question is still waiting, that it is past the date
-    the plan named, and that answering the change settles it -- and it must not
-    pretend a recorded reply settled anything, which is exactly the confusion
-    the two facts are kept apart to prevent.
+    The half this walk could not take until #837 landed is the reply itself.  A
+    reply from an External Organization is Corridor-originated correspondence
+    and a *distinct fact* from the record question being answered, and the
+    whole reason the two are kept apart is the confusion this walk now proves
+    cannot happen: City Water replies, the coordinator records it against the
+    request that asked, and the question is **still open**.  The plan is still
+    outstanding, the Proposed Delta is still open, the week still says the date
+    the plan named has passed, and nothing about the accepted record has moved.
+
+    Only the last step retires the ask, and it is a decision on the review
+    screen and not a reply: settling the change is what closes the question.
     """
 
     adopted = Adopted(session, project).build()
@@ -803,14 +806,68 @@ def test_needs_coordination_waits_past_its_date_and_is_settled_later(
         session, project_id=project.id, as_of=THIRD_VISIT
     ).reading.open_delta_ids
 
-    # What #837 owes: nothing here records that anyone replied. The relation
-    # exists and no production module writes it, so the week cannot say a
-    # reply arrived and does not.
-    assert "replied" not in page
+    # #837's half, which this walk was written waiting for. The coordinator
+    # sends from their own mail client and records what went out against the
+    # plans it advanced; Corridor sends nothing.
+    plan_ids = [need.plan_id for need in later.follow_up]
+    sent = client.post(
+        f"/work/{project.slug}/follow-up/sent",
+        data={
+            "follow_up_plan_id": [str(plan_id) for plan_id in plan_ids],
+            "covered_subject_key": [
+                need.subject_name for need in later.follow_up
+            ],
+            "external_organization": "City Water",
+            "question": "Which date does the utility hold to?",
+            "sent_content": "Which date do you hold to for U-042?",
+            "sent_on": "2026-10-02",
+            "sent_by": "local:coordinator",
+            "expected_response_by": "2026-10-09",
+        },
+    )
+    assert sent.status_code == 201, sent.text
+    session.expire_all()
 
-    # Visit three: the answer arrives by whatever means, and the coordinator
-    # settles the change. Settling the record question is what retires the
-    # ask -- not a reply, which is a separate fact.
+    # City Water replies, and the coordinator records it with the evidence.
+    request_id = session.scalar(
+        select(OutgoingRequest.id).where(OutgoingRequest.project_id == project.id)
+    )
+    replied = client.post(
+        f"/work/{project.slug}/follow-up/response",
+        data={
+            "request_id": str(request_id),
+            "received_on": "2026-10-12",
+            "completeness": "substantive",
+            "evidence_kind": "manual_observation",
+            "observation": "City Water said they hold to 15 February.",
+            "observed_by": "local:coordinator",
+            "source_reference": "telephone call, 11:20",
+        },
+    )
+    assert replied.status_code == 201, replied.text
+    session.expire_all()
+
+    # And this is the distinction the two facts are kept apart for: they
+    # replied, and the question is still open. The plan is still outstanding,
+    # the change is still undecided, and the week still says the date the plan
+    # named has passed.
+    after_reply = read_project_workflow(
+        session, project_id=project.id, as_of=THIRD_VISIT
+    )
+    assert len(after_reply.follow_up) == len(children)
+    assert all(
+        need.overdue(today=THIRD_VISIT.date()) for need in after_reply.follow_up
+    )
+    assert first.id in read_review_items(
+        session, project_id=project.id, as_of=THIRD_VISIT
+    ).reading.open_delta_ids
+    assert "past the date this plan named" in _text(
+        client.get(f"/work/{project.slug}").text
+    )
+
+    # Visit three: the coordinator settles the change. Settling the record
+    # question is what retires the ask -- not the reply, which is a separate
+    # fact and has just been shown to settle nothing.
     settle = read_review_items(session, project_id=project.id, as_of=THIRD_VISIT)
     settle_item = next(row for row in settle.items if row.focused)
     answered = client.post(
@@ -879,6 +936,12 @@ def test_no_follow_up_plan_control_claims_to_send_anything(session, project, cli
     screen that can retire an outside ask is exactly the screen somebody would
     next expect to send the message.  It does not, it says so, and the page's
     own words tell the coordinator where the message still comes from.
+
+    #837 sharpened the point rather than softening it.  The week can now record
+    what was sent and what came back, so the screen is one step closer to
+    looking like a mail client than it was -- and the count below is what keeps
+    that from becoming one.  Recording a send is not sending: the application
+    still has exactly one mail sender and exactly one caller of it.
     """
 
     _two_sources_planned(session, client, project)
@@ -896,6 +959,9 @@ def test_no_follow_up_plan_control_claims_to_send_anything(session, project, cli
         f"/work/{project.slug}/issue/prepare",
         f"/work/{project.slug}/schedule",
         f"/work/{project.slug}/follow-up/close",
+        # #837's two recordings of correspondence that already happened.
+        f"/work/{project.slug}/follow-up/sent",
+        f"/work/{project.slug}/follow-up/response",
     }, actions
     assert not any(
         word in page.lower()
