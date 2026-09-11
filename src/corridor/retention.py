@@ -45,6 +45,12 @@ from corridor.principals import HumanPrincipal, require_human_principal
 CLASS_B_DAYS = 30
 OPEN_REFERENCE_DAYS = 90
 
+# The one environment-level ordering boundary hold activation and a sign-in
+# record deletion batch both pass through (ADR-0102). A string rather than a
+# magic number so the lock says what it is in `pg_locks`; `hashtextextended`
+# makes the bigint key, the same idiom `shadow_processing` uses.
+HOLD_ORDERING_LOCK = "retention-hold-ordering"
+
 
 @dataclass(frozen=True)
 class FamilySpec:
@@ -191,6 +197,43 @@ def permit_unreferenced_deletion(
     return DeletionPermit(key=key, sha256=sha256, issued_by=issued_by)
 
 
+def take_hold_ordering_lock(session: Session) -> None:
+    """Take the one boundary hold activation and a deletion batch share (ADR-0102).
+
+    A hold predicate evaluated inside a ``DELETE`` is not complete
+    serialization: it decides a hold committed *before* the statement began,
+    and leaves a hold arriving while the statement runs to chance. The boundary
+    is what makes that outcome a stated one rather than a race. Both sides take
+    this lock, and the deleting side reads hold state only after it holds it,
+    so exactly one of two things happened and the caller can say which:
+
+    - hold activation won, and every deletion batch that begins after it
+      commits refuses;
+    - a deletion batch won, and it may finish before the hold is enforced.
+
+    Neither ordering recovers a row a batch already removed, and no caller may
+    claim it does.
+
+    It is ``pg_advisory_xact_lock``, so the acquiring transaction holds it until
+    it commits: that is the property the protocol needs, because it closes the
+    window between a hold's ``INSERT`` and its ``COMMIT`` in which a batch could
+    otherwise read the holds table and see nothing. An advisory lock is scoped
+    to the database, which is scoped to the customer environment, and it needs
+    no schema and no grant -- ``corridor_web`` and ``corridor_worker`` can
+    already execute it.
+
+    A hold written by something that does not call this -- an operator issuing
+    ``INSERT`` into ``retention_holds`` by hand -- is outside the protocol and
+    falls back to the ``DELETE`` predicate alone. ``place_hold`` is the only
+    application path that activates a hold, and it takes this first.
+    """
+
+    session.execute(
+        text("select pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+        {"key": HOLD_ORDERING_LOCK},
+    )
+
+
 def place_hold(
     session: Session,
     *,
@@ -198,8 +241,16 @@ def place_hold(
     reason: str,
     principal: HumanPrincipal,
 ) -> RetentionHold:
-    """Append an attributable project hold; one active hold is sufficient."""
+    """Append an attributable project hold; one active hold is sufficient.
 
+    Takes the ordering boundary before anything else, so this returns only once
+    the hold has won it. What that licenses the caller to say is bounded: every
+    deletion batch beginning after this transaction commits is refused. It does
+    not say that a batch already running stopped, and it does not say that rows
+    a batch removed come back.
+    """
+
+    take_hold_ordering_lock(session)
     actor = require_human_principal(principal).subject
     if not reason.strip():
         raise RetentionRefused("a retention hold requires a reason")

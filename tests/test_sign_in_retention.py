@@ -23,7 +23,8 @@ from hashlib import sha256
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, text
+from sqlalchemy.exc import DBAPIError
 
 from corridor import access, audit, sign_in_retention
 from corridor.config import settings
@@ -120,6 +121,32 @@ def _enrolled(db, project_id: int) -> tuple[str, HumanPrincipal]:
 
 def _present(db, model, row_id) -> bool:
     return db.scalar(select(model.id).where(model.id == row_id)) is not None
+
+
+def _boundary_scenario(factory) -> tuple[int, int]:
+    """One project and one session past its period, both committed."""
+
+    with factory() as setup:
+        project = Project(
+            slug=f"boundary-{uuid4().hex[:8]}", name="Ordering boundary", is_synthetic=True
+        )
+        setup.add(project)
+        setup.flush([project])
+        dead = _session_row(setup, expires_at=NOW - SESSION_RETENTION - timedelta(days=1))
+        setup.commit()
+        return project.id, dead.id
+
+
+def _fail_fast_at_the_boundary(db) -> None:
+    """Turn waiting at the boundary into a visible error instead of a hung test.
+
+    The point of the protocol is that the loser *waits*, so proving which side
+    won means observing a wait. A thread and a timing window would prove it too,
+    and would pass by luck when the ordering it is meant to pin was not enforced
+    at all; a lock timeout is the same observation without the luck.
+    """
+
+    db.execute(text("set local lock_timeout = '250ms'"))
 
 
 def test_a_record_past_its_stated_period_is_actually_removed(session):
@@ -347,6 +374,10 @@ def test_a_hold_committed_by_another_transaction_mid_pass_is_honoured(runtime_da
     while a pass is open. The sweeping transaction has already read the holds
     table as empty -- exactly the stale answer a check-then-delete would act on
     -- before the other transaction commits its hold.
+
+    This is the ``DELETE`` predicate's own guarantee and it is what a hold that
+    never took the ordering boundary still gets. The two tests below take the
+    boundary from either side and pin which ordering won.
     """
 
     factory = runtime_database.session_factory
@@ -383,6 +414,94 @@ def test_a_hold_committed_by_another_transaction_mid_pass_is_honoured(runtime_da
     assert receipt["deleted"]["web_sessions"] == 0
     with factory() as verify:
         assert verify.get(WebSession, dead_id) is not None
+
+
+def test_hold_activation_that_wins_the_boundary_makes_the_batch_refuse(runtime_database):
+    """The first of the two orderings: the hold got to the boundary first.
+
+    The hold's transaction holds the boundary from before its ``INSERT`` until
+    its ``COMMIT``, which is the window a delete could otherwise read the holds
+    table in and see nothing. A pass arriving inside that window does not read
+    stale hold state and does not delete under it -- it waits, which is what the
+    lock timeout here makes visible. Once the hold commits, the pass that
+    follows refuses and the row past its period is still there.
+    """
+
+    factory = runtime_database.session_factory
+    project_id, dead_id = _boundary_scenario(factory)
+
+    with factory() as holding:
+        place_hold(
+            holding,
+            project_id=project_id,
+            reason="open records request",
+            principal=OPERATOR,
+        )
+        with factory() as blocked:
+            _fail_fast_at_the_boundary(blocked)
+            with pytest.raises(DBAPIError, match="lock timeout"):
+                sweep_sign_in_records(blocked, as_of=NOW)
+            blocked.rollback()
+        holding.commit()
+
+    with factory() as sweeping:
+        receipt = sweep_sign_in_records(sweeping, as_of=NOW)
+        sweeping.commit()
+
+    assert receipt["outcome"] == "refused"
+    assert receipt["refusal"] == "hold_active"
+    with factory() as verify:
+        assert verify.get(WebSession, dead_id) is not None
+
+
+def test_a_batch_that_wins_the_boundary_keeps_what_it_deleted(runtime_database):
+    """The second ordering, and the accepted outcome rather than a defect.
+
+    A pass holding the boundary finishes. Hold activation arriving behind it
+    waits for that batch instead of overlapping it -- the lock timeout is that
+    wait -- and when the hold is finally placed it governs every batch that
+    begins after it. What it does not do, and what nothing here does, is put
+    back the row the batch already removed: that row was past its stated period
+    and no hold existed at the moment it went. ADR-0102 section 5 states this
+    as the meaning of losing the boundary, so a future reader finding a deleted
+    row and an active hold is looking at the documented outcome.
+    """
+
+    factory = runtime_database.session_factory
+    project_id, dead_id = _boundary_scenario(factory)
+
+    with factory() as sweeping:
+        receipt = sweep_sign_in_records(sweeping, as_of=NOW)
+        assert receipt["outcome"] == "deleted"
+        assert receipt["deleted"]["web_sessions"] >= 1
+        with factory() as blocked:
+            _fail_fast_at_the_boundary(blocked)
+            with pytest.raises(DBAPIError, match="lock timeout"):
+                place_hold(
+                    blocked,
+                    project_id=project_id,
+                    reason="open records request",
+                    principal=OPERATOR,
+                )
+            blocked.rollback()
+        sweeping.commit()
+
+    with factory() as holding:
+        hold = place_hold(
+            holding,
+            project_id=project_id,
+            reason="open records request",
+            principal=OPERATOR,
+        )
+        holding.commit()
+        hold_id = hold.id
+
+    with factory() as verify:
+        assert verify.get(WebSession, dead_id) is None
+        assert verify.get(RetentionHold, hold_id).lifted_at is None
+    with factory() as after:
+        assert sweep_sign_in_records(after, as_of=NOW)["refusal"] == "hold_active"
+        after.commit()
 
 
 def test_a_pass_that_deleted_something_writes_one_receipt(session):

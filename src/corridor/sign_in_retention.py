@@ -8,6 +8,15 @@ reach the product accumulated for the life of the customer database, with no
 stated period after which they go. ADR-0102 states that period; this module is
 the pass that enforces it.
 
+**A period is when a row becomes eligible for deletion, not how long it lives.**
+The two are separate terms. The period ends and the row becomes eligible; this
+pass is what removes it, so whatever interval invokes the pass is an additional
+lag on top of the period, and a hold, a failed run or a recovery delay
+lengthens that lag further without changing the period. Under the daily
+schedule ADR-0102 specifies, an eligible row goes within a further 24 hours.
+Nothing here gives a row a maximum lifetime, and ``TOKEN_RETENTION`` in
+particular must not be quoted as one.
+
 **The three periods are product judgements, not figures a standard requires.**
 Published practice says a period must exist and says to determine it by risk
 assessment where no requirement governs (NIST SP 800-63B-4 §2.4.2); the audit
@@ -49,6 +58,27 @@ is good for, which is telling the receipt that a hold is why nothing happened.
 What this does not do, because it cannot: a hold committed while a ``DELETE``
 is already executing does not put back the rows that statement removed. Those
 rows were past their stated period and no hold existed when they went.
+
+**That predicate is not complete serialization, so the ordering is a protocol
+rather than a race.** ``retention.take_hold_ordering_lock`` is one
+environment-level boundary; ``place_hold`` takes it, and this pass takes it
+before it reads hold state or deletes anything. Which side won is then a fact
+the receipt can stand on: hold activation first and this pass refuses; this
+pass first and it may finish before the hold is enforced, which the hold's own
+acknowledgement is worded not to deny. The residual above is unchanged and is
+still the guarantee for a hold that never passes the boundary -- an operator
+inserting into ``retention_holds`` by hand -- and nothing anywhere recovers a
+deleted row.
+
+**Hold activation waits for a running batch, so batch length is part of the
+contract.** Today this pass takes the boundary once and issues one unbounded
+``DELETE`` per relation under it, so the batch a hold waits behind is the whole
+pass over three small relations. That is short enough while they stay small,
+which is the same fact ADR-0102's cadence rests on and the reason growth is
+answered with a time index rather than a rarer schedule. If the pass ever stops
+being short, the deletes must be bounded -- row-limited, each committing its
+own transaction so the boundary is released between them -- before a hold could
+reasonably be made to wait behind it.
 
 **Nothing recorded is lost.** Who signed in and who signed out are
 ``audit_log`` entries written in the same transaction as the act, and
@@ -104,12 +134,17 @@ from corridor.models import (
     SignInToken,
     WebSession,
 )
+from corridor.retention import take_hold_ordering_lock
 
 
 # The three stated periods, measured from the moment the row stopped being able
-# to authorize anything -- not from when it was created. ADR-0102 gives the
-# reason for each and for why they differ; changing one here without changing
-# the ADR makes the stated retention and the enforced retention disagree.
+# to authorize anything -- not from when it was created. Each is when a row
+# becomes *eligible* for deletion and not a maximum lifetime for it: the row
+# goes at the next pass, so the invocation interval is a further lag on top of
+# the number below. ADR-0102 states the two terms separately and gives the
+# reason for each period and for why they differ; changing one here without
+# changing the ADR makes the stated retention and the enforced retention
+# disagree.
 SESSION_RETENTION = timedelta(days=7)
 TOKEN_RETENTION = timedelta(hours=24)
 ATTEMPT_RETENTION = timedelta(days=180)
@@ -149,6 +184,9 @@ def sweep_sign_in_records(session: Session, *, as_of: datetime) -> dict[str, Any
     Returns the pass's receipt whether it deleted, declined, or found nothing
     due, so the caller that scheduled it can record that it ran either way.
     Only a pass that actually deleted something writes an ``audit_log`` entry.
+
+    The clock is validated before the boundary is taken, so a caller that
+    passes an unusable ``as_of`` is refused without making a hold wait.
     """
 
     moment = _aware_utc(as_of)
@@ -172,6 +210,11 @@ def sweep_sign_in_records(session: Session, *, as_of: datetime) -> dict[str, Any
         "audit_id": None,
     }
 
+    # The boundary first, and the hold state only after it: a hold activation
+    # that reached it first is committed by the time the boundary is granted
+    # here, and one that did not now waits for this batch instead of
+    # overlapping it.
+    take_hold_ordering_lock(session)
     if _held(session):
         receipt["outcome"] = "refused"
         receipt["health"] = "retention_attention_required"
@@ -237,7 +280,13 @@ def _delete(session: Session, model, condition) -> int:
     followed by a delete would leave the window between them, in which a hold
     another transaction commits is honoured by neither; evaluated here, at READ
     COMMITTED, the statement's own snapshot includes any hold committed before
-    it began and the delete then matches no row at all.
+    it began and the delete then matches no row at all. That is the guarantee
+    for a hold that never took the ordering boundary; one that did could not
+    have committed while this was running at all.
+
+    One statement, with no row limit: the whole relation is the batch. See the
+    module docstring for why that is acceptable at this size and what would
+    have to change if it stopped being.
     """
 
     result = session.execute(

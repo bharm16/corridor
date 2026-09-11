@@ -106,6 +106,26 @@ durable about the act is already in `audit_log`.
 | `sign_in_tokens` | **24 hours** | the earlier of `expires_at` and `consumed_at` |
 | `sign_in_attempts` | **180 days** | `occurred_at` |
 
+**Each number is when a row becomes eligible for deletion. It is not a maximum
+row lifetime, and the two are separate terms.** A record becomes eligible for
+deletion at its retention threshold. Under normal operation, the next daily
+sweep removes it within an additional 24 hours. Legal holds, failed runs, and
+recovery delays are reported separately. So the `sign_in_tokens` row of the
+table above says that a spent link becomes eligible twenty-four hours after it
+died — not that it is gone within twenty-four hours, and not that it has a
+twenty-four hour maximum lifetime. Section 5 says how a hold is reported and
+what it does and does not undo; the cadence bullet under Consequences says how
+a run, a failure and a missed window are.
+
+**No exact-second deletion promise is made here, and none is being engineered
+towards.** A deadline tighter than "eligible at the threshold, removed at the
+next daily sweep" would take a time index on the three relations or a more
+frequent invocation, and neither is warranted before the scheduled pass of #943
+has been deployed and its cost observed: measure the pass as it runs, and add
+an index when its query plan or observed cost calls for one. A customer who
+requires a tighter deletion deadline needs an explicit cadence-and-lag
+commitment agreed before enrollment. None of the three numbers above is one.
+
 **These are recommended operating defaults, and all three are product
 judgements.** They are subject to the applicable customer records schedule and
 to legal review: where such a schedule exists it governs and these numbers
@@ -219,6 +239,50 @@ does not do, because it cannot, is put back rows a delete had already removed
 when the hold was placed; those rows were past their stated period and no hold
 existed at the moment they went.
 
+**The `NOT EXISTS` predicate is not complete serialization, so the ordering is
+a protocol.** `retention.take_hold_ordering_lock` is one environment-level
+PostgreSQL advisory lock, held by the acquiring transaction until it commits.
+`retention.place_hold` takes it before it does anything else, and so does each
+deletion batch, which reads hold state only *after* it holds it. That closes
+the window between a hold's `INSERT` and its `COMMIT` in which a batch could
+otherwise read the holds table and see nothing. The lock is scoped to the
+database, which is scoped to the customer environment, and it needs no schema
+change and no grant: `corridor_worker`, which is the role both sides run under,
+can already execute `pg_advisory_xact_lock`.
+
+Three statements are then precise rather than hopeful:
+
+- **Hold activation wins first — the deletion batch refuses.** The batch waits
+  at the boundary, reads the committed hold, and removes nothing.
+- **A deletion batch wins first — it may finish before the hold becomes
+  enforced.** Hold activation waits for that batch rather than silently
+  overlapping it, and the hold then governs every batch that begins after it.
+  This is the accepted outcome, not a defect.
+- **The acknowledgement does not claim enforcement it has not won.**
+  `place_hold` returns only once it holds the boundary, so an acknowledged hold
+  means every deletion batch beginning after that transaction commits is
+  refused. It does not mean a running batch stopped, and **no path anywhere
+  recovers a row a batch already deleted.**
+
+**What the boundary does not order.** A hold written by something that does not
+take the lock is outside the protocol and falls back to exactly the `NOT
+EXISTS` guarantee above. `place_hold` is the only application path that
+activates a hold and it takes the lock, and `corridor_web` holds no privilege
+on `retention_holds` at all since #680 revoked them, so what is left outside
+the protocol is someone connecting as `corridor_worker` or as the owner and
+issuing `INSERT` by hand. The Class B deletion paths do not take the lock
+either; they have their own manifest recheck, and extending the boundary to
+them was not decided here.
+
+**Batch length is part of the contract**, because hold activation now waits for
+a running batch. Today the pass takes the boundary once and issues one `DELETE`
+per relation with no row limit, so the batch a hold waits behind is the whole
+pass over three relations. That is acceptable while they are small — the same
+fact the daily cadence rests on — and it is a further reason growth is answered
+with a time index rather than a rarer schedule. If the pass stops being short,
+the deletes have to be bounded first: row-limited, each committing its own
+transaction so the boundary is released between them.
+
 The cost, stated rather than hidden: a hold on one project suspends sign-in
 record expiry for the whole customer environment, which over-retains. That is
 the correct direction for a hold, which exists to override minimisation, and it
@@ -279,7 +343,10 @@ expiry, that an idle pass writes no domain audit event, and the four boundaries
 this decision turns on: an active credential still authorizes after a pass, a
 draft's permitted recovery window survives one, a credential the pass removed
 stays invalid rather than becoming ambiguous, and a hold another transaction
-commits after the pass has begun is honoured by the delete itself.
+commits after the pass has begun is honoured by the delete itself. Two further
+tests take the ordering boundary from both sides in committed transactions:
+hold activation holding it makes the batch refuse, and a batch holding it
+finishes and keeps its deletions once the hold that waited behind it commits.
 `make retention ARGS="expire-sign-in-records"` runs it, with an optional
 `--as-of <iso>` for reproducing a past pass.
 
@@ -305,11 +372,13 @@ specified here concretely enough to act on.
   `sign_in_attempts` is indexed on `(scope_kind, scope_value, occurred_at)` for
   the throttle, and the other two on their hashes — so each pass scans all three.
   That is cheap while they are small and is the reason not to run it hourly. The
-  interval is also the lag: a row becomes *eligible* when its period ends and
-  goes at the next pass, so a daily schedule removes a spent link within a day
-  of its twenty-four hours ending. If these relations ever grow enough for the
-  scan to cost something, the answer is a time index, which is a schema change,
-  not a rarer schedule.
+  interval is the deletion lag section 2 states as its own term: a row becomes
+  *eligible* when its period ends and goes at the next pass, so a daily schedule
+  removes a spent link within a further twenty-four hours of its twenty-four
+  hours ending, and neither number is a maximum row lifetime. If these relations
+  ever grow enough for the scan to cost something, the answer is a time index,
+  which is a schema change, not a rarer schedule — added when the deployed
+  pass's query plan or observed cost calls for one, not before it has run.
 - **What success and failure look like.** Success is exit status zero and one
   printed receipt. A hold is not a failure: the receipt reads `"outcome":
   "refused"` with `"refusal": "hold_active"`, the exit status is still zero, and
