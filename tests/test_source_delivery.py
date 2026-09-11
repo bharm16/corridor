@@ -215,7 +215,7 @@ def test_the_ledger_refuses_a_disposition_that_does_not_say_what_it_means(
 def test_a_binding_names_one_transport_and_the_configuration_it_arrived_under(
     session, project
 ):
-    """A pulled delivery has no credential and a pushed one always does."""
+    """A pulled delivery authenticates neither way, a pushed one exactly one."""
 
     with pytest.raises(SourceDeliveryRefused, match="pull or push"):
         DeliveryBinding(
@@ -226,7 +226,7 @@ def test_a_binding_names_one_transport_and_the_configuration_it_arrived_under(
             channel="shared-files",
             configuration_identity="txdot-rid-box-v1",
         )
-    with pytest.raises(SourceDeliveryRefused, match="bound credential"):
+    with pytest.raises(SourceDeliveryRefused, match="authenticated it"):
         DeliveryBinding(
             customer="acme-utilities",
             project_id=project.id,
@@ -315,55 +315,103 @@ def test_one_function_reads_a_retained_delivery_back_as_its_envelope(session, pr
     }
 
 
-def test_a_human_upload_cannot_yet_be_recorded_in_this_family(session, project):
-    """The seam ADR-0078's own migration header still records as outstanding.
+def test_a_human_upload_is_a_pushed_delivery_its_own_person_authenticated(
+    session, project
+):
+    """The seam ADR-0078's own migration header used to record as outstanding.
 
     A manual upload *is* a delivery in every sense this family means: somebody
     hands Corridor bytes it never asked for, which is exactly what
     ``push_intake`` calls push, and ADR-0078 lists manual upload among the
-    connector kinds that enter under one contract. It cannot be recorded here
-    yet, and what stops it is the database rather than a preference:
+    connector kinds that enter under one contract. What stopped it being
+    recorded here was the database rather than a preference — a pushed delivery
+    had to name a ``push_intake_credentials`` row, and a signed-in person
+    presents no credential, because the transport did not authenticate the
+    delivery, the web session did.
 
-    * ``ck_source_delivery_transport`` admits only ``pull`` and ``push``, so
-      there is no third value a human-carried delivery could take;
-    * ``ck_source_delivery_push_credential`` makes ``push`` require a
-      ``push_intake_credentials`` row, and a signed-in person presents no
-      credential — the transport did not authenticate, the web session did;
-    * ``ck_push_intake_credential_channel`` admits only ``project_alias``,
-      ``shared_mailbox`` and ``webhook``, so a credential cannot be minted for
-      an uploader without either misstating the channel or issuing a live push
-      secret that would then be a real door into the project;
-    * and recording the upload as ``pull`` would state that a connector
-      configuration fetched it on a cursor, which is precisely the second
-      definition of one identity ADR-0089 exists to remove.
-
-    So this test is the seam, not a workaround: it holds the three constraints
-    a follow-on has to change, and it fails the moment they do. Until then an
-    upload correctly has no delivery row, and ``later_revision``,
-    ``key_date_table`` and ``document_delivery_backfill`` correctly leave it
-    unlinked rather than inventing one.
+    #823 turns that requirement into an authentication mode, and this test
+    holds all four of its limbs plus the two things that deliberately did not
+    change.
     """
 
-    with pytest.raises(SourceDeliveryRefused):
-        # What a signed-in person's delivery would be: pushed, with no
-        # transport credential behind it.
+    binding = DeliveryBinding(
+        customer="acme-utilities",
+        project_id=project.id,
+        project_slug=project.slug,
+        transport="push",
+        channel="product_upload",
+        configuration_identity="product-upload",
+        delivered_by_principal="local:dana-fields",
+    )
+    digest = sha256(b"a matrix a person handed over").hexdigest()
+    recorded = take_delivery(
+        session,
+        binding,
+        DeliveryObservation(
+            external_identity="matrix.pdf",
+            external_version=digest,
+            content_digest=digest,
+            bytes_reference=f"{digest[:2]}/{digest}.pdf",
+        ),
+        service_identity="corridor.source_intake",
+        run_identity="product-upload:1",
+    )
+    row = session.get(SourceDelivery, recorded.delivery_id)
+    assert (row.transport, row.channel) == ("push", "product_upload")
+    assert row.delivered_by_principal == "local:dana-fields"
+    assert row.credential_id is None
+
+    # A push that authenticated neither way, and one claiming both, are refused
+    # before they reach the database.
+    for credential_id, principal in ((None, ""), (1, "local:dana-fields")):
+        with pytest.raises(SourceDeliveryRefused, match="authenticated it"):
+            DeliveryBinding(
+                customer="acme-utilities",
+                project_id=project.id,
+                project_slug=project.slug,
+                transport="push",
+                channel="product_upload",
+                configuration_identity="product-upload",
+                credential_id=credential_id,
+                delivered_by_principal=principal,
+            )
+    # A pull is bound by its configuration and authenticates neither way.
+    with pytest.raises(SourceDeliveryRefused, match="connector configuration"):
         DeliveryBinding(
             customer="acme-utilities",
             project_id=project.id,
             project_slug=project.slug,
-            transport="push",
-            channel="upload",
-            configuration_identity="human-upload-v1",
+            transport="pull",
+            channel="shared-files",
+            configuration_identity="txdot-rid-box-v1",
+            delivered_by_principal="local:dana-fields",
         )
-    with pytest.raises(SourceDeliveryRefused):
-        DeliveryBinding(
-            customer="acme-utilities",
-            project_id=project.id,
-            project_slug=project.slug,
-            transport="upload",
-            channel="upload",
-            configuration_identity="human-upload-v1",
-        )
+    # And the database refuses the same row, so the rule is not one a writer
+    # that bypassed `DeliveryBinding` could get wrong differently. The copy
+    # keeps every column the identity trigger re-derives, so what refuses it is
+    # the authentication check and not a mis-derived identity.
+    with pytest.raises(Exception, match="ck_source_delivery_authentication"):
+        with session.begin_nested():
+            session.execute(
+                text(
+                    """
+                    insert into source_deliveries (
+                        customer, project_id, transport, channel,
+                        configuration_identity, external_identity,
+                        external_version, content_sha256, bytes_reference,
+                        delivery_identity, idempotency_key, service_identity,
+                        run_identity, disposition
+                    )
+                    select customer, project_id, transport, channel,
+                           configuration_identity, external_identity,
+                           external_version, content_sha256, bytes_reference,
+                           delivery_identity, idempotency_key, service_identity,
+                           run_identity, 'duplicate'
+                      from source_deliveries where id = :id
+                    """
+                ),
+                {"id": recorded.delivery_id},
+            )
 
     definitions = {
         name: definition
@@ -378,12 +426,13 @@ def test_a_human_upload_cannot_yet_be_recorded_in_this_family(session, project):
             )
         ).all()
     }
+    # No third transport: ADR-0089 describes pull and push, and an upload is a
+    # push rather than a new kind of arrival.
     transport = definitions["ck_source_delivery_transport"]
     assert "'pull'" in transport and "'push'" in transport
     assert "'upload'" not in transport
-    assert (
-        "credential_id IS NOT NULL"
-        in definitions["ck_source_delivery_push_credential"]
-    )
+    # And no credential minted for a person: a push secret issued to an
+    # uploader would be a real door into the project.
     channels = definitions["ck_push_intake_credential_channel"]
     assert "'project_alias'" in channels and "'upload'" not in channels
+    assert "ck_source_delivery_push_credential" not in definitions

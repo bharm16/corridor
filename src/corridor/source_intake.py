@@ -37,25 +37,6 @@ Two acts, each honest on its own:
    size) and writes the exact bytes to the content-addressed store *before any
    model work*. An oversized, unsupported, or foreign file is refused here with an
    actionable reason and leaves nothing registered.
-What upload is *not* yet is a member of the delivery family. ADR-0078 lists
-manual upload among the connector kinds that enter under one contract and its own
-migration header records that this path is outstanding; ADR-0089 then made every
-delivery one persisted row whatever transport carried it. An upload belongs there
-— somebody hands Corridor bytes it never asked for, which is what push means —
-and it cannot be written there without a schema change, for reasons that are
-database constraints rather than preferences: ``ck_source_delivery_transport``
-admits only ``pull`` and ``push``, ``ck_source_delivery_push_credential`` makes a
-pushed delivery name a ``push_intake_credentials`` row that an authenticated
-*person* does not have, and ``ck_push_intake_credential_channel`` admits no
-upload channel one could be minted on. Recording it as a pull instead would state
-that a connector configuration fetched it on a cursor, which is the second
-definition of one identity ADR-0089 exists to remove. So the seam is left
-explicit and held by a test (``tests/test_source_delivery.py``): the gate
-composition and the refusal vocabulary here are already the shared ones, the
-arrival observation names the project, ``confirm_intake`` already takes the
-``source_delivery_id`` it will one day be given, and until the schema admits a
-human-carried delivery an upload honestly has none.
-
 2. ``preview_intake`` reads the current registry state and reports, read-only, what
    confirming would create or change — including that a genuinely unresolved fact
    (registry id, date, any relationship) stays unresolved rather than silently
@@ -64,6 +45,35 @@ human-carried delivery an upload honestly has none.
    or cross-project request without any partial authoritative change, and otherwise
    registers the Document in the caller's transaction so a rolled-back caller hands
    off no work.
+
+An upload *is* a member of the delivery family (#823). ADR-0078 lists manual
+upload among the connector kinds that enter under one contract, and ADR-0089 made
+every delivery one persisted row whatever transport carried it; an upload belongs
+there because somebody hands Corridor bytes it never asked for, which is what push
+means. What kept it out was three database constraints rather than a preference,
+and the load-bearing one was ``ck_source_delivery_push_credential``: it made a
+pushed delivery name a ``push_intake_credentials`` row that an authenticated
+*person* does not hold. It is now ``ck_source_delivery_authentication``, which
+asks how the transport authenticated instead of assuming — a machine push names
+its credential, a human push names its principal, and a push naming neither is
+refused. Nothing is minted for a person: ``ck_push_intake_credential_channel``
+still admits no upload channel, because a credential issued to an uploader would
+be a live push secret and therefore a real door into the project. No third
+transport is added either, since recording the upload as a pull would state that
+a connector configuration fetched it on a cursor — the second definition of one
+identity ADR-0089 exists to remove.
+
+``receive_upload`` is that seam, and it records the whole lifecycle rather than
+only its happy end. A refusal at the byte or structure gate is a
+``terminally_refused`` delivery carrying the rule that refused it; a storage or
+scanner failure is a ``transient_failure``, which says nothing about the bytes
+and is why the checkpoint rule treats the two differently; and an authorized
+upload is ``stored`` before the person has decided anything, so an upload staged
+and then abandoned is a record instead of an absence. Confirmation stays the
+separate attributable act it always was, now also bound to the delivery through
+``source_delivery.confirm_delivery`` and idempotent on a replay — and the
+``source_delivery_id`` ``confirm_intake`` had reserved for it is at last the one
+an ordinary upload carries.
 """
 
 from __future__ import annotations
@@ -73,6 +83,8 @@ import json
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path, PurePosixPath
+from typing import TYPE_CHECKING
+from uuid import uuid4
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -99,10 +111,18 @@ from corridor.models import (
     Document,
     ExtractionRun,
     Project,
+    SourceDelivery,
 )
-from corridor.object_storage import store_bytes
+from corridor.object_storage import content_key, store_bytes
 from corridor.principals import HumanPrincipal, require_human_principal
 from corridor.storage import staged_file
+
+# ``corridor.source_delivery`` reaches this module back through the connector
+# package, so the delivery ledger is imported where it is used rather than at
+# the top — the same local import ``source_delivery`` itself makes for the
+# activation gate.
+if TYPE_CHECKING:
+    from corridor.source_delivery import DeliveryObservation
 
 # One uploaded file per request is the count bound; a batch caller (email) loops
 # this module per attachment. 64 MiB holds a large utility-conflict matrix PDF or
@@ -115,6 +135,15 @@ MAX_UPLOAD_BYTES = 64 * 1024 * 1024
 # mail intake can opt into the separately bounded MIME reader for .eml parts;
 # this does not expand the upload surface's default format contract.
 ACCEPTED_SUFFIXES = frozenset({".pdf"}) | SPREADSHEET_SUFFIXES
+
+# The delivery family's three server-owned facts about a product upload (#823).
+# The channel is what the person used, not what they said; the configuration is
+# the upload surface itself, which is what a pull delivery names with a connector
+# identity and a machine push names with its credential; the service identity is
+# this module, because this is what took delivery.
+PRODUCT_UPLOAD_CHANNEL = "product_upload"
+PRODUCT_UPLOAD_CONFIGURATION = "product-upload"
+UPLOAD_SERVICE_IDENTITY = "corridor.source_intake"
 
 # The declared semantic kind of the source, chosen by the person handing it over —
 # a question the bytes cannot answer and the system must not guess (ADR-0007,
@@ -150,6 +179,37 @@ class IntakeRefused(refusals.Refusal, ValueError):
         self.reason = reason
 
 
+class UploadRefused(IntakeRefused):
+    """The gate refused an upload, and the ledger recorded the refusal.
+
+    Carries the ledger identity so the caller can commit the record it just
+    made while still refusing the request: a refusal that rolls back with the
+    response is exactly the loss ADR-0089 set out to remove, and it is the
+    same shape ``push_intake.PushDeliveryRefused`` uses for the same reason.
+    """
+
+    def __init__(self, reason: str, message: str, *, delivery_id: int) -> None:
+        super().__init__(reason, message)
+        self.delivery_id = delivery_id
+
+
+class UploadNotTaken(refusals.Refusal, RuntimeError):
+    """Storage or the scanner failed, so nothing can be said about the bytes.
+
+    Distinct from ``UploadRefused`` because the two mean opposite things to
+    anybody reading the ledger afterwards (ADR-0089): a refusal is a fact about
+    the delivery and will never be admitted, and this is a fact about Corridor
+    on one attempt. The person is told to try again, and the recorded
+    ``transient_failure`` is what stops that attempt from vanishing.
+    """
+
+    refusal_kind = refusals.CONFLICT
+
+    def __init__(self, message: str, *, delivery_id: int) -> None:
+        super().__init__(message)
+        self.delivery_id = delivery_id
+
+
 class IntakeConflict(refusals.Refusal, ValueError):
     """A confirm that no longer matches the source or registry it previewed.
 
@@ -174,6 +234,16 @@ class StagedSource:
     suffix: str
     filename: str
     stored_path: Path
+
+
+@dataclass(frozen=True)
+class ReceivedUpload:
+    """One taken upload: its staged bytes, and the delivery they arrived on."""
+
+    staged: StagedSource
+    delivery_id: int
+    delivery_identity: str
+    replayed: bool
 
 
 @dataclass(frozen=True)
@@ -221,6 +291,9 @@ class IntakeConfirmation:
     doc_type: str
     created: bool
     audit_id: int
+    # The delivery this person admitted to processing, where the confirmation
+    # named one; a source that arrived through no transport names none (#823).
+    delivery_confirmation_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -330,6 +403,174 @@ def validate_and_stage(
     )
 
 
+def receive_upload(
+    session: Session,
+    *,
+    project: Project,
+    body: bytes,
+    filename: str,
+    principal: HumanPrincipal,
+    customer: str,
+    source_revision: str = "",
+    max_bytes: int | None = None,
+) -> ReceivedUpload:
+    """Take delivery of one uploaded file, and record what became of it.
+
+    The gate and the staging are ``validate_and_stage``'s, unchanged and shared
+    with every other channel. What this adds is the ledger row ADR-0089 says
+    every delivery gets, on the one transport that fits — ``push``, because
+    somebody handed Corridor bytes it never asked for — authenticated by the
+    signed-in person rather than by a machine credential nobody should mint for
+    them.
+
+    Every outcome is a row, so nothing is lost between the upload form and the
+    confirmation:
+
+    * an authorized upload is ``stored`` the moment its exact bytes are in the
+      content-addressed store, before the person has decided anything, and an
+      upload abandoned at the preview stays exactly that;
+    * a byte or structure refusal is ``terminally_refused`` carrying the rule
+      that refused it, with the digest of what actually arrived;
+    * a storage or scanner failure is ``transient_failure``, which says nothing
+      about the delivery and is why the checkpoint rule will not advance past
+      one.
+
+    ``source_revision`` is the person's declaration of *which* revision of the
+    source these bytes are. It defaults to the bytes themselves, so uploading
+    the same file twice converges on the delivery already taken; declaring a
+    revision makes a genuinely new delivery that shares the stored object,
+    because storage deduplication and delivery identity are different questions
+    and identical bytes can be a new and meaningful source revision (ADR-0015
+    leaves what they are to the person, and this module still never guesses it).
+    """
+
+    from corridor import source_delivery
+
+    principal = require_human_principal(principal)
+    digest = hashlib.sha256(body).hexdigest()
+    binding = source_delivery.DeliveryBinding(
+        customer=customer,
+        project_id=project.id,
+        project_slug=project.slug,
+        transport="push",
+        channel=PRODUCT_UPLOAD_CHANNEL,
+        configuration_identity=PRODUCT_UPLOAD_CONFIGURATION,
+        delivered_by_principal=principal.subject,
+    )
+    # The upload form is the whole run: there is no pass and no cursor, and the
+    # run is not part of the delivery's identity, so a replay converges on the
+    # row the first one wrote and keeps that run's name.
+    run_identity = f"product-upload:{uuid4().hex}"
+    # Taken before the gate, so a refusal names the exact bytes that arrived
+    # and an unusable filename still leaves an identifiable delivery.
+    offered = _upload_observation(
+        _offered_name(filename) or digest,
+        source_revision,
+        digest,
+        len(body),
+    )
+    try:
+        staged = validate_and_stage(
+            body,
+            filename,
+            max_bytes=max_bytes,
+            customer_id=customer,
+            project_id=project.id,
+            channel=PRODUCT_UPLOAD_CHANNEL,
+        )
+    except IntakeRefused as exc:
+        refused = source_delivery.record_delivery(
+            session,
+            binding,
+            offered,
+            disposition=source_delivery.DISPOSITION_TERMINALLY_REFUSED,
+            service_identity=UPLOAD_SERVICE_IDENTITY,
+            run_identity=run_identity,
+            refusal_reason=f"{exc.reason}: {exc}",
+        )
+        raise UploadRefused(
+            exc.reason, str(exc), delivery_id=refused.delivery_id
+        ) from exc
+    except Exception as exc:
+        # The store or the scanner, not the bytes. Recorded before the request
+        # fails, so the attempt survives the response that refuses it.
+        failed = source_delivery.record_delivery(
+            session,
+            binding,
+            offered,
+            disposition=source_delivery.DISPOSITION_TRANSIENT_FAILURE,
+            service_identity=UPLOAD_SERVICE_IDENTITY,
+            run_identity=run_identity,
+            refusal_reason=f"{type(exc).__name__}: {exc}",
+        )
+        raise UploadNotTaken(
+            "This upload could not be stored. Nothing was refused about the "
+            "file itself; try again.",
+            delivery_id=failed.delivery_id,
+        ) from exc
+
+    recorded = source_delivery.take_delivery(
+        session,
+        binding,
+        _upload_observation(
+            staged.filename,
+            source_revision,
+            digest,
+            staged.size_bytes,
+            bytes_reference=content_key(digest, staged.suffix),
+        ),
+        service_identity=UPLOAD_SERVICE_IDENTITY,
+        run_identity=run_identity,
+    )
+    # The receipt always names the row the bytes were taken on, never the
+    # duplicate observation of it, so a re-posted form reaches the same one.
+    taken = source_delivery.stored_delivery(
+        session, idempotency_key=recorded.idempotency_key
+    )
+    return ReceivedUpload(
+        staged=staged,
+        delivery_id=int(taken.id),
+        delivery_identity=taken.delivery_identity,
+        replayed=recorded.disposition == source_delivery.DISPOSITION_DUPLICATE,
+    )
+
+
+def _upload_observation(
+    external_identity: str,
+    source_revision: str,
+    digest: str,
+    byte_count: int,
+    bytes_reference: str = "",
+) -> "DeliveryObservation":
+    """What was handed over, and the one place an upload's identity is derived.
+
+    The name the person gave the file identifies it, and the declared source
+    revision versions it — falling back to the digest, so an undeclared
+    re-upload of the same file is the same delivery rather than a second one.
+    The provider's own timestamps stay empty: a browser's clock and a
+    filesystem's modification time are not the source's facts about itself.
+    """
+
+    from corridor.source_delivery import DeliveryObservation
+
+    return DeliveryObservation(
+        external_identity=external_identity,
+        external_version=(source_revision or "").strip() or digest,
+        content_digest=digest,
+        bytes_reference=bytes_reference,
+        metadata={"filename": external_identity, "byte_count": byte_count},
+    )
+
+
+def _offered_name(filename: str) -> str:
+    """The display name, or empty where the upload offered no usable one."""
+
+    try:
+        return _safe_filename(filename)
+    except IntakeRefused:
+        return ""
+
+
 def preview_intake(
     session: Session, project: Project, staged: StagedSource, doc_type: str
 ) -> IntakePreview:
@@ -427,16 +668,21 @@ def confirm_intake(
     supersession, organization identity, sequencing, or release.
 
     ``source_delivery_id`` is the ledger row of the delivery these exact bytes
-    arrived on, where the caller holds one (#687). An ordinary upload holds
-    none, and today that is two facts wearing one answer: paper handed over at a
-    meeting genuinely arrived through no transport, *and* a file handed over
-    through this form did arrive by one that the delivery family cannot yet
-    represent (see this module's docstring). Either way the link is left unknown
-    rather than guessed. `later_revision` and
-    `key_date_table` do hold one: both refuse a capture whose bytes no *stored*
-    delivery of this project holds, so the row they pass is proven before this
-    is called, not inferred afterwards.
+    arrived on (#687). An ordinary upload now holds one, because
+    ``receive_upload`` took delivery of it before the preview was drawn, and
+    naming it here is what makes the confirmation an act on *that* delivery:
+    the row is re-proved against this project, these bytes and the ``stored``
+    disposition before anything is written, and one
+    ``source_delivery_confirmations`` row records who admitted it, idempotently
+    (#823). `later_revision` and `key_date_table` pass one too: both refuse a
+    capture whose bytes no *stored* delivery of this project holds, so the row
+    they pass is proven before this is called, not inferred afterwards. What
+    still holds none is a source that genuinely arrived through no transport —
+    paper handed over at a meeting, registered from the curated corpus — and
+    there the link stays unknown rather than guessed.
     """
+
+    from corridor.source_delivery import DISPOSITION_STORED, confirm_delivery
 
     principal = require_human_principal(principal)
     if doc_type not in ACCEPTED_DOC_TYPES:
@@ -465,6 +711,21 @@ def confirm_intake(
             "The staged bytes changed since preview. Re-upload the file.",
         )
 
+    delivery = None
+    if source_delivery_id is not None:
+        delivery = session.get(SourceDelivery, int(source_delivery_id))
+        if (
+            delivery is None
+            or delivery.project_id != project.id
+            or delivery.content_sha256 != sha256
+            or delivery.disposition != DISPOSITION_STORED
+        ):
+            raise IntakeConflict(
+                "delivery_mismatch",
+                "This confirmation does not match the delivery these bytes "
+                "arrived on. Upload and preview the file again.",
+            )
+
     existing = session.scalars(
         select(Document).where(
             Document.project_id == project.id,
@@ -490,6 +751,14 @@ def confirm_intake(
         source_delivery_id=source_delivery_id,
     )
     created = existing is None
+    # The admission itself, bound to the delivery rather than only to the
+    # Document it produced, so a stored delivery nobody admitted is visibly
+    # different from one somebody did (#823).
+    confirmation = (
+        None
+        if delivery is None
+        else confirm_delivery(session, delivery=delivery, principal=principal)
+    )
 
     entry = audit.record(
         session,
@@ -512,6 +781,7 @@ def confirm_intake(
         doc_type=doc_type,
         created=created,
         audit_id=entry.id,
+        delivery_confirmation_id=None if confirmation is None else confirmation.id,
     )
 
 

@@ -63,6 +63,7 @@ from corridor.source_delivery import (
     DISPOSITION_TRANSIENT_FAILURE,
     DeliveryBinding,
     DeliveryObservation,
+    confirm_delivery,
     record_delivery,
     take_delivery,
 )
@@ -158,17 +159,35 @@ def _deliver(
     disposition: str | None = None,
     refusal_reason: str | None = None,
     document: Document | None = None,
+    uploaded_by: str = "",
 ):
-    """One delivery in the ledger, at a declared arrival instant."""
+    """One delivery in the ledger, at a declared arrival instant.
 
-    binding = DeliveryBinding(
-        customer="acme-utilities",
-        project_id=adopted.project.id,
-        project_slug=adopted.project.slug,
-        transport="pull",
-        channel="shared-files",
-        configuration_identity="shared-files-v1",
-        configuration_version="1",
+    ``uploaded_by`` makes it the delivery a person handed over through the
+    product rather than one a connector fetched (#823); the two differ in what
+    is supposed to happen next, which is what the reading has to say.
+    """
+
+    binding = (
+        DeliveryBinding(
+            customer="acme-utilities",
+            project_id=adopted.project.id,
+            project_slug=adopted.project.slug,
+            transport="push",
+            channel="product_upload",
+            configuration_identity="product-upload",
+            delivered_by_principal=uploaded_by,
+        )
+        if uploaded_by
+        else DeliveryBinding(
+            customer="acme-utilities",
+            project_id=adopted.project.id,
+            project_slug=adopted.project.slug,
+            transport="pull",
+            channel="shared-files",
+            configuration_identity="shared-files-v1",
+            configuration_version="1",
+        )
     )
     observation = DeliveryObservation(
         external_identity=name,
@@ -379,6 +398,41 @@ def test_a_stored_delivery_nobody_processed_is_not_read(session, adopted):
 
     assert _state(reading, "untouched") == "failed"
     assert "no processing receipt" in reading.lines[0].detail
+
+
+def test_coverage_separates_an_unconfirmed_upload_from_a_confirmed_one(
+    session, adopted
+):
+    """Stored is not admitted, and the reading says which of the two it is.
+
+    A delivery is stored the moment Corridor holds the exact bytes, which for a
+    product upload happens before the person has decided anything. Reading an
+    upload nobody confirmed as "no processing receipt records it" described a
+    failure that had not happened; what had happened is that nobody had asked
+    for it to be read yet (#823).
+    """
+
+    _configure(session, adopted)
+    staged = _deliver(
+        session,
+        adopted,
+        name="handed-over.xlsx",
+        received_at=CUTOFF - timedelta(days=1),
+        uploaded_by=COORDINATOR.subject,
+    )
+
+    reading = _read(session, adopted)
+    assert _state(reading, "handed-over.xlsx") == "failed"
+    assert "nobody has confirmed it" in reading.lines[0].detail
+
+    confirm_delivery(session, delivery=staged, principal=COORDINATOR)
+
+    confirmed = _read(session, adopted)
+    assert _state(confirmed, "handed-over.xlsx") == "failed"
+    assert "confirmed, and no processing receipt" in confirmed.lines[0].detail
+    # The distinction is inside the digest a coordinator confirms, so the two
+    # readings are not interchangeable.
+    assert confirmed.reading_digest != reading.reading_digest
 
 
 def test_the_watermark_is_the_prefix_before_the_first_late_arrival(session, adopted):
