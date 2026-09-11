@@ -72,6 +72,7 @@ from corridor.web.app import (
 )
 
 from access_support import seed_membership
+from browser_session_support import page_without_shell
 from record_counts import nothing_written
 from packet_review_support import (
     Rendition,
@@ -508,7 +509,10 @@ def test_the_week_carries_no_decision_control_of_its_own(session, project, clien
 
     _cross_source(session, project)
 
-    body = client.get(f"/work/{project.slug}").text
+    # The navigation shell every customer page carries (#843) is not the
+    # week's control surface, and signing out is not a decision about the
+    # record, so the page is read without it.
+    body = page_without_shell(client.get(f"/work/{project.slug}").text)
 
     assert "<form" not in body
     assert "<button" not in body

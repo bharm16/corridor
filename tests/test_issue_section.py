@@ -84,6 +84,7 @@ from corridor.web.issue_section import (
     issue_view,
 )
 
+from browser_session_support import page_without_shell
 from coverage_support import declare_coverage
 from later_revision_support import BASELINE_ROWS, adopt, workbook_bytes
 from packet_review_support import Rendition, append_deltas, configure_issue, modify, subject
@@ -694,7 +695,7 @@ def test_the_rendered_screen_offers_no_approval_for_a_blocked_candidate(
     # for a *fresh* candidate rather than offering to approve this one. That
     # is the recovery this section has always described in words and could not
     # perform until #675.
-    assert body.count("<form") == 1
+    assert page_without_shell(body).count("<form") == 1
     assert "/issue/prepare" in body
 
 
@@ -895,9 +896,12 @@ def test_the_week_grows_no_record_decision_control_beside_the_approval(
 
     body = week(client, adopted)
 
-    assert body.count("<form") == 1
-    assert f'action="/work/{adopted.project.slug}/issue/authorize"' in body
-    assert body.count("<button") == 1
+    # The navigation shell is on every customer page (#843); what this test
+    # pins is the one act the *week* carries, so the page is read without it.
+    own = page_without_shell(body)
+    assert own.count("<form") == 1
+    assert f'action="/work/{adopted.project.slug}/issue/authorize"' in own
+    assert own.count("<button") == 1
     # The request-forgery field is the session's own proof that this submission
     # came from this page, not a control the week grew: every authenticated form
     # on a live-pilot page carries it, and `test_architecture.py` fails when one

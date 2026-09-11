@@ -1,0 +1,64 @@
+{#
+  The navigation shell every customer page carries (#843).
+
+  Why: each screen grew its own header link, so where a coordinator could go
+  next depended on which page they had landed on, and signing out was reachable
+  from the projects list and nowhere else. `corridor.web.navigation` owns the
+  items, their words, their destinations and which one the reader is inside;
+  this file only draws them, and the module's docstring says why each is what
+  it is.
+
+  Use:  {% include "_shell.html" %}   once, immediately before the page's own
+        `<header>`. One line, no arguments, the same in every template on
+        purpose: a reviewer and a rebase can both read the insertion at a
+        glance. The page's own context supplies `request`, and `project` where
+        the page is inside one.
+
+  Every `href` below is written out rather than interpolated from the module,
+  so `tests/test_manifest_page_links.py` can read each one from this source and
+  hold it against the routes the deployment serves.
+
+  Nothing here paints state. The item the reader is on is announced by
+  `aria-current` and shown by a mark that is `aria-hidden` -- the rule
+  `_primitives.html` states for a state label, applied to a location: colour
+  and weight are never the signal, because neither survives print, greyscale,
+  or being read aloud.
+#}
+{%- set shell = navigation_shell(
+      request.url.path,
+      project.slug if project is defined and project else "",
+      project.name if project is defined and project else "") -%}
+{%- macro here(item) -%}
+{%- if item.mark %}<span class="here" aria-hidden="true">{{ item.mark }} </span>{% endif %}{{ item.text }}
+{%- endmacro -%}
+<style>
+  .shell { border-bottom:1px solid #e2e2e2; background:#fafafa; font-size:.9rem; }
+  .shell > ul { display:flex; flex-wrap:wrap; align-items:center;
+                gap:.15rem .9rem; list-style:none; margin:0;
+                padding:.4rem 1.2rem; }
+  .shell li.project { font-weight:600; }
+  .shell li.account { margin-left:auto; }
+  .shell form { display:inline; margin:0; }
+  .shell button { font:inherit; color:#111; background:none; border:0;
+                  padding:0; text-decoration:underline; cursor:pointer; }
+</style>
+<nav class="shell" aria-label="{{ shell.label }}">
+  <ul>
+    <li><a href="/"{% if shell.projects.aria_current %} aria-current="{{ shell.projects.aria_current }}"{% endif %}>{{ here(shell.projects) }}</a></li>
+    {%- if shell.project_name %}
+    <li class="project">{{ shell.project_name }}</li>
+    {%- endif %}
+    {%- if shell.sources %}
+    <li><a href="/projects/{{ project.slug }}/sources"{% if shell.sources.aria_current %} aria-current="{{ shell.sources.aria_current }}"{% endif %}>{{ here(shell.sources) }}</a></li>
+    {%- endif %}
+    {%- if shell.work %}
+    <li><a href="/work/{{ project.slug }}"{% if shell.work.aria_current %} aria-current="{{ shell.work.aria_current }}"{% endif %}>{{ here(shell.work) }}</a></li>
+    {%- endif %}
+    {%- if shell.record %}
+    <li><a href="/record/{{ project.slug }}"{% if shell.record.aria_current %} aria-current="{{ shell.record.aria_current }}"{% endif %}>{{ here(shell.record) }}</a></li>
+    {%- endif %}
+    <li class="account">
+      <form method="post" action="/sign-out">{{ csrf_field() }}<button type="submit">{{ shell.sign_out }}</button></form>
+    </li>
+  </ul>
+</nav>

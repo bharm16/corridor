@@ -106,3 +106,22 @@ def submit_form(client, url, fields):
     """Post exactly these fields, and nothing a browser form would not send."""
 
     return client.post(url, data=fields, follow_redirects=False)
+
+
+# --- the page's own markup, without the shell every page carries ------------
+
+_SHELL = re.compile(r'<nav class="shell".*?</nav>', re.S)
+
+
+def page_without_shell(body: str) -> str:
+    """This page's own markup, with the navigation shell taken out (#843).
+
+    Every customer page renders the same shell, and the shell carries the one
+    control that leaves the product: a POST form with the forgery field and a
+    Sign out button. A test asking what *this page* offers -- "the only form
+    here is the GET search", "the one act on the week is the approval" -- is
+    asking about the page, not about the navigation every page carries, so it
+    reads the page with the shell removed rather than counting it.
+    """
+
+    return _SHELL.sub("", body)

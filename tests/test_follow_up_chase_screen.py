@@ -88,6 +88,7 @@ from corridor.web.follow_up_view import (
     copy_ready_brief,
 )
 
+from browser_session_support import page_without_shell
 from packet_review_support import (
     Rendition,
     accept_baseline_fact,
@@ -647,9 +648,11 @@ def test_the_brief_is_copyable_read_only_text_and_no_message_is_produced(
     for ordinal in range(1, len(reading.bundles) + 1):
         assert f'for="follow-up-bundle-{ordinal}-brief"' in body
         assert f'aria-describedby="follow-up-bundle-{ordinal}-brief-hint"' in body
-    # And nothing that could send it.
-    assert "<form" not in body
-    assert "<button" not in body
+    # And nothing that could send it. The navigation shell every customer
+    # page carries (#843) is not this section's control surface.
+    own = page_without_shell(body)
+    assert "<form" not in own
+    assert "<button" not in own
     for forbidden in ("mailto:", "Send ", "smtp", "Draft email"):
         assert forbidden not in body
 
