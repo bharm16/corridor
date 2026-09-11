@@ -356,6 +356,115 @@ def test_concurrent_identical_retries_return_one_original_result(
         assert len(session.scalars(select(SourceFactAppendReceipt)).all()) == 1
 
 
+def test_concurrent_unkeyed_appends_of_one_reading_return_one_original_result(
+    runtime_database, tmp_path
+):
+    """The production shape of the same overlap: no key, only the content (#925).
+
+    `record_routed_run` passes `idempotency_key=None` for every `SOURCE_FACTS`
+    route, so the key is `content:<digest>` over the document's sha256, the
+    prompt, schema, model and sealed configuration, the token usage, the row
+    accounting, and every Candidate payload. That is a different index from
+    the test above and a different branch inside the command -- the lookup by
+    `uq_source_fact_append_content` that runs when no receipt carries the key
+    -- and the project-processing pass reaches only this one.
+
+    Two overlapping workers matter here because an expired work lease is
+    re-claimable under a worker that is still running (#918), and nothing in
+    `extract_project` re-checks a claim. This says what `lock_project` plus the
+    content digest are worth when that happens: one run, one receipt, one set
+    of Facts, and the loser is told it created nothing.
+
+    It is worth saying what this does *not* prove, because the digest is over
+    the reading and not over the document: two workers that read the same bytes
+    to different rows, or to the same rows with different token usage, produce
+    different digests and both append. The reader here is the deterministic
+    spreadsheet one, so identical content is the honest case to assert, and a
+    model-backed route cannot rely on it.
+    """
+
+    path = _workbook(
+        tmp_path,
+        "unkeyed.xlsx",
+        [["UC-1", "CenterPoint", "Electric", "1149+00", "1150+00", "Pole"]],
+    )
+    factory = runtime_database.session_factory
+    with factory.begin() as session:
+        project = Project(slug="unkeyed-facts", name="Unkeyed Facts", is_synthetic=True)
+        session.add(project)
+        session.flush()
+        document = ingest_document(
+            session,
+            project_id=project.id,
+            path=path,
+            doc_type="matrix",
+            images_dir=tmp_path / "images",
+        )
+        document_id = document.id
+
+    barrier = Barrier(2)
+
+    def append_without_a_key():
+        with factory.begin() as session:
+            document = session.get(Document, document_id)
+            document._stored_path = str(path)
+            candidate = propose(
+                document,
+                kind="dependency",
+                fields={"station_from": "1149+00", "station_to": "1150+00"},
+                page_no=1,
+                quote="UC-1 CenterPoint Electric 1149+00 1150+00 Pole",
+                quote_verified=True,
+                whole_row=True,
+                confidence=None,
+                prompt_version=PROMPT_VERSION,
+                dedupe="UC-1",
+                text_source="cells",
+                tier="native",
+            )
+            candidate.payload_json["citations"][0].update(
+                {"table_row": 1, "sheet_name": "Utility Conflicts"}
+            )
+            accounting = RowAccounting(
+                reader_version=PROMPT_VERSION,
+                reader_path="spreadsheet_cells",
+            )
+            accounting.detect("sheet:1:row:1", page=1, row_number=1)
+            accounting.account(
+                "sheet:1:row:1", disposition="extracted", reason="candidate_recorded"
+            )
+            accounted = accounting.finish([candidate])
+            barrier.wait()
+            result = append_source_facts(
+                session,
+                document,
+                idempotency_key=None,
+                prompt_version=PROMPT_VERSION,
+                schema_version=SCHEMA_VERSION,
+                candidate_count=1,
+                page_errors=0,
+                candidates=accounted,
+                model=None,
+                row_accounting_json=accounted.row_accounting,
+                allow_unsealed_legacy=True,
+                source_path=path,
+            )
+            return result.run.id, result.created
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(lambda _index: append_without_a_key(), range(2)))
+
+    assert len({run_id for run_id, _created in results}) == 1
+    assert sorted(created for _run_id, created in results) == [False, True]
+    with factory() as session:
+        receipts = session.scalars(select(SourceFactAppendReceipt)).all()
+        assert len(receipts) == 1
+        # The key was derived, not given: this is the branch under test.
+        assert receipts[0].idempotency_key == f"content:{receipts[0].content_sha256}"
+        assert len(session.scalars(select(ExtractionRun)).all()) == 1
+        assert len(session.scalars(select(Fact)).all()) == 2
+
+
 def test_completed_native_extraction_keeps_stationing_typed_inside_the_full_row(
     session, project, tmp_path, monkeypatch
 ):

@@ -37,7 +37,10 @@ recoverable and idempotent:
    proposals and its terminal Extraction Run commit together; a completed run
    is skipped without re-reading; a failed document does not stop its siblings.
    Every completed run dirties the durable Record Inclusion watermark in its own
-   commit (see ``record_inclusion``).
+   commit (see ``record_inclusion``). The document row is claimed for the
+   duration of its own reading, for the reason act 1 claims it for the duration
+   of its own read: the skip check and the append underneath it are both blind
+   to a worker that has not committed yet (``_claim_for_extraction``, #925).
 4. Reconcile: run the watermark-gated Record Inclusion. It loads when the
    project is pending — including the case where every extraction was skipped
    but a prior crash left the watermark dirty — and is a no-op that appends no
@@ -119,6 +122,15 @@ class ProcessingPassResult:
     scope act rejected, while this counts documents the read act never opened,
     including the kinds no extractor would take anyway. A held document
     belongs in one of these numbers or the pass has lost it (#919).
+
+    ``eligible_document_count`` is how many documents this pass took to
+    extraction, which is what it has always been and is now one filter
+    narrower: a document another live pass was already reading is counted in
+    ``excluded`` under ``extracting_elsewhere`` instead (#925). That reason is
+    the one entry in ``excluded`` that is not a steady state, and it is named
+    so it cannot be read as one. Nothing is owed to anybody for it: the worker
+    holding the document either finishes or dies, and the next pass takes
+    whatever is left.
     """
 
     project_id: int
@@ -184,7 +196,10 @@ def process_project(
     the production runtime supply their own model boundary — and ``clock`` is the
     controlled time source. The pass owns its transactions through
     ``session_factory``; it does not hold a project mutation lock across the
-    model requests inside extraction.
+    model requests inside extraction. It does hold the one document row it is
+    reading, which is a different claim and a narrower one — see
+    ``_claim_for_extraction`` for why that is what an overlapping worker needs
+    and the project lock is not.
     """
 
     # Read what nobody has read, before the scope is taken, so a document
@@ -202,11 +217,18 @@ def process_project(
                 f"project {project_id} is not a registered project"
             )
         eligible, excluded = _eligible_documents(session, project_id)
-        eligible_shas = [document.sha256 for document in eligible]
+        eligible_documents = [
+            (document.id, document.sha256) for document in eligible
+        ]
 
         outcomes: list[Outcome] = []
         processing_failures: list[str] = list(parse_failures)
-        for sha256 in eligible_shas:
+        taken = 0
+        for document_id, sha256 in eligible_documents:
+            if not _claim_for_extraction(session, document_id):
+                excluded["extracting_elsewhere"] += 1
+                continue
+            taken += 1
             try:
                 outcomes.extend(
                     extract_project(
@@ -233,7 +255,7 @@ def process_project(
 
     return ProcessingPassResult(
         project_id=project_id,
-        eligible_document_count=len(eligible_shas),
+        eligible_document_count=taken,
         outcomes=outcomes,
         excluded=excluded,
         processing_failures=processing_failures,
@@ -290,6 +312,14 @@ def _parse_landed_documents(
     the document to the worker that holds it rather than blocking behind a
     render; the row stays ``pending`` and the next pass takes it if that worker
     never commits.
+
+    **It answers it for this act and no other.** The overlap above is a
+    property of the lease, so it reaches every act the pass has, and this line
+    is evidence about reading one document -- never about the pass. Extraction
+    needed its own claim, for its own reasons, and has one
+    (``_claim_for_extraction``, #925); the reconciliation after it is fenced by
+    the watermark row it already locks
+    (``reconciliation_watermark.ReconciliationWatermark.reconcile``).
     """
 
     images_dir = settings.corpus_images
@@ -352,6 +382,58 @@ def _parse_landed_documents(
     return parsed, held_unread, failures
 
 
+def _claim_for_extraction(session: Session, document_id: int) -> bool:
+    """Hold this document's row for the duration of its own extraction.
+
+    The same overlap the read act was fenced against reaches this act, and
+    nothing here answered it (#925). Two live passes are possible whenever a
+    lease expires under a worker that is still running -- ``claim_due_work``
+    deliberately re-claims ``state = 'claimed' and lease_expires_at <= now``,
+    an expired lease stops counting toward the concurrency limit, and
+    ``process_project`` never re-checks its claim token -- and project
+    processing declares ``claim_ttl_seconds`` of 1800, which a project whose
+    model reads run longer than half an hour will outlive.
+
+    Neither of the two things that look like guards settles it.
+    ``extract_project``'s skip reads ``already_extracted``, which reports
+    *committed* completed runs, and neither worker has committed while the
+    other is inside its reader -- the same reason re-reading ``pending`` could
+    not settle act 1. And the append underneath has no identity to fall back
+    on: every ``EXTRACTED_PROPOSALS`` route reaches ``record_extraction_run``,
+    which takes no lock and holds no idempotency key, and ``extraction_runs``
+    carries no unique constraint over ``(document_id, prompt_version)``
+    because a redo is meant to append another receipt.
+
+    So the document pays for a second model reading and carries a second
+    completed run, and what that costs depends only on which worker got there
+    first. Before anything is declared, two completed runs are exactly what
+    ``declare_single_run_documents_by_policy`` calls ambiguous, and the
+    document's conflicts stay off the record until a human chooses a run;
+    after a declaration, the same second run is orphaned instead -- paid for,
+    never selected, and carrying a duplicate Candidate for every row the
+    document held.
+
+    ``skip_locked`` rather than a wait, exactly as act 1 does it: the second
+    worker leaves the document to the worker holding it instead of blocking
+    behind a model call, and the row is untouched, so the next pass takes it
+    if that worker never commits. The lock is released by that document's own
+    commit inside ``extract_project``, so it spans one document's reading and
+    not the pass. It is not the project mutation lock this pass still refuses
+    to hold across a model request: nothing anywhere waits on a Document row
+    (the only two acquirers are this line and act 1, both ``skip_locked``), so
+    it can neither block another actor nor take part in a cycle.
+    """
+
+    return (
+        session.scalars(
+            select(Document.id)
+            .where(Document.id == document_id)
+            .with_for_update(skip_locked=True)
+        ).first()
+        is not None
+    )
+
+
 def _eligible_documents(
     session: Session, project_id: int
 ) -> tuple[list[Document], dict[str, int]]:
@@ -362,7 +444,11 @@ def _eligible_documents(
     deliberately unread), documents whose parse failed, documents nothing has
     read yet, and documents whose only terminal reading is a permanent
     unreadable/no-matrix outcome. Each exclusion is counted by reason for
-    honest reporting.
+    honest reporting. A sixth reason, ``extracting_elsewhere``, is opened here
+    at zero and filled by the extraction loop, which is the only act that can
+    answer it: whether another live pass holds a document is true of the
+    instant the reader is about to run, not of the instant this scope was taken
+    (``_claim_for_extraction``, #925).
 
     ``failed_parse`` and ``awaiting_parse`` are counted apart because they are
     owed to different people (#893). A failed parse waits for the bounded,
@@ -420,6 +506,11 @@ def _eligible_documents(
         "failed_parse": 0,
         "awaiting_parse": 0,
         "unreadable_permanent": 0,
+        # Filled by the extraction loop, not here: this act cannot know which
+        # documents another live pass is already inside, and asking before the
+        # reader runs would answer about a moment that has passed by the time
+        # it matters. See ``_claim_for_extraction`` (#925).
+        "extracting_elsewhere": 0,
     }
     for document in documents:
         if not extractable_document(document):
@@ -473,6 +564,11 @@ def summarize_pass(
     # that line too: the hold is what stopped it, this pass did nothing wrong,
     # and another pass is not what changes it. It rides the receipt as its own
     # number so that a held document is never absent from every count (#919).
+    # A document another live pass was already extracting is on the same side
+    # of the line for a different reason: it is neither this pass's failure nor
+    # a steady state, because the worker holding it is finishing it right now
+    # (#925). It is in ``held_out`` rather than a number of its own, which is
+    # the honest place for a document this pass correctly declined to touch.
     health = (
         "healthy"
         if processing_failures == 0

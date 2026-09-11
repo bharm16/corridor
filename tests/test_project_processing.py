@@ -651,3 +651,95 @@ def test_an_unknown_project_is_refused_before_any_model_work(runtime_database):
             clock=ControlledClock(NOW),
         )
     assert route.extract_calls == {}
+
+
+def test_two_committed_workers_do_not_both_extract_one_eligible_document(
+    runtime_database,
+):
+    """Two live passes meeting on one eligible document, in real transactions.
+
+    #918 fenced the read act and nothing after it. The same overlap reaches
+    extraction: `claim_due_work` deliberately re-claims an occurrence whose
+    lease has expired, and the worker holding the old claim is not stopped, so
+    a pass whose model calls outlive `claim_ttl_seconds` is still in the
+    extraction loop when its successor enters it. Neither the skip check nor
+    the append settles it. `already_extracted` reads committed completed runs,
+    and neither worker has committed when the other looks;
+    `record_extraction_run` -- the command every `EXTRACTED_PROPOSALS` route
+    reaches -- takes no lock, holds no idempotency key, and `extraction_runs`
+    has no unique constraint over `(document_id, prompt_version)`, because a
+    redo is *supposed* to append another receipt.
+
+    So the document pays for two model readings and carries two completed
+    runs. Removing the claim below is the measurement, not a prediction: this
+    exact interleaving leaves two completed runs, two Candidates for one
+    conflict row, and a second run that B's Active Run declaration has already
+    orphaned. Reverse the order of the two commits and the cost is the other
+    one `declare_single_run_documents_by_policy` allows -- two completed runs
+    and no declaration yet is its definition of ambiguous, and that keeps the
+    document's conflicts off the record until a human chooses a run.
+
+    The shape that proves it, which a repeated sequential pass could not:
+    worker A is held *inside its own uncommitted extractor* while worker B runs
+    a whole pass over the same project.
+    """
+
+    factory = runtime_database.session_factory
+    project_id = _project(factory)
+    eligible = _matrix(factory, project_id, "ucm.pdf", doc_date=date(2025, 1, 1))
+
+    inside = Event()
+    release = Event()
+    readings: list[str] = []
+
+    class HeldRoute(ScriptedRoute):
+        def _extract(self, session, document):
+            first = not readings
+            readings.append(document.filename)
+            if first:
+                inside.set()
+                assert release.wait(timeout=10)
+            return super()._extract(session, document)
+
+    route = HeldRoute({"ucm.pdf": ["PL1"]})
+
+    def pass_over_the_project():
+        return process_project(
+            factory,
+            project_id=project_id,
+            select_route=route,
+            clock=ControlledClock(NOW),
+        )
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        worker_a = pool.submit(pass_over_the_project)
+        assert inside.wait(timeout=10), "worker A never reached the extractor"
+        result_b = pass_over_the_project()
+        release.set()
+        result_a = worker_a.result(timeout=30)
+
+    assert readings == ["ucm.pdf"], (
+        "the second worker read a document the first was already reading"
+    )
+    # B leaves the document to the worker holding it and says so honestly: it
+    # is not B's failure, and B did not take it to extraction either.
+    assert result_b.extracted == 0
+    assert result_b.processing_failures == []
+    assert result_b.excluded["extracting_elsewhere"] == 1
+    assert result_b.eligible_document_count == 0
+    # A's reading is the one that counts, and there is one of everything after
+    # it -- one paid model call, one completed run, one Candidate, one
+    # conflict, and a document no human has to disambiguate.
+    assert result_a.extracted == 1
+    assert result_a.excluded["extracting_elsewhere"] == 0
+    assert result_a.processing_failures == []
+    with factory() as verify:
+        assert _completed_runs(verify, project_id) == 1
+        assert verify.scalar(
+            select(func.count()).select_from(Candidate).where(
+                Candidate.source_document_id == eligible
+            )
+        ) == 1
+        assert _dependencies(verify, project_id) == {"PL1"}
+    assert result_a.ambiguous_documents == []
+    assert result_b.ambiguous_documents == []
