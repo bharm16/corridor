@@ -194,7 +194,18 @@ EXPECTED_SCHEMA_SHA256 = (
     # relations and commands that already exist, so the digest moves and
     # neither count does. Recomputed against a fresh disposable database with
     # template reuse off.
-    "d5a29688d34b05f90840e2eb97c34df20952a04e07b6b88fe1474cdb729642f3"
+    # #937 bounds the web half of `project_accepted_record_decision_count` to
+    # the partition the database sealed on this transaction, and refuses
+    # anything else with `insufficient_privilege`. A `SECURITY DEFINER` command
+    # steps outside row-level security by construction, so #933's reading --
+    # correct about the privilege it needed -- answered about any project the
+    # caller named, membership or no membership; "only a number" is still that
+    # project's number. The unpartitioned worker reading is unchanged, because
+    # a background run carries no person's authorization to bound (ADR-0079).
+    # The body is rewritten, so the digest moves; no relation, sequence,
+    # privilege or grant changes, so both counts are unchanged. Recomputed
+    # against a fresh disposable database with template reuse off.
+    "1334b7abe9d9fefced5df35247e0eb8b3b8933992b33b2df1d3ad11ec3e1b4ca"
 )
 
 pytestmark = [pytest.mark.slow, pytest.mark.migration]

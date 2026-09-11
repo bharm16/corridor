@@ -53,10 +53,11 @@ from typing import Any, Mapping, Sequence
 
 from sqlalchemy import BigInteger, bindparam, cast, func, select
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
-from corridor import audit, intake_hardening, onboarding_authorization
-from corridor.access import COORDINATION, resolve_membership
+from corridor import audit, intake_hardening, onboarding_authorization, refusals
+from corridor.access import COORDINATION, designation_refused, resolve_membership
 from corridor.activation_runtime import limited_onboarding_authorization
 from corridor.baseline_workbook import (
     IMPORTER_IDENTITY,
@@ -88,6 +89,7 @@ from corridor.models import (
     FactDecision,
     OnboardingPreview,
     Project,
+    SourceDelivery,
     SourceSegment,
 )
 from corridor.object_storage import (
@@ -100,6 +102,10 @@ from corridor.object_storage import (
 from corridor.operating_mode import adopt_project_baseline
 from corridor.principals import HumanPrincipal, require_human_principal
 from corridor.source_append import append_fact
+from corridor.source_authorization import (
+    authentication_mode_of,
+    source_binding_standing,
+)
 from corridor.source_intake import (
     IntakeConflict,
     StagedSource,
@@ -170,6 +176,20 @@ class BaselineOperationsUnresolved(BaselineAdoptionRefused):
 
 class StaleBaselinePreview(BaselineAdoptionRefused):
     """The preview being adopted no longer describes the source or the reading."""
+
+
+class BaselineReadingNotPermitted(refusals.Refusal, BaselineAdoptionRefused):
+    """This login may not ask what this project's accepted record holds (#937).
+
+    Its own type, and ``not_authorized`` rather than the conflict every other
+    refusal here answers, because nothing about the record is in conflict: the
+    caller was not entitled to the reading. Two situations raise it and each
+    writes its own sentence -- a project outside the partition the database
+    sealed on this transaction, and a deployment login that holds no execute
+    privilege on the command at all.
+    """
+
+    refusal_kind = refusals.NOT_AUTHORIZED
 
 
 @dataclass(frozen=True)
@@ -1346,20 +1366,79 @@ def _refuse_nonempty_project_record(session: Session, project: Project) -> None:
     they should have met this refusal or nothing at all. Asking the role that
     already holds the read keeps both halves of the guard and leaves the
     boundary exactly as narrow as it was.
+
+    The command bounds the web capability to its own sealed partition and
+    raises ``insufficient_privilege`` for anything else (#937). Two different
+    situations reach that one SQLSTATE and a person acts on them differently,
+    so they are told apart here by asking the database a structural question --
+    does this login hold execute on the command at all -- rather than by
+    reading the message PostgreSQL wrote. The call runs in a savepoint so
+    either refusal leaves the caller's transaction usable, exactly as
+    ``access.open_project_partition`` leaves it (#654).
     """
 
-    decided = int(
-        session.scalar(
-            select(func.project_accepted_record_decision_count(project.id))
-        )
-        or 0
-    )
+    try:
+        with session.begin_nested():
+            decided = int(
+                session.scalar(
+                    select(func.project_accepted_record_decision_count(project.id))
+                )
+                or 0
+            )
+    except DBAPIError as error:
+        if not designation_refused(error):
+            raise
+        raise _reading_not_permitted(session, project) from error
     if decided:
         raise BaselineAdoptionRefused(
             f"{project.slug} already holds {decided} accepted record decisions. "
             "Adopting a baseline over an existing Project Record needs an "
             "explicit migration or reconciliation, or a fresh environment."
         )
+
+
+#: The command whose execute privilege separates a supported deployment login
+#: from an unsupported one. Spelled with its argument types because that is how
+#: PostgreSQL identifies an overloadable function.
+_DECISION_COUNT_COMMAND = "public.project_accepted_record_decision_count(bigint)"
+
+
+def _reading_not_permitted(
+    session: Session, project: Project
+) -> BaselineReadingNotPermitted:
+    """Which of the two ``insufficient_privilege`` refusals this was.
+
+    A deployment that never granted the command to its login and a caller
+    asking about a project outside its sealed partition both arrive as
+    ``42501``, and the person reading the screen has to do different things
+    about them: the first is a deployment nobody enabled this path for, the
+    second is a project this session is not entitled to. ``has_function_privilege``
+    answers which, as a fact about the catalogue rather than as a phrase found
+    in an error message (``corridor.access`` refuses to classify refusals by
+    reading them, for the same reason).
+
+    ``corridor_legacy_dev`` is the login this reaches in practice. Leaving that
+    development mode out of the grant is deliberate -- it is the opt-in
+    unpartitioned login, and handing it an unpartitioned reading of every
+    project's accepted record is the thing #937 exists to stop -- but a
+    development deployment meeting it deserves a sentence rather than a 500.
+    """
+
+    permitted = bool(
+        session.scalar(
+            select(func.has_function_privilege(_DECISION_COUNT_COMMAND, "execute"))
+        )
+    )
+    if not permitted:
+        return BaselineReadingNotPermitted(
+            "This deployment's database login is not one Corridor prepares "
+            "baseline readings under. Run the product under the web capability, "
+            "or adopt the baseline through the command-line path."
+        )
+    return BaselineReadingNotPermitted(
+        f"{project.slug} is not a project this session may read. Open the "
+        "project from your own project list and try again."
+    )
 
 
 def _replayed_adoption_id(session: Session, project_id: int) -> int:
@@ -1563,6 +1642,10 @@ class RetainedPreview:
     adopted_values: tuple[dict[str, Any], ...]
     baseline_payload: dict[str, Any]
     document_id: int
+    #: The delivery the adopted bytes were handed over on. Retained beside the
+    #: Document rather than re-derived from the digest, because two deliveries
+    #: of one workbook share a digest and are not one act (#937).
+    source_delivery_id: int
     fact_ids: tuple[int, ...]
     operations_resolved: bool
     blocking_question_count: int
@@ -1649,12 +1732,81 @@ def _retained_from_row(row: OnboardingPreview) -> RetainedPreview:
         adopted_values=tuple(payload["adopted_values"]),
         baseline_payload=dict(payload["baseline_payload"]),
         document_id=int(payload["document_id"]),
+        source_delivery_id=int(payload["source_delivery_id"]),
         fact_ids=tuple(int(one) for one in payload["fact_ids"]),
         operations_resolved=bool(row.operations_resolved),
         blocking_question_count=int(row.blocking_question_count),
         adoptable=bool(row.adoptable),
         prepared_at=row.prepared_at,
     )
+
+
+def _submitted_baseline_delivery(
+    session: Session,
+    *,
+    project: Project,
+    staged: StagedSource,
+    source_delivery_id: int,
+) -> SourceDelivery:
+    """The delivery a reading was asked for, re-proved rather than trusted (#937).
+
+    A delivery id that arrives on a form is a claim. Every stage of the
+    preparation re-proves it against something the customer's record already
+    holds, and this is the first: the row exists, it is this project's, it
+    carries the exact bytes staged for the reading, Corridor really stored it,
+    and the source binding it arrived under is still one this project's
+    recorded authorization permits.
+
+    **Matching bytes are not the relationship.** Two deliveries of one workbook
+    -- a connector pull and a person's upload an hour later -- carry the same
+    digest and are different acts by different parties under different
+    authority, so resolving the delivery from the digest here would pick one of
+    them arbitrarily and attribute the reading to it. The caller names the
+    delivery it is acting on, exactly as ``later_revision`` and
+    ``key_date_table`` name theirs, and this refuses one that does not hold up.
+
+    **The source scope is re-asked, not remembered.** ``require_source_delivery``
+    proved the binding when the bytes arrived; a recorded authorization can be
+    narrowed or withdrawn between then and now, and ``source_authorization``'s
+    own rule is that a withdrawal stops new processing without reaching back
+    into what a previous version admitted. Reading a workbook for adoption is
+    new processing. A project that records no authorized set at all is left
+    alone rather than newly gated: the delivery path did not require one
+    either, and inventing a second rule here is how two paths come to disagree.
+    """
+
+    # Imported here rather than at the top for the reason `source_intake`
+    # gives for the same import: the delivery ledger reaches that module back
+    # through the connector package.
+    from corridor.source_delivery import DISPOSITION_STORED
+
+    delivery = session.get(SourceDelivery, int(source_delivery_id))
+    if (
+        delivery is None
+        or int(delivery.project_id) != int(project.id)
+        or delivery.content_sha256 != staged.sha256
+        or delivery.disposition != DISPOSITION_STORED
+    ):
+        raise BaselineAdoptionRefused(
+            "The delivery this reading names is not a stored delivery of these "
+            "bytes on this project. Supply the workbook again."
+        )
+    standing = source_binding_standing(
+        session,
+        project_id=int(project.id),
+        customer=delivery.customer,
+        channel=delivery.channel,
+        configuration_identity=delivery.configuration_identity,
+        configuration_version=delivery.configuration_version,
+        authentication_mode=authentication_mode_of(delivery),
+    )
+    if standing.recorded and not standing.permitted:
+        raise BaselineAdoptionRefused(
+            "This project's recorded source authorization no longer permits "
+            f"the way this workbook was delivered ({standing.reason}). Corridor "
+            "operations can say what this project may take delivery on."
+        )
+    return delivery
 
 
 def prepare_baseline_reading(
@@ -1666,6 +1818,7 @@ def prepare_baseline_reading(
     source_identity: str,
     principal: HumanPrincipal,
     at: datetime,
+    source_delivery_id: int,
     source_kind: str = "ucm_workbook",
     output_template: FormatIdentity | None = None,
     field_mapping: MappingDeclaration | None = None,
@@ -1684,9 +1837,26 @@ def prepare_baseline_reading(
     ``retain_onboarding_preview`` proves it again and decides adoptability from
     the project's own operating mode, so a reading prepared after the project
     adopted is retained for checking and is not an adoptable baseline.
+
+    ``source_delivery_id`` is the delivery these exact bytes were handed over
+    on, and it is required rather than optional (#937). Without it the
+    confirmation below registered a Document that named no delivery, so the
+    source register showed an awaiting-confirmation delivery beside a
+    separately registered document and nothing joined them -- a preparation and
+    an adoption with no receipt behind it. ``_submitted_baseline_delivery``
+    re-proves the claim before the workbook is opened, ``confirm_intake``
+    re-proves it again inside the write and records who admitted it, and
+    ``_write_retained_adoption`` re-proves that the Document it adopts really
+    arrived on it.
     """
 
     actor = require_human_principal(principal)
+    delivery = _submitted_baseline_delivery(
+        session,
+        project=project,
+        staged=staged,
+        source_delivery_id=source_delivery_id,
+    )
     intake_hardening.assert_staged_bytes_may_be_read_richly(
         session, project_id=int(project.id), sha256=staged.sha256
     )
@@ -1728,6 +1898,7 @@ def prepare_baseline_reading(
                 binding_fingerprint=intake.binding_fingerprint,
                 principal=actor,
                 images_dir=images_dir,
+                source_delivery_id=int(delivery.id),
                 parse=False,
             )
         except IntakeConflict as exc:
@@ -1761,6 +1932,7 @@ def prepare_baseline_reading(
     )
     payload = _retained_payload(preview)
     payload["document_id"] = confirmation.document_id
+    payload["source_delivery_id"] = int(delivery.id)
     payload["fact_ids"] = [int(one) for one in fact_ids]
     outcome = onboarding_authorization.retain_preview(
         session,
@@ -1909,6 +2081,9 @@ def adopt_retained_baseline(
             # something was: an answer is part of the act, not a rendering of
             # the screen it was given on.
             "coordinator_answers": [item.as_payload() for item in answered],
+            # And which delivery it rests on, so the retained proof of the act
+            # names the receipt as well as the document it produced (#937).
+            "source_delivery_id": int(retained.source_delivery_id),
         },
     )
     return result
@@ -1930,6 +2105,14 @@ def _write_retained_adoption(
         document is None
         or int(document.project_id) != int(project.id)
         or document.sha256 != retained.content_sha256
+        # The delivery relationship, re-proved rather than assumed to have
+        # survived preparation (#937). A Document that carries the right bytes
+        # in the right project but arrived on some other delivery -- or on
+        # none -- is not the receipt this adoption claims to rest on, and an
+        # adoption whose retained source names one delivery while the record
+        # names another is exactly the incoherence the source register showed.
+        or document.source_delivery_id is None
+        or int(document.source_delivery_id) != int(retained.source_delivery_id)
     ):
         raise StaleBaselinePreview(
             "The source this reading was prepared from is no longer the one "
@@ -1993,6 +2176,7 @@ def _write_retained_adoption(
             "revision_id": revision_id,
             "baseline_source_id": int(outcome["baseline_source_id"]),
             "content_sha256": retained.content_sha256,
+            "source_delivery_id": int(retained.source_delivery_id),
             "preview_fingerprint": retained.binding_fingerprint,
             "adopted_values": len(fact_ids),
             "coordinator_answers": [item.as_payload() for item in answers],

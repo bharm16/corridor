@@ -113,11 +113,14 @@
       page offered only the first: a coordinator who had just handed the file
       over landed back here and was asked to hand it over again. The control
       is rendered from `may_prepare`, which `onboarding_view` already computed
-      and no template read, rather than from a second copy of the rule.
+      and no template read, rather than from a second copy of the rule --
+      and which is the current onboarding permission as well as the
+      designation, so a project whose compatibility permission has lapsed
+      shows no control rather than one that is about to be refused (#937).
     #}
     {% if view.supplied %}
       <section class="panel">
-        <h2>What has been supplied</h2>
+        <h2>Workbook received</h2>
         <ul class="plain">
           {% for source in view.supplied %}
             <li>
@@ -127,11 +130,20 @@
                 <form method="post"
                       action="/projects/{{ view.project_slug }}/baseline/prepare">
                   {{ csrf_field() }}
+                  {#
+                    The delivery this reading acts on, named rather than
+                    inferred from the digest: two deliveries of one workbook
+                    share their bytes and are different acts (#937). The route
+                    re-proves the id against this project, these bytes and the
+                    stored disposition, so a tampered field is refused rather
+                    than believed.
+                  #}
+                  <input type="hidden" name="source_delivery_id" value="{{ source.delivery_id }}">
                   <input type="hidden" name="sha256" value="{{ source.content_sha256 }}">
                   <input type="hidden" name="filename" value="{{ source.filename }}">
                   <p>
                     <button type="submit" class="secondary">
-                      Read this workbook for adoption
+                      Prepare baseline preview
                     </button>
                   </p>
                 </form>

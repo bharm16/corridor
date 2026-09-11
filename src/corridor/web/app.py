@@ -9865,6 +9865,7 @@ def prepare_baseline(
     slug: str,
     sha256: str = Form(...),
     filename: str = Form(...),
+    source_delivery_id: int = Form(...),
     source_identity: str = Form(""),
     customer: str = Form(""),
     principal: HumanPrincipal = Depends(get_human_principal),
@@ -9878,6 +9879,14 @@ def prepare_baseline(
     they settle the mechanics, and a coordinator may run it on their own
     source; neither consumes anything, so it can be run again after a mapping
     changes.
+
+    `source_delivery_id` is required, not optional (#937). The reading is an
+    act on one delivery -- the receipt the source register is built around --
+    and a request that names only a digest cannot say which of two deliveries
+    of the same workbook it read. It arrives as a claim on a form and is
+    re-proved in the domain against the project, the bytes, the stored
+    disposition and the source binding this project's recorded authorization
+    still permits; nothing here trusts it.
     """
 
     project = _project(session, slug, principal)
@@ -9909,6 +9918,7 @@ def prepare_baseline(
                 source_identity=source_identity.strip() or filename,
                 principal=principal,
                 at=now,
+                source_delivery_id=source_delivery_id,
             )
     except (OnboardingRefused, BaselineAdoptionRefused) as refused:
         return _onboarding_page(

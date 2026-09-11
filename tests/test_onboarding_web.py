@@ -24,14 +24,18 @@ from corridor import access
 from corridor.config import settings
 from corridor.models import Project
 from corridor.onboarding_authorization import (
+    ADOPT_BASELINE,
+    INSPECT_COMPATIBILITY,
     ONBOARDING_OPERATIONS,
+    REACH_PROJECT,
     completed_act,
+    onboarding_standing,
     record_onboarding_event,
     record_onboarding_grant,
 )
 from corridor.operating_mode import ADOPTED_BASELINE, project_operating_mode
 from corridor.principals import HumanPrincipal
-from corridor.source_intake import receive_upload, validate_and_stage
+from corridor.source_intake import receive_upload
 from corridor.web import auth
 from corridor.web.app import app, get_review_clock, get_session
 
@@ -135,11 +139,29 @@ def prose(body: str) -> str:
     return html.unescape(body)
 
 
-def stage(tmp_path, name="ucm.xlsx"):
-    return validate_and_stage(workbook(tmp_path, name=name), name)
+def stage(session, project, tmp_path, name="ucm.xlsx"):
+    """Hand the workbook over the way the product does, and keep the receipt.
+
+    Staging the bytes alone is not supplying a workbook: the reading is an act
+    on the delivery those bytes arrived on (#937), and a request that names
+    only a digest cannot say which delivery it read. So these scenarios take
+    delivery through the same call the upload route makes, and carry the
+    delivery id the page's own control carries.
+    """
+
+    received = receive_upload(
+        session,
+        project=project,
+        body=workbook(tmp_path, name=name),
+        filename=name,
+        principal=COORDINATOR,
+        customer=settings.customer_id,
+    )
+    session.flush()
+    return received.staged, received.delivery_id
 
 
-def prepare(client, project, staged):
+def prepare(client, project, staged, delivery_id):
     """Ask for the bounded reading the way the page's own control asks."""
 
     return client.post(
@@ -148,6 +170,7 @@ def prepare(client, project, staged):
             auth.CSRF_FIELD: client.cookies.get(auth.CSRF_COOKIE, ""),
             "sha256": staged.sha256,
             "filename": staged.filename,
+            "source_delivery_id": str(delivery_id),
             "source_identity": "UCM workbook revision C",
             "customer": "Lone Star Transit Authority",
         },
@@ -248,15 +271,24 @@ def test_a_supplied_workbook_is_offered_the_control_that_reads_it(
     assert name in readable, (
         "the page does not say the workbook was supplied at all"
     )
-    assert "Read the workbook that was supplied" in readable, (
+    assert "Prepare a preview of the values this workbook would establish" in readable, (
         "the page still asks for a workbook it has already been given: "
         + readable[:400]
+    )
+    assert "Workbook received" in readable, (
+        "the page does not say the workbook arrived: " + readable[:400]
     )
     offered = form_fields(page.text, "/baseline/prepare")
     assert offered is not None, "no control on the page reaches the reading"
     assert auth.CSRF_FIELD in offered, (
         "the rendered form carries no request-forgery token, so a real "
         "browser submission is refused"
+    )
+    # The control names the delivery it acts on, not only the bytes (#937):
+    # two deliveries of one workbook share a digest, so a form that carried
+    # only the digest left the route unable to say which one it read.
+    assert offered["source_delivery_id"], (
+        "the control offers the reading without naming the delivery it reads"
     )
 
     prepared = submit_form(
@@ -312,17 +344,155 @@ def test_a_member_who_may_not_prepare_is_not_offered_the_control(
     )
 
 
+def test_a_withdrawn_permission_pauses_the_page_rather_than_offering_the_control(
+    session, browser, provisioned, tmp_path
+):
+    """#937: the displayed capability is the permission too, not the designation alone.
+
+    The compatibility permission ADR-0099 grants is per-project, versioned and
+    withdrawable, and `prepare_baseline_reading` proves it in the database
+    before it opens anything. A page that read only the designation printed the
+    paused notice and the Prepare button side by side -- so Technical
+    Operations was invited into an act the very same page had just said was
+    paused, and met a refusal it already had the words for.
+    """
+
+    project, grant_id = provisioned
+    name = "supplied-ucm.xlsx"
+    receive_upload(
+        session,
+        project=project,
+        body=workbook(tmp_path, name=name),
+        filename=name,
+        principal=COORDINATOR,
+        customer=settings.customer_id,
+    )
+    record_onboarding_event(
+        session,
+        project_id=int(project.id),
+        grant_id=grant_id,
+        kind="withdrawal_requested",
+        requested_by="Dana Reyes, records custodian",
+        requested_at=AT,
+        executed_by_actor="security:duty-officer",
+        executed_at=AT,
+        reason="counsel review",
+    )
+    session.flush()
+
+    page = browser(OPERATOR_EMAIL).get(
+        f"/work/{project.slug}", follow_redirects=False
+    )
+
+    assert page.status_code == 200, page.text
+    readable = prose(page.text)
+    assert "Onboarding is paused" in readable, readable[:400]
+    assert name in readable, (
+        "the state of the project is readable by every member; only the act "
+        "is designated"
+    )
+    assert form_fields(page.text, "/baseline/prepare") is None, (
+        "Technical Operations was offered a control beside the notice saying "
+        "this project's onboarding is paused: " + readable[:600]
+    )
+    assert "Prepare a preview of the values this workbook would establish" not in (
+        readable
+    ), (
+        "the page invites an act Corridor may not perform on this project: "
+        + readable[:400]
+    )
+
+
+def test_the_page_reads_the_reading_permission_not_the_adoption_one(
+    session, browser, provisioned, tmp_path
+):
+    """A grant is selected per operation, so the two permissions really diverge.
+
+    Operations withdrew the version that carried the compatibility reading and
+    issued a narrower one that carries only the adoption. Nothing about this
+    project is paused -- the grant in force is perfectly good -- and the act
+    this page would otherwise offer is one Corridor may not perform. The page
+    has the answer already; before #937 it printed the invitation anyway.
+    """
+
+    project, grant_id = provisioned
+    name = "supplied-ucm.xlsx"
+    receive_upload(
+        session,
+        project=project,
+        body=workbook(tmp_path, name=name),
+        filename=name,
+        principal=COORDINATOR,
+        customer=settings.customer_id,
+    )
+    record_onboarding_grant(
+        session,
+        project_id=int(project.id),
+        authorization_id="loa-web",
+        grant_version=2,
+        customer="lone-star-transit",
+        environment="pilot-1",
+        permitted_operations=(REACH_PROJECT, ADOPT_BASELINE),
+        source_scope="ucm workbook revisions",
+        governing_authorization_identity="customer-authorization-7",
+        governing_authorization_version="2026-04-01",
+        evidence_identity="s3://authorizations/7.pdf",
+        evidence_sha256="a" * 64,
+        issued_at=AT - timedelta(minutes=1),
+        expires_at=AT + timedelta(days=14),
+        issued_by_actor=OPERATIONS_ACTOR,
+        recorded_by_actor=OPERATIONS_ACTOR,
+    )
+    record_onboarding_event(
+        session,
+        project_id=int(project.id),
+        grant_id=grant_id,
+        kind="withdrawal_requested",
+        requested_by="Dana Reyes, records custodian",
+        requested_at=AT,
+        executed_by_actor="security:duty-officer",
+        executed_at=AT,
+        reason="counsel review",
+    )
+    session.flush()
+    assert onboarding_standing(
+        session, project_id=int(project.id), operation=ADOPT_BASELINE, at=AT
+    ).permitted, "the adoption permission has to stand, or this proves nothing"
+    assert not onboarding_standing(
+        session, project_id=int(project.id), operation=INSPECT_COMPATIBILITY, at=AT
+    ).permitted
+
+    page = browser(OPERATOR_EMAIL).get(
+        f"/work/{project.slug}", follow_redirects=False
+    )
+
+    assert page.status_code == 200, page.text
+    readable = prose(page.text)
+    assert "Onboarding is paused" not in readable, (
+        "nothing about the grant in force is withdrawn, so the page must not "
+        "say the whole of onboarding is paused: " + readable[:400]
+    )
+    assert form_fields(page.text, "/baseline/prepare") is None, (
+        "the page offered the reading under a permission it can see is "
+        "withdrawn: " + readable[:600]
+    )
+    assert "onboarding_authorization_withdrawn" in readable, (
+        "the page hides the control and says nothing about why: "
+        + readable[:400]
+    )
+
+
 # --- the two acts -----------------------------------------------------------
 
 
 def test_preparing_a_reading_shows_what_adopting_it_would_accept(
-    browser, provisioned, tmp_path
+    session, browser, provisioned, tmp_path
 ):
     project, _ = provisioned
     client = browser(COORDINATOR_EMAIL)
-    staged = stage(tmp_path)
+    staged, delivery_id = stage(session, project, tmp_path)
 
-    prepared = prepare(client, project, staged)
+    prepared = prepare(client, project, staged, delivery_id)
 
     assert prepared.status_code == 201, prepared.text
     assert "What adopting this would accept" in prose(prepared.text)
@@ -331,11 +501,11 @@ def test_preparing_a_reading_shows_what_adopting_it_would_accept(
 
 
 def test_the_adoption_form_the_page_renders_carries_the_forgery_token(
-    browser, provisioned, tmp_path
+    session, browser, provisioned, tmp_path
 ):
     project, _ = provisioned
     client = browser(COORDINATOR_EMAIL)
-    prepare(client, project, stage(tmp_path))
+    prepare(client, project, *stage(session, project, tmp_path))
 
     page = client.get(f"/work/{project.slug}", follow_redirects=False)
     fields = form_fields(page.text, "/baseline/adopt")
@@ -353,7 +523,7 @@ def test_the_coordinator_adopts_from_the_page_they_were_already_on(
 
     project, _ = provisioned
     client = browser(COORDINATOR_EMAIL)
-    prepare(client, project, stage(tmp_path))
+    prepare(client, project, *stage(session, project, tmp_path))
     page = client.get(f"/work/{project.slug}", follow_redirects=False)
     fields = form_fields(page.text, "/baseline/adopt")
 
@@ -377,7 +547,7 @@ def test_adopting_without_answering_a_blocking_question_is_refused(
 ):
     project, _ = provisioned
     client = browser(COORDINATOR_EMAIL)
-    prepare(client, project, stage(tmp_path))
+    prepare(client, project, *stage(session, project, tmp_path))
     page = client.get(f"/work/{project.slug}", follow_redirects=False)
     fields = form_fields(page.text, "/baseline/adopt")
 
@@ -394,7 +564,7 @@ def test_a_form_with_no_forgery_token_is_refused_before_anything_is_read(
 ):
     project, _ = provisioned
     client = browser(COORDINATOR_EMAIL)
-    prepare(client, project, stage(tmp_path))
+    prepare(client, project, *stage(session, project, tmp_path))
     page = client.get(f"/work/{project.slug}", follow_redirects=False)
     fields = form_fields(page.text, "/baseline/adopt")
     fields.pop(auth.CSRF_FIELD)
@@ -418,7 +588,7 @@ def test_a_member_with_no_coordination_designation_is_refused_by_the_command(
 
     project, _ = provisioned
     operator = browser(OPERATOR_EMAIL)
-    prepared = prepare(operator, project, stage(tmp_path))
+    prepared = prepare(operator, project, *stage(session, project, tmp_path))
     assert prepared.status_code == 201, prepared.text
 
     page = operator.get(f"/work/{project.slug}", follow_redirects=False)
