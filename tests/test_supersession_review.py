@@ -55,6 +55,8 @@ from corridor.supersession_review import (
     reconfirm_operative_support,
 )
 
+from proposal_support import proposal
+
 
 REVIEWER = HumanPrincipal("local:supersession-reviewer")
 
@@ -149,27 +151,12 @@ def _candidate(
     }
     if baseline is not None:
         fields["baseline"] = baseline
-    return Candidate(
-        project_id=project.id,
-        kind="dependency",
-        payload_json={
-            "kind": "dependency",
-            "fields": fields,
-            "citations": [
-                {
-                    "document_id": document.id,
-                    "page": 1,
-                    "quote": row_quote,
-                    "verified": True,
-                }
-            ],
-        },
-        source_document_id=document.id,
-        source_pages=[1],
-        confidence=1.0,
+    return proposal(
+        document,
+        fields=fields,
+        quote=row_quote,
         prompt_version="matrix-v1",
         model="test-model",
-        citations_verified=True,
     )
 
 

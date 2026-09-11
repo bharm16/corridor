@@ -26,8 +26,10 @@ from corridor.eval import (
 )
 from corridor.eval import _SEQUENTIAL_ID, _UTILITY_ID
 from corridor.extraction_runs import declare_active_run, record_extraction_run
-from corridor.models import Candidate, DocPage, Document, ExtractionRun, Project
+from corridor.models import DocPage, Document, ExtractionRun, Project
 from corridor.principals import HumanPrincipal
+
+from proposal_support import proposal
 
 DECLARER = HumanPrincipal("local:eval-declarer")
 
@@ -84,21 +86,12 @@ def add_page(session, document, page_no, text):
 
 
 def make_candidate(session, project, document, uid, page=1, prompt_version="txdot_ucm_v1"):
-    c = Candidate(
-        project_id=project.id,
-        kind="dependency",
-        payload_json={
-            "kind": "dependency",
-            "fields": {"utility_id": uid, "external_org": "MT AT&T"},
-            "citations": [{"document_id": document.id, "page": page, "quote": uid,
-                           "verified": True, "whole_row": True}],
-            "confidence": 1.0,
-        },
-        source_document_id=document.id,
-        source_pages=[page],
-        confidence=1.0,
+    c = proposal(
+        document,
+        fields={"utility_id": uid, "external_org": "MT AT&T"},
+        quote=uid,
+        page_no=page,
         prompt_version=prompt_version,
-        citations_verified=True,
     )
     session.add(c)
     session.flush()
@@ -1008,15 +1001,12 @@ def test_agreement_candidates_do_not_stamp_a_matrix_score(
     session.add(agreement)
     session.flush()
     session.add(
-        Candidate(
-            project_id=project.id,
-            kind="dependency",
-            payload_json={"kind": "dependency", "fields": {"description": "x"}},
-            source_document_id=agreement.id,
-            source_pages=[1],
-            confidence=1.0,
+        proposal(
+            agreement,
+            fields={"description": "x"},
+            quote="x",
+            whole_row=False,
             prompt_version="agreement_v1",
-            citations_verified=True,
         )
     )
     session.flush()
@@ -1397,28 +1387,11 @@ def test_a_human_correction_becomes_a_case_scored_beside_the_existing_reference(
     }
     edit_candidate(session, original, corrected_fields, principal=DECLARER)
 
-    replay = Candidate(
-        project_id=project.id,
-        kind="dependency",
-        payload_json={
-            "kind": "dependency",
-            "fields": corrected_fields,
-            "citations": [
-                {
-                    "document_id": document.id,
-                    "page": 1,
-                    "quote": "FOC1-1",
-                    "verified": True,
-                    "whole_row": True,
-                }
-            ],
-            "confidence": 1.0,
-        },
-        source_document_id=document.id,
-        source_pages=[1],
-        confidence=1.0,
+    replay = proposal(
+        document,
+        fields=corrected_fields,
+        quote="FOC1-1",
         prompt_version="measurement_case_v2",
-        citations_verified=True,
     )
     session.add(replay)
     session.flush([replay])
@@ -1465,18 +1438,11 @@ def test_a_human_correction_becomes_a_case_scored_beside_the_existing_reference(
         case_measurement=measured.case_measurement,
     ) == 0
 
-    regressed = Candidate(
-        project_id=project.id,
-        kind="dependency",
-        payload_json={
-            **replay.payload_json,
-            "fields": {**corrected_fields, "station_from": "1149+00"},
-        },
-        source_document_id=document.id,
-        source_pages=[1],
-        confidence=1.0,
+    regressed = proposal(
+        document,
+        fields={**corrected_fields, "station_from": "1149+00"},
+        quote="FOC1-1",
         prompt_version="measurement_case_v3",
-        citations_verified=True,
     )
     session.add(regressed)
     session.flush([regressed])

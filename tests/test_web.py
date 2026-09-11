@@ -63,6 +63,7 @@ from corridor.work_decisions import (
     current_next_action_decision,
 )
 from access_support import seed_membership
+from proposal_support import proposal
 from supersession_support import SupersededChain, superseded_chain
 
 TEST_PRINCIPAL = HumanPrincipal("local:test-reviewer")
@@ -211,43 +212,36 @@ def make_candidate(
     whole_row=True,
     unverified_fields=(),
     low_confidence_tokens=(),
+    unmapped_columns=(),
+    tier=None,
+    text_source="text_layer",
     kind="dependency",
     prompt_version="txdot_ucm_v1",
     auto_active_run=True,
     model=None,
 ):
-    c = Candidate(
-        project_id=project.id,
+    c = proposal(
+        document,
         kind=kind,
-        payload_json={
-            "kind": kind,
-            "fields": {
-                "utility_id": uid,
-                "external_org": "AT&T Texas (SWBT)",
-                "station_from": station_from,
-            },
-            "citations": [
-                {
-                    "document_id": document.id,
-                    "page": 1,
-                    "quote": f"{uid} AT&T Texas (SWBT)",
-                    "verified": verified,
-                    "whole_row": whole_row,
-                }
-            ],
-            "confidence": 1.0,
-            "unverified_fields": list(unverified_fields),
-            "low_confidence_tokens": list(low_confidence_tokens),
-            "dedupe_hint": "x",
+        fields={
+            "utility_id": uid,
+            "external_org": "AT&T Texas (SWBT)",
+            "station_from": station_from,
         },
-        source_document_id=document.id,
-        source_pages=[1],
-        confidence=1.0,
+        quote=f"{uid} AT&T Texas (SWBT)",
+        quote_verified=verified,
+        whole_row=whole_row,
         prompt_version=prompt_version,
-        citations_verified=(
-            verified and not unverified_fields and not low_confidence_tokens
-        ),
+        # One blocking key for every row this helper builds, so a test that
+        # wants two rows to be candidate duplicates gets them without saying
+        # so. Predates the derived hint and is kept rather than widened.
+        dedupe="x",
         model=model,
+        tier=tier,
+        text_source=text_source,
+        unverified=unverified_fields,
+        unmapped=unmapped_columns,
+        low_confidence=low_confidence_tokens,
     )
     session.add(c)
     session.flush()
@@ -354,30 +348,14 @@ def test_unresolved_identity_shows_one_card_with_evidence_and_no_preselection(
     }
     quote = " | ".join(fields.values())
     session.add(DocPage(document_id=matrix.id, page_no=1, text=quote))
-    row = Candidate(
-        project_id=project.id,
-        kind="dependency",
-        payload_json={
-            "kind": "dependency",
-            "fields": fields,
-            "citations": [
-                {
-                    "document_id": matrix.id,
-                    "page": 1,
-                    "quote": quote,
-                    "verified": True,
-                    "whole_row": True,
-                }
-            ],
-            "dedupe_hint": quote,
-            "text_source": "text_layer",
-        },
-        source_document_id=matrix.id,
-        source_pages=[1],
+    row = proposal(
+        matrix,
+        fields=fields,
+        quote=quote,
         confidence=0.99,
         prompt_version="matrix_v1",
+        dedupe=quote,
         model="gpt-test",
-        citations_verified=True,
     )
     session.add(row)
     record_extraction_run(
@@ -2099,18 +2077,11 @@ def test_a_missing_page_image_is_a_404_not_a_crash(client, session, document):
 # ------------------------------ what the queue surfaces about a row (#71)
 
 
-def rich_candidate(session, project, document, **payload):
-    c = make_candidate(session, project, document)
-    c.payload_json = {**c.payload_json, **payload}
-    session.flush()
-    return c
-
-
 def test_the_queue_shows_which_tier_read_the_row(session, project, document):
     """A transcribed row deserves different weight from one read off the
     text layer, the same way `text_source: ocr` already does — and today a
     reviewer cannot tell without opening the payload."""
-    rich_candidate(session, project, document, tier="transcribe", text_source="ocr")
+    make_candidate(session, project, document, tier="transcribe", text_source="ocr")
 
     view = build_view(session, next_candidate(session, project.id))
 
@@ -2125,7 +2096,7 @@ def test_the_queue_lists_headers_the_vocabulary_could_not_place(
     has no field for" — the trigger for a deliberate vocabulary extension,
     which is not an extractor's decision to make. Reconstructing these from
     the payload by hand is how #85 and #97 were investigated."""
-    rich_candidate(
+    make_candidate(
         session,
         project,
         document,
@@ -2141,7 +2112,7 @@ def test_an_unverified_row_names_the_field_that_failed(session, project, documen
     """ "Unverified" that names the suspect value instead of only sinking
     the row. A reviewer who cannot see *which* field is unsupported has to
     re-verify all of them."""
-    rich_candidate(
+    make_candidate(
         session,
         project,
         document,
@@ -2169,7 +2140,7 @@ def test_a_clean_row_surfaces_nothing_extra(session, project, document):
 
 
 def test_the_queue_page_renders_what_it_surfaces(client, session, project, document):
-    rich_candidate(
+    make_candidate(
         session,
         project,
         document,
@@ -2970,42 +2941,23 @@ def _rehearsal_receipt(
     def run(document, rows, prompt_version):
         made = []
         for utility_id, station in rows:
-            candidate = Candidate(
-                project_id=project.id,
-                kind="dependency",
-                payload_json={
-                    "kind": "dependency",
-                    "fields": {
-                        "utility_id": utility_id,
-                        "external_org": "City of Houston",
-                        "utility_type": "WW",
-                        "baseline": "SR-BL",
-                        "potential_conflict": "Y",
-                        "station_from": station,
-                        "station_to": station,
-                    },
-                    "citations": [
-                        {
-                            "document_id": document.id,
-                            "page": 1,
-                            "quote": f"{utility_id} City of Houston",
-                            "verified": True,
-                            "whole_row": True,
-                        }
-                    ],
-                    "unverified_fields": [],
-                    "unmapped_columns": [],
-                    "low_confidence_tokens": [],
-                    "tier": "structure",
-                    "dedupe_hint": f"{utility_id}|{station}",
-                    "text_source": "text_layer",
+            candidate = proposal(
+                document,
+                fields={
+                    "utility_id": utility_id,
+                    "external_org": "City of Houston",
+                    "utility_type": "WW",
+                    "baseline": "SR-BL",
+                    "potential_conflict": "Y",
+                    "station_from": station,
+                    "station_to": station,
                 },
-                source_document_id=document.id,
-                source_pages=[1],
+                quote=f"{utility_id} City of Houston",
                 confidence=0.99,
                 prompt_version=prompt_version,
+                dedupe=f"{utility_id}|{station}",
                 model="gpt-test",
-                citations_verified=True,
+                tier="structure",
             )
             session.add(candidate)
             made.append(candidate)
@@ -4122,72 +4074,41 @@ def _event_cohort_lane(session, project):
         return made
 
     def dep(document, uid):
-        return Candidate(
-            project_id=project.id,
-            kind="dependency",
-            payload_json={
-                "kind": "dependency",
-                "fields": {
-                    "utility_id": uid,
-                    "external_org": "Web queue Pipeline Co",
-                    "utility_type": "Petroleum and Gaseous Materials",
-                    "baseline": "SR-BL",
-                    "station_from": "1102+20",
-                    "station_to": "1102+80",
-                },
-                "citations": [
-                    {
-                        "document_id": document.id,
-                        "page": 1,
-                        "quote": "event lane rows",
-                        "verified": True,
-                        "whole_row": True,
-                    }
-                ],
-                "dedupe_hint": f"{uid}|{document.id}",
-                "text_source": "text_layer",
+        return proposal(
+            document,
+            fields={
+                "utility_id": uid,
+                "external_org": "Web queue Pipeline Co",
+                "utility_type": "Petroleum and Gaseous Materials",
+                "baseline": "SR-BL",
+                "station_from": "1102+20",
+                "station_to": "1102+80",
             },
-            source_document_id=document.id,
-            source_pages=[1],
+            quote="event lane rows",
             confidence=0.99,
             prompt_version="minutes_v1",
+            dedupe=f"{uid}|{document.id}",
             model="gpt-test",
-            citations_verified=True,
         )
 
     def event(document, ref):
-        return Candidate(
-            project_id=project.id,
+        return proposal(
+            document,
             kind="event",
-            payload_json={
-                "kind": "event",
-                "fields": {
-                    "event_type": "commitment",
-                    "description": f"Web queue Pipeline committed on {ref}",
-                    "external_org": "Web queue Pipeline Co",
-                    "stated_party": "Web queue Pipeline Co",
-                    "event_date": "2025-01-16",
-                    "committed_date": "2025-06-01",
-                    "conflict_ref": ref,
-                },
-                "citations": [
-                    {
-                        "document_id": document.id,
-                        "page": 1,
-                        "quote": "event lane rows",
-                        "verified": True,
-                        "whole_row": True,
-                    }
-                ],
-                "dedupe_hint": f"event|{ref}",
-                "text_source": "text_layer",
+            fields={
+                "event_type": "commitment",
+                "description": f"Web queue Pipeline committed on {ref}",
+                "external_org": "Web queue Pipeline Co",
+                "stated_party": "Web queue Pipeline Co",
+                "event_date": "2025-01-16",
+                "committed_date": "2025-06-01",
+                "conflict_ref": ref,
             },
-            source_document_id=document.id,
-            source_pages=[1],
+            quote="event lane rows",
             confidence=0.99,
             prompt_version="minutes_v1",
+            dedupe=f"event|{ref}",
             model="gpt-test",
-            citations_verified=True,
         )
 
     from datetime import date as _date
@@ -4534,30 +4455,14 @@ def _disagreeing_project(session, project):
             "station_to": station,
         }
         quote = " | ".join(fields.values())
-        return Candidate(
-            project_id=project.id,
-            kind="dependency",
-            payload_json={
-                "kind": "dependency",
-                "fields": fields,
-                "citations": [
-                    {
-                        "document_id": document.id,
-                        "page": 1,
-                        "quote": quote,
-                        "verified": True,
-                        "whole_row": True,
-                    }
-                ],
-                "dedupe_hint": quote,
-                "text_source": "text_layer",
-            },
-            source_document_id=document.id,
-            source_pages=[1],
+        return proposal(
+            document,
+            fields=fields,
+            quote=quote,
             confidence=0.99,
             prompt_version="matrix_v1",
+            dedupe=quote,
             model="gpt-test",
-            citations_verified=True,
         )
 
     from datetime import date as _date
@@ -5107,30 +5012,15 @@ def _unplaced_statement(session, project):
     session.flush()
 
     def candidate(document, kind, fields, prompt):
-        c = Candidate(
-            project_id=project.id,
+        c = proposal(
+            document,
             kind=kind,
-            payload_json={
-                "kind": kind,
-                "fields": fields,
-                "citations": [
-                    {
-                        "document_id": document.id,
-                        "page": 1,
-                        "quote": "rows",
-                        "verified": True,
-                        "whole_row": True,
-                    }
-                ],
-                "dedupe_hint": f"{kind}|{fields.get('utility_id') or fields.get('conflict_ref')}",
-                "text_source": "text_layer",
-            },
-            source_document_id=document.id,
-            source_pages=[1],
+            fields=fields,
+            quote="rows",
             confidence=0.99,
             prompt_version=prompt,
+            dedupe=f"{kind}|{fields.get('utility_id') or fields.get('conflict_ref')}",
             model="gpt-test",
-            citations_verified=True,
         )
         session.add(c)
         return c
@@ -5710,19 +5600,12 @@ def _seed_changed_support_chain(session, project) -> SupersededChain:
         session, chain.dependency.id, chain.old_evidence.id,
         principal=TEST_PRINCIPAL,
     )
-    successor_candidate = Candidate(
-        project_id=project.id, kind="dependency",
-        payload_json={
-            "kind": "dependency",
-            "fields": {"utility_id": "FOC1-1",
-                       "external_org": "AT&T Metro (SWBT)",
-                       "station_from": "1149+00"},
-            "citations": [{"document_id": chain.successor.id, "page": 1,
-                           "quote": "FOC1-1 AT&T Metro (SWBT)",
-                           "verified": True, "whole_row": True}],
-        },
-        source_document_id=chain.successor.id, source_pages=[1], confidence=1.0,
-        prompt_version="txdot_ucm_v1", citations_verified=True,
+    successor_candidate = proposal(
+        chain.successor,
+        fields={"utility_id": "FOC1-1",
+                "external_org": "AT&T Metro (SWBT)",
+                "station_from": "1149+00"},
+        quote="FOC1-1 AT&T Metro (SWBT)",
     )
     chain = chain.extracted(chain.successor, successor_candidate)
     chain.register()
