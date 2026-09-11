@@ -23,7 +23,7 @@ from sqlalchemy import select
 
 from corridor import access
 from corridor.config import settings
-from corridor.models import Document, Project
+from corridor.models import Document, Project, SourceDelivery
 from corridor.onboarding_authorization import (
     ADOPT_BASELINE,
     INSPECT_COMPATIBILITY,
@@ -39,6 +39,7 @@ from corridor.principals import HumanPrincipal
 from corridor.source_delivery import (
     DeliveryBinding,
     DeliveryObservation,
+    confirm_delivery,
     take_delivery,
 )
 from corridor.source_intake import receive_upload
@@ -46,7 +47,12 @@ from corridor.web import auth
 from corridor.web.app import app, get_review_clock, get_session
 
 from access_support import seed_membership
-from browser_session_support import form_fields, sign_in, submit_form
+from browser_session_support import (
+    every_form_fields,
+    form_fields,
+    sign_in,
+    submit_form,
+)
 from test_onboarding_authorization import (
     AT,
     DEMO,
@@ -305,30 +311,31 @@ def test_a_supplied_workbook_is_offered_the_control_that_reads_it(
     assert "What adopting this would accept" in prose(prepared.text)
 
 
-def test_two_deliveries_of_one_workbook_leave_the_page_choosing_by_recency(
+def test_two_deliveries_of_one_workbook_are_both_offered_and_told_apart(
     session, browser, provisioned, tmp_path
 ):
-    """Established, not assumed: which of two identical-byte deliveries wins.
+    """Two deliveries of one workbook are two acts, and the page shows both.
 
-    Two deliveries of one workbook are two acts. This project took the same
-    bytes twice -- first pulled from a shared-files connector under its own
-    configuration and authenticated by nothing but that configuration, then
-    uploaded an hour later by a signed-in coordinator. Same digest, different
-    channel, different submitter, different authority.
+    This project took the same bytes twice -- first pulled from a shared-files
+    connector under its own configuration and authenticated by nothing but
+    that configuration, then uploaded an hour later by a signed-in
+    coordinator. Same digest, different channel, different submitter,
+    different authority.
 
-    The page's own contract says the reading is an act on *this delivery*,
-    "not on whichever row happens to share its digest". The downstream checks
-    #947 added hold that line at every stage after the form. **The form is
-    where the choice is made, and the choice is made by recency**:
-    `_supplied` at `src/corridor/web/onboarding_view.py:346` de-duplicates
-    stored deliveries by `content_sha256`, keeps the newest, and returns the
-    rest to nobody. So the coordinator is offered one control, cannot tell
-    that a second delivery exists, and cannot say which one they are reading.
+    The reading behind this page used to order stored deliveries newest-first
+    and de-duplicate them on `content_sha256`, so the pull and the upload
+    collapsed into a single control and nothing on the screen said a second
+    delivery existed. That contradicted the page's own contract -- the reading
+    is an act on *this delivery*, "not on whichever row happens to share its
+    digest" -- and it made the choice by recency on the coordinator's behalf.
 
-    This test fixes that behaviour rather than blessing it. The template
-    already renders one control per supplied delivery, so what would change is
-    the de-duplication and what each row has to say to be told apart -- both
-    the maintainer's call, and this assertion is what moves when it is made.
+    Only that collapse changed. Storing the same bytes once is still the
+    content-addressed store's answer, and a retried submission is still one
+    delivery by `uq_source_deliveries_observation`; what is no longer asserted
+    is that two independently recorded deliveries are one act. Each row now
+    says what the ledger retains about its own delivery, and where the ledger
+    retains nothing -- a pull has no submitting person -- it says that instead
+    of deriving a name from the channel or the filename.
     """
 
     project, _ = provisioned
@@ -359,6 +366,11 @@ def test_two_deliveries_of_one_workbook_leave_the_page_choosing_by_recency(
         run_identity=uuid4().hex,
     )
     session.flush()
+    confirm_delivery(
+        session,
+        delivery=session.get_one(SourceDelivery, int(pulled.delivery_id)),
+        principal=OPERATOR,
+    )
 
     # Then: the coordinator uploads the same workbook through the product.
     client = browser(COORDINATOR_EMAIL)
@@ -375,38 +387,186 @@ def test_two_deliveries_of_one_workbook_leave_the_page_choosing_by_recency(
     page = client.get(f"/work/{project.slug}", follow_redirects=False)
     assert page.status_code == 200, page.text
 
-    controls = re.findall(
-        rf'action="/projects/{re.escape(project.slug)}/baseline/prepare"', page.text
+    offered = every_form_fields(page.text, "/baseline/prepare")
+    assert len(offered) == 2, (
+        "the page offers one control per delivery, and these are two "
+        f"deliveries; it offered {len(offered)}"
     )
-    assert len(controls) == 1, (
-        "the page now offers one control per delivery, which is the change "
-        f"this test was written to notice; it offered {len(controls)}"
+    assert {one["sha256"] for one in offered} == {digest}
+    identified = {one["source_delivery_id"] for one in offered}
+    assert len(identified) == 2, identified
+    assert str(pulled.delivery_id) in identified, (
+        "the delivery pulled from the connector is not selectable, so one of "
+        "the two acts is still invisible"
     )
-    offered = form_fields(page.text, "/baseline/prepare")
-    assert offered is not None
-    assert offered["sha256"] == digest
 
-    # The pulled delivery is not merely unselected. It is absent: neither the
-    # name it arrived under nor the channel that carried it reaches the page,
-    # so nothing on the screen says a second delivery of these bytes exists.
-    assert offered["source_delivery_id"] != str(pulled.delivery_id)
-    assert "shared-files" not in prose(page.text), (
-        "the page now names the channel a delivery arrived on, which is what "
-        "would let a coordinator tell two deliveries of one workbook apart"
+    # Both are selectable, and the page says why one file is on it twice.
+    readable = prose(page.text)
+    assert "Identical file contents — 2 deliveries" in readable, readable[:600]
+
+    # The sentence naming what happens next is true of a page that lists two
+    # of them: the act is on a delivery the reader chooses, not on "this
+    # workbook", which named the one delivery the page used to show.
+    assert (
+        "Choose a delivery and prepare a preview of the values it would "
+        "establish. Nothing is adopted until you approve it." in readable
+    ), readable[:600]
+    assert "the values this workbook would establish" not in readable
+
+    # What tells them apart is what each delivery's own row retains: the
+    # channel and configuration that carried it, and who submitted it.
+    assert "shared-files" in readable, (
+        "the page does not name the channel a delivery arrived on, so a "
+        "coordinator cannot tell the two apart: " + readable[:600]
     )
+    assert "shared-files-v1" in readable
+    assert f"Submitted by {COORDINATOR.subject}" in readable
+    # And where nothing is recorded, the row says so. A connector pull is
+    # authenticated by its configuration and has no submitting person at all,
+    # so no name may be derived for it from the mailbox or the filename.
+    assert (
+        "No submitting person is recorded; this delivery arrived on a "
+        "connector configuration" in readable
+    ), readable[:600]
+    # The confirmation each delivery carries, in the register's own words:
+    # somebody has confirmed the pulled one for processing, and nobody has
+    # confirmed the upload.
+    assert f"Confirmed by {OPERATOR.subject}" in readable, readable[:600]
+    assert "Nobody has confirmed it for processing yet" in readable
 
     # What is preserved, and is the half #947 got right: the reading is made
     # from exactly the delivery the control named, and the registered Document
     # carries that id rather than the one that merely shares the bytes.
+    chosen = next(
+        one
+        for one in offered
+        if one["source_delivery_id"] != str(pulled.delivery_id)
+    )
     prepared = submit_form(
-        client, f"/projects/{project.slug}/baseline/prepare", offered
+        client, f"/projects/{project.slug}/baseline/prepare", chosen
     )
     assert prepared.status_code == 201, prepared.text
     document = session.scalars(
         select(Document).where(Document.project_id == int(project.id))
     ).one()
-    assert int(document.source_delivery_id) == int(offered["source_delivery_id"])
+    assert int(document.source_delivery_id) == int(chosen["source_delivery_id"])
     assert int(document.source_delivery_id) != int(pulled.delivery_id)
+
+
+def test_a_later_identical_delivery_does_not_replace_the_selection(
+    session, browser, provisioned, tmp_path
+):
+    """The delivery chosen before the form was submitted is the one read.
+
+    #947 re-proves the delivery id at every stage after the form. What it
+    could not reach is an ambiguous choice made *before* the form rendered:
+    while the reading de-duplicated on the digest and kept the newest row, a
+    second delivery of the same bytes arriving between the page and the click
+    silently became what the page had appeared to offer.
+
+    So this walks that window. The coordinator opens the page and takes the
+    control it rendered; a second delivery of the identical file arrives; and
+    the control they already hold still reads the delivery it named.
+    """
+
+    project, _ = provisioned
+    client = browser(COORDINATOR_EMAIL)
+    body = workbook(tmp_path, name="ucm-baseline.xlsx")
+
+    def upload(name):
+        form = client.get(
+            f"/projects/{project.slug}/sources/upload", follow_redirects=False
+        )
+        return client.post(
+            f"/projects/{project.slug}/sources/upload",
+            data={
+                **(form_fields(form.text, "/sources/upload") or {}),
+                "doc_type": "matrix",
+            },
+            files={"upload": (name, body)},
+            follow_redirects=False,
+        )
+
+    assert upload("ucm-baseline.xlsx").status_code == 200
+    page = client.get(f"/work/{project.slug}", follow_redirects=False)
+    chosen = form_fields(page.text, "/baseline/prepare")
+    assert chosen is not None, page.text
+
+    # The identical file arrives again under another name, which is a second
+    # delivery rather than a replay of the first: the same bytes under a
+    # different external identity are a different delivery identity.
+    assert upload("ucm-baseline-copy.xlsx").status_code == 200
+
+    again = client.get(f"/work/{project.slug}", follow_redirects=False)
+    offered = every_form_fields(again.text, "/baseline/prepare")
+    assert len(offered) == 2, "the later delivery replaced rather than joined"
+    assert chosen["source_delivery_id"] in {
+        one["source_delivery_id"] for one in offered
+    }, "the delivery the coordinator was offered is no longer on the page"
+    assert "ucm-baseline-copy.xlsx" in prose(again.text)
+
+    prepared = submit_form(
+        client, f"/projects/{project.slug}/baseline/prepare", chosen
+    )
+
+    assert prepared.status_code == 201, prepared.text
+    document = session.scalars(
+        select(Document).where(Document.project_id == int(project.id))
+    ).one()
+    assert int(document.source_delivery_id) == int(chosen["source_delivery_id"]), (
+        "the reading was made from the delivery that arrived later, not the "
+        "one the coordinator selected"
+    )
+
+
+def test_the_register_and_the_selection_print_one_delivery_time_alike(
+    session, browser, provisioned, tmp_path
+):
+    """One retained instant, one rendering, on both screens that print it.
+
+    The register printed a delivery's received time to the minute and dropped
+    the zone, while the onboarding selection printed the stored value as it
+    came back. Same row, same column, two forms -- and a delivery time with no
+    zone cannot be compared against the customer's own record of when they
+    sent the file. This is the argument that already put the register's
+    confirmation wording on the selection row rather than a second phrasing of
+    it, applied to the instant beside it.
+    """
+
+    project, _ = provisioned
+    client = browser(COORDINATOR_EMAIL)
+    name = "one-time-two-screens.xlsx"
+    upload = client.get(
+        f"/projects/{project.slug}/sources/upload", follow_redirects=False
+    )
+    client.post(
+        f"/projects/{project.slug}/sources/upload",
+        data={**(form_fields(upload.text, "/sources/upload") or {}), "doc_type": "matrix"},
+        files={"upload": (name, workbook(tmp_path, name=name))},
+        follow_redirects=False,
+    )
+
+    received = session.scalars(
+        select(SourceDelivery.received_at).where(
+            SourceDelivery.project_id == int(project.id)
+        )
+    ).one()
+    printed = f"{received:%Y-%m-%d %H:%M %Z}"
+    assert printed != f"{received:%Y-%m-%d %H:%M} ", (
+        "the retained instant carries no zone to print, so this proves nothing"
+    )
+
+    selection = client.get(f"/work/{project.slug}", follow_redirects=False)
+    register = client.get(f"/projects/{project.slug}/sources", follow_redirects=False)
+
+    assert printed in prose(selection.text), (
+        "the onboarding selection does not print the delivery's received time "
+        "with its zone"
+    )
+    assert printed in prose(register.text), (
+        "the register prints the same instant differently, so one delivery "
+        "time reaches a coordinator as two"
+    )
 
 
 def test_a_member_who_may_not_prepare_is_not_offered_the_control(

@@ -296,6 +296,11 @@ PILOT_ROUTES: dict[tuple[str, str], PilotRoute] = {
                 "release_preparation_attempts",
                 "release_preparation_requests",
                 "source_deliveries",
+                # #933 the onboarding selection says, per delivery, whether
+                # anybody has confirmed it for processing and who -- one of the
+                # facts that tells two deliveries of one workbook apart, now
+                # that they are both offered instead of collapsed by digest.
+                "source_delivery_confirmations",
                 "source_segments",
                 # #831 the follow-up bundle's citations, resolved to the exact
                 # passages each Support Assessment recorded, so a bundle links

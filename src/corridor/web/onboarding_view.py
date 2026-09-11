@@ -53,7 +53,7 @@ from corridor.baseline_adoption import (
     latest_baseline_reading,
 )
 from corridor.format_replacement import ValidationFinding
-from corridor.models import SourceDelivery
+from corridor.models import SourceDelivery, SourceDeliveryConfirmation
 from corridor.onboarding_authorization import (
     ADOPT_BASELINE,
     INSPECT_COMPATIBILITY,
@@ -65,7 +65,9 @@ from corridor.onboarding_authorization import (
     withdrawal_record,
 )
 from corridor.operating_mode import baseline_adoption, is_adopted_baseline
+from corridor.source_delivery import delivery_confirmations
 from corridor.web.format_replacement_view import OperationsPanel
+from corridor.web.ui_primitives import recorded_moment
 
 
 #: What each permitted operation is called where a coordinator reads it. These
@@ -134,12 +136,60 @@ class SuppliedSource:
     deliveries of one workbook -- a connector pull and a person's upload an
     hour later -- carry the same bytes and are different acts under different
     authority, so a route given only a digest cannot say which one it read.
+
+    Which is what the rest of these fields are for. A coordinator being asked
+    to choose between two deliveries has to be able to tell them apart, and
+    every fact that tells them apart is one the delivery ledger already
+    retains: when it arrived, the channel and configuration that carried it,
+    who is recorded as having submitted it, and whether anybody has confirmed
+    it for processing yet. ``submitted_by`` and ``confirmation`` are sentences
+    rather than values because the truthful answer is sometimes that nothing
+    is recorded -- a connector pull has no submitting person at all -- and a
+    name read out of a mailbox or a filename would be this page inventing one.
     """
 
     delivery_id: int
     content_sha256: str
     filename: str
     delivered_at: datetime
+    channel: str
+    configuration_identity: str
+    configuration_version: str
+    delivery_identity: str
+    submitted_by: str
+    confirmation: str
+
+
+@dataclass(frozen=True, slots=True)
+class SuppliedGroup:
+    """The deliveries that carried one set of bytes: together, never merged.
+
+    ``_supplied`` used to order stored deliveries newest first and drop every
+    later row sharing a ``content_sha256``, so a connector pull and a person's
+    upload of the same workbook reached the page as one control and the
+    earlier act left no trace on it at all. One rule was answering three
+    different questions, and only the last of them is this reading's:
+
+    * whether to store the same bytes twice -- ``source_intake`` answers it,
+      with a content-addressed store, and still does;
+    * whether a retried submission is a second delivery --
+      ``source_delivery`` answers it, with ``uq_source_deliveries_observation``
+      over the derived delivery identity, and still does;
+    * whether two independently recorded deliveries of identical bytes are one
+      act. They are not, and this reading no longer says they are.
+
+    Identical contents are still worth saying, because they are why one
+    filename can be on the page twice. So the deliveries are grouped under
+    that fact rather than collapsed into it, and every one of them stays
+    named, inspectable and selectable.
+    """
+
+    content_sha256: str
+    deliveries: tuple[SuppliedSource, ...]
+
+    @property
+    def identical_contents(self) -> bool:
+        return len(self.deliveries) > 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -177,7 +227,7 @@ class OnboardingView:
     operations: OperationsPanel | None
     findings: tuple[ValidationFinding, ...]
     paused: PausedPanel | None
-    supplied: tuple[SuppliedSource, ...]
+    supplied: tuple[SuppliedGroup, ...]
     may_adopt: bool
     may_prepare: bool
     standing: OnboardingStanding
@@ -324,14 +374,19 @@ def _may_prepare(membership: MembershipAccess, preparing: OnboardingStanding) ->
     return designated and preparing.permitted
 
 
-def _supplied(session: Session, project_id: int) -> tuple[SuppliedSource, ...]:
-    """Every file this project has taken delivery of, newest first.
+def _supplied(session: Session, project_id: int) -> tuple[SuppliedGroup, ...]:
+    """Every delivery this project has stored, newest first, grouped by bytes.
 
     Only the deliveries that were actually stored: a refused upload and a
     transport failure are both rows in the same ledger, and neither is a
     workbook anybody can read. The page offers the file rather than checking
     the content store for it, because the bytes can be swept between the page
     and the click and the route already answers that in its own words.
+
+    No delivery is dropped here; ``SuppliedGroup`` says why. What replaces the
+    de-duplication is the ledger's own account of each delivery, with the
+    confirmations read once for the project rather than once per row, through
+    the same reader the source register uses.
     """
 
     rows = session.scalars(
@@ -342,21 +397,76 @@ def _supplied(session: Session, project_id: int) -> tuple[SuppliedSource, ...]:
         )
         .order_by(SourceDelivery.received_at.desc(), SourceDelivery.id.desc())
     ).all()
-    seen: set[str] = set()
-    supplied: list[SuppliedSource] = []
+    confirmations = delivery_confirmations(session, project_id)
+    grouped: dict[str, list[SuppliedSource]] = {}
     for row in rows:
-        if row.content_sha256 in seen:
-            continue
-        seen.add(row.content_sha256)
-        supplied.append(
+        grouped.setdefault(row.content_sha256, []).append(
             SuppliedSource(
                 delivery_id=int(row.id),
                 content_sha256=row.content_sha256,
                 filename=str(row.metadata_json.get("filename") or row.external_identity),
                 delivered_at=row.received_at,
+                channel=row.channel,
+                configuration_identity=row.configuration_identity,
+                configuration_version=row.configuration_version,
+                delivery_identity=row.delivery_identity,
+                submitted_by=_submitted_by(row),
+                confirmation=_confirmation(confirmations.get(int(row.id))),
             )
         )
-    return tuple(supplied)
+    return tuple(
+        SuppliedGroup(content_sha256=digest, deliveries=tuple(deliveries))
+        for digest, deliveries in grouped.items()
+    )
+
+
+def _submitted_by(delivery: SourceDelivery) -> str:
+    """Who is recorded as having submitted this delivery, or that nobody is.
+
+    Never derived. ``ck_source_delivery_authentication`` admits exactly one of
+    three cases: a person's authenticated session carried the bytes, a machine
+    credential did, or a connector configuration is the whole binding and no
+    submitter exists to record. Only the first names anybody. Reading a sender
+    out of a mailbox address or a filename would put a name on this page the
+    record does not hold, which is the one thing a page asking a coordinator to
+    choose between two deliveries must not do.
+    """
+
+    if delivery.delivered_by_principal:
+        return f"Submitted by {delivery.delivered_by_principal}"
+    if delivery.transport == "push":
+        return (
+            "No submitting person is recorded; a machine credential "
+            "authenticated this delivery"
+        )
+    return (
+        "No submitting person is recorded; this delivery arrived on a "
+        "connector configuration"
+    )
+
+
+def _confirmation(confirmation: SourceDeliveryConfirmation | None) -> str:
+    """Whether anybody has confirmed this delivery for processing, and who.
+
+    Taking delivery and confirming it are two acts by two parties (#823), and
+    a delivery nobody has confirmed is the ordinary state of an upload whose
+    preview was left on screen. So the absence is said rather than left to be
+    inferred from a line that is not there.
+
+    In the source register's own words, and through its rendering of the
+    instant, because these two screens report the same relation and must not
+    describe it differently. What is deliberately not borrowed is
+    ``source_register``'s *state*: those words are a joint reading of the
+    disposition, the registered source and the confirmation, and this row has
+    read only the last of the three.
+    """
+
+    if confirmation is None:
+        return "Nobody has confirmed it for processing yet"
+    return (
+        f"Confirmed by {confirmation.confirmed_by_principal} "
+        f"on {recorded_moment(confirmation.confirmed_at)}"
+    )
 
 
 def _reading(retained: RetainedPreview) -> ReadingPanel:
@@ -403,7 +513,7 @@ def _next_action(
     retained: RetainedPreview | None,
     standing: OnboardingStanding,
     paused: PausedPanel | None,
-    supplied: tuple[SuppliedSource, ...] = (),
+    supplied: tuple[SuppliedGroup, ...] = (),
     preparing: OnboardingStanding | None = None,
 ) -> str:
     """One sentence naming what happens next, never a list of possibilities."""
@@ -421,6 +531,17 @@ def _next_action(
                 # not perform on this project right now, so the sentence is
                 # why, not an invitation (#934).
                 return _standing_sentence(preparing)
+            if sum(len(group.deliveries) for group in supplied) > 1:
+                # "This workbook" named the one delivery the page used to
+                # show. It became false the moment the page stopped collapsing
+                # deliveries by digest and started listing all of them (#933),
+                # because the reader now has to pick one before anything can
+                # be prepared. Same promise, said about the delivery they
+                # choose rather than about a workbook the page cannot name.
+                return (
+                    "Choose a delivery and prepare a preview of the values it "
+                    "would establish. Nothing is adopted until you approve it."
+                )
             return (
                 "Prepare a preview of the values this workbook would "
                 "establish. Nothing is adopted until you approve it."
