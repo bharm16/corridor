@@ -1,9 +1,16 @@
-"""Operate the manifest-gated Class B TTL boundary.
+"""Operate the manifest-gated Class B TTL boundary, and the sign-in expiry.
 
 Previously each processing family either kept intermediaries forever or would
 have needed its own cleanup script. This adapter exposes the shared retention
 module as explicit plan/execute/hold/lift commands and never accepts a table
 name, so the command line cannot broaden the Class B allowlist.
+
+``expire-sign-in-records`` is a second, deliberately separate boundary over
+``sign_in_retention`` (#907, ADR-0102): per person rather than per project, no
+manifest, and a deleted row rather than a nulled content column. It is here
+because this is the retention surface an operator already knows, and because
+the pass has no recurring trigger yet -- ADR-0102 records what Due Work would
+need before it stops depending on somebody running this.
 """
 
 from __future__ import annotations
@@ -25,6 +32,7 @@ from corridor.retention import (
     place_hold,
     plan_retention,
 )
+from corridor.sign_in_retention import sweep_sign_in_records
 
 
 _CONTRACT = """\
@@ -52,6 +60,11 @@ def _parser() -> argparse.ArgumentParser:
     lift = commands.add_parser("lift", help="lift one attributable hold")
     lift.add_argument("hold_id", type=int)
     commands.add_parser("clear-class-c", help="clear rebuildable page projections")
+    expire = commands.add_parser(
+        "expire-sign-in-records",
+        help="delete sessions, links and attempts past their stated retention",
+    )
+    expire.add_argument("--as-of", required=True, type=datetime.fromisoformat)
     return parser
 
 
@@ -100,6 +113,8 @@ def main(argv: list[str] | None = None, *, session_factory=None) -> int:
         elif args.command == "lift":
             hold = lift_hold(session, hold_id=args.hold_id, principal=principal)
             payload = {"hold_id": hold.id, "status": "lifted"}
+        elif args.command == "expire-sign-in-records":
+            payload = sweep_sign_in_records(session, as_of=args.as_of)
         else:
             delete_rebuildable_page_data(session)
             payload = {"status": "class_c_cleared"}
