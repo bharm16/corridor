@@ -16,6 +16,19 @@ on:
     - cron: "0 6 * * 0"
   workflow_dispatch:
 
+# Without this block the workflow takes the repository default for every scope,
+# which is the only reason it ever had more than this. Both jobs were read
+# before it was written: `full-suite` checks out, restores a uv cache through
+# the runner's own runtime token, starts the runner's PostgreSQL and runs the
+# suite; `image` checks out, builds the image from anonymously pullable public
+# bases, and runs containers against a service database. Neither reads
+# `GITHUB_TOKEN` for anything but the checkout, and neither publishes. An
+# explicit block sets every scope it omits to `none`, so a job that later needs
+# one -- `packages` for a registry it must authenticate to, `id-token` for an
+# AWS role -- declares it on that job rather than here.
+permissions:
+  contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
