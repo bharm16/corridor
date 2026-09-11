@@ -5,6 +5,17 @@ pilot thresholds and findings. Missing evidence cannot become a pass, a burst
 failure cannot disappear in a pooled value, and a confirmed automatic material
 false write stays failed across later measurement cohorts. These are reports,
 not policy activation or customer-record commands.
+
+**A threshold reads the contract's denominator, never the pilot's preference**
+(#887). Packet interruption precision used to be evaluated against whichever
+`packet_precision_basis` the pilot owner predeclared, so a pilot could be
+scored on all surfaced packets -- a denominator `docs/pilot-success-criteria.md`
+has never used. `PACKET_PRECISION_BASIS` fixes it. The declared basis is still
+read, and still printed, because a result produced under the other basis keeps
+that label rather than being retrospectively relabelled as compliant: it cannot
+become a pass. A measured failure stays a failure, on the same rule as the
+cohort limits below -- a positive claim needs the contract's own evidence, and a
+known defect stays visible either way.
 """
 
 from collections import defaultdict
@@ -26,6 +37,9 @@ OUTCOMES = ("continue as designed", "continue with revision", "extend evidence",
             "delay broader rollout", "keep a higher-risk capability disabled", "stop the affected commercial path")
 STRATIFIED = {"net_coordinator_time", "review_burden", "operations_time", "source_latency",
               "packet_precision", "manual_reconstruction"}
+# The success contract's packet-precision denominator, and the only one the
+# threshold is evaluated against.
+PACKET_PRECISION_BASIS = "interrupting"
 
 
 def _finding(name, value, threshold, passes, *, measured=True, numerator=None, denominator=None, unit=None):
@@ -199,8 +213,18 @@ def _criteria(report, cohort, partner, metrics, rows):
         entry["result"] = "fail"
     entries.append(entry)
     entries.append(_ratio("coverage", metrics["coverage"], ">=95% connected-channel arrivals captured within declared window", minimum=.95))
-    basis = report["declaration"]["packet_precision_basis"]
-    entries.append(_ratio("packet_precision", metrics["packet_precision"][basis], f">=80%; predeclared denominator {basis}", minimum=.8))
+    recorded = report["declaration"]["packet_precision_basis"]
+    precision = _ratio("packet_precision", metrics["packet_precision"][PACKET_PRECISION_BASIS],
+                       ">=80% of interrupting packets judged necessary at triage; denominator fixed by the success contract", minimum=.8)
+    precision["recorded_basis"] = recorded
+    precision["evaluated_basis"] = PACKET_PRECISION_BASIS
+    precision["all_surfaced_diagnostic"] = metrics["packet_precision"]["all_surfaced"]
+    if recorded != PACKET_PRECISION_BASIS:
+        precision["basis_limit"] = (f"predeclared {recorded}; the criterion's denominator is "
+                                    f"{PACKET_PRECISION_BASIS}, so this pilot has not measured it")
+        if precision["result"] == "pass":
+            precision["result"] = "insufficient_evidence"
+    entries.append(precision)
     entries.append(_ratio("client_ready_packages", metrics["packages"], ">=90% prepared candidates; complete configured artifacts without outside repair", minimum=.9))
     entries.append(_dist("manual_reconstruction", metrics["manual_reconstruction"], "median <=3 minutes per interrupting packet", median_max=3))
     entries.append(_dist("provider_cost", metrics["provider_cost"], "mean <=25 USD/active project-week, all providers", mean_max=25))

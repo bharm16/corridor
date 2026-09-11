@@ -22,6 +22,10 @@ are pinned by format and usability rather than by name, Recorded Verbal
 Statements are a per-partner selection rather than a wait on an unbuilt
 dependency, the issue profile joins the pinned parameters, and the
 material-field strata are classified by what the code actually maintains.
+Amended 2026-09-11 (#887) so that the packet-precision basis is no longer
+selectable: the criterion is evaluated on interrupting packets, the
+all-surfaced rate is a printed diagnostic, and "interrupting" is pinned to a
+declared presentation rather than to the first reading's consequence level.
 The pilot report issue (#498) carries the result.
 
 **What this contract governs.** A failed criterion gates what Corridor may
@@ -211,25 +215,44 @@ weeks). A pilot passes only if every criterion passes for both partners.
   `src/corridor/pilot_measurement.py` builds one entry for every distinct
   packet item key surfaced in the period, whatever became of it — accepted,
   edited, kept current, sent to coordination, deferred, ignored, superseded, or
-  still open at close — and marks an entry `interrupting` when the surfacing
-  event's consequence level is `must_handle_before_issue`. It then emits
-  `interrupting_packet_denominator`, `necessary_interrupting_packets` and
-  `unjudged_interrupting_packets` beside the separate all-packet
+  still open at close — and marks an entry `interrupting` by the rule below. It
+  then emits `interrupting_packet_denominator`, `necessary_interrupting_packets`
+  and `unjudged_interrupting_packets` beside the separate all-packet
   `packet_denominator`, and it computes manual reconstruction over interrupting
   packets alone. #424's and #498's rule that "every surfaced packet enters the
   denominator" is a rule against dropping the interruptions nobody answered —
   their own enumeration is a list of *outcomes*, not of consequence levels — so
   it agrees with this contract rather than naming a second denominator.
-- **One divergence is open, and this contract does not move for it.**
+- **An interruption is a presentation, not a standing property of the
+  difference underneath it.** A packet is interrupting for a period when that
+  period retains at least one `packet_surfacing` record that declared it at
+  ADR-0085's **"Must handle before this issue"**. A level is derived afresh for
+  each reading from the issue content configured at that cutoff
+  (`src/corridor/consequence_levels.py`), so the same packet can be shown as
+  informational on Monday and as required triage on Wednesday. Three
+  consequences follow, and each is tested: a packet **promoted** to that
+  heading after an informational reading is interrupting, because somebody was
+  in fact interrupted; **repeated** presentations of one packet are one
+  interruption rather than several; and a packet that was **never** shown at
+  that heading is not interrupting however urgent it looks. The interrupting
+  presentation is printed with the packet as `interrupting_presentation`, whose
+  evidence reference is the same occurrence identity a judgment at triage
+  carries (`src/corridor/pilot_observations.py`), so the denominator and the
+  judgments that fill it reconcile against one record.
+- **The basis is not selectable, and an old result keeps its own label.**
   `src/corridor/pilot_report.py` computes both an `interrupting` and an
-  `all_surfaced` rate and refuses to choose silently;
-  `src/corridor/pilot_checkpoint.py` then evaluates the 80% threshold against
-  whichever `packet_precision_basis` the pilot owner predeclared, and
-  [the reporting contract](operations/pilot-reporting.md) records that
-  selectable basis as an unresolved discrepancy between the documents. The
-  criterion above is the one being measured here: a pilot that predeclares
-  `all_surfaced` has not measured it, and its packet interruption precision is
-  reported as unmeasured rather than passed.
+  `all_surfaced` rate; `src/corridor/pilot_checkpoint.py` evaluates the 80%
+  threshold against the interrupting basis, prints the all-surfaced rate beside
+  it as a diagnostic, and reads the pilot's predeclared
+  `packet_precision_basis` only as the label its result keeps (#887). A pilot
+  that predeclared `all_surfaced` has not measured this criterion: it is
+  reported as unmeasured rather than passed, under the basis it was declared
+  under, and is never retrospectively relabelled as compliant. A measured
+  failure on this contract's basis stays a failure.
+- **Zero eligible packets is unmeasured, never 100%.** An interrupting
+  denominator of zero reports insufficient evidence, pooled and in every
+  stratum. A week nobody was interrupted in is not a week this criterion
+  passed.
 
 ### Material-field strata: what is supported, and for whom
 

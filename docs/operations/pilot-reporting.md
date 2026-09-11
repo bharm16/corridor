@@ -47,10 +47,16 @@ Required declarations are:
   matrix/UCM revisions, email, minutes and schedule exports only; selecting a
   broader class does not make that sample prove it.
 - `packet_precision_basis`: `all_surfaced` or `interrupting`, fixed before
-  measurement. #424/#498 specify all surfaced packets; the existing success
-  document specifies interrupting packets. The software prints **both** and
-  refuses to select silently. This explicit choice records the pilot owner's
-  resolution of the contract discrepancy; it does not rewrite either document.
+  measurement. It is the **label this declaration keeps**, not a choice of
+  denominator (#887). #424 and #498 enumerate the *outcomes* that must survive
+  to period close, which is an anti-survivorship rule; the success contract
+  names the denominator, and it is interrupting packets. So the checkpoint
+  evaluates the 80% threshold against that basis whatever a pilot declared,
+  prints the all-surfaced rate beside it as a diagnostic, and reports a pilot
+  that declared `all_surfaced` as unmeasured rather than passed. The result
+  stays labelled with the basis it was produced under and is never
+  retrospectively relabelled as compliant; a measured failure on the
+  contract's basis stays a failure.
 - `minimum_stratum_project_weeks`: a positive predeclared evidence minimum for
   each quiet, ordinary and burst stratum. Missing strata stay insufficient.
 - `business_calendar`: `timezone`, an explicit `holidays` date list, and
@@ -179,7 +185,12 @@ membership and issue context; changed membership/context remains a separate
 question. Period exposure rows remain intact. A later valid judgment joins only
 the same unambiguous frozen question (or an explicit `frozen_packet_identity`).
 Conflicting judgments withhold a rate rather than retrospectively relabeling it.
-A close before the judgment retains an unjudged packet in the denominator. Time distributions print
+A close before the judgment retains an unjudged packet in the denominator. A packet
+is interrupting for a period when that period retains at least one presentation
+record declaring it at ADR-0085's "Must handle before this issue": a packet promoted
+to that heading after an informational reading counts, and repeated presentations of
+one packet are one interruption rather than several. A zero denominator is
+unmeasured, never 100%. Time distributions print
 median and nearest-rank p90. Source-to-delta latency includes native deltas that
 were never surfaced as packets. An arrival is joined across retained weeks by exact customer/database/project
 origin and source identity. An arrival absent from the entire retained history

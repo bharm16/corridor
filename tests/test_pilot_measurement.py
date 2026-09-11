@@ -6,7 +6,11 @@ from dataclasses import replace
 import pytest
 
 from corridor.analytics import AnalyticsEvent, EventFamily, default_binding
-from corridor.pilot_measurement import MeasurementPeriod, derive_measurement
+from corridor.pilot_measurement import (
+    INTERRUPTING_CONSEQUENCE_LEVEL,
+    MeasurementPeriod,
+    derive_measurement,
+)
 
 
 START = datetime(2026, 9, 7, tzinfo=timezone.utc)
@@ -96,6 +100,84 @@ def test_period_close_retains_unopened_deferred_superseded_and_each_child_outcom
                         9: "ignored/open", 10: "ignored/open", 11: "ignored/open", 12: "superseded"}
     assert report["packets"][2]["outcomes"] == ["superseded"]
     assert report["interaction_counts"]["packet_presentations"] == 4
+
+
+def present(key, level, *, hour, children=(1,)):
+    """One Work List presentation of `key` at `level`, as the reader receives it."""
+
+    return event(EventFamily.PACKET_SURFACING, item_key=key, hour=hour,
+                 child_consequences=[{"delta_id": i} for i in children],
+                 child_count=len(children), consequence_level=level,
+                 cutoff=(START + timedelta(hours=hour)).isoformat(),
+                 consequence_rule_version="issue-consequence-v1")
+
+
+def test_the_interrupting_level_is_the_heading_adr_0085_declares():
+    from corridor.consequence_levels import MUST_HANDLE
+
+    assert INTERRUPTING_CONSEQUENCE_LEVEL == MUST_HANDLE
+
+
+def test_a_packet_promoted_to_must_handle_after_an_informational_reading_is_interrupting():
+    report = derive_measurement([period()], [
+        present("packet-a", "can_wait", hour=1),
+        present("packet-a", "affects_issue", hour=2),
+        present("packet-a", INTERRUPTING_CONSEQUENCE_LEVEL, hour=3),
+    ])["periods"][0]
+    assert report["packet_denominator"] == 1
+    assert report["interrupting_packet_denominator"] == 1
+    assert report["packets"][0]["interrupting_presentation"]["presented_at"] == (
+        START + timedelta(hours=3)).isoformat()
+
+
+def test_a_packet_that_was_never_presented_as_must_handle_is_not_interrupting():
+    report = derive_measurement([period()], [
+        present("packet-a", "affects_issue", hour=1),
+        present("packet-a", "can_wait", hour=2),
+    ])["periods"][0]
+    assert report["packet_denominator"] == 1
+    assert report["interrupting_packet_denominator"] == 0
+    assert report["packets"][0]["interrupting_presentation"] is None
+
+
+def test_repeated_must_handle_presentations_of_one_packet_are_one_interruption():
+    shown = [present("packet-a", INTERRUPTING_CONSEQUENCE_LEVEL, hour=h) for h in (1, 2, 3, 4)]
+    report = derive_measurement([period()], shown)["periods"][0]
+    assert len(report["packets"][0]["presentation_event_ids"]) == 4
+    assert report["interrupting_packet_denominator"] == 1
+    assert report["packets"][0]["interrupting_presentation"]["event_id"] == shown[0].event_id
+
+
+def test_an_interrupting_packet_shown_and_ignored_stays_in_the_denominator_unjudged():
+    report = derive_measurement([period()], [
+        present("packet-a", INTERRUPTING_CONSEQUENCE_LEVEL, hour=1),
+        event(EventFamily.PACKET_OPENING, hour=2, item_key="packet-a"),
+    ])["periods"][0]
+    assert report["packets"][0]["opened"] is True
+    assert report["packets"][0]["outcomes"] == ["ignored/open"]
+    assert report["interrupting_packet_denominator"] == 1
+    assert report["unjudged_interrupting_packets"] == 1
+    assert report["necessary_interrupting_packets"] == 0
+
+
+def test_an_interrupting_packet_nobody_opened_stays_in_the_denominator():
+    report = derive_measurement([period()], [
+        present("packet-a", INTERRUPTING_CONSEQUENCE_LEVEL, hour=1),
+    ])["periods"][0]
+    assert report["packets"][0]["opened"] is False
+    assert report["interrupting_packet_denominator"] == 1
+    assert report["unjudged_interrupting_packets"] == 1
+
+
+def test_the_interrupting_presentation_names_the_occurrence_a_triage_judgment_answers():
+    from corridor.pilot_observations import TriageOccurrence
+
+    shown = present("packet-a", INTERRUPTING_CONSEQUENCE_LEVEL, hour=3)
+    report = derive_measurement([period()], [shown])["periods"][0]
+    judged = TriageOccurrence(item_key="packet-a", cutoff=shown.payload["cutoff"],
+                              consequence_level=INTERRUPTING_CONSEQUENCE_LEVEL,
+                              consequence_rule_version="issue-consequence-v1")
+    assert report["packets"][0]["interrupting_presentation"]["evidence_reference"] == judged.identity
 
 
 def test_report_joins_real_instants_configured_artifacts_and_attributable_measured_inputs():

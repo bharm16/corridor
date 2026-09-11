@@ -185,14 +185,26 @@ def _cohort_packets(rows):
 
 
 def _packet_rates(packets, complete):
+    """Both rates, each labelled with what it is for (#887).
+
+    ``interrupting`` is the success contract's criterion; ``all_surfaced`` is
+    printed beside it as a diagnostic, because an all-packet rate answers a
+    different question and has never been the threshold's denominator.
+    """
+
     interrupting = [p for p in packets if p["interrupting"]]
-    def one(selected):
+    def one(selected, basis, role):
         result = rate(sum(p.get("necessary") is True for p in selected), len(selected), "packets",
                       complete=complete and all(type(p.get("necessary")) is bool for p in selected))
         result["unjudged"] = sum(p.get("necessary") is None for p in selected)
-        result["derivation"] = "necessary at triage / every selected surfaced packet through close; open, ignored, superseded and deferred remain"
+        result["basis"] = basis
+        result["role"] = role
+        result["derivation"] = ("necessary at triage / every selected surfaced packet through close; "
+                                "open, ignored, superseded and deferred remain; "
+                                "an empty denominator is unmeasured, never 100%")
         return result
-    return {"all_surfaced": one(packets), "interrupting": one(interrupting)}
+    return {"all_surfaced": one(packets, "all_surfaced", "diagnostic"),
+            "interrupting": one(interrupting, "interrupting", "criterion")}
 
 
 def _latencies(children):
@@ -405,8 +417,12 @@ def derive_report(measurement, declaration, evidence):
     if declaration.get("schema_version") != "pilot-contract-v1":
         raise ValueError("report requires a predeclared pilot contract")
     declared = instant(declaration["declared_at"])
+    # Retained as the label the pilot's own result keeps, not as a choice of
+    # denominator: #887 fixed the criterion on the interrupting basis, and an
+    # older declaration has to stay readable under the basis it was made under.
     if declaration.get("packet_precision_basis") not in {"all_surfaced", "interrupting"}:
-        raise ValueError("predeclare all_surfaced or interrupting packet precision; never silently change denominators")
+        raise ValueError("record packet_precision_basis as all_surfaced or interrupting; it labels this "
+                         "declaration and no longer selects the criterion's denominator")
     by_id = {r["declaration"]["period_id"]: r for r in measurement["periods"]}
     if len(by_id) != len(measurement["periods"]):
         raise ValueError("duplicate measurement period")

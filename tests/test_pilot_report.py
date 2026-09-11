@@ -63,6 +63,64 @@ def test_all_surfaced_packets_keep_open_and_noninterrupting_denominators():
     assert packets["all_surfaced"]["unjudged"] == 1
 
 
+def report_on(events, basis):
+    p, contract, evidence = inputs()
+    contract["packet_precision_basis"] = basis
+    return derive_report(derive_measurement([p], events), contract, evidence)
+
+
+def judged(key, necessary, *, hour):
+    return event(EventFamily.MEASUREMENT_SAMPLE, sample_kind="packet_usefulness", item_key=key,
+                 necessary=necessary, actor="coordinator", evidence_reference=f"triage:{key}", hour=hour)
+
+
+def precision(report):
+    return next(f for f in build_checkpoint(report)["cohorts"][0]["partners"]["fixture-partner"]["findings"]
+                if f["criterion"] == "packet_precision")
+
+
+def test_the_criterion_reads_the_interrupting_denominator_whatever_the_pilot_predeclared():
+    # All-surfaced passes at 4/5 while the contract's own denominator fails at
+    # 0/1. A pilot that predeclared the other basis is still scored on this one.
+    events = [surface("interrupting", [1]), judged("interrupting", False, hour=2)]
+    for index in range(4):
+        events += [event(EventFamily.PACKET_SURFACING, item_key=f"quiet-{index}", child_consequences=[],
+                         child_count=0, consequence_level="can_wait", hour=3 + index),
+                   judged(f"quiet-{index}", True, hour=20 + index)]
+    finding = precision(report_on(events, "all_surfaced"))
+    assert finding["evaluated_basis"] == "interrupting"
+    assert (finding["numerator"], finding["denominator"]) == (0, 1)
+    assert finding["result"] == "fail"
+    assert finding["all_surfaced_diagnostic"]["value"] == .8
+    assert finding["all_surfaced_diagnostic"]["role"] == "diagnostic"
+
+
+def test_a_result_recorded_under_the_all_surfaced_basis_keeps_that_label_and_never_passes():
+    events = [surface("one", [1]), judged("one", True, hour=2)]
+    recorded = precision(report_on(events, "all_surfaced"))
+    assert recorded["recorded_basis"] == "all_surfaced"
+    assert "predeclared all_surfaced" in recorded["basis_limit"]
+    # The pooled finding is held down by the fixture's incomplete pilot shape,
+    # so the stratum finding is where a basis that cannot pass is visible.
+    assert recorded["volume_strata"]["quiet"]["result"] == "insufficient_evidence"
+    contract_basis = precision(report_on(events, "interrupting"))
+    assert contract_basis["recorded_basis"] == "interrupting"
+    assert "basis_limit" not in contract_basis
+    assert contract_basis["volume_strata"]["quiet"]["result"] == "pass"
+
+
+def test_zero_eligible_interrupting_packets_is_unmeasured_and_never_a_hundred_percent():
+    shown = event(EventFamily.PACKET_SURFACING, item_key="quiet", child_consequences=[],
+                  child_count=0, consequence_level="can_wait", hour=2)
+    report = report_on([shown, judged("quiet", True, hour=3)], "interrupting")
+    metric = pooled(report)["packet_precision"]["interrupting"]
+    assert (metric["denominator"], metric["value"], metric["status"]) == (0, None, "insufficient_evidence")
+    finding = precision(report)
+    assert finding["value"] is None
+    assert finding["result"] == "insufficient_evidence"
+    assert finding["volume_strata"]["quiet"]["result"] == "insufficient_evidence"
+
+
 def test_same_work_savings_exclude_new_artifacts_and_missing_time_is_not_zero():
     events = [event(EventFamily.WORK_OBSERVATION, category="record_maintenance", minutes=20,
                     actor="coordinator", evidence_reference="work:1"),
