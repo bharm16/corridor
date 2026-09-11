@@ -1,6 +1,7 @@
 """Public test-harness contract for xdist worker database isolation."""
 
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 import fcntl
 import os
 from pathlib import Path
@@ -585,6 +586,69 @@ def _schema_census(database_url: str) -> list[tuple[str, str, str]]:
             ]
     finally:
         probe.dispose()
+
+
+def test_the_one_template_this_run_migrated_is_what_a_fixture_copies(
+    tmp_path, monkeypatch
+):
+    """The harness publishes one migrated schema; nothing else migrates a second.
+
+    `m8_acceptance_database` keeps its own per-process template for a caller
+    outside this harness, and that is the fallback below. Inside a coordinated
+    run the template already exists, so reaching for it must not build a worker
+    database or migrate anything a second time.
+    """
+
+    calls = _record_provisioning(monkeypatch)
+    state = harness.LazyWorkerDatabase(
+        make_url(SOURCE_URL), f"corridor_pytest_{RUN_ID}_gw0", TEMPLATE, tmp_path
+    )
+
+    published = harness._harness_migrated_template(
+        SimpleNamespace(_corridor_pytest_database=state)
+    )
+
+    assert published == TEMPLATE
+    assert [call for call in calls if call[0] == "migrate"] == [("migrate", TEMPLATE)]
+    assert not state.provisioned
+    assert not state.cleanup_needed
+
+    uncoordinated = harness.LazyWorkerDatabase(
+        make_url(SOURCE_URL), f"corridor_pytest_{RUN_ID}_gw0", "", None
+    )
+    assert harness._harness_migrated_template(SimpleNamespace()) is None
+    assert harness._harness_migrated_template(
+        SimpleNamespace(_corridor_pytest_database=uncoordinated)
+    ) is None
+
+
+def test_an_isolated_database_fixture_asks_for_a_copy_of_that_template(
+    provision_isolated_database, request, monkeypatch
+):
+    """The label is the only thing a fixture still decides for itself."""
+
+    from corridor import m8_acceptance_database
+
+    seen = {}
+
+    @contextmanager
+    def record(admin_url, **keywords):
+        seen.update(keywords, admin_url=admin_url)
+        yield "provisioned"
+
+    monkeypatch.setattr(
+        m8_acceptance_database, "provision_disposable_postgres", record
+    )
+
+    with provision_isolated_database("harness_seam_proof") as database:
+        assert database == "provisioned"
+
+    template = harness._harness_migrated_template(request.config)
+    assert seen["label"] == "harness_seam_proof"
+    assert seen["template_database"] == template
+    assert "reuse_migrated_template" not in seen
+    if template is not None:
+        assert re.fullmatch(r"corridor_pytest_[1-9][0-9]*_[0-9a-f]{8}_tmpl", template)
 
 
 @pytest.mark.slow

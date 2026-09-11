@@ -543,14 +543,14 @@ def provision_isolated_database(request):
     template lives here and each fixture asks this seam for a copy of it.
     """
 
-    from corridor.config import settings
-    from corridor.m8_acceptance_database import provision_disposable_postgres
-
     template = _harness_migrated_template(request.config)
 
     @contextmanager
     def provision(label: str):
-        with provision_disposable_postgres(
+        from corridor.config import settings
+        from corridor import m8_acceptance_database
+
+        with m8_acceptance_database.provision_disposable_postgres(
             settings.database_url,
             repo_root=ROOT,
             label=label,
