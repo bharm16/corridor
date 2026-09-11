@@ -244,9 +244,9 @@ def create_revision_comparison(
             side="successor",
             matcher_version=effective_matcher_version,
         )
-        findings = _compare_inputs(
-            predecessor_inputs,
-            successor_inputs,
+        findings = _compare_rows(
+            [_row(snapshot) for snapshot in predecessor_inputs],
+            [_row(snapshot) for snapshot in successor_inputs],
             config,
         )
 
@@ -785,18 +785,30 @@ def _canonical_jsonb(value: Any) -> Any:
     return value
 
 
-def _compare_inputs(
-    predecessor_inputs: list[dict[str, Any]],
-    successor_inputs: list[dict[str, Any]],
+def _compare_rows(
+    predecessor_rows: list[_RevisionRow],
+    successor_rows: list[_RevisionRow],
     config: dict[str, Any],
 ) -> list[_FindingDraft]:
-    predecessor_rows = {
-        snapshot["candidate_id"]: _row(snapshot) for snapshot in predecessor_inputs
-    }
-    successor_rows = {
-        snapshot["candidate_id"]: _row(snapshot) for snapshot in successor_inputs
-    }
-    edges = _eligible_edges(predecessor_rows, successor_rows, config)
+    """The whole matcher: projected rows in, ordered findings out, no Session.
+
+    It takes ``_RevisionRow`` rather than the Extraction Run input snapshots
+    it used to.  A snapshot carries a dozen keys of run and project lineage
+    that ``_run_inputs`` has already validated; the matcher reads three of
+    them.  Declaring those three is what lets the correspondence contract be
+    stated as a table of rows instead of rebuilt in PostgreSQL, and it leaves
+    the projection in ``_row``, where the receipt and readback tests prove it
+    against a persisted snapshot.
+
+    It stays private on purpose.  A public entry point here would answer "do
+    these rows correspond" without a receipt, and could not reach the
+    ``Document.doc_type`` that ``_validate_supported_inputs`` fails closed on
+    -- both of which this module exists to refuse.
+    """
+
+    predecessor_by_id = {row.candidate_id: row for row in predecessor_rows}
+    successor_by_id = {row.candidate_id: row for row in successor_rows}
+    edges = _eligible_edges(predecessor_by_id, successor_by_id, config)
     strong_edges = {
         pair: edge
         for pair, edge in edges.items()
@@ -835,12 +847,12 @@ def _compare_inputs(
     matched_predecessors = {edge.predecessor_id for edge in matched}
     matched_successors = {edge.successor_id for edge in matched}
     unmatched_predecessors = (
-        predecessor_rows.keys()
+        predecessor_by_id.keys()
         - ambiguous_predecessors
         - matched_predecessors
     )
     unmatched_successors = (
-        successor_rows.keys() - ambiguous_successors - matched_successors
+        successor_by_id.keys() - ambiguous_successors - matched_successors
     )
 
     findings: list[_FindingDraft] = list(ambiguous)
@@ -849,8 +861,8 @@ def _compare_inputs(
     ):
         changes = tuple(
             _field_changes(
-                predecessor_rows[edge.predecessor_id].fields,
-                successor_rows[edge.successor_id].fields,
+                predecessor_by_id[edge.predecessor_id].fields,
+                successor_by_id[edge.successor_id].fields,
             )
         )
         findings.append(
@@ -867,8 +879,8 @@ def _compare_inputs(
     for candidate_id in sorted(unmatched_predecessors):
         state, reason = _side_specific_unmatched_state(
             candidate_id,
-            predecessor_rows,
-            successor_rows,
+            predecessor_by_id,
+            successor_by_id,
             edges,
             ambiguous_successors,
             predecessor_side=True,
@@ -886,8 +898,8 @@ def _compare_inputs(
     for candidate_id in sorted(unmatched_successors):
         state, reason = _side_specific_unmatched_state(
             candidate_id,
-            successor_rows,
-            predecessor_rows,
+            successor_by_id,
+            predecessor_by_id,
             edges,
             ambiguous_predecessors,
             predecessor_side=False,
