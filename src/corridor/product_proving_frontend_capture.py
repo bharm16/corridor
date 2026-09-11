@@ -163,6 +163,8 @@ _PRODUCT_PROVING_ROUTE_CONTRACT_DOCUMENTATION = {
     "prepare_project_issue": frozenset({202, 403, 409}),
     "reschedule_deferred_change": frozenset({200, 201, 400, 409}),
     "close_project_follow_up_plan": frozenset({201, 400, 409}),
+    "record_follow_up_request_sent": frozenset({201, 409}),
+    "record_follow_up_response": frozenset({201, 409}),
     "queue": frozenset({200}),
     "internal_report": frozenset({200}),
     "internal_report_full": frozenset({200}),

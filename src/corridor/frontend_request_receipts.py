@@ -92,6 +92,16 @@ ROUTE_CONTRACTS: Mapping[str, frozenset[int]] = {
     # still waiting on, or PostgreSQL refused the closure. None writes a
     # Project Record revision (ADR-0084).
     "close_project_follow_up_plan": frozenset({201, 400, 409}),
+    # The two correspondence recordings the follow-up section carries (#837).
+    # Both answer 201 when the record is appended and 409 when it is refused,
+    # and a refusal is PostgreSQL's own sentence rendered on the week the
+    # coordinator was already on rather than a redirect. There is no 403 on
+    # either: the roster gate every project surface passes through is what
+    # admits the caller, and recording correspondence writes no accepted
+    # authority and makes nothing effective, so no designation is proved on
+    # the row the way #533's release and #839's preparation are.
+    "record_follow_up_request_sent": frozenset({201, 409}),
+    "record_follow_up_response": frozenset({201, 409}),
     "queue": frozenset({200}),
     "internal_report": frozenset({200}),
     "internal_report_full": frozenset({200}),
