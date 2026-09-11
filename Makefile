@@ -1,4 +1,4 @@
-.PHONY: clean-test-databases boot up down psql check test-engine-absent image-engine-audit retained-citation-inventory pdf-reader-inspect pdf-reader-node pdf-reader-reproduce pdf-pairs-measure pdf-reader-gold-eval native-matrix-replay textract-replay link-deliveries test-focused test test-full test-slow test-shard test-slow-shard test-timing test-slow-timing test-migrations test-serial corpus demo ingest docs queue agreements extract active-run revision-process milestones exceptions eval candidate-model gold storage-baseline storage identity-audit retention ledger-archive carry-forward due-work location-discovery m8-acceptance sh99-admission-acceptance event-admission-acceptance sh99-coordinator-rehearsal product-proving evidence-investigator evidence-shadow evidence-shadow-eval pdf-eval page-inventory-eval page-inventory-routing-replay render-rasterizer-compare minutes report
+.PHONY: clean-test-databases boot up down psql check test-engine-absent image-engine-audit retained-citation-inventory pdf-reader-inspect pdf-reader-node pdf-reader-reproduce pdf-pairs-measure pdf-reader-gold-eval native-matrix-replay textract-replay link-deliveries test-focused test test-full test-slow test-shard test-slow-shard test-timing test-slow-timing test-migrations test-serial corpus demo ingest docs queue agreements extract active-run revision-process milestones exceptions eval candidate-model gold storage-baseline storage identity-audit retention ledger-archive carry-forward due-work location-discovery m8-acceptance sh99-admission-acceptance event-admission-acceptance sh99-coordinator-rehearsal product-proving evidence-investigator evidence-shadow evidence-shadow-eval pdf-eval page-inventory-eval page-inventory-routing-replay minutes report
 
 TEST_WORKERS ?= 4
 TEST_TIMEOUT_SECONDS ?= 600
@@ -419,11 +419,6 @@ pdf-eval:
 # gold membership.
 page-inventory-eval:
 	uv run python -m corridor.page_inventory_evaluation $(ARGS)
-
-# Render corpus pages under both rasterizers and record the comparison with
-# its declared tolerances (#735).
-render-rasterizer-compare:
-	uv run python -m corridor.render_rasterizer_comparison $(ARGS)
 
 # Decide the frozen Stage 1 routing pages again from the reader-backed Page
 # Inventory and record every difference from the incumbent run and the gold
