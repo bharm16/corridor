@@ -67,9 +67,10 @@ def test_the_defaults_delegate_the_whole_payload_to_the_extractors_constructor()
 
 
 def test_the_three_keys_the_hand_written_payloads_omitted_are_carried():
-    """`unmapped_columns`, `tier` and `text_source`, which 100, 98 and 84 of the
-    test tree's 105 payload literals left absent while `corridor.facts` reads
-    all three. A caller states them here and they arrive."""
+    """`unmapped_columns`, `tier` and `text_source`: of the test tree's 105
+    hand-written payloads, four named the first, six the second and twenty the
+    third, while `corridor.facts` reads all three. A caller states them here
+    and they arrive."""
 
     candidate = proposal(
         _document(),

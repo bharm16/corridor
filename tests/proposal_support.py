@@ -16,7 +16,7 @@ carry the first, six the second and twenty the third.
 ``candidates.py`` says was fixed -- so a reader that started distinguishing the
 two would pass here and fail on a real extraction.  ``tests/test_web.py`` had
 grown a second helper whose entire body was patching those three keys back
-onto the first one's output for five tests.
+onto the first one's output for the four tests that needed them.
 
 ``propose`` is deep for an extractor, which knows every one of its ten required
 keyword arguments and why, and shallow for a test, which knows the row and the
