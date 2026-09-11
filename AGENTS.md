@@ -11,16 +11,24 @@ make down   # stop the stack
 make queue  # run the coordination UI at http://localhost:8412
 ```
 
-Every entry point is a `make` target, and the Makefile comments say what each
-one takes. `make extract`, `make agreements`, and `make minutes` call a model
-and need `OPENAI_API_KEY` in `.env`.
+Every entry point is a `make` target. Bare `make` lists them all with a
+one-line summary, and `make <target> ARGS=--help` prints that command's own
+arguments and worked invocations, which is where the contract lives: a
+Makefile comment cannot travel with the flag it describes, and one of them
+had already detached onto the target that drops databases. `make extract`,
+`make agreements`, and `make minutes` call a model and need `OPENAI_API_KEY`
+in `.env`.
 
 ## Testing
 
 Run test targets directly and wait for their process/session exit status.
-`make test-focused`, `make test`, `make test-slow`, and `make test-full` stream
-pytest output and record running/completed state plus the actual exit code in
-`out/test-results/<suite>.json`. Use that receipt for background monitoring.
+Every local pytest target runs through `scripts/run_local_tests.py`, which
+streams pytest output and records running/completed state plus the actual exit
+code in `out/test-results/<suite>.json`: `make test-focused`, `make test`,
+`make test-slow`, `make test-full`, `make test-serial` (the `full` receipt) and
+`make test-timing`/`make test-slow-timing` (the `test` and `slow` receipts,
+because each measures that suite's selection). Use that receipt for background
+monitoring.
 Pytest summaries may contain skip and warning counts; never wait for a text
 pattern such as `passed in`, or pipe live test output through `grep`/`head`.
 Focused commands stop after 30 seconds by default; choose a smaller seam, or

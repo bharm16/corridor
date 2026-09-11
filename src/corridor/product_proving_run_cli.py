@@ -47,10 +47,27 @@ def _sha256(value: str) -> str:
     return value
 
 
+_CONTRACT = """\
+Publish a Product Test Run only from two independently sealed live-frontend pass bundles and the
+exact restored database baseline; arbitrary success capture JSON is not accepted:
+  make product-proving ARGS="publish-observed --database-baseline-dir=<dir> --database-baseline-manifest-sha256=<sha> --pass-1-dir=<dir> --pass-1-manifest-sha256=<sha> --restore-1-dir=<dir> --restore-1-manifest-sha256=<sha> --pass-2-dir=<dir> --pass-2-manifest-sha256=<sha> --restore-2-dir=<dir> --restore-2-manifest-sha256=<sha> --source-database-url=<url> --output-dir=<new-dir>"
+  make product-proving ARGS="verify <bundle-dir> --expected-manifest-sha256=<sha>"
+Capture and clone-verify the exact local development database before a pass;
+restore requires an explicit exact-target opt-in and re-verifies every public
+schema object, table, and sequence after replacing the database:
+  make product-proving ARGS="database-capture --source-database-url=<url> --postgres-admin-url=<url> --expected-clean-git-revision=<sha> --expected-migration-head=<head> --output-dir=<new-dir>"
+  make product-proving ARGS="database-restore <bundle-dir> --source-database-url=<url> --postgres-admin-url=<url> --expected-source-database-name=corridor --expected-clean-git-revision=<sha> --expected-migration-head=<head> --expected-manifest-sha256=<sha> --pass-bundle-dir=<dir> --pass-bundle-manifest-sha256=<sha> --restore-receipt-output-dir=<new-dir> --allow-shared-development-restore"
+A terminal failure uses `publish-failure` and `verify-failure`; it can never
+be read through the successful two-pass verifier.
+"""
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="product-proving-run",
         description="Publish or verify a bounded Product Test Run and its exact receipts.",
+        epilog=_CONTRACT,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     commands = parser.add_subparsers(dest="command", required=True)
     publish = commands.add_parser(

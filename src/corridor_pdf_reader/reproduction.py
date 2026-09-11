@@ -324,8 +324,27 @@ def retain(output: Path, receipt: dict[str, Any], *, actor: str) -> Path:
     return target
 
 
+_CONTRACT = """\
+The 333-pair reproduction of loop-020: verify the corpus digests, build the
+answer keys and compare them with the retained key digests, read every pair
+with the measured engine, score the development set and the spent holdout,
+tally, and write a receipt carrying the configuration identity. An explicit
+experiment outside pytest and CI (ADR-0008); needs the reference corpus at
+TRUE_PAIRS_ROOT, `make pdf-reader-node`, and tens of minutes:
+  make pdf-reader-reproduce ARGS="--output out/pdf-reader/reproduction-2026-09-06 --retain --holdout-actor local:<human>"
+`--retain` copies the receipt set into src/corridor_pdf_reader/receipts/,
+appends the holdout access to bootstrap/LOOP-LOG.md as prose and records the
+same access in gold/pdf-pairs/v1/holdout-access.jsonl (ADR-0008); it needs
+--holdout-actor.
+"""
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser = argparse.ArgumentParser(
+        description=__doc__.split("\n\n")[0],
+        epilog=_CONTRACT,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument("--output", type=Path, required=True, help="a new directory outside git")
     parser.add_argument("--jobs", type=int, default=MEASURED_JOBS, help="the measured default is 4")
     parser.add_argument(

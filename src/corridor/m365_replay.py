@@ -140,8 +140,18 @@ def replay_graph(session: Session, *, project: Project, customer: str,
             "dispositions": [row.disposition for row in sync.records]}
 
 
+_CONTRACT = """\
+Replay recorded Graph pages into an existing synthetic project; never connects a tenant.
+make m365-replay ARGS="recording.json --project-id 1 --customer fixture --run-identity replay-1"
+"""
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        epilog=_CONTRACT,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument("recording", type=Path)
     parser.add_argument("--project-id", required=True, type=int)
     parser.add_argument("--customer", required=True)

@@ -5,6 +5,11 @@ forever for a summary regex that did not recognize pytest's warning count.
 This wrapper inherits pytest's output, waits on its process, and replaces a
 small JSON receipt as it runs. Timeout and interruption stop only the process
 group this invocation created, including its xdist workers.
+
+Every local test target runs through here, including the two timing
+diagnostics that used to export the authorization themselves and call pytest
+directly. The reasons that authorize a broad run belong to
+`scripts.test_gate.broad_run`, which `tests/conftest.py` reads as well.
 """
 
 from __future__ import annotations
@@ -23,9 +28,11 @@ import time
 
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+from scripts.test_gate.broad_run import DIAGNOSTIC_ENV, DIAGNOSTIC_REASONS  # noqa: E402
+
 SUITES = ("focused", "test", "slow", "full")
-DIAGNOSTIC_REASONS = ("failure-reproduction", "performance-investigation")
-DIAGNOSTIC_ENV = "CORRIDOR_LOCAL_BROAD_REASON"
 
 
 class _Interrupted(BaseException):
@@ -231,7 +238,7 @@ def main(argv: list[str] | None = None) -> int:
             and arguments.diagnostic_reason is None):
         print(
             "Broad local testing requires --diagnostic-reason "
-            "failure-reproduction or performance-investigation. "
+            f"{' or '.join(DIAGNOSTIC_REASONS)}. "
             "Use make test-focused ARGS=\"tests/test_file.py\" during development; "
             "PR CI runs the full required proof.",
             file=sys.stderr,

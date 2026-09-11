@@ -132,8 +132,21 @@ def report_markdown(report: EvaluationReport) -> str:
     return "\n".join(lines) + "\n"
 
 
+_CONTRACT = """\
+Compare a PDF engine JSON artifact with the frozen page/cell gold contract.
+Holdout runs also require an explicit access log, actor, and reason; see
+gold/pdf/v1/README.md. This is the experiment runner, not a pytest alias:
+  make pdf-eval ARGS="evaluate --gold gold/pdf/v1/dataset.json --predictions=<run.json> --output-json=<metrics.json> --output-report=<metrics.md>"
+"""
+
+
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="corridor-pdf-eval")
+    parser = argparse.ArgumentParser(
+        prog="corridor-pdf-eval",
+        description=__doc__,
+        epilog=_CONTRACT,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     commands = parser.add_subparsers(dest="command", required=True)
     command = commands.add_parser("evaluate")
     command.add_argument("--gold", type=Path, required=True)

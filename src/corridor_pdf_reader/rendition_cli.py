@@ -110,8 +110,22 @@ def render_text(reading: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
+_CONTRACT = """\
+Print a stored Document Rendition as the reader sees it: pages, tables,
+cells with their semantics-tier IDs, text outside every table, clipped runs.
+The read runs in a PDFium-isolated child process (corridor_pdf_reader.execution).
+Address the rendition by content digest through the storage interface, or by path:
+  make pdf-reader-inspect ARGS="--sha256 <sha256> --pages 1 2"
+  make pdf-reader-inspect ARGS="--file corpus/files/<sha256>.pdf --json"
+"""
+
+
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser = argparse.ArgumentParser(
+        description=__doc__.split("\n\n")[0],
+        epilog=_CONTRACT,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--sha256", help="digest of a stored Document Rendition")
     source.add_argument("--file", type=Path, help="a PDF on disk, for a document that is not stored")

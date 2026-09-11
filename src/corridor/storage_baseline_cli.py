@@ -30,6 +30,16 @@ def _positive_int(value: str) -> int:
     return parsed
 
 
+_CONTRACT = """\
+Measure the known permanent copy chains on the current development corpus and
+freeze representative Report, release, and Extraction Run semantics. Optional
+exact row identities keep a rerun pinned as the database grows:
+  make storage-baseline ARGS="--report-run-id=1 --release-id=1 --extraction-run-id=1"
+Already-sealed representative outputs may be pinned by file when the current
+development database has no retained Report Run or Report Approved for Release.
+"""
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="storage-baseline",
@@ -37,6 +47,8 @@ def _parser() -> argparse.ArgumentParser:
             "Measure known permanent copy chains and freeze representative "
             "Report, release, and Extraction Run semantics."
         ),
+        epilog=_CONTRACT,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--report-run-id", type=_positive_int)

@@ -27,8 +27,19 @@ from corridor.retention import (
 )
 
 
+_CONTRACT = """\
+Plan first; execute requires the exact manifest digest. Holds and lifts are
+separate attributable commands through CORRIDOR_HUMAN_PRINCIPAL.
+"""
+
+
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="retention")
+    parser = argparse.ArgumentParser(
+        prog="retention",
+        description=__doc__,
+        epilog=_CONTRACT,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     commands = parser.add_subparsers(dest="command", required=True)
     plan = commands.add_parser("plan", help="persist and print a dry-run manifest")
     plan.add_argument("--as-of", required=True, type=datetime.fromisoformat)

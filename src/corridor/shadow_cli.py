@@ -64,7 +64,7 @@ def _write_export(path, output):
 
 
 def _parser():
-    parser = argparse.ArgumentParser(prog="shadow-processing")
+    parser = argparse.ArgumentParser(prog="shadow-processing", description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     for name in ("provision", "run", "export"):
         sub = commands.add_parser(name)

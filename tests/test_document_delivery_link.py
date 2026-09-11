@@ -23,6 +23,7 @@ from sqlalchemy import select
 
 from corridor import audit, email_intake, push_intake
 from corridor.config import settings
+from makefile_support import recipe as make_recipe
 from corridor.document_delivery_backfill import (
     CAPTURE_RECEIPT_RULE,
     INBOUND_MESSAGE_RULE,
@@ -595,13 +596,7 @@ def test_the_backfill_is_reachable_as_the_operator_command_it_is():
 
     from corridor import document_delivery_backfill
 
-    recipe = (
-        (Path(__file__).parents[1] / "Makefile")
-        .read_text(encoding="utf-8")
-        .split("\nlink-deliveries:\n", 1)[1]
-        .split("\n\n", 1)[0]
-    )
-    assert "python -m corridor.document_delivery_backfill" in recipe
+    assert "python -m corridor.document_delivery_backfill" in make_recipe("link-deliveries")
     assert callable(document_delivery_backfill.main)
     # Anything but the one documented invocation is a usage error, not a sweep.
     assert document_delivery_backfill.main(["sweep-everything"]) == 2

@@ -19,8 +19,21 @@ from corridor.db import WorkerSession
 from corridor.identity_audit import export
 
 
+_CONTRACT = """\
+The identity and authorization export (#531): every enrollment, sign-in,
+sign-out, designation change, and deprovisioning act, oldest first. Resume a
+previous export with the id it ended on; nothing else narrows it.
+  make identity-audit ARGS="--format=csv --after-id=9100"
+"""
+
+
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="identity-audit")
+    parser = argparse.ArgumentParser(
+        prog="identity-audit",
+        description=__doc__,
+        epilog=_CONTRACT,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument(
         "--format", choices=("json", "csv"), default="json", dest="fmt"
     )

@@ -128,8 +128,18 @@ def _candidates(engine) -> dict[str, int]:
     return {str(name): int(backends) for name, backends in rows}
 
 
+_CONTRACT = """\
+Dry run by default; --apply drops. Never touches the configured development
+database, a database with an open connection, or a name it does not recognise.
+"""
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        epilog=_CONTRACT,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument(
         "--apply",
         action="store_true",

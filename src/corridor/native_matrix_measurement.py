@@ -731,8 +731,27 @@ def replay_case(database, case: RetainedCase, configuration, output: Path) -> di
     }
 
 
+_CONTRACT = """\
+Offline native matrix mapping regression (#737). Verifies the seven retained
+answer manifests, all 20 measured 110-dpi images, source PDFs and machine CSVs;
+replays their raw structures through the actual adapter, commits only in a
+guarded disposable database, and compares every retained field/row decision
+separately from historical source_ref multiplicity matching. WSDOT 9540 is
+spent; this is not a new generalization score. No model/AWS calls or production
+selection. The local PostgreSQL 16 admin URL provisions and drops a new DB;
+the configured shared database is never migrated. Explicit experiment, not CI:
+  make native-matrix-replay ARGS="--output <new-dir> --postgres-admin-url <local-admin-url>"
+Or pass --postgres-admin-url-env CORRIDOR_MEASUREMENT_POSTGRES_URL.
+Optional --results-root relocates the same digest-pinned retained answer sets.
+"""
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        epilog=_CONTRACT,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument("--output", type=Path, required=True, help="new receipt directory")
     database_args = parser.add_mutually_exclusive_group(required=True)
     database_args.add_argument("--postgres-admin-url", help="local PostgreSQL 16 admin URL; only a new disposable database is migrated")

@@ -36,8 +36,21 @@ def required_environment(name: str) -> str:
     return value
 
 
+_CONTRACT = """\
+Separate PostgreSQL operations registry and external receipts (#656).
+Requires explicit role-specific URLs; never uses a default customer URL.
+  make control-plane ARGS="initialize"
+  make control-plane ARGS="register --file environment-registration.json"
+Full input/custody contract: docs/operations/customer-environments.md.
+"""
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        epilog=_CONTRACT,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser(
         "initialize", help="install only the separate control-plane schema"
