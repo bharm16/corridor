@@ -1,0 +1,18 @@
+{
+  "rule": "docs/history/scripts/ holds the exact bytes of a retired scripts/ file kept for what it records rather than for what it does. The copy is inert: it is never executed, never edited, and never returned to scripts/. Each one is listed below with where it came from, what generated it, and the limits of what it says. tests/test_architecture.py enforces both halves, so an archived file that is not registered, whose bytes no longer hash to their digest, or whose original path has come back, fails make check rather than drifting.",
+  "why_not_deleted": "A deleted file stays in git history, but history carries only the bytes: not the query that produced them, not the day it was run, and not the warning that the text in them is truncated. A reader who finds one of these sentences needs all three, because they are customer commitment text and read as authoritative when they are not. Keeping the bytes beside that record is the difference between evidence and a quotation with no provenance.",
+  "retained": {
+    "sh99-cohort-wizard.sh.txt": {
+      "original_path": "scripts/sh99-cohort-wizard.sh",
+      "sha256": "ee2aff8ea03746f0297438786a04cb14883e65750d334a4b6b5fb79d9c954007",
+      "added_in": "d932698e6a9d14115cc8a938e112463a5a15e275",
+      "retired_by": "#861",
+      "superseded_by": "docs/adr/0027-dependencies-enter-by-authorized-policy-when-revisions-agree-exactly.md",
+      "total_stages": 40,
+      "generated": "2026-08-07",
+      "provenance": "Generated 2026-08-07 from the live database; membership rule: a conflict enters if at least one commitment, slip, or closure event that references it carries a date.",
+      "provenance_quoted_from": "scripts/sh99-cohort-wizard.sh:184-186",
+      "not_ground_truth": "The sixty-five dated sentences its forty stages quote are display excerpts, truncated mid-word to fit a terminal line: '2025-01-13  LJA committed to obtain the updated cross section for PL45 at station 6723+30, aligned with the Ener' and '2025-01-13  LJA committed to provide updated cross sections and drainage information for the PL30 conflict affec' both end mid-word. They are the output of one query on one day, not a complete record and not independently verified: the dated commitment, slip and closure events the query read are the source of record, and each sentence is unique to this file only because truncation made it unique. Nothing here is ground truth, and none of it may be promoted into evaluation gold data, where a truncated excerpt would become an expected answer."
+    }
+  }
+}
