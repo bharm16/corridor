@@ -10,13 +10,11 @@ run through that frame against the disposable database.
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import text
 
-from corridor.config import settings
 from corridor.evidence_investigator_evaluation_cli import main as evaluation_main
 from corridor.evidence_investigator_cli import main as investigator_main
 from corridor.evidence_investigator_shadow_cli import main as shadow_main
@@ -27,18 +25,13 @@ from corridor.experimental_command import (
     run_json_command,
 )
 from corridor.experimental_database import ProductionDatabaseRefusal
-from corridor.m8_acceptance_database import provision_disposable_postgres
 from corridor.models import Project
 from corridor.receipts import ArtifactCollision
 
 
 @pytest.fixture(scope="module")
-def disposable_database():
-    with provision_disposable_postgres(
-        settings.database_url,
-        repo_root=Path(__file__).resolve().parents[1],
-        label="experimental_cli",
-    ) as database:
+def disposable_database(provision_isolated_database):
+    with provision_isolated_database("experimental_cli") as database:
         yield database
 
 

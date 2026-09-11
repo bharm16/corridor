@@ -37,6 +37,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import time
 from typing import Any, Callable
 from uuid import uuid4
 
@@ -137,7 +138,8 @@ def provision_disposable_postgres(
     repo_root: Path,
     label: str,
     migration_revision: str = "head",
-    reuse_migrated_template: bool = False,
+    reuse_migrated_template: bool = True,
+    template_database: str | None = None,
 ) -> Iterator[ProvisionedDatabase]:
     """Create, migrate to one revision, and destroy a guarded PostgreSQL database.
 
@@ -147,9 +149,25 @@ def provision_disposable_postgres(
     this module migrated to the requested revision, instead of replaying the
     same Alembic path for every database. Each revision gets a distinct
     template.
+
+    Copying is the default because replaying the chain costs three seconds
+    against a tenth of a second for the copy, and the callers that were paying
+    it wanted the schema, not the replay. A caller whose subject *is* the
+    migration -- a fresh-database contract, or a faked chain -- now asks for
+    the replay by passing ``False``.
+
+    ``template_database`` names a migrated database the caller already owns,
+    so a harness that migrated one schema for its whole run does not have this
+    module migrate a second one per process. The caller owns that database's
+    lifecycle; this module only copies it.
     """
 
     error_cls = DisposableDatabaseRefused
+    if template_database is not None and migration_revision != "head":
+        raise error_cls(
+            "a caller-owned template carries the revision it was migrated to; "
+            "a historical revision needs its own migration"
+        )
     parsed = make_url(admin_url)
     if parsed.get_backend_name() != "postgresql":
         raise error_cls("a disposable database requires PostgreSQL")
@@ -161,7 +179,7 @@ def provision_disposable_postgres(
         poolclass=NullPool,
         future=True,
     )
-    uses_template = reuse_migrated_template
+    uses_template = reuse_migrated_template and template_database is None
     database_name = disposable_database_name(label)
     database_created = False
     database_engine = None
@@ -174,7 +192,7 @@ def provision_disposable_postgres(
             error_cls=error_cls,
             target=_url_target(parsed),
         )
-        template_name: str | None = None
+        template_name: str | None = template_database
         if uses_template:
             template_name = _ensure_migrated_template(
                 admin_engine,
@@ -184,17 +202,17 @@ def provision_disposable_postgres(
                 label=label,
                 migration_revision=migration_revision,
             )
-        with admin_engine.connect() as connection:
-            if template_name is None:
+        if template_name is None:
+            with admin_engine.connect() as connection:
                 connection.execute(text(f'create database "{database_name}"'))
-            else:
-                connection.execute(
-                    text(
-                        f'create database "{database_name}" '
-                        f'template "{template_name}"'
-                    )
-                )
-            database_created = True
+        else:
+            _copy_migrated_template(
+                admin_engine,
+                template_name,
+                database_name,
+                error_cls=error_cls,
+            )
+        database_created = True
         database_url = parsed.set(database=database_name)
         if template_name is None:
             apply_schema_migrations(
@@ -330,7 +348,44 @@ def read_migration_head(
 
 _TEMPLATE_LABEL = "migrated_template"
 _TEMPLATE_PREFIX = disposable_database_prefix(_TEMPLATE_LABEL)
+_TEMPLATE_COPY_ATTEMPTS = 30
+_TEMPLATE_COPY_PAUSE_SECONDS = 0.2
 _migrated_templates: dict[tuple[str, str], str] = {}
+
+
+def _copy_migrated_template(
+    admin_engine,
+    template_name: str,
+    database_name: str,
+    *,
+    error_cls: type[Exception],
+) -> None:
+    """Copy a migrated template, waiting out another copier that holds it.
+
+    PostgreSQL refuses to copy a database another session is connected to. A
+    per-process template is only ever copied by the process that made it, but
+    a template the caller owns is shared by construction -- every xdist worker
+    copies the one schema its run migrated -- so the collision is expected and
+    brief. ``tests/conftest.py`` has always waited it out when copying its own
+    worker databases from that same template.
+    """
+
+    for _ in range(_TEMPLATE_COPY_ATTEMPTS):
+        with admin_engine.connect() as connection:
+            try:
+                connection.execute(
+                    text(
+                        f'create database "{database_name}" '
+                        f'template "{template_name}"'
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001 - narrowed immediately
+                if "being accessed by other users" not in str(exc):
+                    raise
+            else:
+                return
+        time.sleep(_TEMPLATE_COPY_PAUSE_SECONDS)
+    raise error_cls(f"migrated template {template_name!r} stayed busy")
 
 
 def _ensure_migrated_template(

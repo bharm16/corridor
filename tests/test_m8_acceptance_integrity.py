@@ -225,6 +225,146 @@ def test_reusable_template_cache_separates_migration_revisions(monkeypatch):
     assert repeated_head_template == head_template
 
 
+def test_a_caller_owned_template_is_copied_without_migrating_another(monkeypatch):
+    """The pytest harness migrates one schema per run and hands it over here.
+
+    Without this, the harness's template and this module's per-process template
+    were two migrated copies of the same schema, and neither could see the
+    other.
+    """
+
+    database_name = acceptance_database.disposable_database_name(DATABASE_LABEL)
+    monkeypatch.setattr(
+        acceptance_database,
+        "disposable_database_name",
+        lambda _label: database_name,
+    )
+    monkeypatch.setattr(
+        acceptance_database,
+        "_ensure_migrated_template",
+        lambda *_args, **_kwargs: pytest.fail("a second template was migrated"),
+    )
+    monkeypatch.setattr(
+        acceptance_database,
+        "apply_schema_migrations",
+        lambda *_args, **_kwargs: pytest.fail("a copied schema was migrated again"),
+    )
+    copied = []
+    monkeypatch.setattr(
+        acceptance_database,
+        "_copy_migrated_template",
+        lambda _engine, template, name, **_kwargs: copied.append((template, name)),
+    )
+    monkeypatch.setattr(
+        acceptance_database,
+        "read_migration_head",
+        lambda *_args, **_kwargs: "test-head",
+    )
+    monkeypatch.setattr(
+        acceptance_database,
+        "require_experimental_database",
+        lambda *_args, **_kwargs: None,
+    )
+
+    with acceptance_database.provision_disposable_postgres(
+        settings.database_url,
+        repo_root=REPO_ROOT,
+        label=DATABASE_LABEL,
+        template_database="corridor_pytest_101_deadbeef_tmpl",
+    ) as provisioned:
+        assert provisioned.name == database_name
+
+    assert copied == [("corridor_pytest_101_deadbeef_tmpl", database_name)]
+
+
+def test_a_caller_owned_template_refuses_a_revision_it_cannot_prove(monkeypatch):
+    """A template carries the revision it was migrated to, and says nothing more."""
+
+    monkeypatch.setattr(
+        acceptance_database,
+        "disposable_database_name",
+        lambda _label: pytest.fail("the refusal must precede naming a database"),
+    )
+
+    with pytest.raises(
+        acceptance_database.DisposableDatabaseRefused,
+        match="historical revision needs its own migration",
+    ):
+        with acceptance_database.provision_disposable_postgres(
+            settings.database_url,
+            repo_root=REPO_ROOT,
+            label=DATABASE_LABEL,
+            migration_revision="b4d1e2f3a5c6",
+            template_database="corridor_pytest_101_deadbeef_tmpl",
+        ):
+            raise AssertionError("the refusal must precede the yield")
+
+
+def test_a_template_another_worker_is_copying_is_waited_out(monkeypatch):
+    """One template shared across xdist workers is contended by construction.
+
+    A per-process template is only ever copied by the process that made it, so
+    this collision first became reachable when the harness started handing its
+    own run template over.
+    """
+
+    monkeypatch.setattr(acceptance_database.time, "sleep", lambda _seconds: None)
+    busy = _BusyTemplateEngine(busy_attempts=2)
+
+    acceptance_database._copy_migrated_template(
+        busy, "shared_tmpl", "copy_name", error_cls=AcceptanceError
+    )
+
+    assert busy.attempts == 3
+
+    exhausted = _BusyTemplateEngine(busy_attempts=1_000)
+    with pytest.raises(AcceptanceError, match="stayed busy"):
+        acceptance_database._copy_migrated_template(
+            exhausted, "shared_tmpl", "copy_name", error_cls=AcceptanceError
+        )
+    assert exhausted.attempts == acceptance_database._TEMPLATE_COPY_ATTEMPTS
+
+    failing = _BusyTemplateEngine(busy_attempts=0, error="permission denied")
+    with pytest.raises(RuntimeError, match="permission denied"):
+        acceptance_database._copy_migrated_template(
+            failing, "shared_tmpl", "copy_name", error_cls=AcceptanceError
+        )
+    assert failing.attempts == 1
+
+
+class _BusyTemplateEngine:
+    """An admin engine whose first ``busy_attempts`` copies find the template held."""
+
+    def __init__(self, *, busy_attempts, error=None):
+        self.attempts = 0
+        self._busy_attempts = busy_attempts
+        self._error = error
+
+    def connect(self):
+        self.attempts += 1
+        busy = self.attempts <= self._busy_attempts
+        return _BusyTemplateConnection(
+            self._error
+            or ("source database is being accessed by other users" if busy else None)
+        )
+
+
+class _BusyTemplateConnection:
+    def __init__(self, error):
+        self._error = error
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+    def execute(self, _statement, _parameters=None):
+        if self._error is not None:
+            raise RuntimeError(self._error)
+        return None
+
+
 class _TemplateAdminEngine:
     def connect(self):
         return _TemplateAdminConnection()
@@ -265,6 +405,7 @@ def test_disposable_database_is_dropped_when_migration_fails(monkeypatch):
                 settings.database_url,
                 repo_root=REPO_ROOT,
                 label=DATABASE_LABEL,
+                reuse_migrated_template=False,
             ):
                 raise AssertionError("migration failure must precede yield")
         assert not _database_exists(database_name)
@@ -297,6 +438,7 @@ def test_migration_head_is_read_from_the_disposable_database(monkeypatch):
             settings.database_url,
             repo_root=REPO_ROOT,
             label=DATABASE_LABEL,
+            reuse_migrated_template=False,
         ) as provisioned:
             assert provisioned.name == database_name
             assert provisioned.migration_head == "test-head"
@@ -337,6 +479,7 @@ def test_disposable_provisioning_applies_the_production_database_guard(monkeypat
             settings.database_url,
             repo_root=REPO_ROOT,
             label=DATABASE_LABEL,
+            reuse_migrated_template=False,
         ) as provisioned:
             assert provisioned.name == database_name
         assert seen == [(database_name, True)]

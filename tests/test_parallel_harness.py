@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.engine import Engine, make_url
+from sqlalchemy.pool import NullPool
 
 import conftest as harness
 from corridor.db import engine
@@ -553,3 +554,82 @@ def test_provisioning_re_entered_by_its_own_migration_refuses_instead_of_hanging
     assert state.failed is True
     assert state._provisioning_thread is None
     assert ("migrate", f"corridor_pytest_{RUN_ID}_gw0") in calls
+
+
+def _provisioned_url(database) -> str:
+    return database.session_factory.kw["bind"].url.render_as_string(
+        hide_password=False
+    )
+
+
+def _schema_census(database_url: str) -> list[tuple[str, str, str]]:
+    """Every public relation in one database, and the columns on each."""
+
+    probe = create_engine(database_url, poolclass=NullPool)
+    try:
+        with probe.connect() as connection:
+            return [
+                tuple(row)
+                for row in connection.execute(
+                    text(
+                        "select c.relkind, c.relname, coalesce(a.attname, '') "
+                        "from pg_class c "
+                        "join pg_namespace n on n.oid = c.relnamespace "
+                        "left join pg_attribute a on a.attrelid = c.oid "
+                        "  and a.attnum > 0 and not a.attisdropped "
+                        "where n.nspname = 'public' "
+                        "  and c.relkind in ('r', 'p', 'v', 'm', 'S', 'f', 'i') "
+                        "order by 1, 2, 3"
+                    )
+                )
+            ]
+    finally:
+        probe.dispose()
+
+
+@pytest.mark.slow
+def test_an_isolated_database_carries_the_schema_a_replay_would_have_built(
+    provision_isolated_database, monkeypatch
+):
+    """A copied schema is the migrated schema, and an asked-for replay still replays.
+
+    Every isolated-database fixture now takes a copy of the one template this
+    run migrated, so a copy that silently lost a relation would leave those
+    fixtures testing a schema nothing else in the suite has. The census is
+    taken from a copied database and from one that `reuse_migrated_template=
+    False` actually migrated; the recorded Alembic calls prove which database
+    each of the two paths ran the chain against.
+    """
+
+    import corridor.m8_acceptance_database as acceptance_database
+    from corridor.config import settings
+
+    # Whichever template is in play -- this run's, or the per-process one a
+    # serial pytest builds instead -- exists before the recorder is installed.
+    with provision_isolated_database("harness_copy_warm"):
+        pass
+
+    replayed = []
+    real_migration = acceptance_database.apply_schema_migrations
+
+    def record(database_url, **kwargs):
+        replayed.append(make_url(str(database_url)).database)
+        return real_migration(database_url, **kwargs)
+
+    monkeypatch.setattr(acceptance_database, "apply_schema_migrations", record)
+
+    with provision_isolated_database("harness_copy_proof") as copied:
+        assert replayed == []
+        copied_census = _schema_census(_provisioned_url(copied))
+
+    with acceptance_database.provision_disposable_postgres(
+        settings.database_url,
+        repo_root=harness.ROOT,
+        label="harness_replay_proof",
+        reuse_migrated_template=False,
+    ) as migrated:
+        assert replayed == [migrated.name]
+        migrated_census = _schema_census(_provisioned_url(migrated))
+
+    assert ("r", "projects", "slug") in copied_census
+    assert copied_census == migrated_census

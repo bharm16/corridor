@@ -20,7 +20,6 @@ import hashlib
 import json
 from copy import deepcopy
 from datetime import date
-from pathlib import Path
 from threading import Event
 from uuid import uuid4
 
@@ -89,7 +88,6 @@ from corridor.models import (
     PolicyRun,
     Project,
 )
-from corridor.m8_acceptance_database import provision_disposable_postgres
 from corridor.principals import HumanPrincipal, InvalidHumanPrincipal
 
 OPERATOR = HumanPrincipal("local:event-admission-operator")
@@ -98,14 +96,10 @@ PROJECT_SIDE = "LJA"
 
 
 @pytest.fixture(scope="module")
-def event_admission_isolated_database():
+def event_admission_isolated_database(provision_isolated_database):
     """One migrated disposable database for cross-session and replay proofs."""
 
-    with provision_disposable_postgres(
-        settings.database_url,
-        repo_root=Path(__file__).resolve().parents[1],
-        label="event_admission_race",
-    ) as database:
+    with provision_isolated_database("event_admission_race") as database:
         yield database
 
 

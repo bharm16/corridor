@@ -3,14 +3,11 @@
 from __future__ import annotations
 
 import hashlib
-from pathlib import Path
 
 import pytest
 from sqlalchemy import select
 
-from corridor.config import settings
 from corridor.db import Session
-from corridor.m8_acceptance_database import provision_disposable_postgres
 from corridor.models import (
     Candidate,
     Dependency,
@@ -41,7 +38,7 @@ ALICE = HumanPrincipal("local:identity-alice")
 
 
 @pytest.fixture(scope="module")
-def identity_isolated_database():
+def identity_isolated_database(provision_isolated_database):
     """One migrated disposable database for the identity registry proofs.
 
     These tests resolve and count identities registry-wide (ADR-0051), so a
@@ -52,11 +49,7 @@ def identity_isolated_database():
     event-admission cross-session fixture.
     """
 
-    with provision_disposable_postgres(
-        settings.database_url,
-        repo_root=Path(__file__).resolve().parents[1],
-        label="organization_identity",
-    ) as database:
+    with provision_isolated_database("organization_identity") as database:
         yield database
 
 

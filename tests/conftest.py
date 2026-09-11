@@ -8,6 +8,10 @@ tests never contact PostgreSQL, even when xdist is enabled. Serial pytest
 runs continue to use the configured development database. The shared-corpus
 fixture also preserves that database; only an explicitly disposable empty CI
 source uses a separate empty clone of the same migrated template.
+
+That template is also the one schema every isolated-database fixture copies,
+through `provision_isolated_database`. Alembic therefore runs once per run
+rather than once per fixture that wanted a database of its own.
 """
 
 from __future__ import annotations
@@ -508,31 +512,70 @@ def project(session):
     return synthetic_project(session)
 
 
-@pytest.fixture
-def runtime_database():
-    """Harness-owned migrated database for real competing Due Work transactions."""
+def _harness_migrated_template(config) -> str | None:
+    """The schema this run has already migrated, for a fixture to copy.
+
+    The coordinated harness publishes exactly one migrated template per run,
+    behind the cross-process file lock, and every worker database is a copy of
+    it. Handing that same template to the disposable-database provisioner is
+    what keeps one Alembic subprocess per *run* from becoming one per process
+    and one more per isolated-database fixture. Without the coordinated harness
+    -- a serial pytest process, or the migration cases that own their own
+    databases -- there is nothing published yet, and `m8_acceptance_database`
+    migrates one template for the process instead.
+    """
+
+    state = getattr(config, "_corridor_pytest_database", None)
+    if state is None or state.coordination is None or not state.template:
+        return None
+    return state.ensure_template()
+
+
+@pytest.fixture(scope="session")
+def provision_isolated_database(request):
+    """Provision one disposable database carrying this run's migrated schema.
+
+    Every isolated-database fixture used to call
+    `provision_disposable_postgres` itself and take the replay-the-chain
+    default it had then, so an Alembic subprocess ran once per fixture for a
+    schema the run had already built -- measured at 3.0s against 0.13s for the
+    copy. The harness is the one that knows a migrated template exists, so the
+    template lives here and each fixture asks this seam for a copy of it.
+    """
 
     from corridor.config import settings
     from corridor.m8_acceptance_database import provision_disposable_postgres
 
-    with provision_disposable_postgres(
-        settings.database_url,
-        repo_root=ROOT,
-        label="due_work_test",
-        reuse_migrated_template=True,
-    ) as database:
+    template = _harness_migrated_template(request.config)
+
+    @contextmanager
+    def provision(label: str):
+        with provision_disposable_postgres(
+            settings.database_url,
+            repo_root=ROOT,
+            label=label,
+            template_database=template,
+        ) as database:
+            yield database
+
+    return provision
+
+
+@pytest.fixture
+def runtime_database(provision_isolated_database):
+    """Harness-owned migrated database for real competing Due Work transactions."""
+
+    with provision_isolated_database("due_work_test") as database:
         yield database
 
 
 @pytest.fixture(scope="module")
-def customer_environment_databases():
+def customer_environment_databases(provision_isolated_database):
     """Two customer databases and an independently removable control-plane DB.
 
     Only this harness provisions databases. Exiting a customer context performs
     the actual DROP DATABASE used by the external-custody proof (#656).
     """
-    from corridor.m8_acceptance_database import provision_disposable_postgres
-
     source = _configured_database_url()
     admin = _validated_admin_url(source).set(database="postgres")
     name = f"{DATABASE_PREFIX}{new_worker_run_id()}_gw0"
@@ -541,10 +584,7 @@ def customer_environment_databases():
 
     @contextmanager
     def customer():
-        with provision_disposable_postgres(
-            source, repo_root=ROOT,
-            label="customer_test", reuse_migrated_template=True,
-        ) as database:
+        with provision_isolated_database("customer_test") as database:
             yield database
 
     try:
