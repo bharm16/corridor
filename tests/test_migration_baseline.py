@@ -132,7 +132,19 @@ EXPECTED_SCHEMA_SHA256 = (
     # Four relations and four sequences, their five commands, the guard that
     # refuses every other write, and #839's designation trigger on the act.
     # Recomputed against a fresh disposable database with template reuse off.
-    "4a02e5d8ced2dcccb78f092697d6a8f7ce2f2efaeda0210c7e1fde327ca51c83"
+    # #886 adds the versioned set of authorized source bindings a project may
+    # take delivery on: `project_source_authorizations`, one recorded version
+    # with the governing customer authorization it was issued under and the
+    # digest the command derives from its bindings, and
+    # `project_source_authorization_bindings`, the set itself -- channel,
+    # configuration identity and version, permitted source classes and
+    # authentication mode, several rows free to name one channel. Two relations
+    # and two sequences, their two commands, the guard that refuses every other
+    # write, and a partition policy each. The activation configuration's single
+    # `source_channel` / `source_configuration` pair is gone, which is why a
+    # product upload was refused on a mailbox-activated deployment. Recomputed
+    # against a fresh disposable database with template reuse off.
+    "304b1b4327d794375293a5524f050d31478343ede05878ae8ab59775f0d64916"
 )
 
 pytestmark = [pytest.mark.slow, pytest.mark.migration]
@@ -259,6 +271,7 @@ COMPOSED_UPGRADE = (
     "follow_up_plan_closure",
     "capture_correction",
     "onboarding_authorization",
+    "source_authorization",
     # The sibling transitions this revision has always carried at the end, and
     # the PUBLIC sweep that runs last of all because it reads the catalog every
     # block above has finished writing.
@@ -283,6 +296,7 @@ COMPOSED_DOWNGRADE = (
     "minutes_spine",
     "project_contacts",
     "email_spine",
+    "source_authorization",
     "onboarding_authorization",
     "capture_correction",
     "follow_up_plan_closure",

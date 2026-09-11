@@ -17,7 +17,8 @@ NOW = datetime(2026, 9, 9, tzinfo=timezone.utc)
 
 @pytest.fixture
 def configuration():
-    return ActivationConfiguration("fixture-env", "fixture-customer", 1, "ucm-v1", "manual-upload",
+    return ActivationConfiguration("fixture-env", "fixture-customer", 1,
+        "fixture-source-authorization", 1, "c" * 64,
         511, 606, "us-east-2", "code-1", "db-1", "image-1", "governance-1", "security-1",
         "a" * 64, "true", "corridor_web", route_manifest_digest(), "fixture-deployment")
 
@@ -73,7 +74,24 @@ def test_successful_revision_replays_and_configuration_change_disables_it(tmp_pa
     assert processing_authorized(configuration, receipt)
     assert not processing_authorized(replace(configuration, security_revision="security-2"), receipt)
     with pytest.raises(ActivationRefused, match="stale"):
-        activate(replace(configuration, source_configuration="ucm-v2"), **kwargs)
+        activate(replace(configuration, source_authorization_version=2), **kwargs)
+
+
+@pytest.mark.parametrize("change", [{"source_authorization_version": 0},
+    {"source_authorization_sha256": "not-a-digest"}, {"source_authorization_identity": ""}])
+def test_activation_names_one_recorded_source_authorization(tmp_path, configuration, change):
+    """The delivery gate compares against a recorded set (#886), so name it exactly.
+
+    An activation that cannot say which version of the project's authorized
+    source bindings it was activated against has nothing for
+    `require_source_delivery` to hold the database to, which is the one thing
+    that stops a set changed after activation from passing unnoticed.
+    """
+    config = replace(configuration, **change)
+    with pytest.raises(ActivationRefused, match="source authorization|every configuration"):
+        activate(config, evidence=evidence(tmp_path, config), operator="local:operator",
+            revision="one", custody=tmp_path / "custody", now=NOW)
+    assert not (tmp_path / "custody").exists()
 
 
 @pytest.mark.parametrize("gate", sorted(BASE_GATES))

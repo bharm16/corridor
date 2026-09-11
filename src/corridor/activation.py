@@ -50,8 +50,18 @@ class ActivationConfiguration:
     environment: str
     customer: str
     project_id: int
-    source_configuration: str
-    source_channel: str
+    # Which recorded version of this project's authorized source bindings the
+    # deployment was activated against (#886). The enumeration itself lives in
+    # the customer database, where it can be versioned, withdrawn and read back
+    # as history; these three values are the receipt's binding to it, so a set
+    # changed there without a new activation revision stops source deliveries
+    # instead of passing unnoticed. They replace the single
+    # `source_configuration` / `source_channel` pair, which could name one
+    # channel and so refused a valid product upload on a mailbox-activated
+    # deployment.
+    source_authorization_identity: str
+    source_authorization_version: int
+    source_authorization_sha256: str
     ingress_issue: int
     source_class_issue: int
     data_region: str
@@ -65,7 +75,6 @@ class ActivationConfiguration:
     boundary_role: str
     boundary_route_digest: str
     deployment_id: str
-    source_configuration_version: str = ""
     model_provider_posture: str = "deterministic-no-model"
     processes_pdf: bool = False
     pulls_source: bool = False
@@ -201,9 +210,15 @@ def validate_activation_evidence(configuration: ActivationConfiguration, *,
     now = now or datetime.now(timezone.utc)
     values = asdict(configuration)
     if now.tzinfo is None or not operator or not revision or not all(
-        value for key, value in values.items() if key not in {"processes_pdf", "pulls_source", "source_configuration_version"}
+        value for key, value in values.items() if key not in {"processes_pdf", "pulls_source"}
     ):
         raise ActivationRefused("activation must identify every configuration, operator and revision")
+    # The authorized source set is a recorded version with a digest the
+    # database derived (#886); an activation that cannot name one exactly is
+    # an activation whose delivery gate has nothing to compare against.
+    if (configuration.source_authorization_version < 1
+            or not digests.is_digest(configuration.source_authorization_sha256)):
+        raise ActivationRefused("activation must name one recorded source authorization version and its digest")
     if configuration.boundary_mode not in {"true", "1", "yes", "on"} or configuration.boundary_role != WEB_CAPABILITY_LOGIN:
         raise ActivationRefused("live pilot web boundary is disabled or uses the wrong role")
     if configuration.boundary_route_digest != route_manifest_digest():

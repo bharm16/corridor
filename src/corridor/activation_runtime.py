@@ -120,7 +120,25 @@ def require_source_project(session, project_id):
 
 
 def require_source_delivery(session, binding):
-    """Before reading/storing a newly delivered source, bind exact ingress scope."""
+    """Before reading/storing a newly delivered source, bind exact ingress scope.
+
+    The selection this compares against is a **recorded set** (#886), not the
+    single channel/configuration pair the activation configuration used to
+    carry. One pair is one channel, so a deployment activated for a project
+    alias refused a product upload -- a delivery ADR-0058 keeps as the explicit
+    fallback and #823 made a canonical member of the delivery family. The
+    repair is not an exception for that channel: every binding, the upload
+    included, is authorized by name in `project_source_authorizations` or the
+    delivery is refused.
+
+    So the customer and the project are still refused here, before any SQL runs
+    and before any byte reaches storage. Whether the delivery's own selection is
+    authorized is a database question, for the same reason `require_source_project`
+    already asks one: an authorization that can be versioned, withdrawn and read
+    back as history is a record, not a file this process happens to hold, and a
+    queued delivery must be answered by the set in force when it is processed
+    rather than by the set that was in force when it arrived.
+    """
     data_class = runtime_data_class()
     if data_class in {"local", "synthetic"}:
         return
@@ -136,11 +154,46 @@ def require_source_delivery(session, binding):
         # exist. The project binding is still proved, by the same grant.
         return
     configuration = current_activation()
-    if (binding.customer, binding.project_id, binding.channel, binding.configuration_identity,
-        binding.configuration_version) != (configuration.customer, configuration.project_id,
-        configuration.source_channel, configuration.source_configuration, configuration.source_configuration_version):
-        raise RouteRefused("delivery source selection differs from activation")
+    if (binding.customer, binding.project_id) != (configuration.customer, configuration.project_id):
+        raise RouteRefused("delivery source selection is outside the activated customer or project")
     require_source_project(session, binding.project_id)
+    _require_authorized_source_binding(session, configuration, binding)
+
+
+def _require_authorized_source_binding(session, configuration, binding):
+    """The recorded set decides; the receipt says which version may decide.
+
+    Two different refusals, kept apart because an operator acts on them
+    differently: the database has no authorization for this delivery's
+    selection, or it has one the deployment was not activated against. The
+    second is what a queued delivery meets after somebody records a new
+    version -- the record moved on, the receipt did not, and new processing
+    stops until an activation revision says otherwise. Neither erases anything
+    the previous version admitted.
+    """
+    from corridor.source_authorization import authentication_mode_of, source_binding_standing
+
+    standing = source_binding_standing(
+        session,
+        project_id=binding.project_id,
+        customer=binding.customer,
+        channel=binding.channel,
+        configuration_identity=binding.configuration_identity,
+        configuration_version=binding.configuration_version,
+        authentication_mode=authentication_mode_of(binding),
+    )
+    if not standing.recorded:
+        raise RouteRefused("delivery source selection is not authorized: no_source_authorization")
+    activated = (configuration.source_authorization_identity,
+        configuration.source_authorization_version, configuration.source_authorization_sha256)
+    if (standing.authorization_identity, standing.authorization_version,
+            standing.binding_set_sha256) != activated:
+        superseded = standing.authorization_version > configuration.source_authorization_version
+        raise RouteRefused("delivery source selection is not authorized: "
+            + ("source_authorization_superseded" if superseded
+               else "source_authorization_differs_from_activation"))
+    if not standing.permitted:
+        raise RouteRefused(f"delivery source selection is not authorized: {standing.reason}")
 
 
 @contextmanager
@@ -193,13 +246,22 @@ def limited_onboarding_authorization(session, *, project_id, operation, at):
 
 
 class SourceDeliveryScope(Protocol):
-    """The existing delivery binding's neutral activation contract."""
+    """The existing delivery binding's neutral activation contract.
+
+    `transport` and `credential_id` are here because the authorized set names
+    the authentication mode each binding permits (#886), and that mode is read
+    off the delivery rather than asserted beside it: a pull authenticates
+    neither way, and a push names exactly one of the two things that can
+    authenticate it.
+    """
     customer: str
     project_id: int
     project_slug: str
+    transport: str
     channel: str
     configuration_identity: str
     configuration_version: str
+    credential_id: int | None
 
 
 @dataclass(frozen=True)

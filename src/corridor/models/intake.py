@@ -43,6 +43,9 @@ __all__ = [
     "InboundRouteTriage",
     "InboundThread",
     "InboundThreadReading",
+    "AUTHENTICATION_MODES",
+    "ProjectSourceAuthorization",
+    "ProjectSourceAuthorizationBinding",
     "PushIntakeCredential",
     "SOURCE_FETCH_OUTCOMES",
     "SourceDelivery",
@@ -100,6 +103,184 @@ class PushIntakeCredential(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+
+
+#: How the transport that carried a delivery authenticated it (#823, #886).
+#: A pulled delivery is bound by its connector configuration and authenticates
+#: neither way; a pushed one names a machine credential or the signed-in person
+#: who handed the bytes over.  An authorized source binding names which of the
+#: three applies to it, so a configuration authorized for a machine is not also
+#: authorized for whoever can sign in.
+AUTHENTICATION_MODES = (
+    "connector_configuration",
+    "machine_credential",
+    "human_principal",
+)
+
+
+class ProjectSourceAuthorization(Base):
+    """One recorded version of the source bindings a project may be delivered on (#886).
+
+    The activation configuration named one ``source_channel`` and one
+    ``source_configuration``, and ``require_source_delivery`` compared a
+    delivery against that pair.  One pair is one channel, so a deployment
+    activated for a project alias refused a product upload -- a delivery the
+    database itself accepts, and the explicit fallback ADR-0058 keeps.  What
+    replaces the pair is this: a versioned set, recorded per project, whose
+    every member is there because somebody authorized it.  Manual upload is in
+    the set or it is not delivered; it is never a special case beside the
+    comparison.
+
+    Immutable and versioned, exactly as ``project_onboarding_grants`` is
+    (#827), and for the same reasons.  Widening, narrowing or withdrawing the
+    set is a new row at a higher ``authorization_version``, attributed to the
+    actor who issued it and the actor who recorded it; the predecessor and its
+    bindings stay exactly as recorded, so a delivery taken last week can still
+    be read against the terms that admitted it.  A version whose set is empty
+    is how every binding is withdrawn at once, which is why there is no
+    ``revoked`` column and no event relation: what stops is new processing, and
+    what remains is history.
+
+    ``governing_authorization_identity`` and ``governing_authorization_version``
+    are the same two columns the onboarding grant carries, so the one customer
+    authorization both records are issued under is named the same way by both
+    rather than in two formats.
+
+    ``binding_set_sha256`` is derived by ``record_project_source_authorization``
+    from the rows it writes and is never recomputed here: one canonical form,
+    stated in the migration family, with no Python sibling that could disagree.
+    The activation receipt carries this digest, so a set changed in the
+    database without a new activation revision stops source deliveries rather
+    than passing unnoticed.
+    """
+
+    __tablename__ = "project_source_authorizations"
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id", "id", name="uq_project_source_authorizations_project_id"
+        ),
+        UniqueConstraint(
+            "project_id",
+            "authorization_identity",
+            "authorization_version",
+            name="uq_project_source_authorizations_version",
+        ),
+        CheckConstraint(
+            "authorization_version >= 1",
+            name="ck_project_source_authorizations_version",
+        ),
+        CheckConstraint(
+            "binding_set_sha256 ~ '^[0-9a-f]{64}$'",
+            name="ck_project_source_authorizations_digest",
+        ),
+        CheckConstraint(
+            "length(btrim(authorization_identity)) > 0 "
+            "and length(btrim(customer)) > 0 "
+            "and length(btrim(environment)) > 0 "
+            "and length(btrim(governing_authorization_identity)) > 0 "
+            "and length(btrim(governing_authorization_version)) > 0 "
+            "and length(btrim(issued_by_actor)) > 0 "
+            "and length(btrim(recorded_by_actor)) > 0",
+            name="ck_project_source_authorizations_actors",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    authorization_identity: Mapped[str] = mapped_column(String(128))
+    authorization_version: Mapped[int] = mapped_column(Integer)
+    customer: Mapped[str] = mapped_column(String(128))
+    environment: Mapped[str] = mapped_column(String(128))
+    governing_authorization_identity: Mapped[str] = mapped_column(String(128))
+    governing_authorization_version: Mapped[str] = mapped_column(String(64))
+    binding_set_sha256: Mapped[str] = mapped_column(String(64))
+    issued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    issued_by_actor: Mapped[str] = mapped_column(String(128))
+    recorded_by_actor: Mapped[str] = mapped_column(String(128))
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class ProjectSourceAuthorizationBinding(Base):
+    """One authorized way a source may be delivered to this project (#886).
+
+    The five things an authorized binding names, which are the five facts a
+    delivery either matches or does not: the ``channel``, the
+    ``configuration_identity`` and ``configuration_version`` that carried it,
+    the source classes that binding permits, and the ``authentication_mode``
+    the transport must have used.
+
+    Several rows may name the same ``channel``: two folders on one connector,
+    or two aliases into one project, are two configurations of one channel and
+    each is authorized on its own terms.  The key is therefore the whole
+    ``(channel, configuration_identity, configuration_version)`` triple, which
+    is exactly what a ``DeliveryBinding`` carries, so an unknown configuration,
+    a removed one and a changed version are three different rows missing rather
+    than one comparison failing.
+
+    ``permitted_source_classes`` records what this binding is authorized to
+    carry and is covered by the version's digest.  It is not compared against a
+    delivery: a delivery carries no source class, and inventing one so this
+    column could be compared would put a guess in the ledger.
+    """
+
+    __tablename__ = "project_source_authorization_bindings"
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id",
+            "id",
+            name="uq_project_source_authorization_bindings_project_id",
+        ),
+        # The authorization is named with its project, so a binding recorded in
+        # one project can never join another customer's authorization (#675).
+        ForeignKeyConstraint(
+            ["project_id", "authorization_id"],
+            [
+                "project_source_authorizations.project_id",
+                "project_source_authorizations.id",
+            ],
+            name="fk_project_source_authorization_bindings_authorization",
+        ),
+        UniqueConstraint(
+            "authorization_id",
+            "channel",
+            "configuration_identity",
+            "configuration_version",
+            name="uq_project_source_authorization_bindings_selection",
+        ),
+        CheckConstraint(
+            "length(btrim(channel)) > 0 "
+            "and length(btrim(configuration_identity)) > 0",
+            name="ck_project_source_authorization_bindings_selection",
+        ),
+        CheckConstraint(
+            "authentication_mode in ('connector_configuration', "
+            "'machine_credential', 'human_principal')",
+            name="ck_project_source_authorization_bindings_mode",
+        ),
+        CheckConstraint(
+            "array_length(permitted_source_classes, 1) >= 1 "
+            "and array_position(permitted_source_classes, null) is null "
+            "and array_position(permitted_source_classes, '') is null",
+            name="ck_project_source_authorization_bindings_classes",
+        ),
+        Index(
+            "ix_project_source_authorization_bindings_authorization_id",
+            "authorization_id",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(BigInteger)
+    authorization_id: Mapped[int] = mapped_column(BigInteger)
+    channel: Mapped[str] = mapped_column(String(32))
+    configuration_identity: Mapped[str] = mapped_column(Text)
+    configuration_version: Mapped[str] = mapped_column(
+        Text, default="", server_default=""
+    )
+    permitted_source_classes: Mapped[list[str]] = mapped_column(ARRAY(Text))
+    authentication_mode: Mapped[str] = mapped_column(String(32))
 
 
 class SourceDelivery(Base):
