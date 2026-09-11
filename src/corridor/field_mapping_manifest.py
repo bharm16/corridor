@@ -659,6 +659,45 @@ def declared_field_mapping(
     return manifest
 
 
+def combined_range_mapping(
+    reading: OperationsReading,
+    fields: Sequence[str],
+    *,
+    delimiter: str = DEFAULT_RANGE_DELIMITER,
+) -> MaterialMapping:
+    """Declare that one range pair is carried as one combined column (#829).
+
+    The declaration a replacement mapping revision needs and the only part of
+    one a person actually decides: everything else about a mapping is what the
+    file itself heads, which ``declared_field_mapping`` derives.  It is built
+    from the same default this module applies to every other column, so a
+    combined mapping and a split one agree about the parser, the precision, the
+    vocabulary and the materiality of the fields they carry, and differ in
+    exactly the thing that was declared.
+
+    Nothing here reads the file's values.  ``prove_manifest`` does, against the
+    customer's own populated example, and refuses a declaration the example
+    contradicts.
+    """
+
+    fields = tuple(fields)
+    headings = {column.field: column.heading for column in reading.column_mapping}
+    missing = [field for field in fields if field not in headings]
+    if missing:
+        raise MappingManifestRefused(
+            f"{missing} cannot be declared as one combined column: this "
+            "workbook heads no canonical column for it"
+        )
+    vocabularies = _vocabularies_by_heading(reading)
+    return replace(
+        _default_mapping(headings[fields[0]], fields[0], vocabularies),
+        source_columns=tuple(headings[field] for field in fields),
+        target_fields=fields,
+        composition=COMBINED_RANGE,
+        delimiter=delimiter,
+    )
+
+
 def _default_mapping(
     heading: str, field: str, vocabularies: Mapping[str, tuple[tuple[str, ...], str | None]]
 ) -> MaterialMapping:

@@ -1496,8 +1496,9 @@ def candidate_is_stale(
 
     ``prepared_candidate_is_stale`` answers the *profile* part of this and is
     one term here, never the whole contract: an accepted decision after
-    preparation, and a package authorized after preparation, each make a
-    candidate stale without the profile moving at all.
+    preparation, a package authorized after preparation, and a replaced output
+    template or field mapping each make a candidate stale without the profile
+    moving at all.
     """
 
     package = latest_authorized_package(session, int(candidate.project_id))
@@ -1515,6 +1516,7 @@ def candidate_is_stale(
             or 0
         ),
         current_package_id=None if package is None else int(package.id),
+        formats=effective_baseline_formats(session, int(candidate.project_id)),
     )
 
 
@@ -1524,15 +1526,26 @@ def candidate_staleness_reasons(
     inventory: IssueInventory | None,
     newest_revision_id: int,
     current_package_id: int | None,
+    formats: Mapping[str, Any],
 ) -> tuple[str, ...]:
     """The staleness rule itself, over inputs the caller has already read.
 
-    ``candidate_is_stale`` above is this function plus the three reads it
+    ``candidate_is_stale`` above is this function plus the four reads it
     needs, and it is the only reason this one is separate: a cross-project
-    reading (#537, #636) has those three facts loaded for every project it
+    reading (#537, #636) has those four facts loaded for every project it
     shows and must not go back to the database once per candidate to re-ask
     them. Two authorities over one staleness rule is the failure #641 exists to
     prevent, so there is exactly one and this is it.
+
+    The replaced output template or field mapping is the fourth term, and it
+    was the one missing (#829). A coordinator may register a replacement
+    between preparation and release, and the sealed artifacts are then not the
+    ones the project produces; ``release_authorization`` refused that at the
+    authorization itself while ``authorization_blockers`` — which is what the
+    Issue section offers the act on — did not know about it, so the section
+    offered an approval #533 would refuse. It is one term of one rule now,
+    and ``release_authorization.candidate_format_differences`` is this term
+    named on its own for the revalidation that raises on it.
     """
 
     reasons: list[str] = []
@@ -1560,7 +1573,36 @@ def candidate_staleness_reasons(
             "a package was authorized after this candidate was prepared, so "
             "its comparison baseline is no longer the current one"
         )
+    reasons.extend(replaced_format_reasons(candidate, formats))
     return tuple(reasons)
+
+
+def replaced_format_reasons(
+    candidate: ReleaseCandidate, formats: Mapping[str, Any]
+) -> tuple[str, ...]:
+    """Whether the template and mapping a candidate was rendered through still hold.
+
+    Stated once, here, because #533 raises on it and the Issue section offers
+    an act on it, and those two answering differently is how a screen offers an
+    approval the authorization refuses.
+    ``release_authorization.candidate_format_differences`` is this function
+    under the name revalidation already called it.
+    """
+
+    replaced: list[str] = []
+    for kind, format_id, what in (
+        ("output_template", candidate.output_template_format_id, "output template"),
+        ("field_mapping", candidate.field_mapping_format_id, "field mapping"),
+    ):
+        registered = formats.get(kind)
+        if registered is None or int(registered.id) != int(format_id):
+            replaced.append(
+                f"the {what} this project renders through was replaced after "
+                "this candidate was prepared, so the sealed artifacts would "
+                "not be the ones this project now produces. Nothing is "
+                "released; prepare a fresh candidate."
+            )
+    return tuple(replaced)
 
 
 def authorization_blockers(

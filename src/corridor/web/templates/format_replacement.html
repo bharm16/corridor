@@ -1,0 +1,350 @@
+{% import "_primitives.html" as ui -%}
+<!doctype html>
+<meta charset="utf-8">
+<title>Output template and field mapping — {{ project.name }}</title>
+{#
+  Replacing the output template or the field mapping without re-adopting the
+  baseline (#829, ADR-0076).
+
+  Two readings on one page, and the split is #509's rather than a layout
+  choice. The operations panel is the importer mechanics — worksheets,
+  formulas, hidden content, unknown columns, diagnostics, the round trip — and
+  a coordinator is never asked to decide any of it. The comparison panel is the
+  one project question: what the customer's mapped columns now mean.
+
+  Nothing here changes an accepted value, and the page says so where somebody
+  is about to approve, because that is the promise ADR-0076 makes by recording
+  these identities apart from the adopted data baseline.
+#}
+<style>
+  :root { --line:#e2e2e2; --muted:#666; }
+  * { box-sizing: border-box; }
+  body { font: 14px/1.5 system-ui, sans-serif; margin: 0; color:#111;
+         background:#fff; }
+  header { display:flex; justify-content:space-between; align-items:baseline;
+           padding:.7rem 1.2rem; border-bottom:1px solid var(--line); }
+  header b { font-size:1rem; }
+  header a { color:#111; }
+  main { max-width: 60rem; margin: 2.5rem auto; padding: 0 1.2rem; }
+  h1 { font-size:1.4rem; margin:0 0 .3rem; letter-spacing:-.01em; }
+  h2 { font-size:1.05rem; margin:1.8rem 0 .4rem; }
+  h3 { font-size:.95rem; margin:1rem 0 .3rem; }
+  .lead { color:var(--muted); margin:0 0 1.6rem; font-size:.95rem; }
+  .quiet { color:var(--muted); font-size:.9rem; }
+  .mono { font-family:ui-monospace, monospace; font-size:.78rem;
+          color:var(--muted); }
+  .panel { border:1px solid var(--line); border-radius:6px;
+           padding:.8rem 1rem; margin:.8rem 0; }
+  ul.plain { list-style:none; margin:.3rem 0; padding:0; }
+  ul.plain li { padding:.15rem 0; }
+  fieldset { border:1px solid var(--line); border-radius:6px;
+             padding:.6rem .9rem; margin:.8rem 0; }
+  legend { font-weight:600; padding:0 .3rem; }
+  button { font:inherit; padding:.35rem .9rem; border:1px solid #111;
+           background:#111; color:#fff; border-radius:4px; }
+  button.secondary { background:#fff; color:#111; }
+  input[type=text] { font:inherit; padding:.25rem .4rem; border:1px solid var(--line);
+                     border-radius:4px; }
+</style>
+{{ ui.styles() }}
+
+<header>
+  <b>{{ project.name }}</b>
+  <span><a href="/work/{{ project.slug }}">Work &rarr;</a></span>
+</header>
+
+<main>
+  <h1>Output template and field mapping — {{ project.name }}</h1>
+  <p class="lead">
+    The form this project's record is written back into, and what each of its
+    columns carries. Both are recorded separately from the adopted baseline, so
+    replacing either is one attributable act and never another Adopt Baseline.
+    <b>No accepted value changes here.</b>
+  </p>
+
+  {%- if refusal %}
+  {% call ui.outcome("refused", refusal, focus) %}
+  <p class="quiet">Nothing was registered. The registrations below are unchanged.</p>
+  {% endcall %}
+  {%- elif registered %}
+  {% call ui.outcome("saved", registered.heading, focus) %}
+  <p class="quiet">{{ registered.detail }}</p>
+  {% endcall %}
+  {%- endif %}
+
+  <section aria-labelledby="effective-heading">
+    <h2 id="effective-heading"{{ ui.anchor(focus_ids["item"], focus) }}>In force now</h2>
+    {%- if view.effective %}
+    <ul class="plain">
+      {%- for line in view.effective %}
+      <li>
+        <b>{{ line.words }}</b> — {{ line.identity }} {{ line.version }},
+        registered by {{ line.registered_by_principal }}
+        on {{ line.registered_at.strftime('%Y-%m-%d %H:%M') }}
+        <span class="mono">{{ line.content_sha256[:16] }}…</span>
+      </li>
+      {%- endfor %}
+    </ul>
+    {%- else %}
+    <p class="quiet">
+      This project has registered no output template and field mapping, so
+      there is nothing a replacement would supersede.
+    </p>
+    {%- endif %}
+  </section>
+
+  {%- if view.candidate %}
+  <section aria-labelledby="candidate-heading">
+    <h2 id="candidate-heading">The issue prepared against them</h2>
+    <p>
+      <span class="mono">{{ view.candidate.candidate_identity }}</span>
+    </p>
+    {%- if view.candidate.stale %}
+    <p>{{ ui.state(state_label("attention", "This prepared issue no longer describes the project")) }}</p>
+    <ul class="plain">
+      {%- for reason in view.candidate.stale_reasons %}
+      <li>{{ reason }}</li>
+      {%- endfor %}
+    </ul>
+    {%- else %}
+    <p class="quiet">
+      It still matches what is registered. Registering a replacement makes it
+      stale, and a fresh candidate is prepared on the Work page.
+    </p>
+    {%- endif %}
+  </section>
+  {%- endif %}
+
+  <section aria-labelledby="offer-heading">
+    <h2 id="offer-heading">Offer a replacement</h2>
+    <p class="quiet">
+      Corridor operations offers the customer's new form and reads it here.
+      Nothing is registered until the replacement is approved below.
+    </p>
+    <form method="post" action="/template-and-mapping/{{ project.slug }}/validate"
+          enctype="multipart/form-data">
+      {{ csrf_field() }}
+      <fieldset>
+        <legend>What is being replaced</legend>
+        <ul class="plain">
+          {%- for kind, words in kind_words %}
+          <li>
+            <label>
+              <input type="radio" name="kind" value="{{ kind }}"
+                     {% if kind == selected_kind %}checked{% endif %}>
+              The {{ words }}
+            </label>
+          </li>
+          {%- endfor %}
+        </ul>
+      </fieldset>
+      <fieldset>
+        <legend>How it is named on a later receipt</legend>
+        {% call ui.field("replacement-identity", "Identity",
+                         "How a later receipt names this registration.",
+                         required=true) %}
+          <input type="text" id="replacement-identity" name="identity"
+                 value="{{ submitted_identity }}"
+                 aria-describedby="replacement-identity-hint" required>
+        {% endcall %}
+        {% call ui.field("replacement-version", "Version", required=true) %}
+          <input type="text" id="replacement-version" name="version"
+                 value="{{ submitted_version }}" required>
+        {% endcall %}
+      </fieldset>
+      <fieldset>
+        <legend>How the customer's form carries each range</legend>
+        <p class="quiet">
+          A form that stops carrying two values in two columns and starts
+          carrying one combined range in the same columns prints identical
+          headings, so no reading of the file can tell. Operations declares it
+          and Corridor proves the declaration against the customer's own
+          populated rows.
+        </p>
+        <ul class="plain">
+          {%- for choice in view.ranges %}
+          <li>
+            <label>
+              <input type="checkbox" name="combined" value="{{ choice.name }}"
+                     {% if choice.combined %}checked{% endif %}>
+              {{ choice.labels[0] }} and {{ choice.labels[1] }} are one
+              combined range in one column
+            </label>
+          </li>
+          {%- endfor %}
+        </ul>
+      </fieldset>
+      <fieldset>
+        {% call ui.field("replacement-file", "The customer's new form",
+                         "One populated workbook, so a declaration is proved "
+                         "against the customer's own values.", required=true) %}
+          <input type="file" id="replacement-file" name="upload"
+                 accept=".xlsx,.xlsm"
+                 aria-describedby="replacement-file-hint" required>
+        {% endcall %}
+      </fieldset>
+      <button type="submit" class="secondary">Read and validate this file</button>
+    </form>
+  </section>
+
+  {%- if view.proposal %}
+  <section aria-labelledby="validation-heading" class="panel">
+    <h2 id="validation-heading">
+      Proposed {{ view.proposal.words }} — {{ view.proposal.identity }}
+      {{ view.proposal.version }}
+    </h2>
+    {%- if view.proposal.unchanged %}
+    <p>{{ ui.state(state_label("neutral", "This is the registration already in force")) }}</p>
+    <p class="quiet">Approving it registers nothing, because nothing changed.</p>
+    {%- endif %}
+
+    {%- if view.proposal.findings %}
+    <p>{{ ui.state(state_label("attention", "This file cannot be registered as offered")) }}</p>
+    <ul class="plain">
+      {%- for finding in view.proposal.findings %}
+      <li>{{ finding.sentence }} <span class="mono">{{ finding.code }}</span></li>
+      {%- endfor %}
+    </ul>
+    {%- else %}
+    <p>{{ ui.state(state_label("settled", "This file reads as the registration it claims to be")) }}</p>
+    {%- endif %}
+
+    {%- if view.proposal.operations %}
+    <h3>What Corridor operations read in this file</h3>
+    {{ ui.fact_list([
+         ("Worksheet", view.proposal.operations.worksheet),
+         ("Heading row", view.proposal.operations.header_row_number),
+         ("Importer", view.proposal.operations.importer),
+         ("Columns a canonical field names", view.proposal.operations.mapped_columns | length),
+         ("Rows checked back through the mapping", view.proposal.operations.rows_checked),
+         ("Values checked back through the mapping", view.proposal.operations.values_checked),
+       ]) }}
+    <ul class="plain">
+      {%- for heading in view.proposal.operations.controlled_vocabularies %}
+      <li>{{ heading }} — the form declares a drop-down for this column, and
+        the mapping revision records exactly the values it offers.</li>
+      {%- endfor %}
+      {%- for heading in view.proposal.operations.unknown_columns %}
+      <li>{{ heading }} — printed, and no canonical field names it. It is
+        retained and nothing reads it.</li>
+      {%- endfor %}
+      {%- for locator in view.proposal.operations.formula_cells %}
+      <li>{{ locator }} — a formula. Its cached value is what was read.</li>
+      {%- endfor %}
+      {%- for locator in view.proposal.operations.hidden_content %}
+      <li>{{ locator }} — hidden content.</li>
+      {%- endfor %}
+      {%- for line in view.proposal.operations.unsupported_values %}
+      <li>{{ line }}</li>
+      {%- endfor %}
+      {%- for detail in view.proposal.operations.diagnostics %}
+      <li>{{ detail }}</li>
+      {%- endfor %}
+    </ul>
+    {%- endif %}
+
+    {%- if view.proposal.kind == "field_mapping" %}
+    <h3>What each field means now, and what it would mean</h3>
+    <p class="quiet">
+      Every canonical field either revision carries. Accepted values are not
+      touched by any of this: a field that stops being carried keeps the value
+      the record holds, and no column here writes one.
+    </p>
+    {% call ui.record_table(
+         "The registered field mapping against the proposed one",
+         ["Field", "In force now", "Under the proposed revision", "What differs"]) %}
+      {%- for row in view.proposal.comparison %}
+      <tr>
+        <th scope="row">{{ row.label }}</th>
+        <td>
+          {%- if row.before %}
+          {{ row.before.headings | join(", ") }}
+          <span class="mono">{{ row.before.cardinality }} {{ row.before.composition }}</span>
+          {%- else %}{{ not_recorded }}{% endif %}
+        </td>
+        <td>
+          {%- if row.after %}
+          {{ row.after.headings | join(", ") }}
+          <span class="mono">{{ row.after.cardinality }} {{ row.after.composition }}</span>
+          {%- else %}{{ not_recorded }}{% endif %}
+        </td>
+        <td>
+          {%- if row.state == "added" %}
+          The registered revision carries no column for it.
+          {%- elif row.state == "removed" %}
+          The proposed revision carries no column for it. Its accepted value is
+          unchanged.
+          {%- elif row.differences %}
+          <ul class="plain">
+            {%- for difference in row.differences %}
+            <li>It is {{ difference }}.</li>
+            {%- endfor %}
+          </ul>
+          {%- else %}
+          Nothing.
+          {%- endif %}
+        </td>
+      </tr>
+      {%- endfor %}
+    {% endcall %}
+    {%- if not view.proposal.material_changes %}
+    <p class="quiet">
+      Every field is carried exactly as the registered revision declares it.
+    </p>
+    {%- endif %}
+    {%- endif %}
+
+    <p class="quiet">
+      {%- if view.may_approve %}
+      Approving is a Project Coordination act, and you hold that designation
+      for this project.
+      {%- else %}
+      Approving is a Project Coordination act, and you do not hold that
+      designation for this project.
+      {%- endif %}
+    </p>
+
+    <form method="post" action="/template-and-mapping/{{ project.slug }}/register">
+      {{ csrf_field() }}
+      {#
+        Everything the validation was composed from, so the approval recomposes
+        exactly the same proposal from the same staged bytes and refuses if it
+        digests to anything else.
+      #}
+      <input type="hidden" name="kind" value="{{ view.proposal.kind }}">
+      <input type="hidden" name="identity" value="{{ view.proposal.identity }}">
+      <input type="hidden" name="version" value="{{ view.proposal.version }}">
+      <input type="hidden" name="staged_sha256" value="{{ view.proposal.staged_sha256 }}">
+      {%- for choice in view.ranges if choice.combined %}
+      <input type="hidden" name="combined" value="{{ choice.name }}">
+      {%- endfor %}
+      <input type="hidden" name="content_sha256" value="{{ view.proposal.content_sha256 }}">
+      <input type="hidden" name="supersedes_format_id"
+             value="{{ view.proposal.supersedes_format_id if view.proposal.supersedes_format_id is not none else '' }}">
+      <button type="submit">Approve this {{ view.proposal.words }}</button>
+    </form>
+  </section>
+  {%- endif %}
+
+  <section aria-labelledby="history-heading">
+    <h2 id="history-heading">Every registration, and who made it</h2>
+    {%- if view.registrations %}
+    {% call ui.record_table("Registrations, newest first",
+                            ["Registration", "Identity", "Version",
+                             "Registered by", "Registered at", "Digest"]) %}
+      {%- for row in view.registrations %}
+      <tr>
+        <th scope="row">{{ row.words }}{% if row.in_force %} (in force){% endif %}</th>
+        <td>{{ row.identity }}</td>
+        <td>{{ row.version }}</td>
+        <td>{{ row.registered_by_principal }}</td>
+        <td>{{ row.registered_at.strftime('%Y-%m-%d %H:%M') }}</td>
+        <td class="mono">{{ row.content_sha256[:16] }}…</td>
+      </tr>
+      {%- endfor %}
+    {% endcall %}
+    {%- else %}
+    <p class="quiet">Nothing has been registered for this project yet.</p>
+    {%- endif %}
+  </section>
+</main>

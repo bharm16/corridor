@@ -103,6 +103,15 @@
          ("Output template", view.effective.output_template[0] ~ " " ~ view.effective.output_template[1]),
          ("Field mapping", view.effective.field_mapping[0] ~ " " ~ view.effective.field_mapping[1]),
        ]) }}
+    {#
+      Where a customer whose form changed is repaired (#829). A configuration
+      that names a registration nobody can replace is a dead end, and the
+      audit's finding was that the replacement had no surface at all.
+    #}
+    <p class="quiet">
+      <a href="/template-and-mapping/{{ project.slug }}">Replace the output
+        template or field mapping &rarr;</a>
+    </p>
 
     <h3>Source coverage expected before an issue</h3>
     <ul class="plain">

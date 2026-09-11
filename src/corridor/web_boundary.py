@@ -774,6 +774,73 @@ PILOT_ROUTES: dict[tuple[str, str], PilotRoute] = {
             }
         ),
     ),
+    ("GET", "/template-and-mapping/{slug}"): PilotRoute(
+        why=(
+            "#829 read the output template and field mapping this project "
+            "renders through, every registration it has made, and a "
+            "replacement somebody prepared -- which arrives as a link, "
+            "because the offered bytes are content-addressed and no schema "
+            "holds a proposal"
+        ),
+        relations=frozenset(
+            {
+                "project_baseline_format_manifests",
+                "project_baseline_formats",
+                "project_issue_profile_artifacts",
+                "project_issue_profiles",
+                "project_record_revisions",
+                "project_roster_entries",
+                "projects",
+                "release_candidates",
+                "release_packages",
+                "web_sessions",
+            }
+        ),
+    ),
+    ("POST", "/template-and-mapping/{slug}/validate"): PilotRoute(
+        why=(
+            "#829 the Corridor operations reading of an offered replacement: "
+            "importer mechanics, and whether the file is the mapping revision "
+            "the project registered. It registers nothing and the only thing "
+            "it writes is the offered bytes, retained under their own digest"
+        ),
+        relations=frozenset(
+            {
+                "project_baseline_format_manifests",
+                "project_baseline_formats",
+                "project_issue_profile_artifacts",
+                "project_issue_profiles",
+                "project_record_revisions",
+                "project_roster_entries",
+                "projects",
+                "release_candidates",
+                "release_packages",
+                "web_sessions",
+            }
+        ),
+    ),
+    ("POST", "/template-and-mapping/{slug}/register"): PilotRoute(
+        why=(
+            "#829 register the replacement output template or mapping "
+            "revision; the write itself is the record-decision command's, not "
+            "this role's, and no accepted value moves"
+        ),
+        relations=frozenset(
+            {
+                "project_baseline_format_manifests",
+                "project_baseline_format_objects",
+                "project_baseline_formats",
+                "project_issue_profile_artifacts",
+                "project_issue_profiles",
+                "project_record_revisions",
+                "project_roster_entries",
+                "projects",
+                "release_candidates",
+                "release_packages",
+                "web_sessions",
+            }
+        ),
+    ),
     ("POST", "/review/{slug}/answers"): PilotRoute(
         why=(
             "#526 record the Review Packet answers"

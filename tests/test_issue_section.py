@@ -21,6 +21,7 @@ instant is declared by the test, and the web routes take theirs from
 from __future__ import annotations
 
 from datetime import date, datetime, timezone
+from hashlib import sha256
 import html
 import re
 from uuid import uuid4
@@ -30,6 +31,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 
 from corridor.access import COORDINATION, EXTERNAL_RELEASE, enroll_member
+from corridor.baseline_adoption import FormatIdentity, register_baseline_format
 from corridor.config import settings
 from corridor.issue_profile import ArtifactEntry, DecisionBlockingPolicy, RendererRevision
 from corridor.issue_content import (
@@ -782,6 +784,55 @@ def test_every_reason_a_candidate_cannot_be_approved_names_who_puts_it_right(
     # And the next action names the control the section is actually offering,
     # rather than a second spelling of the act beside it.
     assert view.prepare_action in body
+
+
+def test_a_replaced_output_template_asks_the_section_for_a_fresh_candidate(
+    session, adopted, client, store, tmp_path
+):
+    """#829's third criterion, on the screen that offers the approval.
+
+    Registering a replacement changes no accepted value and touches no prepared
+    candidate. What it changes is the comparison: the candidate was rendered
+    through a registration the project no longer renders through, so #529's own
+    staleness rule says so and the section asks for a fresh candidate instead
+    of offering an approval #533 would refuse.
+    """
+
+    configure(session, adopted)
+    candidate = prepare(session, adopted, store)
+    assert "Approve this issue for sharing" in prose(week(client, adopted))
+
+    successor = workbook_bytes(tmp_path / "successor.xlsx", BASELINE_ROWS[:2])
+    register_baseline_format(
+        session,
+        project_id=adopted.project.id,
+        identity=FormatIdentity(
+            kind="output_template",
+            identity="customer-2027-form",
+            version="v1",
+            content_sha256=sha256(successor).hexdigest(),
+        ),
+        principal=COORDINATOR,
+        idempotency_key=f"replacement-{uuid4().hex[:10]}",
+        template_bytes=successor,
+    )
+    session.expire_all()
+
+    view = issue_view(session, project_id=adopted.project.id, as_of=NOW)
+    assert view.state == NOT_AUTHORIZABLE
+    assert view.may_authorize is False
+    assert "the output template this project renders through was replaced" in (
+        " ".join(view.stale_reasons)
+    )
+
+    body = prose(week(client, adopted))
+    assert "Approve this issue for sharing" not in body
+    assert "prepare a fresh candidate" in body
+    assert "freshly prepared candidate" in body
+    assert "Confirm coverage and prepare issue" in body
+    assert candidate.coverage_identity in body, (
+        "the candidate stays visible as it was prepared"
+    )
 
 
 def test_the_section_refuses_to_offer_an_approval_the_blockers_forbid(

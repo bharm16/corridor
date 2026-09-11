@@ -68,7 +68,15 @@ from corridor.models import (
 )
 from corridor.object_storage import LocalFilesystemStore
 from corridor.principals import HumanPrincipal
-from corridor.release_authorization import authorize_release_package
+from corridor.baseline_adoption import (
+    FormatIdentity,
+    effective_baseline_formats,
+    register_baseline_format,
+)
+from corridor.release_authorization import (
+    authorize_release_package,
+    candidate_format_differences,
+)
 from corridor.release_candidate import (
     ARTIFACT_INVOKERS,
     ARTIFACT_MISSING,
@@ -646,6 +654,51 @@ def test_the_profile_term_is_not_the_whole_staleness_contract(
     reasons = candidate_is_stale(session, candidate, as_of=CUTOFF)
     assert any("accepted record moved" in reason for reason in reasons)
     assert authorization_blockers(session, candidate, as_of=CUTOFF) == reasons
+
+
+def test_a_replaced_output_template_makes_a_prepared_candidate_stale(
+    session, adopted, store, tmp_path
+):
+    """#829: registering a replacement is the fourth staleness term.
+
+    A coordinator may replace the output template between preparation and
+    release, and the sealed artifacts are then not the ones the project
+    produces. ``release_authorization`` refused that at the authorization
+    itself while ``authorization_blockers`` -- which is what the Issue section
+    offers the approval on -- did not know about it, so the section offered an
+    approval #533 would refuse. The two answer together now, which is what
+    makes the Issue section say a fresh candidate is required.
+    """
+
+    _configure(session, adopted)
+    _, _, candidate = _prepare(session, adopted, store)
+    assert candidate_is_stale(session, candidate, as_of=CUTOFF) == ()
+
+    successor = workbook_bytes(tmp_path / "successor.xlsx", BASELINE_ROWS[:2])
+    register_baseline_format(
+        session,
+        project_id=adopted.project.id,
+        identity=FormatIdentity(
+            kind="output_template",
+            identity="customer-2027-form",
+            version="v1",
+            content_sha256=sha256(successor).hexdigest(),
+        ),
+        principal=COORDINATOR,
+        idempotency_key=f"replacement-{uuid4().hex[:10]}",
+        template_bytes=successor,
+        store=store,
+    )
+
+    reasons = candidate_is_stale(session, candidate, as_of=CUTOFF)
+    assert any("output template" in reason for reason in reasons)
+    assert any("prepare a fresh candidate" in reason for reason in reasons)
+    # One rule, two readers: what #533 revalidates and what the Issue section
+    # offers the act on cannot disagree.
+    assert authorization_blockers(session, candidate, as_of=CUTOFF) == reasons
+    assert candidate_format_differences(
+        candidate, effective_baseline_formats(session, adopted.project.id)
+    ) == tuple(reason for reason in reasons if "output template" in reason)
 
 
 # --- the mandatory UCM stays structural ------------------------------------
