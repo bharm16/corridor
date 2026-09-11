@@ -1175,6 +1175,14 @@ def _authorize(
     access.open_project_partition(
         session, principal_subject=principal.subject, project_id=project.id
     )
+    # And kept for the whole request rather than for the first transaction of
+    # it (#935, #936). A route that commits and then keeps working -- to
+    # re-render what now stands, or to read what the act it committed means --
+    # opens a second transaction, and the declaration is transaction-local, so
+    # without this every partitioned relation answers that second transaction
+    # as if the project were empty. The re-declaration re-proves the roster
+    # entry each time, so nothing is trusted across the commit.
+    access.keep_partition_declared(session)
     return membership
 
 
@@ -2137,6 +2145,7 @@ def root(request: Request, session: Session = Depends(get_session)):
     access.open_member_project_partition(
         session, principal_subject=web_session.principal_subject
     )
+    access.keep_partition_declared(session)
     return TEMPLATES.TemplateResponse(
         request,
         "projects.html",
@@ -5339,6 +5348,7 @@ def portfolio(
     access.open_member_project_partition(
         session, principal_subject=principal.subject
     )
+    access.keep_partition_declared(session)
     reading = read_portfolio(
         session, principal_subject=principal.subject, as_of=clock()
     )

@@ -491,9 +491,54 @@ REGISTER_BASELINE_FORMAT_SIGNATURE = (
     "character varying, character varying, character varying)"
 )
 
+# The same guard the adoption command carries, asked before a coordinator does
+# any work (#933).
+#
+# ``adopt_project_record_baseline`` above refuses a nonempty accepted Project
+# Record itself, which is what makes the rule unbypassable.  But the product
+# has to say so *before* it opens the workbook and before it asks a
+# coordinator six questions, so ``baseline_adoption`` asks the same question
+# when it prepares the reading -- and that read runs in the web request, as
+# ``corridor_web``, which the live-pilot boundary revoked ``dependencies``
+# from.  The half that counts the legacy Constraint Records therefore answered
+# ``permission denied`` on an enforcing deployment and the route answered 500.
+#
+# Both halves have to stay: checking only the spine would let the legacy
+# accepted record be silently adopted over, and checking only the legacy
+# tables would let the spine be.  So rather than widening the boundary the
+# manifest exists to keep narrow, or making the legacy half conditional on the
+# operating mode -- which would disable it for exactly the projects that can
+# hold those rows -- the read moves behind a command owned by the role that
+# already holds it, which is what every other privileged read in this schema
+# does (#492, ADR-0081).  It returns a count and nothing else, so it discloses
+# strictly less than the adoption command the same capability may already run.
+PROJECT_ACCEPTED_RECORD_DECISION_COUNT = """
+create function public.project_accepted_record_decision_count(p_project_id bigint)
+    returns bigint
+    language sql
+    stable
+    security definer
+    set search_path to 'public'
+    as $$
+        select (
+            select count(*) from public.fact_decisions
+             where project_id = p_project_id
+               and superseded_by is null
+        ) + (
+            select count(*) from public.dependencies
+             where project_id = p_project_id
+        );
+    $$;
+"""
+
+PROJECT_ACCEPTED_RECORD_DECISION_COUNT_SIGNATURE = "(bigint)"
+
 BASELINE_RECORD_COMMANDS = {
     "adopt_project_record_baseline": ADOPT_PROJECT_RECORD_BASELINE_SIGNATURE,
     "register_baseline_format": REGISTER_BASELINE_FORMAT_SIGNATURE,
+    "project_accepted_record_decision_count": (
+        PROJECT_ACCEPTED_RECORD_DECISION_COUNT_SIGNATURE
+    ),
 }
 
 
@@ -501,6 +546,7 @@ def upgrade(op) -> None:
     op.execute(BASELINE_RECORD_SCHEMA)
     op.execute(ADOPT_PROJECT_RECORD_BASELINE)
     op.execute(REGISTER_BASELINE_FORMAT)
+    op.execute(PROJECT_ACCEPTED_RECORD_DECISION_COUNT)
     for table in BASELINE_RECORD_TABLES:
         # The application reads the adopted baseline and writes none of it;
         # a new table arrives with the schema's default privileges, so the
@@ -531,9 +577,17 @@ def upgrade(op) -> None:
         op.execute(f"revoke all on function public.{name}{signature} from public")
         # Adopt Baseline and a later format registration are attributable human
         # acts, so they join the other decision commands on the web capability
-        # alone (#509, ADR-0076).
+        # alone (#509, ADR-0076). The accepted-record count is the reading that
+        # refuses one of them before it is attempted, so both capabilities hold
+        # it: a coordinator meets the refusal in the product, and the
+        # command-line adoption path meets the same one.
         op.execute(
-            f"grant execute on function public.{name}{signature} to corridor_web"
+            f"grant execute on function public.{name}{signature} to "
+            + (
+                RUNTIME_LOGINS
+                if name == "project_accepted_record_decision_count"
+                else "corridor_web"
+            )
         )
 
 

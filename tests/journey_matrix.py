@@ -108,6 +108,19 @@ CORE_JOURNEY: tuple[JourneyRow, ...] = (
     ),
     JourneyRow(
         role=COORDINATION,
+        state="A delivered source is registered and held against reading",
+        action="None: nothing is read from this source while the restriction "
+        "stands",
+        route="GET /projects/{slug}/sources",
+        result="The register says document reading is not permitted and "
+        "prints the reason its writer recorded, rather than reporting a "
+        "queue position this source is not in",
+        scenario="a_held_source_is_not_read_and_says_so",
+        owner="#919",
+        handoff_to=TECHNICAL_OPERATIONS,
+    ),
+    JourneyRow(
+        role=COORDINATION,
         state="Signed in, coordinating one or more adopted projects",
         action="Read what every coordinated project needs this week",
         route="GET /portfolio",
@@ -138,7 +151,7 @@ CORE_JOURNEY: tuple[JourneyRow, ...] = (
         role=TECHNICAL_OPERATIONS,
         state="A delivery Corridor could not read or could not place",
         action="Repair the mechanical problem under policy",
-        route="",
+        route="POST /projects/{slug}/baseline/prepare",
         result="The delivery proceeds, and the repair leaves a receipt the "
         "source register shows",
         scenario="operations_resolves_mechanics",
@@ -148,7 +161,7 @@ CORE_JOURNEY: tuple[JourneyRow, ...] = (
         role=COORDINATION,
         state="A delivery Corridor could not read or could not place",
         action="None: this is a mechanical failure, not a record decision",
-        route="",
+        route="POST /projects/{slug}/baseline/prepare",
         result="The blocked row names Technical Operations as the owner and "
         "the next action",
         scenario="operations_resolves_mechanics",
@@ -169,7 +182,7 @@ CORE_JOURNEY: tuple[JourneyRow, ...] = (
         role=COORDINATION,
         state="Adopted, issue set not yet approved",
         action="Review and approve the set of artifacts this project issues",
-        route="",
+        route="POST /issue-configuration/{slug}/approve",
         result="One issue profile version, attributable to this person",
         scenario="approve_the_issue_configuration",
         owner="#828",
@@ -198,7 +211,7 @@ CORE_JOURNEY: tuple[JourneyRow, ...] = (
         role=COORDINATION,
         state="A proposed change cites a source passage",
         action="Read the exact wording at its place in the source",
-        route="GET /review/{slug}/source",
+        route="GET /sources/{slug}/passage/{segment_id}",
         result="The cited passage, in the source, at the locator recorded for "
         "it",
         scenario="inspect_exact_source_context",
@@ -227,7 +240,7 @@ CORE_JOURNEY: tuple[JourneyRow, ...] = (
         role=COORDINATION,
         state="A capture is wrong at the source",
         action="Report the extraction error",
-        route="",
+        route="POST /review/{slug}/correction",
         result="The corrected capture returns through Review, bound to the "
         "source passage that proves it",
         scenario="report_an_extraction_error",
@@ -237,7 +250,7 @@ CORE_JOURNEY: tuple[JourneyRow, ...] = (
         role=COORDINATION,
         state="A decision was just recorded",
         action="Undo it",
-        route="",
+        route="POST /review/{slug}/packet/{receipt_id}/undo",
         result="The packet receipt names what was decided, and the undo "
         "reverses exactly that act",
         scenario="undo_one_decision",
@@ -268,7 +281,7 @@ CORE_JOURNEY: tuple[JourneyRow, ...] = (
         role=COORDINATION,
         state="Ready for your approval",
         action="Inspect the exact artifacts this candidate holds",
-        route="",
+        route="GET /work/{slug}/issue/candidates/{candidate_id}/artifacts/{artifact_type}",
         result="The actual bytes of each configured artifact, before approving "
         "them",
         scenario="inspect_the_actual_artifacts",
@@ -300,7 +313,7 @@ CORE_JOURNEY: tuple[JourneyRow, ...] = (
         role=COORDINATION,
         state="Approved and sent as this issue",
         action="Download the approved package",
-        route="",
+        route="GET /work/{slug}/issue/packages/{issue_number}/bundle",
         result="Exactly the approved bytes, and nothing that would send them "
         "again",
         scenario="download_the_approved_package",
@@ -311,7 +324,7 @@ CORE_JOURNEY: tuple[JourneyRow, ...] = (
         role=COORDINATION,
         state="Approved, and a later revision has since arrived",
         action="Retrieve the earlier package",
-        route="",
+        route="GET /work/{slug}/issue/packages/{issue_number}/bundle",
         result="The earlier package unchanged, with its package history in the "
         "Record view",
         scenario="retrieve_the_earlier_package_unchanged",
@@ -366,7 +379,9 @@ CLAIMED_WORKFLOWS: tuple[WorkflowRow, ...] = (
     ),
     WorkflowRow(
         workflow="A delivery is received and processed",
-        producer="",
+        producer="POST /projects/{slug}/sources/upload takes delivery and "
+        "POST /projects/{slug}/sources/confirm registers it; the standing "
+        "project-processing and delta-generation passes read it",
         consumer="GET /projects/{slug}/sources",
         scenario="see_receipt_and_processing_state",
         owner="#823, #841",
@@ -405,7 +420,8 @@ CLAIMED_WORKFLOWS: tuple[WorkflowRow, ...] = (
         workflow="The approved package is delivered to the person who asked "
         "for it",
         producer="POST /work/{slug}/issue/authorize",
-        consumer="",
+        consumer="GET /work/{slug}/issue/packages/{issue_number}/bundle, "
+        "offered on the week and again on GET /record/{slug}",
         scenario="download_the_approved_package",
         owner="#830",
     ),

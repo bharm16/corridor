@@ -107,6 +107,40 @@
       </p>
       <p><a href="/projects/{{ view.project_slug }}/sources/upload">Supply the baseline workbook &rarr;</a></p>
     </section>
+
+    {#
+      Supplying the workbook and reading it are two acts, and until #934 the
+      page offered only the first: a coordinator who had just handed the file
+      over landed back here and was asked to hand it over again. The control
+      is rendered from `may_prepare`, which `onboarding_view` already computed
+      and no template read, rather than from a second copy of the rule.
+    #}
+    {% if view.supplied %}
+      <section class="panel">
+        <h2>What has been supplied</h2>
+        <ul class="plain">
+          {% for source in view.supplied %}
+            <li>
+              {{ source.filename }} &mdash; delivered {{ source.delivered_at }}
+              <div class="mono">{{ source.content_sha256 }}</div>
+              {% if view.may_prepare %}
+                <form method="post"
+                      action="/projects/{{ view.project_slug }}/baseline/prepare">
+                  {{ csrf_field() }}
+                  <input type="hidden" name="sha256" value="{{ source.content_sha256 }}">
+                  <input type="hidden" name="filename" value="{{ source.filename }}">
+                  <p>
+                    <button type="submit" class="secondary">
+                      Read this workbook for adoption
+                    </button>
+                  </p>
+                </form>
+              {% endif %}
+            </li>
+          {% endfor %}
+        </ul>
+      </section>
+    {% endif %}
   {% else %}
     <section class="panel">
       <h2>What adopting this would accept</h2>

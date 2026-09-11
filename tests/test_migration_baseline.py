@@ -172,7 +172,19 @@ EXPECTED_SCHEMA_SHA256 = (
     # lock and that refusal, and the two bulk supersession sweeps skip a
     # retired delta. Recomputed against a fresh disposable database with
     # template reuse off.
-    "91fff0728ca264910756e5be59c69183c227d5fc1080d11393f4653fcdb459f8"
+    # #933 adds `project_accepted_record_decision_count`, one `SECURITY
+    # DEFINER` reading owned by the record-decision role and granted to both
+    # runtime capabilities: the count of accepted record decisions Adopt
+    # Baseline refuses to overwrite, on both halves -- the spine's effective
+    # decisions and the legacy Constraint Records. The web capability holds no
+    # privilege on `dependencies`, so the Python guard in front of the command
+    # answered `permission denied` on an enforcing deployment; asking the role
+    # that already holds the read keeps both halves and leaves the boundary
+    # where it was. A function is a schema object this fingerprint reads, so
+    # the digest moves; no relation or sequence is added, so both counts are
+    # unchanged. Recomputed against a fresh disposable database with template
+    # reuse off.
+    "8620cbdb372b4e00f44e9727d20346b98d57e5eda47e4fbd2d13a7608e870ac9"
 )
 
 pytestmark = [pytest.mark.slow, pytest.mark.migration]

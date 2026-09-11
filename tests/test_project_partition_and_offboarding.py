@@ -40,7 +40,7 @@ from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, event as sa_event, select, text
+from sqlalchemy import create_engine, event as sa_event, func, select, text, update
 from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.exc import DBAPIError, ProgrammingError
 from sqlalchemy.orm import Session as OrmSession
@@ -762,6 +762,152 @@ def test_a_second_principal_cannot_take_over_a_declared_transaction(
 
         assert access.current_project_partition(web) == (ours, theirs)
     web_connection.rollback()
+
+
+# --- One request is wider than one transaction (#935, #936) ----------------
+#
+# A route that commits and then keeps working opens a second transaction, and
+# the declaration went with the first one. These two tests are the same walk
+# with and without the request asking to keep it, so what is being proved is
+# the mechanism rather than the happy path.
+
+
+def test_a_commit_ends_the_declaration_when_nothing_asked_to_keep_it(
+    two_projects, pooled_web_engine
+):
+    """The defect, stated as a fact of the seam rather than as a story.
+
+    This is exactly what the upload route met: it committed the delivery, then
+    asked whether the project had adopted a baseline, and read the empty
+    partition (#936).
+    """
+
+    ours, _theirs = two_projects
+    with OrmSession(bind=pooled_web_engine) as web:
+        access.open_project_partition(
+            web, principal_subject=LEAVER.subject, project_id=ours
+        )
+        assert [
+            row.exact_text for row in web.scalars(select(SourceSegment)).all()
+        ] == ["ours-UC-1"]
+
+        web.commit()
+
+        assert web.scalars(select(SourceSegment)).all() == []
+        assert access.current_project_partition(web) is None
+        web.rollback()
+
+
+def test_a_kept_declaration_is_taken_up_again_after_the_request_commits(
+    two_projects, pooled_web_engine
+):
+    """And the same walk, once the request says its unit of work is wider.
+
+    The re-declaration runs the same command, so the roster entry is proved
+    again on the new transaction rather than carried across the commit.
+    """
+
+    ours, _theirs = two_projects
+    with OrmSession(bind=pooled_web_engine) as web:
+        access.open_project_partition(
+            web, principal_subject=LEAVER.subject, project_id=ours
+        )
+        access.keep_partition_declared(web)
+
+        web.commit()
+
+        assert [
+            row.exact_text for row in web.scalars(select(SourceSegment)).all()
+        ] == ["ours-UC-1"]
+        assert access.current_project_partition(web) == (ours,)
+        web.rollback()
+
+
+def test_a_kept_declaration_does_not_excuse_a_caller_changing_scope(
+    member_of_both, pooled_web_engine
+):
+    """#662's rule is untouched by the keeper, which is the point of it.
+
+    The keeper takes a scope up again on the transaction its own commit
+    started. What it must never do is make a *caller's* second, different
+    declaration look like something already permitted -- so the refusal is
+    asserted here with the keeper holding a scope, not only without one.
+    """
+
+    ours, theirs = member_of_both
+    with OrmSession(bind=pooled_web_engine) as web:
+        access.open_project_partition(
+            web, principal_subject=LEAVER.subject, project_id=ours
+        )
+        access.keep_partition_declared(web)
+        web.commit()
+        assert access.current_project_partition(web) == (ours,)
+
+        with pytest.raises(access.PartitionScopeConflict):
+            access.open_project_partition(
+                web, principal_subject=LEAVER.subject, project_id=theirs
+            )
+
+        assert access.current_project_partition(web) == (ours,)
+        web.rollback()
+
+
+def test_a_kept_declaration_the_roster_no_longer_allows_is_given_up(
+    runtime_database, two_projects, pooled_web_engine
+):
+    """Withdrawn between the commit and the next read, and refused -- quietly.
+
+    The re-declaration proves the roster entry again, which is what makes the
+    keeper safe; a person offboarded mid-request must not be carried. But the
+    refusal happens inside an event handler no caller can catch, so it has to
+    leave the transaction usable and the partition empty -- which is exactly
+    what an offboarded person should read -- rather than escape as an
+    unhandled privilege error.
+    """
+
+    ours, _theirs = two_projects
+    with OrmSession(bind=pooled_web_engine) as web:
+        access.open_project_partition(
+            web, principal_subject=LEAVER.subject, project_id=ours
+        )
+        access.keep_partition_declared(web)
+        web.commit()
+
+        with runtime_database.session_factory.begin() as operations:
+            operations.execute(
+                update(ProjectRosterEntry)
+                .where(
+                    ProjectRosterEntry.project_id == ours,
+                    ProjectRosterEntry.principal_subject == LEAVER.subject,
+                )
+                .values(active=False)
+            )
+
+        assert web.scalars(select(SourceSegment)).all() == []
+        assert access.current_project_partition(web) is None
+        # And the transaction is still the caller's to use: a refusal that
+        # poisoned it would fail here rather than answer.
+        assert web.scalar(select(func.count()).select_from(Project)) >= 2
+        web.rollback()
+
+
+def test_giving_the_partition_up_stops_it_being_taken_up_again(
+    two_projects, pooled_web_engine
+):
+    """Closing means finished, even for a session that asked to keep it."""
+
+    ours, _theirs = two_projects
+    with OrmSession(bind=pooled_web_engine) as web:
+        access.open_project_partition(
+            web, principal_subject=LEAVER.subject, project_id=ours
+        )
+        access.keep_partition_declared(web)
+        access.close_project_partition(web)
+
+        web.commit()
+
+        assert web.scalars(select(SourceSegment)).all() == []
+        web.rollback()
 
 
 def test_a_new_transaction_is_the_boundary_for_changing_scope(
