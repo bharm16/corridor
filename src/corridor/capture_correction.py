@@ -44,6 +44,18 @@ apply, and the case this act exists for is exactly the one where that is
 unavailable.  A selected segment outside the challenged capture's own document
 is refused here rather than discovered by operations.
 
+**Where a report lives.**  ``capture_correction_requests`` holds one row per
+report, written only through ``report_capture_correction``, the record-decision
+role's ``SECURITY DEFINER`` command; the runtime capabilities hold ``select``
+and a guard trigger refuses every other write.  Its composite foreign keys are
+what make the binding structural rather than conventional: the Fact is named
+through ``(project_id, document_id, fact_id)``, and both passage columns
+through that same ``document_id``, so a selected passage from another file --
+or another customer's -- is unrepresentable rather than merely refused here.
+The table carries no outcome, status or closure column, because what became of
+a report is answered by the corrected capture and by a lifecycle half ADR-0100
+leaves explicitly undecided.
+
 **What this module may not do, said out loud.**  It changes no accepted value,
 overwrites no Source Fact and no Source Segment, and writes no Project Record
 revision.  The expected interpretation a coordinator types is the reason for a
@@ -72,13 +84,24 @@ screen's seam.
 
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
+from hashlib import sha256
+import re
+from typing import Mapping, Sequence
 
+from sqlalchemy import func, select
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
 from corridor import refusals
-from corridor.models import Document, Fact, SourceSegment
+from corridor.models import (
+    CaptureCorrectionRequest,
+    Document,
+    Fact,
+    SourceSegment,
+)
 from corridor.packet_review import ChildReading, ItemReading
 from corridor.principals import HumanPrincipal, require_human_principal
 from corridor.source_segments import source_segment_locator_words
@@ -89,13 +112,20 @@ __all__ = [
     "CONTROL_PASSAGE",
     "CORRECTION_CONTROL",
     "CORRECTION_SUPPORTING_TEXT",
+    "COMMAND_REFUSAL_TOKEN",
     "CaptureCorrectionRefused",
     "ChallengedCapture",
     "CorrectionRequest",
     "NO_CHANGE_EXIT_UNAVAILABLE",
+    "PassageChoice",
+    "ReportedCorrection",
     "build_correction_request",
     "challenged_capture",
+    "correction_idempotency_key",
     "offers_correction",
+    "passage_choices",
+    "record_correction_request",
+    "reported_corrections",
     "resolve_challenged_capture",
     "withdraw_for_no_change",
 ]
@@ -429,3 +459,213 @@ def withdraw_for_no_change(request: CorrectionRequest) -> None:
         NO_CHANGE_EXIT_UNAVAILABLE,
         delta_id=request.capture.delta_id,
     )
+
+
+# --- Recording one, and reading back what stands ---------------------------
+
+
+#: How many retained passages either side of the cited one the form offers as
+#: choices. It bounds the *picker*, never the rule: a misread almost always
+#: lands next to the cell it should have read, and a workbook rendition can
+#: retain thousands of cells, so a select listing every one of them is a list
+#: nobody can use. ``report_capture_correction`` still accepts any passage of
+#: the capture's own document, and the exact-source view (#831) is where a
+#: coordinator reads one outside this window.
+PASSAGE_CHOICE_WINDOW = 12
+
+
+@dataclass(frozen=True, slots=True)
+class PassageChoice:
+    """One retained passage of the capture's own source, as the form offers it."""
+
+    source_segment_id: int
+    locator: str
+    exact_text: str
+    cited: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ReportedCorrection:
+    """One report that already stands against a capture, as the screen shows it.
+
+    Shown read-only beside the control so a coordinator returning to an item
+    can see that the defect was already reported, by whom, and against which
+    passage. It carries no control of its own: a report is not withdrawn, and
+    a further observation is a further report.
+    """
+
+    request_id: int
+    delta_id: int
+    fact_id: int
+    reported_by_principal: str
+    reported_at: datetime
+    expected_interpretation: str
+    selected_locator: str | None
+
+
+def passage_choices(
+    session: Session, capture: ChallengedCapture
+) -> tuple[PassageChoice, ...]:
+    """The retained passages of this capture's own source, around the cited one.
+
+    Ordered as the source presents them, so a coordinator reads down the rows
+    of the sheet or the spans of the page rather than down a list of ids.
+    """
+
+    if capture.document_id is None:
+        return ()
+    found = list(
+        session.scalars(
+            select(SourceSegment)
+            .where(
+                SourceSegment.project_id == capture.project_id,
+                SourceSegment.document_id == capture.document_id,
+            )
+            .order_by(SourceSegment.ordinal, SourceSegment.id)
+        )
+    )
+    positions = [
+        index
+        for index, row in enumerate(found)
+        if row.id == capture.source_segment_id
+    ]
+    if positions:
+        cited = positions[0]
+        found = found[
+            max(0, cited - PASSAGE_CHOICE_WINDOW) : cited + PASSAGE_CHOICE_WINDOW + 1
+        ]
+    else:
+        found = found[: PASSAGE_CHOICE_WINDOW * 2 + 1]
+    return tuple(
+        PassageChoice(
+            source_segment_id=int(row.id),
+            locator=source_segment_locator_words(row),
+            exact_text=row.exact_text,
+            cited=row.id == capture.source_segment_id,
+        )
+        for row in found
+    )
+
+
+def correction_idempotency_key(request: CorrectionRequest) -> str:
+    """One key per distinct report, so a resubmitted form replays (#457).
+
+    The expected interpretation is in the key because two reports against the
+    same capture that say different things about the passage are two reports;
+    the same words submitted twice are one.
+    """
+
+    material = "\x00".join(
+        [
+            str(request.capture.delta_id),
+            str(request.capture.fact_id),
+            request.capture.fact_content_sha256,
+            str(request.selected_source_segment_id),
+            request.reported_by_principal,
+            request.expected_interpretation,
+        ]
+    )
+    return f"capture-correction:{sha256(material.encode('utf-8')).hexdigest()[:32]}"
+
+
+def record_correction_request(
+    session: Session, request: CorrectionRequest
+) -> CaptureCorrectionRequest:
+    """Append the report through the record-decision role's own command.
+
+    The runtime capabilities hold no write on ``capture_correction_requests``
+    and a guard trigger refuses one that does not arrive through
+    ``report_capture_correction``, so this is the only way in. It runs in the
+    caller's transaction: a rolled-back caller leaves no report and no claim
+    that one was made.
+    """
+
+    capture = request.capture
+    try:
+        answer = session.execute(
+            select(
+                func.report_capture_correction(
+                    capture.project_id,
+                    capture.delta_id,
+                    capture.fact_id,
+                    capture.fact_content_sha256,
+                    capture.source_segment_id,
+                    request.selected_source_segment_id,
+                    request.expected_interpretation,
+                    request.reported_by_principal,
+                    request.reported_at,
+                    correction_idempotency_key(request),
+                )
+            )
+        ).scalar_one()
+    except DBAPIError as exc:
+        raise _command_refusal(request, exc) from exc
+    session.expire_all()
+    return session.get_one(CaptureCorrectionRequest, int(answer["request_id"]))
+
+
+#: How the command names the rule it refused, so the surface prints the
+#: command's own sentence and takes only the machine token off it. Rewriting
+#: those sentences here would put a second, quietly divergent vocabulary in
+#: front of one rule, which is what `delta_refusals` exists to prevent.
+COMMAND_REFUSAL_TOKEN = re.compile(r"capture_correction:([a-z_]+)\s*")
+
+
+def _command_refusal(
+    request: CorrectionRequest, exc: DBAPIError
+) -> CaptureCorrectionRefused:
+    """The command's refusal, as this screen's refusal, with its own words."""
+
+    message = str(getattr(exc, "orig", exc)).strip().splitlines()[0]
+    found = COMMAND_REFUSAL_TOKEN.search(message)
+    return CaptureCorrectionRefused(
+        "refused" if found is None else found.group(1),
+        COMMAND_REFUSAL_TOKEN.sub("", message, count=1).strip() or message,
+        kind=refusals.CONFLICT,
+        delta_id=request.capture.delta_id,
+    )
+
+
+def reported_corrections(
+    session: Session, *, project_id: int, delta_ids: Sequence[int]
+) -> Mapping[int, tuple[ReportedCorrection, ...]]:
+    """Every report that already stands against these findings, by finding.
+
+    One grouped statement rather than one per child: the screen asks this for
+    every change on the item it is about to render.
+    """
+
+    wanted = [int(value) for value in dict.fromkeys(delta_ids)]
+    if not wanted:
+        return {}
+    rows = list(
+        session.execute(
+            select(CaptureCorrectionRequest, SourceSegment)
+            .outerjoin(
+                SourceSegment,
+                SourceSegment.id
+                == CaptureCorrectionRequest.selected_source_segment_id,
+            )
+            .where(
+                CaptureCorrectionRequest.project_id == project_id,
+                CaptureCorrectionRequest.delta_id.in_(wanted),
+            )
+            .order_by(CaptureCorrectionRequest.id)
+        ).all()
+    )
+    found: dict[int, list[ReportedCorrection]] = defaultdict(list)
+    for row, segment in rows:
+        found[int(row.delta_id)].append(
+            ReportedCorrection(
+                request_id=int(row.id),
+                delta_id=int(row.delta_id),
+                fact_id=int(row.fact_id),
+                reported_by_principal=row.reported_by_principal,
+                reported_at=row.reported_at,
+                expected_interpretation=row.expected_interpretation,
+                selected_locator=(
+                    None if segment is None else source_segment_locator_words(segment)
+                ),
+            )
+        )
+    return {key: tuple(value) for key, value in found.items()}

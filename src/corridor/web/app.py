@@ -428,6 +428,17 @@ from corridor.statement_lifecycle import (
 )
 from corridor.evidence_investigator_shadow import observe_shadow_review
 from corridor.consequence_levels import MUST_HANDLE
+from corridor.capture_correction import (
+    CORRECTION_CONTROL,
+    CORRECTION_SUPPORTING_TEXT,
+    CaptureCorrectionRefused,
+    build_correction_request,
+    challenged_capture,
+    offers_correction,
+    passage_choices,
+    record_correction_request,
+    reported_corrections,
+)
 from corridor.packet_review import (
     LEAVE_OPEN,
     FocusedAnswer,
@@ -5564,6 +5575,7 @@ def _review_context(
     judgment: dict | None = None,
     defer_until: str = "",
     restored: dict | None = None,
+    correction: dict | None = None,
 ) -> dict:
     reading = read_review_items(session, project_id=project.id, as_of=now)
     binding = binding_for_session(session)
@@ -5592,6 +5604,13 @@ def _review_context(
                 "guidance": _review_guidance(item),
                 "counts": _review_counts(shown),
                 "answers": (answers or {}) if is_open else {},
+                # ADR-0100's ancillary action, built only for the item that
+                # carries controls: it reads the retained capture behind each
+                # change, and an item nobody opened has no control to read it
+                # for (#836).
+                "corrections": (
+                    _correction_views(session, project, shown) if is_open else {}
+                ),
                 # The pilot's interrupting-packet sample is exactly the items
                 # Corridor placed at "Must handle before this issue"; the level
                 # is read from the item rather than derived a second time here.
@@ -5622,7 +5641,48 @@ def _review_context(
         "judgment_offered": collection_is_pinned(binding),
         "judgment_choices": JUDGMENT_CHOICES,
         "judgment_answer": judgment or {},
+        # What the coordinator had typed into the correction form, handed back
+        # on a refusal so nothing they wrote is lost (#836). The control's own
+        # words come from the module ADR-0100 settled them in, so the template
+        # renders them rather than keeping a second copy that can drift.
+        "correction": correction or {},
+        "correction_control": CORRECTION_CONTROL,
+        "correction_supporting_text": CORRECTION_SUPPORTING_TEXT,
     }
+
+
+# --- ADR-0100's ancillary action about a capture (#836) --------------------
+#
+# The control is offered per change and only where ADR-0084's constrained edit
+# leaves the coordinator nothing to choose, so whether it appears is the
+# domain module's answer and never the template's. What the template gets is
+# the capture the change is showing, the retained passages of that capture's
+# own source to pick from, and every report that already stands -- so a
+# coordinator returning to an item can see the defect was already reported
+# rather than reporting it twice.
+
+
+def _correction_views(session: Session, project: Project, item) -> dict:
+    """Per change: whether the control is offered, and what it needs."""
+
+    if not item.focused:
+        return {}
+    standing = reported_corrections(
+        session,
+        project_id=project.id,
+        delta_ids=[child.delta_id for child in item.children],
+    )
+    views = {}
+    for child in item.children:
+        if not offers_correction(item, child):
+            continue
+        capture = challenged_capture(session, item, child)
+        views[child.delta_id] = {
+            "capture": capture,
+            "passages": passage_choices(session, capture),
+            "reported": standing.get(child.delta_id, ()),
+        }
+    return views
 
 
 def _review_guidance(item) -> str:
@@ -6387,6 +6447,133 @@ def save_focused_answers(
     )
 
 
+# --- ADR-0100's ancillary action, saved on its own (#836) ------------------
+#
+# Its own form and its own route, beside the answers rather than inside them.
+# A sixth option in the outcome control would be a fifth primary decision by
+# construction, because everything in that control is an answer to "what
+# should happen to this source's value?" and this is not one; and a report
+# submitted with the answers would make one Save mean two acts. So this route
+# resolves no delta, writes no Project Record revision, and returns the
+# coordinator to the same item with every child exactly as open as it was.
+#
+# The roster gate is what admits the caller, and no designation is proved on
+# the row: reporting an extraction error writes no accepted authority and
+# makes nothing effective, exactly as the retained correspondence recordings
+# do not (#652), and unlike the decisions on this same screen, which do.
+
+
+@app.post("/review/{slug}/correction", response_class=HTMLResponse)
+def report_extraction_error(
+    request: Request,
+    slug: str,
+    item_key: str = Form(...),
+    correction_delta: str = Form(...),
+    correction_passage: str = Form(""),
+    correction_interpretation: str = Form(""),
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+    clock=Depends(get_review_clock),
+):
+    """Record that one capture is wrong about its source, bound to that capture."""
+
+    project = _project(session, slug, principal)
+    now = clock()
+    typed = {
+        "delta": correction_delta,
+        "passage": correction_passage,
+        "interpretation": correction_interpretation,
+    }
+    reading = read_review_items(session, project_id=project.id, as_of=now)
+    item = reading.item(item_key)
+    child = (
+        next(
+            (
+                row
+                for row in item.children
+                if str(row.delta_id) == correction_delta.strip()
+            ),
+            None,
+        )
+        if item is not None
+        else None
+    )
+    if item is None or child is None:
+        return _review_render(
+            request,
+            session,
+            project,
+            principal=principal,
+            now=now,
+            opened_key="",
+            refusal=_item_left_the_reading(),
+            status_code=409,
+        )
+
+    try:
+        correction = build_correction_request(
+            session,
+            item,
+            child,
+            principal=principal,
+            reported_at=now,
+            selected_source_segment_id=(
+                int(correction_passage) if correction_passage.strip().isdigit() else None
+            ),
+            expected_interpretation=correction_interpretation,
+        )
+        recorded = record_correction_request(session, correction)
+    except CaptureCorrectionRefused as exc:
+        if exc.delta_id is not None and exc.control is not None:
+            return _review_render(
+                request,
+                session,
+                project,
+                principal=principal,
+                now=now,
+                opened_key=item_key,
+                correction=typed,
+                errors=(
+                    ui_primitives.FieldError(
+                        field_id=f"{exc.control}-{exc.delta_id}",
+                        message=str(exc),
+                    ),
+                ),
+                status_code=400,
+            )
+        return _review_render(
+            request,
+            session,
+            project,
+            principal=principal,
+            now=now,
+            opened_key=item_key,
+            correction=typed,
+            refusal=_review_refusal(exc.customer_sentence),
+            status_code=409,
+        )
+
+    session.commit()
+    return _review_render(
+        request,
+        session,
+        project,
+        principal=principal,
+        now=now,
+        opened_key=item_key,
+        saved={
+            "heading": "Reported an extraction error",
+            "detail": (
+                f"{child.subject_name} — {child.field_name}: the capture and "
+                "the passage you selected are retained as report "
+                f"{recorded.id}. The record is unchanged and this change is "
+                "still yours to decide; the corrected reading comes back here."
+            ),
+        },
+        status_code=200,
+    )
+
+
 def _review_saved_heading(outcome: str, count: int) -> str:
     noun = "change" if count == 1 else "changes"
     return {
@@ -6410,6 +6597,7 @@ def _review_render(
     refusal: dict | None = None,
     errors: tuple = (),
     judgment: dict | None = None,
+    correction: dict | None = None,
     status_code: int = 200,
 ):
     """Re-read after a write, so what the coordinator sees is what now stands."""
@@ -6425,6 +6613,7 @@ def _review_render(
         refusal=refusal,
         errors=errors,
         judgment=judgment,
+        correction=correction,
     )
     return _render_review_response(request, context, principal=principal, status_code=status_code)
 

@@ -114,7 +114,17 @@ EXPECTED_SCHEMA_SHA256 = (
     # them mutually exclusive, its own idempotency key and its correction pair.
     # Both append commands change signature. Recomputed against a fresh
     # disposable database.
-    "bff005a0827bf7bd086dc6a4c60c4f6baaaf07bd7e1f07715c46e9e3e4600bd0"
+    # #836 adds `capture_correction_requests` (+1 table, +1 sequence) and the
+    # `report_capture_correction` command: ADR-0100's ancillary action, where a
+    # coordinator reports that one capture is wrong about its source. It
+    # carries the Review Packet family's own record-decision write guard and no
+    # designation trigger -- it writes no accepted authority and makes nothing
+    # effective -- and its composite foreign keys name the Fact through
+    # `(project_id, document_id, fact_id)` and both passage columns through
+    # that same `document_id`, so a selected passage outside the capture's own
+    # source is unrepresentable. Recomputed against a fresh disposable database
+    # with template reuse off.
+    "97d5700a36ec1165c3e587d046584aef7c0269bc8218b04a51c7a7dc6a0f88cf"
 )
 
 pytestmark = [pytest.mark.slow, pytest.mark.migration]

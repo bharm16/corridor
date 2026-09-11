@@ -74,6 +74,7 @@ __all__ = [  # noqa: F405
     "CRITICAL_STRATEGIES",
     "Candidate",
     "CandidateDisposition",
+    "CaptureCorrectionRequest",
     "ClassBRetentionMixin",
     "CohortReceipt",
     "CommitmentLineage",

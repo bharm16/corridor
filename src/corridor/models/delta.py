@@ -53,6 +53,7 @@ __all__ = [
     "DeltaSupersession",
     "CANCELLATION_REASONS",
     "CLOSURE_KINDS",
+    "CaptureCorrectionRequest",
     "OutgoingRequest",
     "OutgoingRequestPlan",
     "OutgoingRequestResponse",
@@ -1233,6 +1234,110 @@ class DeltaReviewPacketReversal(Base):
     reversed_by_principal: Mapped[str] = mapped_column(String(128))
     idempotency_key: Mapped[str] = mapped_column(String(160))
     reversed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class CaptureCorrectionRequest(Base):
+    """One attributable report that a named capture is wrong about its source (#836).
+
+    ADR-0100's ancillary action. It changes nothing in the accepted record and
+    resolves no Proposed Delta, which is why it is a relation of its own rather
+    than a column on either.
+
+    The binding is the composite foreign keys, not the column names.
+    ``fact_id`` is reached through ``(project_id, document_id, fact_id)``, so
+    ``document_id`` is the capture's own document by construction; both segment
+    columns are then reached through that same ``document_id``, so a selected
+    passage from another file -- or another customer's -- is unrepresentable
+    rather than merely refused in Python. ``fact_content_sha256`` is the
+    capture's own identity digest, recorded so a reader can prove the id still
+    names the capture that was challenged.
+
+    ``source_segment_id`` is where the capture said it read the value and
+    ``selected_source_segment_id`` is where the coordinator says it should have
+    been read; they are different columns because reading the wrong cell is one
+    of the defects reported here.
+
+    Written only by ``report_capture_correction``, the record-decision role's
+    command; a guard trigger refuses every other write, and a mistaken report is
+    corrected by making another one.
+    """
+
+    __tablename__ = "capture_correction_requests"
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id", "id", name="uq_capture_correction_requests_project_id"
+        ),
+        UniqueConstraint(
+            "project_id",
+            "idempotency_key",
+            name="uq_capture_correction_requests_key",
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "delta_id"],
+            ["proposed_deltas.project_id", "proposed_deltas.id"],
+            name="fk_capture_correction_requests_delta",
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "document_id", "fact_id"],
+            ["facts.project_id", "facts.document_id", "facts.id"],
+            name="fk_capture_correction_requests_fact",
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "document_id", "source_segment_id"],
+            [
+                "source_segments.project_id",
+                "source_segments.document_id",
+                "source_segments.id",
+            ],
+            name="fk_capture_correction_requests_cited_passage",
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "document_id", "selected_source_segment_id"],
+            [
+                "source_segments.project_id",
+                "source_segments.document_id",
+                "source_segments.id",
+            ],
+            name="fk_capture_correction_requests_selected_passage",
+        ),
+        CheckConstraint(
+            "fact_content_sha256 ~ '^[0-9a-f]{64}$'",
+            name="ck_capture_correction_requests_digest",
+        ),
+        CheckConstraint(
+            "length(btrim(expected_interpretation)) > 0 "
+            "and length(expected_interpretation) <= 2000",
+            name="ck_capture_correction_requests_interpretation",
+        ),
+        CheckConstraint(
+            "length(btrim(reported_by_principal)) > 0",
+            name="ck_capture_correction_requests_principal",
+        ),
+        CheckConstraint(
+            "length(btrim(idempotency_key)) > 0",
+            name="ck_capture_correction_requests_key_text",
+        ),
+        Index(
+            "ix_capture_correction_requests_delta_id", "project_id", "delta_id"
+        ),
+        Index("ix_capture_correction_requests_fact_id", "project_id", "fact_id"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    delta_id: Mapped[int] = mapped_column(BigInteger)
+    document_id: Mapped[int] = mapped_column(BigInteger)
+    fact_id: Mapped[int] = mapped_column(BigInteger)
+    fact_content_sha256: Mapped[str] = mapped_column(String(64))
+    source_segment_id: Mapped[int | None] = mapped_column(BigInteger)
+    selected_source_segment_id: Mapped[int] = mapped_column(BigInteger)
+    expected_interpretation: Mapped[str] = mapped_column(Text)
+    reported_by_principal: Mapped[str] = mapped_column(String(128))
+    reported_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    idempotency_key: Mapped[str] = mapped_column(String(160))
     recorded_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

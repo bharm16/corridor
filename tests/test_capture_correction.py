@@ -27,11 +27,16 @@ Nothing here reads a clock.  Every cutoff and instant is declared.
 
 from __future__ import annotations
 
+from dataclasses import replace
+import html
+import re
 from datetime import datetime, timezone
+from urllib.parse import quote
 
 import pytest
-from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
+from fastapi.testclient import TestClient
+from sqlalchemy import func, select
+from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.orm import Session
 
 from corridor.capture_correction import (
@@ -43,12 +48,17 @@ from corridor.capture_correction import (
     CaptureCorrectionRefused,
     build_correction_request,
     challenged_capture,
+    correction_idempotency_key,
     offers_correction,
+    passage_choices,
+    record_correction_request,
+    reported_corrections,
     resolve_challenged_capture,
     withdraw_for_no_change,
 )
 from corridor.delta_resolution import live_delta_status
 from corridor.models import (
+    CaptureCorrectionRequest,
     DeltaDeferral,
     DeltaDisposition,
     DeltaRecordDecision,
@@ -66,6 +76,14 @@ from corridor.packet_review import (
 )
 from corridor.principals import HumanPrincipal
 from corridor.review_packet_reading import HELD_OUT_OWNER_MISMATCH
+from corridor.web.app import (
+    app,
+    get_human_principal,
+    get_review_clock,
+    get_session,
+)
+
+from browser_session_support import form_fields, submit_form
 
 from packet_review_support import (
     Rendition,
@@ -85,6 +103,13 @@ CUTOFF = datetime(2026, 9, 3, 12, 0, tzinfo=timezone.utc)
 REPORTED_AT = datetime(2026, 9, 3, 11, 30, tzinfo=timezone.utc)
 DECIDED_AT = datetime(2026, 9, 3, 11, 0, tzinfo=timezone.utc)
 EXPECTED = "the owner column on this row reads AT&T Texas, unchanged"
+
+
+@pytest.fixture
+def project(member_project) -> Project:
+    """The roster membership the #331 access gate wants before a screen answers."""
+
+    return member_project(ALICE)
 
 
 class Misread:
@@ -461,3 +486,296 @@ def test_a_correction_that_establishes_no_change_has_no_recorded_exit(
                 )
             )
             session.flush()
+
+
+# --- the report, retained --------------------------------------------------
+
+
+def test_a_recorded_report_retains_the_capture_the_passage_and_the_reason(
+    session: Session, project: Project
+):
+    """Everything ADR-0100 says the process preserves, on the row it writes."""
+
+    built = Misread(session, project)
+    elsewhere = built.incoming.segment("AT&T Texas", cell="D1")
+    request = built.request(passage=elsewhere)
+
+    recorded = record_correction_request(session, request)
+
+    assert recorded.project_id == project.id
+    assert recorded.fact_id == built.fact.id
+    assert recorded.fact_content_sha256 == built.fact.content_sha256
+    assert recorded.document_id == built.incoming.document.id
+    # The passage the capture cited and the passage the coordinator chose are
+    # different columns, because reading the wrong cell is the defect reported.
+    assert recorded.source_segment_id == built.segment.id
+    assert recorded.selected_source_segment_id == elsewhere.id
+    assert recorded.expected_interpretation == EXPECTED
+    assert recorded.reported_by_principal == ALICE.subject
+    assert recorded.reported_at == REPORTED_AT
+    assert recorded.idempotency_key == correction_idempotency_key(request)
+
+
+def test_the_same_report_submitted_twice_replays(
+    session: Session, project: Project
+):
+    """A resubmitted form records the report already written, never a second."""
+
+    built = Misread(session, project)
+
+    first = record_correction_request(session, built.request())
+    again = record_correction_request(session, built.request())
+
+    assert again.id == first.id
+    assert session.scalar(
+        select(func.count())
+        .select_from(CaptureCorrectionRequest)
+        .where(CaptureCorrectionRequest.project_id == project.id)
+    ) == 1
+
+
+def test_the_runtime_cannot_write_a_report_except_through_the_command(
+    session: Session, project: Project
+):
+    """The append boundary, not a convention this module asks callers to keep."""
+
+    built = Misread(session, project)
+    request = built.request()
+
+    with pytest.raises(DBAPIError):
+        with session.begin_nested():
+            session.add(
+                CaptureCorrectionRequest(
+                    project_id=project.id,
+                    delta_id=request.capture.delta_id,
+                    document_id=built.incoming.document.id,
+                    fact_id=built.fact.id,
+                    fact_content_sha256=built.fact.content_sha256,
+                    source_segment_id=built.segment.id,
+                    selected_source_segment_id=built.segment.id,
+                    expected_interpretation=EXPECTED,
+                    reported_by_principal=ALICE.subject,
+                    reported_at=REPORTED_AT,
+                    idempotency_key="raw-insert",
+                )
+            )
+            session.flush()
+
+
+def test_the_command_refuses_a_passage_from_another_source(
+    session: Session, project: Project
+):
+    """The same rule the Python refuses, held where a caller cannot go round it."""
+
+    built = Misread(session, project)
+    request = built.request()
+    elsewhere = built.adopted.segment("AT&T Texas")
+    foreign = replace(request, selected_source_segment_id=int(elsewhere.id))
+
+    with pytest.raises(CaptureCorrectionRefused) as refused:
+        with session.begin_nested():
+            record_correction_request(session, foreign)
+
+    assert refused.value.reason == "passage_not_in_this_source"
+    assert "capture_correction:" not in str(refused.value)
+
+
+def test_a_second_capture_does_not_move_the_retained_report(
+    session: Session, project: Project
+):
+    """The binding survives the round trip through the store, not only in memory."""
+
+    built = Misread(session, project)
+    recorded = record_correction_request(session, built.request())
+
+    later, later_segment = built.incoming.capture(
+        fact_type="external_org", value="AT&T Texas (SBC)", subject_key=subject(1)
+    )
+    support(session, project, later, later_segment)
+    _, item = built.item()
+    (child,) = item.children
+
+    assert child.incoming_fact_id == later.id
+    session.expire_all()
+    stored = session.get(CaptureCorrectionRequest, recorded.id)
+    assert stored.fact_id == built.fact.id
+    assert stored.source_segment_id == built.segment.id
+    assert stored.fact_content_sha256 == built.fact.content_sha256
+    (standing,) = reported_corrections(
+        session, project_id=project.id, delta_ids=[child.delta_id]
+    )[child.delta_id]
+    assert (standing.fact_id, standing.reported_by_principal) == (
+        built.fact.id,
+        ALICE.subject,
+    )
+
+
+def test_the_passages_offered_are_this_sources_own_with_the_cited_one_marked(
+    session: Session, project: Project
+):
+    """The picker is bounded to the capture's own retained source, in source order."""
+
+    built = Misread(session, project)
+    built.incoming.segment("AT&T Texas", cell="D1")
+    built.adopted.segment("somewhere else entirely")
+    _, item = built.item()
+    (child,) = item.children
+
+    choices = passage_choices(session, challenged_capture(session, item, child))
+
+    assert [choice.exact_text for choice in choices] == [
+        "AT&T Texas (SWBT)",
+        "AT&T Texas",
+    ]
+    assert [choice.cited for choice in choices] == [True, False]
+
+
+# --- the screen ------------------------------------------------------------
+
+
+@pytest.fixture
+def web(session):
+    """The app shares the test's transaction and the test's declared instant."""
+
+    app.dependency_overrides[get_session] = lambda: session
+    app.dependency_overrides[get_human_principal] = lambda: ALICE
+    app.dependency_overrides[get_review_clock] = lambda: (lambda: CUTOFF)
+    with TestClient(app) as made:
+        yield made
+    app.dependency_overrides.clear()
+
+
+def _open(web, project, key: str):
+    return web.get(f"/review/{project.slug}?item={quote(key, safe='')}")
+
+
+def test_the_control_renders_outside_the_answers_form_and_says_what_it_is_not(
+    session: Session, project: Project, web
+):
+    """ADR-0100's words, its own form, and no option inside the outcome control."""
+
+    built = Misread(session, project)
+    _, item = built.item()
+
+    body = _open(web, project, item.item_key).text
+
+    assert CORRECTION_CONTROL in body
+    assert "does not change the record" in body
+    assert f'action="/review/{project.slug}/correction"' in body
+    # Its own form, opened after the answers form closes: a nested form would
+    # make one Save mean two acts, and the browser would not send it anyway.
+    answers = body.index(f'action="/review/{project.slug}/answers"')
+    closed = body.index("</form>", answers)
+    assert body.index(f'action="/review/{project.slug}/correction"') > closed
+    # And it is not one of the outcome control's options.
+    outcome = body.index('name="answer_outcome"')
+    assert CORRECTION_CONTROL not in body[outcome : body.index("</select>", outcome)]
+
+
+def test_the_control_is_absent_where_another_source_already_captured_a_value(
+    session: Session, project: Project, web
+):
+    """Edit and apply is the act there, so the report is not offered."""
+
+    _, item = _cross_source(session, project)
+
+    body = _open(web, project, item.item_key).text
+
+    assert CORRECTION_CONTROL not in body
+    assert f'action="/review/{project.slug}/correction"' not in body
+
+
+def test_the_screen_records_a_report_and_leaves_every_change_open(
+    session: Session, project: Project, web
+):
+    """The act the ticket names, and the thing it must not do."""
+
+    built = Misread(session, project)
+    _, item = built.item()
+    (child,) = item.children
+
+    saved = web.post(
+        f"/review/{project.slug}/correction",
+        data={
+            "item_key": item.item_key,
+            "correction_delta": str(child.delta_id),
+            "correction_passage": str(built.segment.id),
+            "correction_interpretation": EXPECTED,
+        },
+    )
+
+    assert saved.status_code == 200
+    assert "Reported an extraction error" in saved.text
+    (recorded,) = session.scalars(
+        select(CaptureCorrectionRequest).where(
+            CaptureCorrectionRequest.project_id == project.id
+        )
+    ).all()
+    assert recorded.fact_id == built.fact.id
+    assert recorded.reported_by_principal == ALICE.subject
+    assert live_delta_status(session, child.delta_id) == "open"
+    for model, identifier in (
+        (DeltaDisposition, DeltaDisposition.delta_id),
+        (DeltaDeferral, DeltaDeferral.delta_id),
+        (DeltaRecordDecision, DeltaRecordDecision.delta_id),
+    ):
+        assert not session.scalars(
+            select(model.id).where(identifier == child.delta_id)
+        ).all()
+    # The change is still offered, and still carries every answer it did.
+    _, again = built.item()
+    assert [row.delta_id for row in again.children] == [child.delta_id]
+
+
+def test_an_incomplete_report_names_the_control_and_keeps_what_was_typed(
+    session: Session, project: Project, web
+):
+    """A refusal a coordinator can correct without retyping the rest."""
+
+    built = Misread(session, project)
+    _, item = built.item()
+    (child,) = item.children
+
+    refused = web.post(
+        f"/review/{project.slug}/correction",
+        data={
+            "item_key": item.item_key,
+            "correction_delta": str(child.delta_id),
+            "correction_passage": "",
+            "correction_interpretation": EXPECTED,
+        },
+    )
+
+    assert refused.status_code == 400
+    assert f"{CONTROL_PASSAGE}-{child.delta_id}" in refused.text
+    # Unescaped, because the reason a coordinator typed carries an ampersand
+    # and the page is right to escape it.
+    assert EXPECTED in html.unescape(refused.text)
+    assert not session.scalars(select(CaptureCorrectionRequest.id)).all()
+
+
+def test_the_form_the_page_renders_is_the_one_the_route_accepts(
+    session: Session, project: Project, web
+):
+    """Submitted as the page emitted it, forgery field and all (#821, #880)."""
+
+    built = Misread(session, project)
+    _, item = built.item()
+
+    body = _open(web, project, item.item_key).text
+    fields = form_fields(body, f"/review/{project.slug}/correction")
+    assert fields is not None and "csrf_token" in fields
+    # `form_fields` reads the hidden inputs; the two visible controls are what
+    # a browser adds, so the passage comes from the option the page itself
+    # marked selected rather than from a value this test chose.
+    fields["correction_passage"] = re.search(
+        r'<option value="(\d+)"\s+selected', body
+    ).group(1)
+    fields["correction_interpretation"] = EXPECTED
+
+    saved = submit_form(web, f"/review/{project.slug}/correction", fields)
+
+    assert saved.status_code == 200
+    (recorded,) = session.scalars(select(CaptureCorrectionRequest)).all()
+    # The passage the form preselected is the one the capture cited.
+    assert recorded.selected_source_segment_id == built.segment.id
