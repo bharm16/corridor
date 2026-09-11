@@ -23,7 +23,7 @@ from datetime import date, datetime, time, timezone
 from pathlib import Path
 from collections.abc import Iterable
 from typing import Any, Callable, Literal
-from urllib.parse import parse_qs, quote, urlsplit
+from urllib.parse import parse_qs, quote, urlencode, urlsplit
 
 from fastapi import (
     BackgroundTasks,
@@ -88,6 +88,7 @@ from corridor.telemetry import (
 )
 from corridor import access
 from corridor import web_boundary
+from corridor.web import artifact_downloads
 from corridor.web import auth
 from corridor.web import ui_primitives
 from corridor.check_configuration import (
@@ -155,6 +156,8 @@ from corridor.models import (
     ProductionRunExplanationRequest,
     ExtractionFailureDiagnosisRequest,
     RevisionChangeExplanationRequest,
+    ReleaseCandidate,
+    ReleasePackage,
     SourceIntakeDraftRequest,
 )
 from corridor.coordination_summary import (
@@ -214,7 +217,7 @@ from corridor.dependency_events import (
     current_statement_evidence_memberships,
 )
 from corridor.web.follow_up_view import chase_view
-from corridor.web.issue_section import issue_view
+from corridor.web.issue_section import artifact_words, issue_view
 from corridor.analytics import EventFamily
 from corridor.measurement_collection import binding_for_session, emit_presentation
 from corridor.web.dependency_view import (
@@ -428,6 +431,9 @@ from corridor.release_authorization import (
     Authorization,
     AuthorizationRefused,
     authorize_release_package,
+    retrieve_candidate_artifact,
+    retrieve_released_artifact,
+    retrieve_released_package,
 )
 from corridor.record_history import (
     UnknownRevision,
@@ -479,6 +485,9 @@ def _csrf_field(context) -> Markup:
 TEMPLATES.env.globals.update(
     label=label,
     field_label=field_label,
+    # The words one configured artifact goes by, so the Issue section and the
+    # Record view's package history name the same file the same way (#830).
+    artifact_words=artifact_words,
     documentation_review_label=documentation_review_label,
     documentation_state_label=documentation_state_label,
     input_reference_label=input_reference_label,
@@ -4239,6 +4248,168 @@ def _declared_cutoff(supplied: str, now: datetime) -> datetime:
         )
     return declared
 
+
+# --- The exact bytes of one prepared or approved issue (#830) --------------
+#
+# A coordinator could read an artifact's type, renderer and digest and had no
+# way to the file. These three routes are that way, and they are reads: they
+# write nothing, retain nothing, and change nothing about the candidate or the
+# receipt they serve from. The legacy single-report downloads above stay where
+# they are and stay out of the pilot; ADR-0086's package is the release model,
+# and a second one is exactly what the audit asked not to be built.
+#
+# **Every identifier is resolved on the server.** The path carries a project
+# slug, a candidate row id or an issue number, and an artifact type. There is
+# no parameter for a storage key or a digest, and the lookups below filter on
+# `project.id` as well as the identifier, so a member of one project naming
+# another project's candidate id or issue number is answered by the same 404
+# that a missing row gives — `_project` having already answered the slug that
+# way for a non-member (#331).
+#
+# **No designation check.** Reading back what was prepared or approved for
+# this project is the project's plain read boundary, the same one `/record`
+# uses. The external-release designation gates the *approval*, PostgreSQL
+# proves it there, and a second gate here would deny a coordinator the file
+# they are being asked to check before approving it.
+#
+# **A digest mismatch raises.** `release_authorization`'s retrieval functions
+# read through the content-addressed store, which verifies on the way out.
+# Nothing below catches that: serving bytes that no longer hash to what the
+# receipt recorded is the one outcome a customer deliverable may not have, so
+# the request fails and the file is not served.
+
+
+@app.get("/work/{slug}/issue/candidates/{candidate_id}/artifacts/{artifact_type}")
+def download_candidate_artifact(
+    slug: str,
+    candidate_id: int,
+    artifact_type: str,
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """Download exactly the bytes one prepared candidate retained.
+
+    Every candidate this project holds is reachable, including one the project
+    has moved past: an un-offerable candidate "stays listed here as it was
+    prepared, so what was proposed to the customer and refused is not lost",
+    and a listing whose files could not be opened would keep only half of it.
+    Inspecting a candidate is not approving one — whether the approval is
+    offered is `issue_view`'s answer, taken from #529's own blockers, and this
+    route offers nothing.
+    """
+
+    project = _project(session, slug, principal)
+    candidate = session.scalars(
+        select(ReleaseCandidate).where(
+            ReleaseCandidate.id == candidate_id,
+            ReleaseCandidate.project_id == project.id,
+        )
+    ).first()
+    if candidate is None:
+        raise HTTPException(404, "no such prepared issue for this project")
+    try:
+        data = retrieve_candidate_artifact(session, candidate, artifact_type)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    return artifact_downloads.download_response(
+        data,
+        filename=artifact_downloads.download_name(
+            project_slug=project.slug,
+            kind=artifact_downloads.CANDIDATE,
+            number=int(candidate.id),
+            artifact_type=artifact_type,
+        ),
+    )
+
+
+@app.get("/work/{slug}/issue/packages/{issue_number}/artifacts/{artifact_type}")
+def download_issue_artifact(
+    slug: str,
+    issue_number: int,
+    artifact_type: str,
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """Download exactly the bytes one approved issue sealed.
+
+    The issue number is the package's position in this project's release
+    chain, which is what a person means by "the third issue", and it is the
+    identifier the Issue section and the Record view both print. An earlier
+    issue answers with the bytes it was approved with however far the accepted
+    record has moved since: the object is content-addressed and the receipt is
+    immutable, so there is nothing here to re-derive.
+    """
+
+    project = _project(session, slug, principal)
+    package = _issue_package(session, project, issue_number)
+    try:
+        data = retrieve_released_artifact(session, package, artifact_type)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    return artifact_downloads.download_response(
+        data,
+        filename=artifact_downloads.download_name(
+            project_slug=project.slug,
+            kind=artifact_downloads.ISSUE,
+            number=int(package.sequence_number),
+            artifact_type=artifact_type,
+        ),
+    )
+
+
+@app.get("/work/{slug}/issue/packages/{issue_number}/bundle")
+def download_issue_bundle(
+    slug: str,
+    issue_number: int,
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """Download one approved issue as the single set it was approved as.
+
+    ADR-0086 makes the *set* the external issue unit, so the set has to be
+    obtainable as one thing rather than as a list of files a person collects
+    by hand and hopes they finished. `retrieve_released_package` reads and
+    verifies every member before any of them is returned, and the archive is
+    written only from that complete verified set: a member whose retained
+    bytes no longer hash to what the receipt recorded raises, and no partial
+    bundle is served.
+    """
+
+    project = _project(session, slug, principal)
+    package = _issue_package(session, project, issue_number)
+    members = retrieve_released_package(session, package)
+    return artifact_downloads.download_response(
+        artifact_downloads.bundle_bytes(members),
+        filename=artifact_downloads.download_name(
+            project_slug=project.slug,
+            kind=artifact_downloads.ISSUE,
+            number=int(package.sequence_number),
+        ),
+    )
+
+
+def _issue_package(
+    session: Session, project: Project, issue_number: int
+) -> ReleasePackage:
+    """One approved package of this project, by its number in the chain.
+
+    The caller has already passed the project through `_project`, and the
+    number is resolved within the project it returned, so an issue number that
+    exists in some other project is not this project's issue number and is
+    answered as missing.
+    """
+
+    package = session.scalars(
+        select(ReleasePackage).where(
+            ReleasePackage.project_id == project.id,
+            ReleasePackage.sequence_number == issue_number,
+        )
+    ).first()
+    if package is None:
+        raise HTTPException(404, "no such approved issue for this project")
+    return package
+
+
 # --- The coordinator's cross-project week (#537) ---------------------------
 #
 # One reading over every adopted project the signed-in person may coordinate,
@@ -4440,10 +4611,17 @@ def record_history_screen(
     source: str = "",
     field: str = "",
     revision: str = "",
+    audit_before: int | None = None,
     principal: HumanPrincipal = Depends(get_human_principal),
     session: Session = Depends(get_session),
 ):
-    """One adopted project's accepted record, its sources, and its history."""
+    """One adopted project's accepted record, its sources, and its history.
+
+    ``audit_before`` pages the audit trail backwards. It is a reading
+    parameter and not a search term: it selects which page of the one capped
+    section is shown, changes the URL and nothing else, and every other
+    section answers the same whatever it says.
+    """
 
     project = _project(session, slug, principal)
     terms = readable_terms(
@@ -4451,13 +4629,17 @@ def record_history_screen(
     )
     refused_revision: int | None = None
     try:
-        history = read_record_history(session, project_id=project.id, terms=terms)
+        history = read_record_history(
+            session, project_id=project.id, terms=terms, audit_before=audit_before
+        )
     except UnknownRevision:
         # A revision this project does not hold is answered, not guessed at:
         # the record is shown as it stands now and the page says why.
         refused_revision = terms.revision
         terms = replace(terms, revision=None)
-        history = read_record_history(session, project_id=project.id, terms=terms)
+        history = read_record_history(
+            session, project_id=project.id, terms=terms, audit_before=audit_before
+        )
     return TEMPLATES.TemplateResponse(
         request,
         "record_history.html",
@@ -4465,6 +4647,18 @@ def record_history_screen(
             "project": project,
             "history": history,
             "refused_revision": refused_revision,
+            # This same reading without an audit page, so the one capped
+            # section can offer its older entries without dropping the
+            # question the rest of the page is answering (#830).
+            "search_query": f"/record/{project.slug}?"
+            + urlencode(
+                {
+                    "conflict": history.terms.conflict,
+                    "source": history.terms.source,
+                    "field": history.terms.field,
+                    "revision": history.terms.revision or "",
+                }
+            ),
             # Exactly one region carries `autofocus`: the answer once one has
             # been asked for, and the question itself before that.
             "focus": "values" if history.terms.any_term else "search",

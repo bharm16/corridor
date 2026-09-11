@@ -445,7 +445,7 @@ def test_a_replaced_candidate_stays_on_the_page_as_history_and_carries_no_act(
 
     view = issue_view(session, project_id=adopted.project.id, as_of=NOW)
     assert [one.candidate_id for one in view.superseded] == [first.id]
-    assert view.superseded[0].outcome == "approved and sent as issue 1"
+    assert view.superseded[0].outcome == "approved for sharing as issue 1"
     assert view.superseded[0].coverage_identity == first.coverage_identity
 
     rendered = week(client, adopted)
@@ -500,7 +500,10 @@ def test_an_approved_candidate_reads_as_approved_and_is_not_offered_again(
     assert view.authorized is not None and view.authorized.issue_number == 1
 
     body = prose(week(client, adopted))
-    assert "Approved and sent as this issue" in body
+    # Approved for sharing, never "sent": the act is an authorization and
+    # Corridor delivers nothing (#830, ADR-0086 as amended by ADR-0091).
+    assert "Approved for sharing" in body
+    assert "Approved and sent" not in body
     assert "Approve this issue for sharing" not in body
 
 

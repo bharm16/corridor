@@ -491,7 +491,7 @@ def test_no_candidate_becomes_an_authorized_issue_without_leaving_the_week(
     # 7. The Issue section shows the authorized package, and offers nothing
     #    that would send it twice.
     readable = prose(week(client, adopted))
-    assert "Approved and sent as this issue" in readable
+    assert "Approved for sharing" in readable
     assert "is issue 1 for this project" in readable
     assert RELEASER.subject in readable
     assert form_fields(week(client, adopted), "/issue/authorize") is None

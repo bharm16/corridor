@@ -566,6 +566,76 @@ def test_release_history_is_the_release_reader(session, project, client):
     body = client.get(f"/record/{project.slug}").text
     assert "coordination-report-2026-09.pdf" in body
     assert "A Releaser" in body
+    # The legacy single-report family stays visible and stays told apart from
+    # the approved packages beside it (#830): it binds no accepted revision,
+    # so merging the two tables would claim a lineage it cannot support.
+    assert "Earlier single-report releases" in body
+
+
+def test_the_package_history_is_the_release_readers_own(session, project, client):
+    """The reader that already existed, wired to the view that needed it.
+
+    `release_history` had no caller in the web layer at all, so an approved
+    issue appeared nowhere in this investigation. It is read here rather than
+    re-derived, which is what keeps ADR-0086's package the one release model.
+    """
+
+    from corridor.release_authorization import release_history
+
+    _adopted(session, project)
+
+    history = read_record_history(session, project_id=project.id)
+
+    assert history.packages == release_history(session, project.id)
+    assert history.packages == ()
+    body = client.get(f"/record/{project.slug}").text
+    assert "What was approved for sharing" in body
+    assert "Nothing has been approved for sharing from this project yet." in body
+    assert "Earlier single-report releases" not in body
+
+
+def test_the_audit_trail_says_when_it_is_cut_and_offers_the_entries_before_it(
+    session, project, client
+):
+    """The one reading here that no search narrows, so the page pages it.
+
+    It was capped at a hundred entries silently: an investigation that stops
+    at a number nobody was told about reads as a complete history and is not
+    one. The cut is stated, and the link carries the search terms so paging
+    the trail does not undo the question the rest of the page is answering.
+    """
+
+    _adopted(session, project)
+    for index in range(101):
+        audit.record(
+            session,
+            principal=COORDINATOR,
+            action=audit.CONFIRM_SOURCE_INTAKE,
+            entity_type=audit.PROJECT,
+            entity_id=project.id,
+            after={"note": f"entry {index}"},
+        )
+    session.flush()
+
+    history = read_record_history(session, project_id=project.id)
+    assert len(history.audit) == 100
+    assert history.audit_has_older is True
+    oldest = history.audit[-1].entry_id
+
+    body = client.get(f"/record/{project.slug}?conflict=U-042").text
+    assert "Only the most recent 100 entries are shown." in body
+    assert f"audit_before={oldest}" in body
+    assert "conflict=U-042" in body
+
+    older = read_record_history(
+        session, project_id=project.id, audit_before=oldest
+    )
+    assert older.audit_before == oldest
+    assert all(entry.entry_id < oldest for entry in older.audit)
+    assert older.audit and older.audit_has_older is False
+    assert "Back to the most recent entries" in client.get(
+        f"/record/{project.slug}?audit_before={oldest}"
+    ).text
 
 
 def test_the_audit_trail_is_scoped_to_this_project(session, project, client):

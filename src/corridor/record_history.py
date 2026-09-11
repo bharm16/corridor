@@ -22,7 +22,9 @@ them itself.
 ``record_projection.read_current_project_record`` and
 ``read_project_record_as_of_revision``, which are the spine's own ending
 (ADR-0075); the Support Assessments come from ``support_assessments``; the
-release history comes from ``report_release.external_report_release_history``.
+legacy release history comes from
+``report_release.external_report_release_history`` and
+the package history comes from ``release_authorization.release_history``.
 Native Coordination Decisions additionally come from ``coordination_history``
 and current publication support from ``support_history``. Original compatibility
 classes come only from ``legacy_history``'s verified retained batch and remain
@@ -98,6 +100,7 @@ from corridor.record_projection import (
     read_current_project_record,
     read_project_record_as_of_revision,
 )
+from corridor.release_authorization import ReleaseHistoryEntry, release_history
 from corridor.report_release import (
     ExternalReportReleaseHistory,
     external_report_release_history,
@@ -110,7 +113,9 @@ from corridor.source_segments import source_segment_locator_words
 # fact, segment and assessment it holds into one page.
 VALUE_LIMIT = 60
 
-# How far back the project-scoped audit trail is read in one page.
+# How far back the project-scoped audit trail is read in one page. It is the
+# one reading here with no search to narrow it, so the page says when it has
+# been cut and links to the entries before the oldest one shown (#830).
 AUDIT_LIMIT = 100
 
 # The words each standing prints. They are the review screen's own outcome
@@ -387,6 +392,9 @@ class RecordHistory:
     deltas_total: int
     releases: tuple[ExternalReportReleaseHistory, ...]
     audit: tuple[AuditReading, ...]
+    packages: tuple[ReleaseHistoryEntry, ...] = ()
+    audit_before: int | None = None
+    audit_has_older: bool = False
     coordination: tuple[CoordinationComparison, ...] = ()
     source_decisions: tuple[SourceDecisionReading, ...] = ()
     publication_support: tuple[NativePublicationSupport, ...] = ()
@@ -417,12 +425,19 @@ def read_record_history(
     project_id: int,
     terms: SearchTerms | None = None,
     value_limit: int = VALUE_LIMIT,
+    audit_before: int | None = None,
 ) -> RecordHistory:
     """Assemble one project's record reading from the records that exist.
 
     ``terms.revision`` selects the as-of reading and is refused when it is not
     this project's, so a mistyped revision is answered rather than silently
     treated as "current".
+
+    ``audit_before`` reads the page of the audit trail older than one entry.
+    The trail is the one reading here that no search narrows, so cutting it at
+    ``AUDIT_LIMIT`` without a way past would have been a silent limit; one
+    extra row is asked for and dropped, which is how the reading knows there
+    is an older page to offer without counting the whole table (#830).
     """
 
     terms = terms or SearchTerms()
@@ -455,6 +470,11 @@ def read_record_history(
             for scope in support_scope_identities(session, project_id, revision_id=as_of)
             if not scope.native_route_active)
     deltas = _delta_history(session, project_id, names, terms)
+    read_audit = read_project_audit(
+        session, project_id=project_id, limit=AUDIT_LIMIT + 1, before=audit_before
+    )
+    audit_has_older = len(read_audit) > AUDIT_LIMIT
+    audit = read_audit[:AUDIT_LIMIT]
     return RecordHistory(
         project_id=project_id,
         terms=terms,
@@ -466,7 +486,10 @@ def read_record_history(
         deltas=deltas,
         deltas_total=len(deltas),
         releases=external_report_release_history(session, project_id),
-        audit=read_project_audit(session, project_id=project_id),
+        audit=audit,
+        packages=release_history(session, project_id),
+        audit_before=audit_before,
+        audit_has_older=audit_has_older,
         coordination=coordination,
         source_decisions=_source_decision_history(session, project_id, terms, names, current, historic),
         publication_support=tuple(publication[key] for key in sorted(publication, key=lambda key: (key[0], key[1] or ""))),
@@ -1029,13 +1052,21 @@ def _json_text(value: Any) -> str | None:
 
 
 def read_project_audit(
-    session: Session, *, project_id: int, limit: int = AUDIT_LIMIT
+    session: Session,
+    *,
+    project_id: int,
+    limit: int = AUDIT_LIMIT,
+    before: int | None = None,
 ) -> tuple[AuditReading, ...]:
     """The audit entries this project owns, most recent first.
 
     ``audit_log`` is entity-scoped and has no project column, so the entries a
     project owns are the ones recorded against the project itself and against
     the source documents registered to it. Nothing else is claimed for it.
+
+    ``before`` is an entry id, and the page is the entries older than it. The
+    append-only id orders the trail; a wall-clock instant would not, because
+    two entries recorded in the same second are still one after the other.
     """
 
     document_ids = tuple(
@@ -1049,6 +1080,8 @@ def read_project_audit(
             (AuditLog.entity_type == "document")
             & (AuditLog.entity_id.in_(document_ids))
         )
+    if before is not None:
+        scope = scope & (AuditLog.id < before)
     return tuple(
         AuditReading(
             entry_id=row.id,

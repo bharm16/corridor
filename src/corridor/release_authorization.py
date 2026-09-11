@@ -57,6 +57,14 @@ PDF nobody can bind to an accepted revision. None is migrated, none is
 adopted as a predecessor, and no revision link is inferred from a timestamp:
 unknown history stays unknown by name (#635).
 
+**Retrieval is reading, never re-rendering.** ``retrieve_candidate_artifact``,
+``retrieve_released_artifact`` and ``retrieve_released_package`` resolve the
+storage key from the candidate's own rows or from the receipt and read the
+bytes back through #487's content-addressed store, which verifies the digest
+on the way out. No caller supplies a key or a digest, nothing is rendered a
+second time, and a set whose retained bytes no longer hash to what was
+recorded raises rather than being handed back (#830).
+
 **Release is not delivery.** Nothing here sends an email, creates a
 transmittal, records an acknowledgment, or tracks a delivery status. #563 is
 where external delivery lives.
@@ -509,6 +517,8 @@ class ReleaseHistoryEntry:
     previous_issue_number: int | None
     source_cutoff: datetime
     coverage_identity: str
+    issue_profile_identity: str
+    issue_profile_version: int
     exceptions: tuple[str, ...]
     artifacts: tuple[ReleasedArtifact, ...]
     package_id: int | None = None
@@ -550,6 +560,8 @@ def release_history(
                 ),
                 source_cutoff=package.source_cutoff,
                 coverage_identity=package.coverage_identity,
+                issue_profile_identity=package.issue_profile_identity,
+                issue_profile_version=int(package.issue_profile_version),
                 exceptions=tuple(coverage.get("exceptions") or ()),
                 artifacts=tuple(
                     ReleasedArtifact(
@@ -593,6 +605,55 @@ def retrieve_released_artifact(
     raise LookupError(
         f"this issue does not contain {artifact_type!r}; it contains "
         + ", ".join(one.artifact_type for one in package_set(session, package))
+    )
+
+
+def retrieve_released_package(
+    session: Session,
+    package: ReleasePackage,
+    *,
+    store: ObjectStore | None = None,
+) -> tuple[tuple[SealedArtifact, bytes], ...]:
+    """Every artifact one package sealed, verified, in the receipt's order.
+
+    The whole set is read before anything is handed back, so a caller
+    assembling one bundle out of it cannot serve a partial or unverified set:
+    a member whose retained bytes no longer hash to what the receipt recorded
+    raises here, with nothing returned (#830).
+    """
+
+    backing = store if store is not None else content_store()
+    return tuple(
+        (one, backing.get(one.storage_key, sha256=one.content_sha256))
+        for one in package_set(session, package)
+    )
+
+
+def retrieve_candidate_artifact(
+    session: Session,
+    candidate: ReleaseCandidate,
+    artifact_type: str,
+    *,
+    store: ObjectStore | None = None,
+) -> bytes:
+    """The exact bytes one prepared artifact was retained with, verified.
+
+    The candidate counterpart of ``retrieve_released_artifact``, and verified
+    the same way: #529 retained these bytes under the digest the candidate's
+    identity is bound to, so a candidate a coordinator inspects before
+    approving it is the same set the approval would seal. The storage key is
+    resolved from the candidate's own rows rather than supplied, so nothing a
+    caller can name reaches an object this candidate does not hold (#830).
+    """
+
+    backing = store if store is not None else content_store()
+    members = candidate_set(session, candidate)
+    for one in members:
+        if one.artifact_type == artifact_type:
+            return backing.get(one.storage_key, sha256=one.content_sha256)
+    raise LookupError(
+        f"this prepared issue does not contain {artifact_type!r}; it contains "
+        + ", ".join(one.artifact_type for one in members)
     )
 
 
