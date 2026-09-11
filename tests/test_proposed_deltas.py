@@ -130,6 +130,7 @@ def test_immutable_occurrence_and_derived_live_state(
         delta_id=delta.id,
         deferred_at=datetime.now(timezone.utc),
         scheduled_by_principal="coordinator-jane",
+        request_identity="schedule:awaiting-city",
         wake_condition="next_monthly_utility_meeting",
         reason="Awaiting city confirmation",
     )

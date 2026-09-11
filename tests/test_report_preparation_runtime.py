@@ -202,6 +202,7 @@ def test_the_first_reading_separates_resolved_deferred_and_open(runtime_database
             delta_id=deferred.id,
             deferred_at=now - timedelta(minutes=5),
             scheduled_by_principal="local:coordinator",
+            request_identity="schedule:report-preparation",
             deferred_until=now + timedelta(days=30),
             wake_condition="awaiting utility reply",
         )

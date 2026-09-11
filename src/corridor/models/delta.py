@@ -278,20 +278,36 @@ class DeltaDeferral(Base):
             name="fk_delta_deferrals_delta",
         ),
         # Scheduling writes no Project Record revision (ADR-0084), so the act
-        # carries no idempotency key; the delta, the instant it was scheduled
-        # at, and the person who scheduled it are its identity, and a retried
-        # Defer returns the receipt already written (#457).
+        # carries no Project Record idempotency key; the delta and the identity
+        # the caller gave its request are what make two calls one act, and a
+        # retried Defer returns the receipt already written (#457, #903). The
+        # instant is deliberately outside that: it records when the act
+        # happened, and a retry is not a new act for having arrived later.
         UniqueConstraint(
             "delta_id",
-            "deferred_at",
-            "scheduled_by_principal",
-            name="uq_delta_deferrals_occurrence",
+            "request_identity",
+            name="uq_delta_deferrals_request",
+        ),
+        CheckConstraint(
+            "length(btrim(request_identity)) > 0",
+            name="ck_delta_deferrals_request_identity",
+        ),
+        # One schedule is replaced at most once, so two submissions composed
+        # against the same reading cannot both be carried out (#903).
+        UniqueConstraint(
+            "supersedes_deferral_id", name="uq_delta_deferrals_supersedes"
         ),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
     delta_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    request_identity: Mapped[str] = mapped_column(String(128))
+    #: The receipt this act replaced, as the caller expected it to stand. Null
+    #: on a first Defer, which replaces nothing.
+    supersedes_deferral_id: Mapped[int | None] = mapped_column(
+        ForeignKey("delta_deferrals.id")
+    )
     deferred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     deferred_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     wake_condition: Mapped[str | None] = mapped_column(String(128))

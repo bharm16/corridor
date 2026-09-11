@@ -18,12 +18,12 @@ owning role can write a second copy.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 
 import pytest
 from sqlalchemy import func, select, text
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 
 from corridor.config import settings
 from corridor.materializer import materialize_quoted_statement_wording
@@ -282,10 +282,11 @@ def _one_delta(session, project) -> ProposedDelta:
 
 
 def test_a_replayed_deferral_returns_the_receipt_already_written(session, project):
-    """Scheduling writes no revision, so the act carries no idempotency key.
+    """Scheduling writes no revision, so the act carries no revision key.
 
-    Its identity is what it already stores: the delta, the instant it was
-    scheduled at, and the person who scheduled it (ADR-0084).
+    Its identity is the delta and what the caller said its request was
+    (ADR-0084, #903).  The instant is deliberately outside that: the replay
+    below arrives a day later, which does not make it a second act.
     """
 
     delta = _one_delta(session, project)
@@ -295,6 +296,7 @@ def test_a_replayed_deferral_returns_the_receipt_already_written(session, projec
         delta_id=delta.id,
         deferred_at=DEFERRED_AT,
         scheduled_by_principal="local:coordinator",
+        request_identity="schedule:one",
         deferred_until=DEFERRED_UNTIL,
         wake_condition="utility responds",
     )
@@ -302,13 +304,15 @@ def test_a_replayed_deferral_returns_the_receipt_already_written(session, projec
         session,
         project_id=project.id,
         delta_id=delta.id,
-        deferred_at=DEFERRED_AT,
+        deferred_at=DEFERRED_AT + timedelta(days=1),
         scheduled_by_principal="local:coordinator",
+        request_identity="schedule:one",
         deferred_until=DEFERRED_UNTIL,
         wake_condition="utility responds",
     )
 
     assert replayed.id == first.id
+    assert replayed.deferred_at == DEFERRED_AT
     assert session.scalar(
         select(func.count())
         .select_from(DeltaDeferral)
@@ -316,7 +320,51 @@ def test_a_replayed_deferral_returns_the_receipt_already_written(session, projec
     ) == 1
 
 
-def test_a_second_deferral_of_one_scheduling_act_is_refused(session, project):
+def test_a_replayed_deferral_asking_for_another_date_is_refused(session, project):
+    """The command's own answer to #903, without a route in front of it.
+
+    Converging on the receipt already written is only honest while the replay
+    is asking for the same thing.  One that asks for a different return date
+    is not a replay of that act: answering with the old receipt would report
+    success for a schedule the record does not hold, which is exactly the
+    silent failure #903 was filed for.  So it is refused, nothing is written,
+    and the receipt keeps the date it was recorded with.
+    """
+
+    delta = _one_delta(session, project)
+    first = record_delta_deferral(
+        session,
+        project_id=project.id,
+        delta_id=delta.id,
+        deferred_at=DEFERRED_AT,
+        scheduled_by_principal="local:coordinator",
+        request_identity="schedule:one",
+        deferred_until=DEFERRED_UNTIL,
+    )
+    session.flush()
+
+    with pytest.raises(DBAPIError) as refused, session.begin_nested():
+        record_delta_deferral(
+            session,
+            project_id=project.id,
+            delta_id=delta.id,
+            deferred_at=DEFERRED_AT,
+            scheduled_by_principal="local:coordinator",
+            request_identity="schedule:one",
+            deferred_until=DEFERRED_UNTIL + timedelta(days=14),
+        )
+
+    assert "resolve_delta:schedule_bound_to_other_content" in str(refused.value)
+    session.expire_all()
+    assert session.get(DeltaDeferral, first.id).deferred_until == DEFERRED_UNTIL
+    assert session.scalar(
+        select(func.count())
+        .select_from(DeltaDeferral)
+        .where(DeltaDeferral.delta_id == delta.id)
+    ) == 1
+
+
+def test_a_second_deferral_of_one_scheduling_request_is_refused(session, project):
     delta = _one_delta(session, project)
     project_id, delta_id = project.id, delta.id
     record_delta_deferral(
@@ -325,6 +373,7 @@ def test_a_second_deferral_of_one_scheduling_act_is_refused(session, project):
         delta_id=delta_id,
         deferred_at=DEFERRED_AT,
         scheduled_by_principal="local:coordinator",
+        request_identity="schedule:one",
         deferred_until=DEFERRED_UNTIL,
     )
     session.flush()
@@ -334,19 +383,21 @@ def test_a_second_deferral_of_one_scheduling_act_is_refused(session, project):
     # the wrong reason.
     with as_role(session, DECISION_ROLE):
         with pytest.raises(
-            IntegrityError, match="uq_delta_deferrals_occurrence"
+            IntegrityError, match="uq_delta_deferrals_request"
         ), session.begin_nested():
             session.execute(
                 text(
                     "insert into delta_deferrals (project_id, delta_id, deferred_at, "
-                    "  deferred_until, wake_condition, scheduled_by_principal, reason) "
+                    "  deferred_until, wake_condition, scheduled_by_principal, reason, "
+                    "  request_identity) "
                     "values (:project_id, :delta_id, :deferred_at, :deferred_until, "
-                    "  null, 'local:coordinator', 'a retry that slipped the command')"
+                    "  null, 'local:coordinator', 'a retry that slipped the command', "
+                    "  'schedule:one')"
                 ),
                 {
                     "project_id": project_id,
                     "delta_id": delta_id,
-                    "deferred_at": DEFERRED_AT,
+                    "deferred_at": DEFERRED_AT + timedelta(days=1),
                     "deferred_until": DEFERRED_UNTIL,
                 },
             )

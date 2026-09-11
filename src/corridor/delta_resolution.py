@@ -327,10 +327,16 @@ class ChildDecisionRequest:
     # A source contradiction is a human reading of the delta, not a column on
     # it, so the coordinator says when one resolution settles one.
     contradiction: bool = False
-    # Deferral only.
+    # Deferral only.  A deferral writes no Project Record revision, so
+    # ``idempotency_key`` above is not a revision's key here: it is the
+    # identity the caller gives *this request*, and it is what makes a replay
+    # one act with the original rather than a second schedule (#903).
     deferred_until: datetime | None = None
     wake_condition: str | None = None
     deferral_reason: str | None = None
+    # The scheduling receipt the caller believed was in force. A reschedule
+    # names it; a first Defer of an unscheduled change names nothing.
+    supersedes_deferral_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -1235,9 +1241,11 @@ def defer_delta(
                 delta_id=delta.id,
                 deferred_at=request.decided_at.astimezone(timezone.utc),
                 scheduled_by_principal=principal.subject,
+                request_identity=request.idempotency_key,
                 deferred_until=request.deferred_until,
                 wake_condition=request.wake_condition,
                 reason=request.deferral_reason,
+                supersedes_deferral_id=request.supersedes_deferral_id,
             )
             deferral_id = int(receipt.id)
     except DBAPIError as exc:

@@ -181,6 +181,7 @@ def _defer(
         delta_id=delta.id,
         deferred_at=DECIDED_AT,
         scheduled_by_principal=ALICE.subject,
+        request_identity=f"schedule:{uuid4().hex}",
         deferred_until=until,
         wake_condition=wake_condition,
     )

@@ -140,6 +140,12 @@ REFUSAL_VOCABULARY: tuple[RefusalCode, ...] = (
         BOTH,
         "an accepted or edited value names the Source Facts it makes effective",
     ),
+    # #903's two scheduling refusals, and the blank request identity beside
+    # them.  All three are the command's own for the reason stated above: each
+    # is decided by rows a competing submission can write between a pre-check
+    # and the insert, so the honest answer is the one taken under the lock the
+    # command holds.
+    RefusalCode("missing_request_identity", REFUSED, DATABASE_ONLY),
     RefusalCode("missing_support", UNSUPPORTED, BOTH),
     RefusalCode("missing_wake_condition", REFUSED, DATABASE_ONLY),
     RefusalCode(
@@ -149,7 +155,9 @@ REFUSAL_VOCABULARY: tuple[RefusalCode, ...] = (
         "an organization change says whether it corrects a wrong name or "
         "records that ownership moved",
     ),
+    RefusalCode("schedule_bound_to_other_content", REFUSED, DATABASE_ONLY),
     RefusalCode("stale_accepted_revision", STALE, BOTH),
+    RefusalCode("stale_schedule", REFUSED, DATABASE_ONLY),
     RefusalCode(
         "subject_mismatch",
         REFUSED,

@@ -451,10 +451,13 @@ DECLARED_VOCABULARY: tuple[tuple[str, str, str], ...] = (
     ("missing_idempotency_key", REFUSED, DATABASE_ONLY),
     ("missing_principal", REFUSED, DATABASE_ONLY),
     ("missing_record_effect", REFUSED, BOTH),
+    ("missing_request_identity", REFUSED, DATABASE_ONLY),
     ("missing_support", UNSUPPORTED, BOTH),
     ("missing_wake_condition", REFUSED, DATABASE_ONLY),
     ("organization_change_kind_required", REFUSED, PYTHON_PRECHECK),
+    ("schedule_bound_to_other_content", REFUSED, DATABASE_ONLY),
     ("stale_accepted_revision", STALE, BOTH),
+    ("stale_schedule", REFUSED, DATABASE_ONLY),
     ("subject_mismatch", REFUSED, BOTH),
     ("superseded_delta", REFUSED, BOTH),
     ("unauthorized_writer", REFUSED, DATABASE_ONLY),
@@ -591,11 +594,20 @@ def test_the_declared_vocabulary_gives_every_code_a_status_and_one_raiser() -> N
 
 
 def test_every_refusal_the_command_raises_is_declared() -> None:
-    """The plpgsql is the authority, parsed with the runtime's own expression."""
+    """The plpgsql is the authority, parsed with the runtime's own expression.
 
-    source = Path(
-        "src/corridor/migrations/source_append_commands/resolve_delta.py"
-    ).read_text(encoding="utf-8")
+    Both modules that spell this family's commands are read. ``resolve_delta``
+    creates them and ``delta_deduplication`` replaces two bodies in the same
+    revision, so the deployed Defer -- and every refusal only it raises
+    (#903) -- lives in the second one.
+    """
+
+    source = "".join(
+        Path(
+            f"src/corridor/migrations/source_append_commands/{name}.py"
+        ).read_text(encoding="utf-8")
+        for name in ("resolve_delta", "delta_deduplication")
+    )
     raised = set(REFUSAL_TOKEN.findall(source))
 
     assert raised == set(RESOLVE_DELTA_REFUSAL_CODES)
