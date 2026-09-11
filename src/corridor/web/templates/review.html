@@ -689,6 +689,11 @@
             {%- if typed.passage == passage.source_segment_id|string %} selected
             {%- elif not typed.passage and passage.cited %} selected{% endif %}>
             {{ passage.locator }}: {{ passage.exact_text }}
+            {#- A passage the retained structure does not hold to this subject
+                and field is still listed and still selectable: the coordinator
+                may have grounds to name it, and choosing one answers in the
+                approved words rather than leaving a silently inert row (#945). -#}
+            {%- if not passage.applicable %} (cannot support this change){% endif %}
           </option>
           {%- endfor %}
         </select>

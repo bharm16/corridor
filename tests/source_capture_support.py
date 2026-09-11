@@ -50,12 +50,49 @@ from corridor.models import (
     SourceSegment,
 )
 from corridor.source_append import SegmentValues, append_fact, append_source_segments
+from corridor.vocabulary import STRUCTURED_RECORD_HEADINGS, TEMPLATE_FIELDS
 
 from harness_support import as_role
 
 
 SHEET = "Utility Conflicts"
 CAPTURE_PROMPT_VERSION = "source_capture_fixture_v1"
+
+
+def heading_for(field: str) -> str:
+    """The heading a published UCM form prints this canonical field under.
+
+    Read out of the released vocabulary rather than typed here, because a
+    fixture that spelled its own headings would prove a correction applicable
+    against a column mapping the product does not have (#945).
+    """
+
+    for headings in (
+        {field: column for field, column in TEMPLATE_FIELDS.items()},
+        {field: heading for heading, field in STRUCTURED_RECORD_HEADINGS.items()},
+    ):
+        if field in headings:
+            return headings[field]
+    raise KeyError(f"no published heading names {field!r}")
+
+
+def append_header_row(
+    rendition: "Rendition", columns: dict[str, str], *, row: int = 1
+) -> dict[str, SourceSegment]:
+    """Append this rendition's own column header row: column letter -> field.
+
+    A structured capture's subject is its worksheet row and its field is its
+    column, and the column is named by the sheet's own header row -- which is
+    how ``facts.append_structured_cell_facts`` files every one of them. A
+    fixture workbook with no header row therefore says nothing about what any
+    of its columns carry, so every module that reports a wrong extraction over
+    one builds this first (#945).
+    """
+
+    return {
+        letter: rendition.segment(heading_for(field), cell=f"{letter}{row}")
+        for letter, field in columns.items()
+    }
 
 
 @contextmanager

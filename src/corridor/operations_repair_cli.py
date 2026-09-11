@@ -151,6 +151,11 @@ def main(argv: list[str] | None = None, *, session_factory=None) -> int:
                         "request_id": outcome.request_id,
                         "delta_id": outcome.delta_id,
                         "outcome": outcome.outcome,
+                        # Why the correction was or was not admitted at all
+                        # (#945): an operator reading this receipt should not
+                        # have to open the result row to find out that the
+                        # reported passage carried nothing for this conflict.
+                        "applicability_verdict": outcome.applicability_verdict,
                         "result_id": outcome.result_id,
                         "retirement_id": outcome.retirement_id,
                         "corrected_fact_id": outcome.corrected_fact_id,

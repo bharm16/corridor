@@ -1,21 +1,36 @@
 """The misread capture every correction test starts from (#836, #842, ADR-0101).
 
-One accepted value, one revision that read the same cell wrong, and the two
-other retained cells of that revision a correction can be pointed at: the one
-the capture should have read, and one that says something else again. Two test
-modules build the same scenario -- the lifecycle properties and the operator
-runbook that performs it -- and a second copy of it would let them drift about
-what "the same misread" means.
+One accepted value, and one revision that read the challenged conflict's own
+row through the wrong column. Two test modules build the same scenario -- the
+lifecycle properties and the operator runbook that performs it -- and a second
+copy of it would let them drift about what "the same misread" means.
 
 The accepted record really holds this subject and field, which is what makes a
 *no-change* recomparison reachable at all: a corrected capture can only match an
 accepted value that exists.
+
+**The workbook is laid out the way a UCM workbook is laid out (#945).** A row
+is a Utility Conflict and a column is a field, which is not this fixture's
+convention: ``facts.append_structured_cell_facts`` files every structured
+capture under ``sheet_name!worksheet_row_number`` and takes its field from the
+sheet's own header row. So row 1 is the header, row 2 is the one conflict, and
+the challenged capture reads that conflict's **Required By** cell as its
+``field`` -- a wrong-column misreading of the right row, which is the defect
+the correction reports and the one whose fix is a single unambiguous cell.
+
+There is exactly one passage that can support a value for one subject and one
+field, and it is ``correct``: column C of row 2. Two cells cannot both be it,
+so a scenario that needs the corrected value to *differ* from the accepted one
+builds the fixture with a different ``correct_text`` rather than pointing at a
+second cell. Under the old layout those alternatives sat at C2 and C3 -- rows
+2 and 3 of the sheet, which is to say two other Utility Conflicts.
 
 Nothing here reads a clock. Every instant and cutoff is declared.
 """
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timezone
 from uuid import uuid4
 
@@ -25,9 +40,12 @@ from corridor.capture_correction import (
     build_correction_request,
     record_correction_request,
 )
+from corridor.correction_applicability import PassageApplicability, assess_passage
 from corridor.models import Project, SourceSegment
 from corridor.packet_review import read_review_items
 from corridor.principals import HumanPrincipal
+
+from source_capture_support import append_header_row
 
 from packet_review_support import (
     Rendition,
@@ -56,6 +74,17 @@ STILL_DIFFERENT_TEXT = "1003+00"
 FIELD = "station_from"
 EXPECTED = "the station column on this row reads 1001+00, unchanged"
 
+#: The one conflict this scenario is about, as a worksheet row under the header.
+CONFLICT_ROW = 2
+#: The column the challenged field is published in, and the column the capture
+#: wrongly read it from. Both are named by the rendition's own header row.
+FIELD_COLUMN = "C"
+WRONG_COLUMN = "D"
+#: What ``WRONG_COLUMN`` actually carries. Two date fields in adjacent columns
+#: is the maintainer's own example of a substitution a correction may not make.
+WRONG_FIELD = "need_date"
+ALTERNATE_WRONG_FIELD = "committed_date"
+
 
 class Misread:
     """One accepted value, and a revision that misread the same cell.
@@ -64,10 +93,21 @@ class Misread:
     makes a *no-change* recomparison reachable at all: a corrected capture can
     only match an accepted value that exists.
 
-    ``correct`` is the passage the coordinator points at -- a retained cell of
-    the same revision whose text is the accepted value. ``divergent`` is a
-    retained cell of that same revision saying something else again, for the
-    case where the correction still differs.
+    ``correct`` is the passage the coordinator points at: the challenged
+    conflict's own cell in the challenged field's own column, which is the one
+    passage the retained structure holds to this subject and this field.
+    ``wrong_field_cell`` is the same conflict's cell in the neighbouring
+    column -- the right row under the wrong field, which a correction may not
+    substitute (#945).
+
+    ``correct_text`` is what that cell says, so a scenario needing the
+    corrected value to differ from the accepted one asks for a different text
+    rather than a different cell.
+
+    ``header=False`` retains the same cells under a sheet that names none of
+    its columns, which is the source that settles nothing either way: the
+    report is still built and retained, and the investigation is the half that
+    must refuse to conclude anything from it.
     """
 
     def __init__(
@@ -79,23 +119,31 @@ class Misread:
         accepted_text: str = ACCEPTED_TEXT,
         misread_text: str = MISREAD_TEXT,
         correct_text: str | None = None,
-        divergent_text: str = STILL_DIFFERENT_TEXT,
+        header: bool = True,
     ) -> None:
         self.session = session
         self.project = project
         self.field = field
         self.accepted_text = accepted_text
         correct_text = accepted_text if correct_text is None else correct_text
+        self.subject_key = subject(CONFLICT_ROW)
+        neighbouring = (
+            ALTERNATE_WRONG_FIELD if field == WRONG_FIELD else WRONG_FIELD
+        )
         self.adopted = Rendition(session, project, f"ucm-2026-08-{uuid4().hex[:6]}.xlsx")
         accepted, _ = self.adopted.capture(
-            fact_type=field, value=accepted_text, subject_key=subject(1)
+            fact_type=field, value=accepted_text, subject_key=self.subject_key
         )
         self.revision_id = accept_baseline_fact(session, project, accepted)
         baseline = register_baseline(
             session, project, self.adopted.document, self.revision_id
         )
         register_source_row(
-            session, project, baseline, row_number=1, business_identity="U-001"
+            session,
+            project,
+            baseline,
+            row_number=CONFLICT_ROW,
+            business_identity="U-001",
         )
         register_output_template(
             session, project, identity="district-ucm-template", version="v3"
@@ -103,14 +151,39 @@ class Misread:
         self.incoming = Rendition(
             session, project, f"ucm-2026-09-{uuid4().hex[:6]}.xlsx"
         )
+        # What this revision's columns carry, in the workbook's own words. The
+        # header row is what makes "column C is this field" a retained fact
+        # about the source rather than a fixture's private convention.
+        self.headings = (
+            append_header_row(
+                self.incoming,
+                {FIELD_COLUMN: field, WRONG_COLUMN: neighbouring},
+            )
+            if header
+            else {}
+        )
+        # The misreading: the challenged conflict's own row, read through the
+        # neighbouring column.
         self.fact, self.segment = self.incoming.capture(
-            fact_type=field, value=misread_text, subject_key=subject(1), cell="C1"
+            fact_type=field,
+            value=misread_text,
+            subject_key=self.subject_key,
+            cell=f"{WRONG_COLUMN}{CONFLICT_ROW}",
         )
         self.support = support(session, project, self.fact, self.segment)
-        # The two other retained cells of this same revision: the one the
-        # capture should have read, and one that says something else again.
-        self.correct = self.incoming.segment(correct_text, cell="C2")
-        self.divergent = self.incoming.segment(divergent_text, cell="C3")
+        # The one passage that carries this field for this conflict, and the
+        # neighbouring cell that carries a different field for the same one.
+        self.correct = self.incoming.segment(
+            correct_text, cell=f"{FIELD_COLUMN}{CONFLICT_ROW}"
+        )
+        # The cited cell is the neighbouring column's, which is exactly what
+        # a wrong-field selection looks like when a test needs one.
+        self.wrong_field_cell = self.segment
+        # And the next conflict down, in this field's own column: a cell that
+        # reads perfectly well and describes somebody else (#945).
+        self.other_conflicts_cell = self.incoming.segment(
+            STILL_DIFFERENT_TEXT, cell=f"{FIELD_COLUMN}{CONFLICT_ROW + 1}"
+        )
         (self.delta,) = append_deltas(
             session,
             project,
@@ -118,7 +191,7 @@ class Misread:
             source_revision="2026-09",
             values=[
                 modify(
-                    subject_key=subject(1),
+                    subject_key=self.subject_key,
                     field_name=field,
                     accepted_value=accepted_text,
                     proposed_value=misread_text,
@@ -140,14 +213,53 @@ class Misread:
         )
         return reading, item
 
+    def applicability(
+        self, *, passage: SourceSegment | None = None
+    ) -> PassageApplicability:
+        """What the retained source structure says about one of these passages.
+
+        Computed from the same rows the product computes it from, so a test
+        that hands this to ``record_correction_result`` is handing it the real
+        verdict rather than a convenient one -- which is the whole of what that
+        command refuses to take on trust (#945).
+        """
+
+        return assess_passage(
+            self.session,
+            project_id=int(self.project.id),
+            subject_identity=self.subject_key,
+            field=self.field,
+            selected=passage if passage is not None else self.correct,
+        )
+
+    def report_bypassing_the_picker(self, passage: SourceSegment):
+        """One retained report over a passage the screen would have refused.
+
+        ``build_correction_request`` refuses a selection the retained structure
+        contradicts, so a report naming one exists only where somebody went
+        round the screen -- and that caller is exactly who the authoritative
+        path has to answer for itself (#945). Everything else about the report
+        is what the screen would have written.
+        """
+
+        request = replace(
+            self._request(), selected_source_segment_id=int(passage.id)
+        )
+        return record_correction_request(self.session, request)
+
     def report(self, *, passage: SourceSegment | None = None):
         """The retained extraction-error report operations will act on."""
+
+        return record_correction_request(self.session, self._request(passage=passage))
+
+    def _request(self, *, passage: SourceSegment | None = None):
+        """The request the screen builds, refusals and all."""
 
         _, item = self.item()
         child = next(
             row for row in item.children if row.delta_id == self.delta.id
         )
-        request = build_correction_request(
+        return build_correction_request(
             self.session,
             item,
             child,
@@ -156,6 +268,5 @@ class Misread:
             selected_source_segment_id=(passage or self.correct).id,
             expected_interpretation=EXPECTED,
         )
-        return record_correction_request(self.session, request)
 
 
