@@ -8,16 +8,31 @@ on the template that would actually be deployed rather than on the Python.
 import json
 import pathlib
 import re
+import sys
 
 import aws_cdk as cdk
 import pytest
 from aws_cdk.assertions import Match, Template
 
+from corridor_infra import application_stack
 from corridor_infra.account_foundation_stack import CorridorAccountFoundationStack
 from corridor_infra.application_stack import CorridorApplicationStack
 from corridor_infra.control_plane_stack import CorridorControlPlaneStack
 from corridor_infra.data_stack import CorridorDataStack
 from corridor_infra.network_stack import CorridorNetworkStack
+from scripts import container_entrypoint
+
+# The deployment contract the release and the disposition provider read off
+# these stacks. `scripts/` is a regular package that imports the standard
+# library only, so this environment can read it without the application's
+# dependencies -- which is also why the config-name tests below read
+# `src/corridor/config.py` by path rather than importing pydantic-settings.
+sys.path.insert(0, str(pathlib.Path(__file__).parents[2]))
+from scripts.release_contract import (  # noqa: E402
+    MIGRATION_CONTAINER_NAME,
+    RELEASE_STACK_OUTPUTS,
+    STACK_OUTPUT_READERS,
+)
 
 ENV = cdk.Environment(account="111111111111", region="us-east-2")
 
@@ -43,8 +58,20 @@ def _app_context() -> dict:
     return json.loads(CDK_JSON.read_text())["context"]
 
 
-def _build(**overrides):
-    """Build all stacks; preserve the existing four-item fixture interface."""
+def _build(**overrides) -> dict[str, Template]:
+    """Synthesize every stack, keyed by name.
+
+    Returns a template per stack rather than a tuple. The previous four-item
+    tuple built the control-plane stack and then dropped it from the return
+    value, so `test_bootstrap_policies`'s generic boundary sweeps -- the ones
+    that exist because a hand-written action comparison missed two real grants
+    -- ran against four of the five stacks. Nothing decided that; a discarded
+    tuple element did. Returning a mapping means a caller takes the stack it
+    wants by name and a sweep iterates whatever this builds, so a sixth stack
+    joins those sweeps the day it is added.
+
+    `**overrides` still reaches the application stack's keyword arguments only.
+    """
     app = cdk.App(context=_app_context())
     foundation = CorridorAccountFoundationStack(
         app, "F", env=ENV,
@@ -82,59 +109,23 @@ def _build(**overrides):
     )
     kwargs.update(overrides)
     application = CorridorApplicationStack(app, "A", env=ENV, **kwargs)
-    return foundation, network, data, application
+    return {
+        "foundation": Template.from_stack(foundation),
+        "network": Template.from_stack(network),
+        "control": Template.from_stack(control),
+        "data": Template.from_stack(data),
+        "application": Template.from_stack(application),
+    }
 
 
 @pytest.fixture(scope="module")
 def stacks():
-    app = cdk.App(context={**_app_context(), "corridor:webDesiredCount": 0})
-    foundation = CorridorAccountFoundationStack(
-        app,
-        "F",
-        env=ENV,
-        github_repo="bharm16/corridor",
-        github_environment="nonproduction",
-    )
-    network = CorridorNetworkStack(app, "N", env=ENV)
-    control = CorridorControlPlaneStack(
-        app, "C", env=ENV, vpc=network.vpc,
-        database_security_group=network.control_db_sg,
-    )
-    data = CorridorDataStack(
-        app, "D", env=ENV, vpc=network.vpc, database_security_group=network.db_sg
-    )
-    application = CorridorApplicationStack(
-        app,
-        "A",
-        env=ENV,
-        vpc=network.vpc,
-        alb_security_group=network.alb_sg,
-        web_security_group=network.web_sg,
-        batch_security_group=network.batch_sg,
-        migration_security_group=network.migration_sg,
-        database=data.database,
-        artifact_bucket=data.artifact_bucket,
-        web_db_secret=data.web_db_secret,
-        worker_db_secret=data.worker_db_secret,
-        control_database=control.database,
-        control_operations_secret=control.operations_secret,
-        control_resolver_secret=control.resolver_secret,
-        customer_routing_secret=data.customer_routing_secret,
-        customer_id="synthetic-a", customer_environment_id="synthetic-nonproduction",
-        deployment_id="corridor-nonproduction", data_class="synthetic",
-        image_tag="0123456789abcdef0123456789abcdef01234567",
-        web_desired_count=0,
-        certificate_arn=DUMMY_CERT,
-        public_hostname="pilot.example.com",
-        sign_in_sender="no-reply@example.com",
-    )
-    return {
-        "foundation": Template.from_stack(foundation),
-        "network": Template.from_stack(network),
-        "data": Template.from_stack(data),
-        "control": Template.from_stack(control),
-        "application": Template.from_stack(application),
-    }
+    """The same five templates `_build` produces, synthesized once per module.
+
+    This used to repeat `_build`'s twenty keyword arguments forty lines below
+    it, so the two constructions could drift apart silently.
+    """
+    return _build()
 
 
 # --- cost -------------------------------------------------------------
@@ -184,8 +175,7 @@ def test_worker_service_runs_the_existing_supervisor_with_its_own_health_check(s
 def test_serving_requires_a_worker_and_the_worker_has_an_operational_alarm():
     with pytest.raises(ValueError, match="workerDesiredCount"):
         _build(web_desired_count=1, worker_desired_count=0)
-    _, _, _, application = _build(web_desired_count=1, worker_desired_count=1)
-    template = Template.from_stack(application)
+    template = _build(web_desired_count=1, worker_desired_count=1)["application"]
     template.resource_count_is("AWS::ECS::Service", 2)
     alarms = template.find_resources("AWS::CloudWatch::Alarm")
     worker_alarms = [value["Properties"] for key, value in alarms.items()
@@ -525,28 +515,22 @@ def test_env_and_secret_names_exist_in_corridor_config():
     }
     readable = aliases | plain
 
-    # Names the image entrypoint consumes to compose the URLs config.py reads.
-    entrypoint_inputs = {
-        "CORRIDOR_DB_HOST",
-        "CORRIDOR_DB_PORT",
-        "CORRIDOR_DB_NAME",
-        "CORRIDOR_DB_ADMIN_USERNAME",
-        "CORRIDOR_DB_ADMIN_PASSWORD",
-        "CORRIDOR_TASK_ROLE",
-        "CORRIDOR_CONTROL_DB_HOST", "CORRIDOR_CONTROL_DB_PORT", "CORRIDOR_CONTROL_DB_NAME",
-        "CORRIDOR_CONTROL_OWNER_DB_USERNAME", "CORRIDOR_CONTROL_OWNER_DB_PASSWORD",
-        "CORRIDOR_CONTROL_OPERATIONS_DB_USERNAME", "CORRIDOR_CONTROL_OPERATIONS_DB_PASSWORD",
-        "CORRIDOR_CONTROL_RESOLVER_DB_USERNAME", "CORRIDOR_CONTROL_RESOLVER_DB_PASSWORD",
-    }
+    # The entrypoint declares what it consumes; this asserts the two halves of
+    # that declaration against config.py rather than retyping either.
+    shared = container_entrypoint.SETTINGS_COLLISIONS
+    entrypoint_only = container_entrypoint.ENTRYPOINT_INPUTS - shared
 
-    assert "CORRIDOR_WEB_DB_PASSWORD" in readable
-    assert "CORRIDOR_WORKER_DB_PASSWORD" in readable
+    assert shared <= container_entrypoint.ENTRYPOINT_INPUTS
     assert "DATABASE_URL" in readable
     assert "WEB_DATABASE_URL" in readable
     assert "WORKER_DATABASE_URL" in readable
-    # These must NOT be treated as settings; they are entrypoint inputs only.
-    assert not (entrypoint_inputs & readable), (
-        "an entrypoint input collides with a real setting name"
+    # A name declared as shared must really be a setting, or the declaration
+    # would be a way to excuse a collision instead of recording one.
+    assert shared <= readable, sorted(shared - readable)
+    # Everything else the entrypoint consumes must NOT be a setting name.
+    assert not (entrypoint_only & readable), (
+        "an entrypoint input collides with a real setting name: "
+        f"{sorted(entrypoint_only & readable)}"
     )
 
 
@@ -555,17 +539,7 @@ def test_no_task_sets_an_unreadable_corridor_variable(stacks):
     source = config.read_text()
     aliases = set(re.findall(r'validation_alias="([A-Z0-9_]+)"', source))
     plain = {f.upper() for f in re.findall(r"^    ([a-z_]+):", source, re.MULTILINE)}
-    entrypoint_inputs = {
-        "CORRIDOR_DB_HOST", "CORRIDOR_DB_PORT", "CORRIDOR_DB_NAME",
-        "CORRIDOR_DB_ADMIN_USERNAME", "CORRIDOR_DB_ADMIN_PASSWORD",
-        "CORRIDOR_TASK_ROLE",
-        "CORRIDOR_CONTROL_DB_HOST", "CORRIDOR_CONTROL_DB_PORT", "CORRIDOR_CONTROL_DB_NAME",
-        "CORRIDOR_CONTROL_OWNER_DB_USERNAME", "CORRIDOR_CONTROL_OWNER_DB_PASSWORD",
-        "CORRIDOR_CONTROL_OPERATIONS_DB_USERNAME", "CORRIDOR_CONTROL_OPERATIONS_DB_PASSWORD",
-        "CORRIDOR_CONTROL_RESOLVER_DB_USERNAME", "CORRIDOR_CONTROL_RESOLVER_DB_PASSWORD",
-        "CORRIDOR_DEPLOYMENT_DATA_CLASS",
-    }
-    allowed = aliases | plain | entrypoint_inputs
+    allowed = aliases | plain | container_entrypoint.ENTRYPOINT_INPUTS
 
     template = stacks["application"].to_json()["Resources"]
     for logical_id, resource in template.items():
@@ -580,6 +554,56 @@ def test_no_task_sets_an_unreadable_corridor_variable(stacks):
                 )
 
 
+def test_the_runtime_login_secrets_name_the_logins_the_entrypoint_connects_as(stacks):
+    """`corridor_web` and `corridor_worker` are spelled twice more here.
+
+    `corridor.db_roles` owns the two capability logins and says why: every site
+    that holds one *compares* a live PostgreSQL answer against its own copy, so
+    a rename that missed one leaves a check that silently never matches. This
+    stack spells each login inside the generated secret's username and again
+    inside the secret's name; the entrypoint connects as them. The infra
+    project cannot import `corridor`, so the pairing runs through the
+    entrypoint, whose copy `tests/test_vocabulary_owners.py` pins to
+    `db_roles`.
+    """
+    expected = {login for login, _, _ in container_entrypoint.ROLES.values() if login}
+
+    declared = {}
+    for secret in stacks["data"].find_resources("AWS::SecretsManager::Secret").values():
+        properties = secret["Properties"]
+        template = properties.get("GenerateSecretString", {}).get("SecretStringTemplate")
+        username = json.loads(template)["username"] if template else None
+        if username in expected:
+            declared[username] = properties["Name"]
+
+    assert set(declared) == expected, sorted(expected - set(declared))
+    for login, secret_name in declared.items():
+        assert secret_name == f"corridor/nonprod/{login}"
+
+
+def test_synthesis_applies_the_same_identifier_rule_the_container_applies():
+    """The two guards must refuse the same shapes.
+
+    `corridor.control_plane.identifier` owns the rule. Neither this stack nor
+    the container entrypoint may import it -- this project excludes the
+    application's dependencies and the entrypoint runs before the application
+    exists -- so each keeps a copy. This pins the stack's copy to the
+    entrypoint's, and `tests/test_vocabulary_owners.py` pins the entrypoint's
+    to the owner.
+    """
+    assert (
+        application_stack.STABLE_IDENTIFIER_PATTERN
+        == container_entrypoint.STABLE_IDENTIFIER_PATTERN
+    )
+
+
+@pytest.mark.parametrize("refused", ["-leading-hyphen", "has space", "a" * 129, "caf\u00e9"])
+def test_synthesis_refuses_an_identifier_the_rule_rejects(refused):
+    """The constant has to be load-bearing, not merely equal to its twin."""
+    with pytest.raises(ValueError, match="explicit stable identifier"):
+        _build(customer_id=refused)
+
+
 # --- fail-closed TLS ---------------------------------------------------
 def test_serving_without_a_certificate_is_refused():
     """The web service may not carry traffic over plaintext."""
@@ -590,8 +614,7 @@ def test_serving_without_a_certificate_is_refused():
 def test_without_a_certificate_the_stack_synthesises_but_has_no_listener():
     """The network and data stacks still need to be deployable before a
     certificate exists. The service can exist at zero; it just has no way in."""
-    _, _, _, application = _build(certificate_arn="", web_desired_count=0)
-    template = Template.from_stack(application)
+    template = _build(certificate_arn="", web_desired_count=0)["application"]
 
     template.resource_count_is("AWS::ElasticLoadBalancingV2::Listener", 0)
     template.has_resource_properties("AWS::ECS::Service", {"DesiredCount": 0})
@@ -781,8 +804,7 @@ def test_the_database_master_login_is_the_schema_owner_the_baseline_expects():
     """
     import json
 
-    _, _, data, _ = _build()
-    template = Template.from_stack(data).to_json()["Resources"]
+    template = _build()["data"].to_json()["Resources"]
     secrets = [
         resource
         for resource in template.values()
@@ -1181,3 +1203,90 @@ def test_the_batch_role_may_still_replace_and_delete(stacks):
             granted.update([action] if isinstance(action, str) else action)
     assert any(a.lower().startswith("s3:deleteobject") for a in granted), granted
     assert any(a.startswith("s3:PutObject") for a in granted), granted
+
+
+# --- the contract a release reads off the deployed stacks ---------------
+# `scripts/release_contract.py` is the only declaration of these names. The
+# release workflow reads it at run time; these assertions read it at synthesis
+# time, so a renamed output fails here instead of in the middle of a release.
+
+# The fixture's own short stack ids, against the names CloudFormation and the
+# contract module know the same stacks by.
+CONTRACT_STACK_NAMES = {
+    "foundation": "CorridorAccountFoundation",
+    "network": "CorridorNetwork",
+    "control": "CorridorControlPlane",
+    "data": "CorridorData",
+    "application": "CorridorApplication",
+}
+
+
+def _authored_outputs(template) -> dict:
+    """The outputs the stacks declare, without CDK's cross-stack plumbing.
+
+    CDK synthesises one `ExportsOutput...` output per value another stack
+    references and gives it an `Export`. Those names encode construct logical
+    ids, nobody reads them, and they appear and vanish as references change.
+    No authored `CfnOutput` here sets an export name, so requiring both marks
+    before dropping an output identifies the generated ones exactly.
+    """
+    return {
+        key: value
+        for key, value in template.to_json().get("Outputs", {}).items()
+        if not (key.startswith("ExportsOutput") and "Export" in value)
+    }
+
+
+def test_the_release_stack_emits_every_output_the_release_reads(stacks):
+    emitted = set(_authored_outputs(stacks["application"]))
+    missing = sorted(set(RELEASE_STACK_OUTPUTS) - emitted)
+    assert not missing, (
+        f"the release resolves {missing} off CorridorApplication and the stack "
+        "no longer emits them; it would fail after the environment approval"
+    )
+
+
+def test_the_migration_container_is_named_what_the_release_overrides(stacks):
+    """`aws ecs run-task --overrides` names the container by string. ECS
+    refuses an override naming a container the task definition does not have,
+    so a rename stops the release at the schema step with both services at
+    zero."""
+    template = stacks["application"].to_json()
+    logical_id = template["Outputs"]["MigrationTaskDefinitionArn"]["Value"]["Ref"]
+    migration = template["Resources"][logical_id]
+    assert migration["Type"] == "AWS::ECS::TaskDefinition"
+    names = [
+        container["Name"]
+        for container in migration["Properties"]["ContainerDefinitions"]
+    ]
+    assert MIGRATION_CONTAINER_NAME in names, (
+        f"the release overrides {MIGRATION_CONTAINER_NAME!r}; the migration "
+        f"task definition names {names}"
+    )
+
+
+def test_every_stack_output_is_declared_with_what_reads_it(stacks):
+    """Half of these reach no program at all: `infra-deploy.yml` puts the whole
+    outputs document in the deployment's run summary, and an operator reads one
+    there during an incident. That is a reader, so they are kept and kept
+    declared -- but a new output has to say who reads it before it can exist."""
+    emitted = {
+        (CONTRACT_STACK_NAMES[stack], key)
+        for stack, template in stacks.items()
+        for key in _authored_outputs(template)
+    }
+    declared = {
+        (stack, key)
+        for stack, readers in STACK_OUTPUT_READERS.items()
+        for key in readers
+    }
+    undeclared = sorted(emitted - declared)
+    assert not undeclared, (
+        f"{undeclared} say nothing about what reads them; declare them in "
+        "scripts/release_contract.py or delete them"
+    )
+    stale = sorted(declared - emitted)
+    assert not stale, (
+        f"scripts/release_contract.py declares {stale}, which the stacks no "
+        "longer emit"
+    )

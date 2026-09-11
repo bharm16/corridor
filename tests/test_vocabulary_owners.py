@@ -21,7 +21,11 @@ The scan covers ``src`` only. ``scripts/container_entrypoint.py`` also names
 the two capability logins, and deliberately so: it runs as the container's
 entrypoint *before* the application exists, imports nothing from ``corridor``,
 and assembles the URL the application will later read. A standalone bootstrap
-that imported the package to learn a login would defeat its own purpose.
+that imported the package to learn a login would defeat its own purpose. That
+permission was unpaired, though: the copies were simply outside the scan, so
+nothing said they still matched. They are paired below the same way the
+migration copies are, by asserting equality — and so is the bounded-identifier
+rule the entrypoint restates for the same reason.
 
 Migrations are a declared region rather than a consumer. A revision is
 replayable released history: its DDL and PL/pgSQL inline every role name in SQL
@@ -38,7 +42,16 @@ from pathlib import Path
 import subprocess
 import sys
 
-from corridor import control_plane_schema, db_roles, operating_mode, statement_values
+import pytest
+
+from corridor import (
+    control_plane,
+    control_plane_schema,
+    db_roles,
+    operating_mode,
+    statement_values,
+)
+from scripts import container_entrypoint
 from source_scan_support import python_files, read_python, source_scan_cache  # noqa: F401
 
 
@@ -191,6 +204,47 @@ def test_migration_role_constants_do_not_drift():
     assert unknown == [], (
         "a migration names a role the product no longer owns:\n" + "\n".join(unknown)
     )
+
+
+def test_the_container_entrypoint_connects_as_the_logins_db_roles_owns():
+    """The entrypoint's permitted copies must still equal the owned names.
+
+    The allowance above is why ``scripts/`` is outside the scan; it is not a
+    reason for the copies to be unchecked. Renaming ``corridor_web`` in
+    ``db_roles`` without renaming it here would leave the web container
+    connecting as a login the migration no longer creates, and the container
+    would fail to start only once it was deployed.
+    """
+    logins = {
+        role: login
+        for role, (login, _, _) in container_entrypoint.ROLES.items()
+        if login is not None
+    }
+
+    assert logins == {
+        "web": db_roles.WEB_CAPABILITY_LOGIN,
+        "batch": db_roles.WORKER_CAPABILITY_LOGIN,
+    }
+
+
+def test_the_container_entrypoint_applies_the_identifier_rule_control_plane_owns():
+    """One rule decides what a customer, environment or deployment id may be.
+
+    ``control_plane.identifier`` owns it. The entrypoint refuses the same shape
+    at start-up and cannot import the owner, so it keeps a copy — and a copy
+    that drifted would let a deployment start a container whose identity the
+    control plane then refuses, or the reverse.
+    """
+    assert (
+        container_entrypoint.STABLE_IDENTIFIER_PATTERN
+        == control_plane.STABLE_IDENTIFIER_PATTERN
+    )
+
+    for accepted in ("synthetic-a", "corridor-nonproduction", "A0", "a" * 128):
+        assert control_plane.identifier(accepted) == accepted
+    for refused in ("", "-leading-hyphen", "has space", "a" * 129, "caf\u00e9"):
+        with pytest.raises(ValueError, match="bounded stable identifier"):
+            control_plane.identifier(refused)
 
 
 def test_adopted_baseline_mode_value_is_owned_by_operating_mode():

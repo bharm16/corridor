@@ -107,7 +107,7 @@ jobs:
       - name: Validate the release helpers against their own tests
         run: >-
           uv run pytest tests/test_register_ecs_release_task_definitions.py
-          tests/test_verify_ecs_release.py -q
+          tests/test_verify_ecs_release.py tests/test_release_contract.py -q
 
       # --- credentials from here on ---------------------------------------
       - uses: aws-actions/configure-aws-credentials@ff717079ee2060e4bcee96c4779b553acc87447c
@@ -120,26 +120,7 @@ jobs:
           aws cloudformation describe-stacks --stack-name CorridorApplication \
             --query 'Stacks[0].Outputs' --output json > outputs.json \
             || { echo "::error::CorridorApplication is not deployed yet"; exit 1; }
-          uv run python - <<'PY' >> "$GITHUB_ENV"
-          import json
-          outputs = {o["OutputKey"]: o["OutputValue"] for o in json.load(open("outputs.json"))}
-          wanted = {
-              "RepositoryUri": "REPOSITORY_URI",
-              "WebServiceName": "WEB_SERVICE",
-              "WorkerServiceName": "WORKER_SERVICE",
-              "TaskSubnetIds": "TASK_SUBNETS",
-              "MigrationSecurityGroupId": "MIGRATION_SG",
-              "MigrationTaskDefinitionArn": "BASE_MIGRATION_TD",
-              "BatchTaskDefinitionArn": "BASE_BATCH_TD",
-              "WebTaskDefinitionArn": "BASE_WEB_TD",
-              "ApplicationUrl": "APPLICATION_URL",
-          }
-          for key, name in wanted.items():
-              value = outputs.get(key)
-              if not value or value == "not-configured":
-                  raise SystemExit(f"stack output {key} is missing or unset")
-              print(f"{name}={value}")
-          PY
+          uv run python scripts/release_contract.py resolve outputs.json >> "$GITHUB_ENV"
 
       # A retry of a failed release re-runs the same commit. The repository is
       # tag-immutable, so pushing again is rejected before the workflow reaches
@@ -221,10 +202,11 @@ jobs:
         run: |
           uv run python - <<'PY' > migration-overrides.json
           import json, os
+          from scripts.release_contract import MIGRATION_CONTAINER_NAME
           command = ["python", "-m", "corridor.deployment_bootstrap", "configure"]
           if os.environ["WORKER_DESIRED_COUNT"] != "0":
               command.append("--require-enabled")
-          print(json.dumps({"containerOverrides": [{"name": "MigrationContainer", "command": command}]}))
+          print(json.dumps({"containerOverrides": [{"name": MIGRATION_CONTAINER_NAME, "command": command}]}))
           PY
           aws ecs run-task \
             --cluster "$CLUSTER" \

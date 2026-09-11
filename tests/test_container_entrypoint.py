@@ -268,6 +268,21 @@ def test_deployed_runtime_refuses_incomplete_control_plane_configuration(missing
         entrypoint.prepare_environment(values, "web")
 
 
+@pytest.mark.parametrize("refused", ["-leading-hyphen", "has space", "a" * 129, "caf\u00e9"])
+def test_a_malformed_deployment_identifier_is_refused_at_start_up(refused):
+    """The rule this applies is `corridor.control_plane.identifier`'s.
+
+    This script cannot import it, so it keeps a copy that
+    `tests/test_vocabulary_owners.py` asserts equal to the owner's. That
+    equality is only worth having while the copy is actually applied, which is
+    what these refusals prove.
+    """
+    values = {**BASE, **CONTROL, "CORRIDOR_CUSTOMER_ID": refused}
+
+    with pytest.raises(entrypoint.EntrypointError, match="stable bounded identifier"):
+        entrypoint.prepare_environment(values, "web")
+
+
 def test_only_web_can_keep_a_sufficient_customer_signing_key():
     with pytest.raises(entrypoint.EntrypointError, match="at least 32 bytes"):
         entrypoint.prepare_environment({**BASE, **CONTROL, "CORRIDOR_CUSTOMER_ROUTING_KEY": "short"}, "web")

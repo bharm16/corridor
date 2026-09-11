@@ -105,6 +105,7 @@ INFRASTRUCTURE_PATHS: tuple[str, ...] = (
     "scripts/container_entrypoint.py",
     "scripts/register_ecs_release_task_definitions.py",
     "scripts/verify_ecs_release.py",
+    "scripts/release_contract.py",
     "scripts/classify_ci_change.py",
     "tests/test_classify_ci_change.py",
     "tests/test_ci_policy.py",

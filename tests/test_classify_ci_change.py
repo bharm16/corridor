@@ -320,6 +320,7 @@ def test_a_star_does_not_cross_a_path_separator():
     "scripts/container_entrypoint.py",
     "scripts/register_ecs_release_task_definitions.py",
     "scripts/verify_ecs_release.py",
+    "scripts/release_contract.py",
     ".github/scripts/validate-deployment-config.sh",
     "Dockerfile",
     ".dockerignore",

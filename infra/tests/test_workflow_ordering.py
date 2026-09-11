@@ -12,12 +12,26 @@ ordering is easy to break with an innocuous-looking edit.
 from __future__ import annotations
 
 import pathlib
+import re
 import subprocess
 
 import pytest
 import yaml
 
+from scripts import container_entrypoint
+
 WORKFLOWS = pathlib.Path(__file__).parents[2] / ".github" / "workflows"
+DEPLOYMENT_VALIDATOR = WORKFLOWS.parent / "scripts" / "validate-deployment-config.sh"
+
+# A configuration the validator accepts, so a test may vary one field at a
+# time. The sender's domain is part of the hostname, which keeps the SES
+# warning quiet.
+VALID_DEPLOYMENT_CONFIG = {
+    "CERTIFICATE_ARN": "arn:aws:acm:us-east-2:111111111111:certificate/00000000-0000-0000-0000-000000000000",
+    "PUBLIC_HOSTNAME": "pilot.example.com", "SIGN_IN_SENDER": "signin@example.com",
+    "CUSTOMER_ID": "synthetic-a", "CUSTOMER_ENVIRONMENT_ID": "synthetic-nonproduction",
+    "DEPLOYMENT_ID": "corridor-nonproduction", "DATA_CLASS": "synthetic",
+}
 
 # Anything that resolves or fetches a dependency.
 INSTALLERS = (
@@ -31,13 +45,61 @@ INSTALLERS = (
 
 CREDENTIAL_ACTION = "aws-actions/configure-aws-credentials"
 
+# Every workflow in the repository, so a new one is covered the day it lands
+# rather than the day someone remembers to add it to a list. GitHub reads both
+# suffixes; collecting only one would leave the same silent hole as a job-name
+# list. An empty list would parametrize the credential guard into nothing, so
+# it fails collection rather than reporting a sweep it never ran.
+WORKFLOW_FILES = sorted(
+    path.name for path in WORKFLOWS.iterdir() if path.suffix in (".yml", ".yaml")
+)
+assert WORKFLOW_FILES, f"no workflows found under {WORKFLOWS}"
+
+
+def _workflow(name: str) -> dict:
+    return yaml.safe_load((WORKFLOWS / name).read_text())
+
 
 def _jobs(name: str) -> dict:
-    return yaml.safe_load((WORKFLOWS / name).read_text())["jobs"]
+    return _workflow(name)["jobs"]
 
 
 def _step_text(step: dict) -> str:
     return " ".join(str(step.get(key, "")) for key in ("uses", "run", "name"))
+
+
+def _is_main_guarded(job: dict) -> bool:
+    """Whether the job's own `if` restricts it to `refs/heads/main`.
+
+    The two tests that care about credentials read the guard through this one
+    function, so they cannot come to disagree about what counts as guarded.
+    """
+    return "refs/heads/main" in str(job.get("if", ""))
+
+
+def _declared_permissions(workflow: dict, job: dict):
+    """The `GITHUB_TOKEN` scopes this repository declares for a job.
+
+    A job without a block of its own inherits the workflow's top-level block.
+    With neither -- `full-suite.yml` is the case in point -- the job takes the
+    repository's default, which is a GitHub setting rather than anything here.
+    That default cannot grant `id-token: write`: the scope is `write|none` and
+    is granted only where a `permissions` block names it. So an absent block
+    cannot hide the thing the rule below forbids, and the rule does not demand
+    one. Least privilege for the *other* scopes is a separate question that
+    reading this repository cannot settle either way.
+    """
+    if "permissions" in job:
+        return job["permissions"]
+    return workflow.get("permissions", {})
+
+
+def _grants_id_token(permissions) -> bool:
+    # `permissions:` may be the string `read-all` or `write-all` instead of a
+    # mapping, and `write-all` grants every scope, `id-token` among them.
+    if isinstance(permissions, str):
+        return permissions == "write-all"
+    return bool((permissions or {}).get("id-token"))
 
 
 @pytest.mark.parametrize(
@@ -90,15 +152,39 @@ def test_every_credentialed_job_installs_before_it_authenticates(workflow):
         )
 
 
-def test_the_pull_request_jobs_never_authenticate():
-    """`plan` and `image` create nothing and must hold no id-token."""
-    for job_name, job in _jobs("infra-deploy.yml").items():
-        if job_name not in ("plan", "image"):
+@pytest.mark.parametrize("workflow", WORKFLOW_FILES)
+def test_no_unguarded_job_holds_an_aws_credential_or_the_token_to_get_one(workflow):
+    """A job an unreviewed ref can run must not be able to reach AWS.
+
+    This replaces a test that named `plan` and `image` in `infra-deploy.yml`.
+    Both jobs had moved -- `image` to `full-suite.yml`, the pull-request work to
+    `release-gate.yml` -- leaving `diff` and `deploy` as that file's only jobs,
+    so the loop body never executed and the test passed by asserting nothing.
+    A guard written against a list of job names goes vacuous the moment the
+    jobs are renamed, and says nothing at all about a job added later.
+
+    So the rule is a property of every job in every workflow instead: without a
+    `refs/heads/main` guard, a job may neither run
+    `configure-aws-credentials` nor hold `id-token`. The credential half is the
+    contrapositive of `test_no_credentialed_job_runs_from_an_unreviewed_ref`,
+    which covers only the two dispatch workflows; sweeping every file extends
+    it to the three it never opens. The `id-token` half is new to this test:
+    nothing else notices a job that holds the OIDC token but reaches AWS
+    through something other than the pinned action.
+    """
+    document = _workflow(workflow)
+    for job_name, job in (document.get("jobs") or {}).items():
+        if _is_main_guarded(job):
             continue
-        permissions = job.get("permissions") or {}
-        assert "id-token" not in permissions, job_name
+        assert not _grants_id_token(_declared_permissions(document, job)), (
+            f"{workflow}:{job_name} holds id-token without a main-only guard, "
+            "so an unreviewed branch's YAML can mint an AWS session"
+        )
         for step in job.get("steps") or []:
-            assert CREDENTIAL_ACTION not in str(step.get("uses", "")), job_name
+            assert CREDENTIAL_ACTION not in str(step.get("uses", "")), (
+                f"{workflow}:{job_name} configures AWS credentials without a "
+                "main-only guard"
+            )
 
 
 def test_both_dispatch_jobs_pass_every_required_context():
@@ -184,8 +270,7 @@ def test_no_credentialed_job_runs_from_an_unreviewed_ref(workflow):
             CREDENTIAL_ACTION in str(step.get("uses", "")) for step in steps
         ):
             continue
-        condition = str(job.get("if", ""))
-        assert "refs/heads/main" in condition, (
+        assert _is_main_guarded(job), (
             f"{workflow}:{job_name} assumes an AWS role without a main-only "
             "guard, so an unreviewed branch's YAML can use it"
         )
@@ -288,15 +373,46 @@ def test_a_release_failure_after_drain_keeps_both_services_stopped_for_recovery(
 
 @pytest.mark.parametrize("missing", ["CUSTOMER_ID", "CUSTOMER_ENVIRONMENT_ID", "DEPLOYMENT_ID", "DATA_CLASS"])
 def test_deployment_configuration_requires_an_explicit_synthetic_binding(missing):
-    env = {
-        "CERTIFICATE_ARN": "arn:aws:acm:us-east-2:111111111111:certificate/00000000-0000-0000-0000-000000000000",
-        "PUBLIC_HOSTNAME": "pilot.example.com", "SIGN_IN_SENDER": "signin@example.com",
-        "CUSTOMER_ID": "synthetic-a", "CUSTOMER_ENVIRONMENT_ID": "synthetic-nonproduction",
-        "DEPLOYMENT_ID": "corridor-nonproduction", "DATA_CLASS": "synthetic",
-    }
-    script = WORKFLOWS.parent / "scripts" / "validate-deployment-config.sh"
-    accepted = subprocess.run(["bash", str(script)], env=env, capture_output=True, text=True, check=False)
+    env = dict(VALID_DEPLOYMENT_CONFIG)
+    accepted = subprocess.run(
+        ["bash", str(DEPLOYMENT_VALIDATOR)], env=env, capture_output=True, text=True, check=False
+    )
     assert accepted.returncode == 0, accepted.stdout
     env.pop(missing)
-    refused = subprocess.run(["bash", str(script)], env=env, capture_output=True, text=True, check=False)
+    refused = subprocess.run(
+        ["bash", str(DEPLOYMENT_VALIDATOR)], env=env, capture_output=True, text=True, check=False
+    )
     assert refused.returncode != 0
+
+
+# Values that discriminate the bounded-identifier rule: which of them is
+# acceptable is decided by the pattern, not by this list.
+IDENTIFIER_CASES = (
+    "a", "A0", "synthetic-a", "corridor-nonproduction", "x_y.z:w/v", "a" * 128,
+    "", "-leading-hyphen", "_leading-underscore", ".leading-dot", "has space",
+    "semi;colon", "dollar$sign", "a" * 129, "caf\u00e9",
+)
+
+
+@pytest.mark.parametrize("candidate", IDENTIFIER_CASES)
+def test_the_deployment_validator_applies_the_identifier_rule_the_container_applies(candidate):
+    """The shell copy of the rule is verified by running it.
+
+    ``corridor.control_plane.identifier`` owns the rule, the container
+    entrypoint keeps a paired copy, and this script keeps a third as an ERE
+    because it runs before ``uv sync`` and before any AWS credential exists.
+    A shell copy cannot be compared to a Python pattern by equality, so it is
+    compared by verdict: every case below has to be accepted or refused by both.
+    """
+    expected = bool(re.fullmatch(container_entrypoint.STABLE_IDENTIFIER_PATTERN, candidate))
+
+    result = subprocess.run(
+        ["bash", str(DEPLOYMENT_VALIDATOR)],
+        env={**VALID_DEPLOYMENT_CONFIG, "CUSTOMER_ID": candidate},
+        capture_output=True, text=True, check=False,
+    )
+
+    assert (result.returncode == 0) is expected, (
+        f"the validator and the entrypoint disagree about {candidate!r}: "
+        f"{result.stdout}{result.stderr}"
+    )
