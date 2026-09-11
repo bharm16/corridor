@@ -6,50 +6,69 @@
   One roster-backed Save records the whole Follow-up Plan atomically; the
   separate append-only Work Decisions and their grouping receipt are the
   record behind it (#333, ADR-0035, ADR-0038).
+
+  Use:  {% import "_coordinate.html" as coordination with context %}
+        {{ coordination.coordinate(reading.coordinate_dependency,
+                                   reading.plan, reading.lane_url,
+                                   reading.summary_url,
+                                   reading.next_coordinate_url,
+                                   reading.cohort_receipt, project) }}
+
+  The parameter list is this partial's interface. It was an `{% include %}`
+  reading eleven names off whatever the enclosing page happened to set, ten of
+  them supplied by a five-line `{% set %}` prelude that was byte-identical in
+  `queue.html` and `empty.html`. `with context` is for `csrf_field()` alone,
+  which reads the request the token rides on; every fact this strip prints
+  arrives as an argument.
+
+  `plan` is `corridor.web.dependency_view.PlanForm` whole rather than its
+  fields flattened, so the two decision tails the Save binds to travel with
+  the reason sets they belong to and cannot arrive one without the other.
 #}
-{% if coordinate_dependency %}
+{% macro coordinate(dependency, plan, lane_url, summary_url, next_url, cohort_receipt, project) %}
+{% if dependency %}
 <div class="coordinate">
   <div class="coordinate-head">
-    <b>Recorded {{ coordinate_dependency.ref_code }}</b>
-    — {{ coordinate_dependency.title }}
+    <b>Recorded {{ dependency.ref_code }}</b>
+    — {{ dependency.title }}
     <a class="record"
-       href="/ledger/{{ project.slug }}/{{ coordinate_dependency.id }}?return_to={{ (lane_url ~ '&coordinate=' ~ coordinate_dependency.id)|urlencode }}">View record and supporting documents</a>
+       href="/ledger/{{ project.slug }}/{{ dependency.id }}?return_to={{ (lane_url ~ '&coordinate=' ~ dependency.id)|urlencode }}">View record and supporting documents</a>
     {% if cohort_receipt %}
       <a class="report" href="/reports/{{ project.slug }}" target="_blank"
          rel="noopener">Prepare coordination report (opens in new tab)</a>
     {% endif %}
-    <a class="skip" href="{{ next_coordinate_url }}">skip →
-      {% if next_coordinate_url != summary_url %}next item{% else %}test summary{% endif %}
+    <a class="skip" href="{{ next_url }}">skip →
+      {% if next_url != summary_url %}next item{% else %}test summary{% endif %}
       <kbd>Esc</kbd></a>
   </div>
   <div class="coordinate-forms">
     <form method="post"
-          action="/dependencies/{{ coordinate_dependency.id }}/plan">
+          action="/dependencies/{{ dependency.id }}/plan">
     {{ csrf_field() }}
       <input type="hidden" name="slug" value="{{ project.slug }}">
       <input type="hidden" name="redirect_to" value="{{ lane_url }}">
       <input type="hidden" name="expected_internal_owner_decision_id"
-             value="{{ coordinate_expected_internal_owner_decision_id }}">
+             value="{{ plan.expected_internal_owner_decision_id }}">
       <input type="hidden" name="expected_next_action_decision_id"
-             value="{{ coordinate_expected_next_action_decision_id }}">
+             value="{{ plan.expected_next_action_decision_id }}">
       <select name="internal_owner_roster_entry_id" required
-              {% if not coordinate_dependency.internal_owner %}autofocus{% endif %}>
+              {% if not dependency.internal_owner %}autofocus{% endif %}>
         <option value="">assigned to — choose a project-team member</option>
-        {% for member in plan_roster %}
+        {% for member in plan.roster %}
           <option value="{{ member.id }}">{{ member.display_name }}</option>
         {% endfor %}
       </select>
       <select name="next_action" required>
         <option value="">next action — choose the project response</option>
-        {% for choice in plan_next_action_choices %}
+        {% for choice in plan.next_action_choices %}
           <option value="{{ choice }}">{{ choice }}</option>
         {% endfor %}
       </select>
       <input name="action_due_date" type="date"
-             value="{{ coordinate_dependency.action_due_date or '' }}">
+             value="{{ dependency.action_due_date or '' }}">
       <select name="action_due_date_unknown_reason">
         <option value="">if no date, why?</option>
-        {% for reason in plan_unknown_date_reasons %}
+        {% for reason in plan.unknown_date_reasons %}
           <option value="{{ reason }}">{{ reason.replace('_', ' ') }}</option>
         {% endfor %}
       </select>
@@ -58,3 +77,4 @@
   </div>
 </div>
 {% endif %}
+{% endmacro %}

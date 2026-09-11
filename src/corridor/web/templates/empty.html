@@ -1,12 +1,14 @@
+{% import "_coordinate.html" as coordination with context -%}
 {#
   Nothing is left to adjudicate in this lane. Every fact comes from
-  `corridor.web.queue_view`; the names below are the reading's own fields,
-  including the plan-form names the shared coordination strip reads.
+  `corridor.web.queue_view`; the names below are the reading's own fields.
+  The coordination strip is imported rather than included, so what it needs
+  is its macro's parameter list and no longer a prelude copied from
+  `queue.html`.
 #}
 {% set lane = reading.lane %}
 {% set lane_url = reading.lane_url %}
 {% set summary_url = reading.summary_url %}
-{% set next_coordinate_url = reading.next_coordinate_url %}
 {% set rail = reading.rail %}
 {% set cohort_receipt = reading.cohort_receipt %}
 {% set coordinate_dependency = reading.coordinate_dependency %}
@@ -14,11 +16,6 @@
 {% set candidate_count = reading.candidate_count %}
 {% set support_update_count = reading.support_update_count %}
 {% set ordinary_reviews = reading.ordinary_reviews %}
-{% set plan_roster = reading.plan.roster if reading.plan else [] %}
-{% set plan_next_action_choices = reading.plan.next_action_choices if reading.plan else [] %}
-{% set plan_unknown_date_reasons = reading.plan.unknown_date_reasons if reading.plan else [] %}
-{% set coordinate_expected_internal_owner_decision_id = reading.plan.expected_internal_owner_decision_id if reading.plan else "" %}
-{% set coordinate_expected_next_action_decision_id = reading.plan.expected_next_action_decision_id if reading.plan else "" %}
 <!doctype html>
 <meta charset="utf-8">
 <title>Proposed constraints — {{ project.name }}</title>
@@ -71,7 +68,10 @@
     <a href="/queue/{{ project.slug }}?lane=candidate" {% if lane == "candidate" %}aria-current="page"{% endif %}>Proposed constraints ({{ candidate_count }})</a>
     <a href="/work/{{ project.slug }}">Newer documents needing attention ({{ support_update_count }})</a>
   </nav>
-  {% include "_coordinate.html" %}
+  {{ coordination.coordinate(reading.coordinate_dependency, reading.plan,
+                            reading.lane_url, reading.summary_url,
+                            reading.next_coordinate_url,
+                            reading.cohort_receipt, project) }}
   {% if lane == "rehearsal" and rail %}
     {% set admitted = rail|selectattr("dependency_id")|list %}
     {% set active_admitted = admitted|rejectattr("dismissed")|list %}

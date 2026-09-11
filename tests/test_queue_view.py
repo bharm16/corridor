@@ -10,6 +10,7 @@ against a status code.
 
 import pytest
 from fastapi.testclient import TestClient
+from jinja2 import UndefinedError
 
 from corridor.cohort import (
     COHORT_CLASSIFICATIONS,
@@ -18,8 +19,20 @@ from corridor.cohort import (
     NEWLY_ADDED,
     VERIFICATION_BLOCKED,
 )
-from corridor.models import Project
+from corridor.models import (
+    Dependency,
+    DocPage,
+    Document,
+    Project,
+    ProjectRosterEntry,
+)
 from corridor.principals import HumanPrincipal
+from corridor.work_decisions import (
+    FOLLOW_UP_NEXT_ACTION_CHOICES,
+    UNKNOWN_DUE_DATE_REASONS,
+)
+from corridor.web.app import TEMPLATES
+from corridor.web.dependency_view import PlanForm
 from corridor.web.queue import RailEntry
 from corridor.web.queue_view import (
     CLASSIFICATIONS_BY_KEY,
@@ -206,3 +219,164 @@ def test_the_handler_renders_the_reading_and_carries_its_refusals(
         ).status_code
         == 404
     )
+
+
+# --------------------------------- the shared partials, as declared interfaces
+#
+# `_coordinate.html` and `_evidence.html` were composed with `{% include %}`,
+# which hands a partial the whole enclosing context and therefore declares no
+# interface at all. `_coordinate.html` read eleven names that way, ten of them
+# supplied by a five-line `{% set %}` prelude that `diff` found byte-identical
+# in `queue.html` and `empty.html`, and nothing anywhere named either file.
+# They are macros now, and these render them the way
+# `tests/test_ui_primitives.py` renders `_primitives.html`: against an
+# explicit context, with no HTTP and no database.
+
+
+def _plan_form() -> PlanForm:
+    return PlanForm(
+        roster=(ProjectRosterEntry(id=4, display_name="Dana Reyes"),),
+        next_action_choices=FOLLOW_UP_NEXT_ACTION_CHOICES,
+        unknown_date_reasons=tuple(sorted(UNKNOWN_DUE_DATE_REASONS)),
+        no_follow_up_reasons=(),
+        cancellation_reasons=(),
+        deferral_reasons=(),
+        expected_internal_owner_decision_id=311,
+        expected_next_action_decision_id=412,
+    )
+
+
+def _strip(source: str, **context) -> str:
+    return TEMPLATES.env.from_string(
+        '{% import "_coordinate.html" as coordination with context %}' + source
+    ).render(**context)
+
+
+def _coordinate_call(template_name: str):
+    """The one `{{ coordination.coordinate(...) }}` a host page makes."""
+    import jinja2
+    from jinja2 import nodes
+
+    tree = jinja2.Environment(autoescape=True).parse(
+        TEMPLATES.env.loader.get_source(TEMPLATES.env, template_name)[0]
+    )
+    calls = [
+        node
+        for node in tree.find_all(nodes.Call)
+        if isinstance(node.node, nodes.Getattr) and node.node.attr == "coordinate"
+    ]
+    assert len(calls) == 1, f"{template_name} calls the strip once"
+    return calls[0]
+
+
+def test_the_coordination_strip_renders_from_its_parameters_alone():
+    """Its interface is the parameter list, not the enclosing page."""
+    markup = _strip(
+        "{{ coordination.coordinate(dependency, plan, lane_url, summary_url,"
+        " next_url, cohort_receipt, project) }}",
+        dependency=Dependency(
+            id=51, ref_code="UC-014", title="12-inch gas main", internal_owner=None
+        ),
+        plan=_plan_form(),
+        lane_url="/queue/acme?lane=candidate",
+        summary_url="/queue/acme?lane=candidate&summary=1",
+        next_url="/queue/acme?lane=candidate&coordinate=52",
+        cohort_receipt=None,
+        project=Project(slug="acme", name="Acme Interchange"),
+    )
+
+    assert "Recorded UC-014" in markup and "12-inch gas main" in markup
+    assert "Dana Reyes" in markup
+    assert 'action="/dependencies/51/plan"' in markup
+    for choice in FOLLOW_UP_NEXT_ACTION_CHOICES:
+        assert choice in markup
+    # The skip link reads "next item" only when there is one to go to.
+    assert "next item" in markup
+
+
+def test_the_strip_carries_the_exact_decision_tails_the_save_binds_to():
+    """`PlanForm` travels whole, so the stale check cannot arrive half-set.
+
+    `save_follow_up_plan` matches both expected ids against the current tails
+    exactly, and the strip is where a coordinator reads them. They used to be
+    two hand-copied `{% set %}` lines per host page.
+    """
+    markup = _strip(
+        "{{ coordination.coordinate(dependency, plan, lane_url, summary_url,"
+        " next_url, cohort_receipt, project) }}",
+        dependency=Dependency(id=51, ref_code="UC-014", title="main"),
+        plan=_plan_form(),
+        lane_url="/l",
+        summary_url="/s",
+        next_url="/n",
+        cohort_receipt=None,
+        project=Project(slug="acme", name="Acme"),
+    )
+
+    assert (
+        '<input type="hidden" name="expected_internal_owner_decision_id"\n'
+        '             value="311">' in markup
+    )
+    assert (
+        '<input type="hidden" name="expected_next_action_decision_id"\n'
+        '             value="412">' in markup
+    )
+
+
+def test_a_call_site_that_leaves_out_the_plan_is_refused():
+    """What an `{% include %}` rendered blank, a macro call refuses.
+
+    A missing prelude line used to reach the browser as
+    `value=""`, which `_optional_form_id` turns into `None`. The parameter
+    list is the interface now, and leaving one out is an error at the seam.
+    """
+    with pytest.raises(UndefinedError) as refusal:
+        _strip(
+            "{{ coordination.coordinate(dependency, lane_url, summary_url,"
+            " next_url, cohort_receipt, project) }}",
+            dependency=Dependency(id=51, ref_code="UC-014", title="main"),
+            lane_url="/l",
+            summary_url="/s",
+            next_url="/n",
+            cohort_receipt=None,
+            project=Project(slug="acme", name="Acme"),
+        )
+
+    assert "project" in str(refusal.value)
+
+
+def test_both_pages_call_the_coordination_strip_with_the_same_arguments():
+    """One prelude became one call; the two hosts may not drift apart.
+
+    The five `{% set %}` lines this replaced were byte-identical in
+    `queue.html` and `empty.html` and nothing checked that they stayed so. A
+    drifted copy rendered an empty stale-check value rather than failing.
+    """
+    queue_call = _coordinate_call("queue.html")
+    empty_call = _coordinate_call("empty.html")
+
+    assert queue_call.args == empty_call.args
+    assert (queue_call.kwargs, empty_call.kwargs) == ([], [])
+
+
+def test_an_evidence_pane_renders_one_page_from_its_one_parameter():
+    """`_evidence.html` documented `ev` in prose; it is the signature now."""
+    markup = TEMPLATES.env.from_string(
+        '{% import "_evidence.html" as evidence_pane %}'
+        "{{ evidence_pane.evidence(ev) }}"
+    ).render(
+        ev={
+            "document": Document(id=3, filename="northern-gas-letter.pdf"),
+            "page": DocPage(page_no=12, text="page text", text_source="ocr"),
+            "page_no": 12,
+            "quote": "the 12-inch main will be relocated",
+            "highlights": [],
+            "label": "the other revision",
+        }
+    )
+
+    assert "northern-gas-letter.pdf" in markup
+    assert "the 12-inch main will be relocated" in markup
+    assert "the other revision" in markup
+    # How the page's text was obtained is stated in words, not colour alone.
+    assert "read by OCR" in markup

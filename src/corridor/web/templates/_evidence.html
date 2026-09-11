@@ -4,8 +4,16 @@
   what two revisions print, and a toggle would make the reviewer hold one
   value in their head while looking at the other.
 
-  Expects `ev`: document, page, page_no, quote, highlights.
+  Use:  {% import "_evidence.html" as evidence_pane %}
+        {{ evidence_pane.evidence(ev) }}
+
+  `ev` carries document, page, page_no, quote, highlights and label. It was a
+  prose note above an `{% include %}` that read the name off the enclosing
+  page; it is the macro's one parameter now, so the same note is the
+  signature. No form here, so no `with context`: `label()` is a template
+  global and everything else arrives as the argument.
 #}
+{% macro evidence(ev) %}
 <div class="ev">
   <div class="evhead">
     <b>{{ ev.document.filename }}</b>
@@ -65,3 +73,4 @@
     {% endif %}
   {% endif %}
 </div>
+{% endmacro %}

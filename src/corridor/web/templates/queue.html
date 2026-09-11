@@ -1,20 +1,19 @@
 {% import "_primitives.html" as ui -%}
+{% import "_coordinate.html" as coordination with context -%}
+{% import "_evidence.html" as evidence_pane -%}
 {#
   Every fact on this page comes from `corridor.web.queue_view`; the handler
   passes that one reading and adds nothing. The names below are the reading's
-  own fields, bound once here — including the plan-form names the shared
-  coordination strip reads, so the strip has one source rather than a context
-  the handler assembled beside it.
+  own fields, bound once here. The shared partials above are imported rather
+  than included: what they need is their macros' parameter list, handed over
+  at the call site, not whatever this page happens to have set.
 #}
 {% set view = reading.view %}
 {% set lane = reading.lane %}
 {% set lane_url = reading.lane_url %}
-{% set summary_url = reading.summary_url %}
-{% set next_coordinate_url = reading.next_coordinate_url %}
 {% set rail = reading.rail %}
 {% set cohort_receipt = reading.cohort_receipt %}
 {% set event_cohort_receipt = reading.event_cohort_receipt %}
-{% set coordinate_dependency = reading.coordinate_dependency %}
 {% set waiting_statements = reading.waiting_statements %}
 {% set candidate_count = reading.candidate_count %}
 {% set support_update_count = reading.support_update_count %}
@@ -29,11 +28,6 @@
 {% set siblings = reading.siblings %}
 {% set classification = reading.classification %}
 {% set changes = reading.changes %}
-{% set plan_roster = reading.plan.roster if reading.plan else [] %}
-{% set plan_next_action_choices = reading.plan.next_action_choices if reading.plan else [] %}
-{% set plan_unknown_date_reasons = reading.plan.unknown_date_reasons if reading.plan else [] %}
-{% set coordinate_expected_internal_owner_decision_id = reading.plan.expected_internal_owner_decision_id if reading.plan else "" %}
-{% set coordinate_expected_next_action_decision_id = reading.plan.expected_next_action_decision_id if reading.plan else "" %}
 <!doctype html>
 <meta charset="utf-8">
 <title>Proposed constraints — {{ project.name }}</title>
@@ -263,7 +257,10 @@
 
   <section class="pane left">
    <div class="scroll">
-    {% include "_coordinate.html" %}
+    {{ coordination.coordinate(reading.coordinate_dependency, reading.plan,
+                              reading.lane_url, reading.summary_url,
+                              reading.next_coordinate_url,
+                              reading.cohort_receipt, project) }}
     {% if ordinary_reviews %}
       <aside class="ordinary-work">
         <b>Recorded constraints also need attention in this review.</b>
@@ -567,18 +564,16 @@
   </section>
 
   <section class="pane evidence">
-    {% with ev = {"document": view.document, "page": view.page,
-                  "page_no": view.page_no, "quote": view.quote,
-                  "highlights": view.highlights, "label": ""} %}
-      {% include "_evidence.html" %}
-    {% endwith %}
+    {{ evidence_pane.evidence({"document": view.document, "page": view.page,
+                               "page_no": view.page_no, "quote": view.quote,
+                               "highlights": view.highlights, "label": ""}) }}
     {#
       A disagreement is two documents saying different things, and the
       judgment is the comparison. A toggle would make the reviewer hold
       one value in their head while looking at the other (#209).
     #}
-    {% for ev in evidence_panels %}
-      {% include "_evidence.html" %}
+    {% for panel in evidence_panels %}
+      {{ evidence_pane.evidence(panel) }}
     {% endfor %}
   </section>
 </main>
