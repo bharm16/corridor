@@ -1033,6 +1033,15 @@ AUTHORIZATION_INPUT_RELATIONS: dict[str, str] = {
 
 PROTECTED_RELATIONS: dict[str, str] = {
     "current_coordination_record": "security-invoker view over project-partitioned native coordination decisions and reversals",
+    "current_project_processing_pass": (
+        "a view over `due_work_occurrences` and `due_work_schedules`, both of "
+        "which stay revoked below. It is protected the other way round from "
+        "the two views beside it: they are security-invoker over partitioned "
+        "tables, and this one carries `current_project_partition()` in its own "
+        "body because the relations under it grant `corridor_web` nothing. A "
+        "caller with no declared partition reads no rows, and the four columns "
+        "it exposes carry no claim token, no owner and no declaration (#900)"
+    ),
     "current_project_record": (
         "a view over `fact_decisions` and `facts`, both partitioned. #657 set "
         "`security_invoker` on it, so it reads as the caller and the "

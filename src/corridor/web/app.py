@@ -89,6 +89,7 @@ from corridor.telemetry import (
     configure_logging,
 )
 from corridor import access
+from corridor import project_processing_banner
 from corridor import source_register
 from corridor import web_boundary
 from corridor.web.artifact_downloads import (
@@ -8703,6 +8704,7 @@ def source_uploads(
     before: str = "",
     principal: HumanPrincipal = Depends(get_human_principal),
     session: Session = Depends(get_session),
+    clock=Depends(get_review_clock),
 ):
     """Every delivery this project has received, and what became of each (#841).
 
@@ -8711,6 +8713,12 @@ def source_uploads(
     came from, selects which page is shown, and changes nothing else. The
     filters travel with it, so paging does not drop the question the controls
     are asking.
+
+    The banner above the table is the one thing on this page that is not read
+    from the rows' own recorded times (#900): whether a claim on this project's
+    processing pass is still in force is a comparison against now, so the
+    instant comes from the review clock seam rather than from inside the
+    reader.
     """
     project = _project(session, slug, principal, designation=access.COORDINATION)
     filters = source_register.RegisterFilters(
@@ -8728,6 +8736,12 @@ def source_uploads(
         {
             "project": project,
             "register": register,
+            # The project-level pass, which is the only processing activity the
+            # record carries. It is deliberately not a per-row state: nothing
+            # says which document is being read (#900).
+            "processing_pass": project_processing_banner.read_processing_pass(
+                session, project_id=project.id, now=clock()
+            ),
             # The filters this page is answering, as a query string, so the
             # older-deliveries link carries them. The path is written in the
             # template beside it: a link whose whole target is an expression
