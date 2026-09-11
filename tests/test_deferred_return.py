@@ -39,6 +39,11 @@ from sqlalchemy.orm import Session
 
 import corridor.web.app
 from corridor import web_boundary
+from corridor.delta_resolution import (
+    DEFER,
+    ChildDecisionRequest,
+    resolve_delta,
+)
 from corridor.models import DeltaDeferral, Project, ProjectRecordRevision
 from corridor.operating_mode import adopt_project_baseline
 from corridor.packet_review import read_review_items
@@ -478,6 +483,70 @@ def test_a_change_woken_by_a_newer_source_says_which_condition_woke_it(
     )
     assert sentence == (
         "A newer source version arrived for this subject and field"
+    )
+
+
+def test_the_recorded_wake_condition_is_named_when_it_is_what_woke_it(
+    session, project, clock, client
+):
+    """A deferral held on a person's own condition names it when it fires.
+
+    The review screen always records a date, so this one is scheduled through
+    the command the screen uses, with the wake condition and no date at all --
+    which ADR-0084 allows and the reading has always honoured.
+    """
+
+    adopted = Adopted(session, project).build()
+    first = adopted.answer(
+        document="utility-letter.pdf",
+        family="utility-letter",
+        revision="2026-09-01",
+        value="2027-02-15",
+    )[0]
+    session.expire_all()
+    outcome = resolve_delta(
+        session,
+        ChildDecisionRequest(
+            project_id=project.id,
+            delta_id=first.id,
+            action=DEFER,
+            principal=COORDINATOR,
+            idempotency_key=f"defer:{uuid4().hex[:10]}",
+            decided_at=FIRST_VISIT,
+            wake_condition="the utility sends its revised schedule",
+        ),
+    )
+    assert outcome.status == "deferred", outcome
+    session.expire_all()
+
+    held = read_project_workflow(
+        session, project_id=project.id, as_of=FIRST_VISIT
+    ).deferred[0]
+    assert held.returns_at is None
+    assert held.return_sentence == (
+        "Comes back when the utility sends its revised schedule"
+    )
+
+    # The revised schedule arrives as a newer source version, which is
+    # ADR-0084's wake condition, and the change says both halves.
+    adopted.answer(
+        document="meeting-minutes.pdf",
+        family="meeting-minutes",
+        revision="2026-09-02",
+        value="2027-03-20",
+    )
+    session.expire_all()
+
+    reading = read_review_items(session, project_id=project.id, as_of=FIRST_VISIT)
+    sentence = next(
+        row.return_sentence
+        for item in reading.items
+        for row in item.children
+        if row.delta_id == first.id
+    )
+    assert sentence == (
+        "A newer source version arrived for this subject and field, which is "
+        "what it was waiting for: the utility sends its revised schedule"
     )
 
 
