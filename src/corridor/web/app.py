@@ -16,6 +16,7 @@ as unavailable rather than faked.
 from __future__ import annotations
 
 import logging
+import tempfile
 from dataclasses import replace
 import json
 import secrets
@@ -453,6 +454,26 @@ from corridor.issue_profile_approval import (
     approve_issue_profile,
 )
 from corridor.web.issue_profile_view import issue_configuration_view
+from corridor.baseline_adoption import BaselineAdoptionRefused
+from corridor.format_replacement import (
+    OUTPUT_TEMPLATE,
+    REPLACEMENT_SUFFIX,
+    FormatReplacementRefused,
+    RangeChoice,
+    approve_format_replacement,
+    range_choices,
+    stage_replacement,
+)
+from corridor.intake_hardening import (
+    HostileContentRefused,
+    inspect_byte_gate,
+    inspect_sandboxed_structure,
+)
+from corridor.web.format_replacement_view import (
+    KIND_WORDS,
+    format_replacement_view,
+    validated_replacement,
+)
 from corridor.project_workflow import read_project_workflow
 from corridor.release_preparation import (
     PreparationRequestRefused,
@@ -7885,29 +7906,40 @@ def _issue_configuration_page(
     )
 
 
-def _issue_configuration_membership(
+def _adopted_project_membership(
     session: Session, slug: str, principal: HumanPrincipal
 ) -> tuple[Project, access.MembershipAccess]:
     """The project, its partition, and this person's standing in it.
 
     `_project` is the gate and opens the partition; the membership is read
-    again from the same resolver so the page can say whether this reader holds
-    the designation the approval command will prove. That is a derived display
+    again from the same resolver so a page can say whether this reader holds
+    the designation the acting command will prove. That is a derived display
     and not a second authority -- the control is still rendered and the refusal
     still comes from the command (the audit's own "UI permission feedback is
     not a competing security boundary").
     """
 
     project = _project(session, slug, principal)
+    return project, _adopted_membership(session, project, slug, principal)
+
+
+def _adopted_membership(
+    session: Session, project: Project, slug: str, principal: HumanPrincipal
+) -> access.MembershipAccess:
+    """This reader's standing on an adopted project, or the missing-project answer.
+
+    A legacy project has no adopted template or field mapping, so it has
+    nothing an issue could be configured against and nothing a replacement
+    could supersede. Answered the way a route that does not exist for it is
+    answered.
+    """
+
     if not is_adopted_baseline(session, project.id):
-        # A legacy project has no adopted template or field mapping, so it has
-        # nothing an issue could be configured against. Answered the way a
-        # route that does not exist for it is answered.
         raise HTTPException(404, f"no project {slug!r}")
     membership = access.resolve_membership(session, principal.subject, project.id)
     if membership is None:
         raise HTTPException(404, f"no project {slug!r}")
-    return project, membership
+    return membership
 
 
 @app.get("/issue-configuration/{slug}", response_class=HTMLResponse)
@@ -7929,7 +7961,7 @@ def issue_configuration(
     approves it -- and it is why the approval binds the proposal by digest.
     """
 
-    project, membership = _issue_configuration_membership(session, slug, principal)
+    project, membership = _adopted_project_membership(session, slug, principal)
     now = clock()
     selected = tuple(artifact) if propose.strip() else None
     try:
@@ -7971,7 +8003,7 @@ def approve_issue_configuration(
     what an earlier reporting cutoff was configured to issue.
     """
 
-    project, membership = _issue_configuration_membership(session, slug, principal)
+    project, membership = _adopted_project_membership(session, slug, principal)
     now = clock()
     selected = tuple(artifact)
     try:
@@ -8059,3 +8091,383 @@ def _optional_id(value: str) -> int | None:
         return int(text)
     except ValueError as exc:
         raise HTTPException(400, "this form was not the one the page rendered") from exc
+
+
+# --- The output template and field mapping this project renders through ------
+#
+# #829. ADR-0076 records both identities separately from the adopted data
+# baseline exactly so a customer who changes their workbook layout does not
+# re-adopt their record to keep using it, and the customer-journey audit found
+# `register_baseline_format` -- the act that separation exists for -- with no
+# production caller at all.
+#
+# The reading is `web.format_replacement_view` and every rule about what may be
+# registered is `format_replacement`'s. Neither is re-decided here, and in
+# particular there is no second designation gate on the approval:
+# `register_baseline_format` proves the Project Coordination designation
+# against the roster and answers with the sentence this page prints.
+#
+# The prepared replacement is a link, for #828's reason and by its mechanism:
+# no schema holds a proposal, #825 holds the schema slot, and the offered bytes
+# are content-addressed, so operations hands the person who approves a URL
+# carrying the staged digest and the declaration it was validated under.
+
+
+def _template_and_mapping_page(
+    request: Request,
+    project: Project,
+    membership: access.MembershipAccess,
+    session: Session,
+    *,
+    now: datetime,
+    kind: str,
+    identity: str,
+    version: str,
+    ranges: tuple[RangeChoice, ...],
+    proposal=None,
+    refusal: str | None = None,
+    registered: dict[str, str] | None = None,
+    status_code: int = 200,
+) -> Response:
+    """The page, rendered around whatever just happened to it."""
+
+    view = format_replacement_view(
+        session,
+        project_id=project.id,
+        membership=membership,
+        as_of=now,
+        proposal=proposal,
+        ranges=ranges,
+    )
+    return TEMPLATES.TemplateResponse(
+        request,
+        "format_replacement.html",
+        {
+            "project": project,
+            "view": view,
+            "kind_words": sorted(KIND_WORDS.items()),
+            "selected_kind": kind,
+            "submitted_identity": identity,
+            "submitted_version": version,
+            "refusal": refusal,
+            "registered": registered,
+            "focus": ui_primitives.focus_target(
+                refused=refusal is not None, saved=registered is not None
+            ),
+        },
+        status_code=status_code,
+    )
+
+
+def _template_and_mapping_proposal(
+    session: Session,
+    project: Project,
+    *,
+    kind: str,
+    identity: str,
+    version: str,
+    staged_sha256: str,
+    ranges: tuple[RangeChoice, ...],
+):
+    """Validate the staged replacement in a scratch directory that does not outlive it.
+
+    The importer reads a path rather than a buffer, and the retained copy of
+    the offered bytes is the content-addressed one `stage_replacement` wrote;
+    this directory is a working copy for one request and nothing else.
+    """
+
+    with tempfile.TemporaryDirectory(prefix="corridor-format-") as scratch:
+        return validated_replacement(
+            session,
+            project_id=project.id,
+            kind=kind,
+            identity=identity,
+            version=version,
+            staged_sha256=staged_sha256,
+            ranges=ranges,
+            scratch=Path(scratch),
+        )
+
+
+@app.get("/template-and-mapping/{slug}", response_class=HTMLResponse)
+def template_and_mapping(
+    request: Request,
+    slug: str,
+    kind: str = Query(default=OUTPUT_TEMPLATE),
+    identity: str = Query(default=""),
+    version: str = Query(default=""),
+    staged: str = Query(default=""),
+    combined: list[str] = Query(default=[]),
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+    clock=Depends(get_review_clock),
+):
+    """Read what this project renders through, and a replacement somebody prepared.
+
+    A prepared replacement arrives as a query string because that is how
+    operations hands one to the person who approves it: the offered bytes are
+    already staged under their own digest, so the link is the digest and the
+    declaration it was validated under.
+    """
+
+    project, membership = _adopted_project_membership(session, slug, principal)
+    now = clock()
+    ranges = range_choices(
+        session, project.id, combined=combined, declared=bool(staged)
+    )
+    if not staged.strip():
+        return _template_and_mapping_page(
+            request,
+            project,
+            membership,
+            session,
+            now=now,
+            kind=kind,
+            identity=identity,
+            version=version,
+            ranges=ranges,
+        )
+    try:
+        proposal = _template_and_mapping_proposal(
+            session,
+            project,
+            kind=kind,
+            identity=identity,
+            version=version,
+            staged_sha256=staged.strip(),
+            ranges=ranges,
+        )
+    except FormatReplacementRefused as refused:
+        return _template_and_mapping_page(
+            request,
+            project,
+            membership,
+            session,
+            now=now,
+            kind=kind,
+            identity=identity,
+            version=version,
+            ranges=ranges,
+            refusal=str(refused),
+            status_code=409,
+        )
+    return _template_and_mapping_page(
+        request,
+        project,
+        membership,
+        session,
+        now=now,
+        kind=kind,
+        identity=identity,
+        version=version,
+        ranges=ranges,
+        proposal=proposal,
+    )
+
+
+@app.post("/template-and-mapping/{slug}/validate", response_class=HTMLResponse)
+def validate_template_and_mapping(
+    request: Request,
+    slug: str,
+    kind: str = Form(...),
+    identity: str = Form(...),
+    version: str = Form(...),
+    combined: list[str] = Form(default=[]),
+    upload: UploadFile = File(...),
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+    clock=Depends(get_review_clock),
+):
+    """Read the customer's new form and report what registering it would do.
+
+    This is the operations half of #509's split, so it takes the technical-
+    operations designation: the panel it produces is importer mechanics, which
+    is never a project decision. It registers nothing, and the only thing it
+    writes is the offered bytes themselves, retained under their own digest so
+    the approval can recompose exactly this reading from exactly this file.
+    """
+
+    project = _project(
+        session, slug, principal, designation=access.TECHNICAL_OPERATIONS
+    )
+    membership = _adopted_membership(session, project, slug, principal)
+    now = clock()
+    ranges = range_choices(session, project.id, combined=combined, declared=True)
+    body = upload.file.read(MAX_UPLOAD_BYTES + 1)
+    filename = _safe_upload_name(upload.filename)
+    try:
+        inspect_byte_gate(body, filename, max_bytes=MAX_UPLOAD_BYTES)
+        inspect_sandboxed_structure(body, filename)
+    except HostileContentRefused as exc:
+        return _template_and_mapping_page(
+            request,
+            project,
+            membership,
+            session,
+            now=now,
+            kind=kind,
+            identity=identity,
+            version=version,
+            ranges=ranges,
+            refusal=str(exc),
+            status_code=400,
+        )
+    staged_sha256 = stage_replacement(body)
+    try:
+        proposal = _template_and_mapping_proposal(
+            session,
+            project,
+            kind=kind,
+            identity=identity,
+            version=version,
+            staged_sha256=staged_sha256,
+            ranges=ranges,
+        )
+    except FormatReplacementRefused as refused:
+        return _template_and_mapping_page(
+            request,
+            project,
+            membership,
+            session,
+            now=now,
+            kind=kind,
+            identity=identity,
+            version=version,
+            ranges=ranges,
+            refusal=str(refused),
+            status_code=409,
+        )
+    return _template_and_mapping_page(
+        request,
+        project,
+        membership,
+        session,
+        now=now,
+        kind=kind,
+        identity=identity,
+        version=version,
+        ranges=ranges,
+        proposal=proposal,
+    )
+
+
+@app.post("/template-and-mapping/{slug}/register", response_class=HTMLResponse)
+def register_template_and_mapping(
+    request: Request,
+    slug: str,
+    kind: str = Form(...),
+    identity: str = Form(...),
+    version: str = Form(...),
+    staged_sha256: str = Form(...),
+    content_sha256: str = Form(...),
+    supersedes_format_id: str = Form(default=""),
+    combined: list[str] = Form(default=[]),
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+    clock=Depends(get_review_clock),
+):
+    """Register one validated replacement, as the person performing the act.
+
+    The registration it supersedes and the digest of the bytes it would
+    register both travel back through the form, so an approval registers
+    exactly what the page printed or registers nothing at all. No accepted
+    value is written: the command writes one registration row, its stored
+    declaration and, for a template, its retained bytes.
+
+    The designation is proved at the resolver here and that is deliberate
+    rather than a second gate. `register_baseline_format` proves the Project
+    Coordination designation for a *field mapping*, because that is the
+    registration that changes what a mapped column means, and it proves nothing
+    for an output template: the plpgsql command checks the principal is named
+    and no more. An un-gated route would therefore let any project member
+    replace the form the customer's record is issued in. Making the command
+    prove it for both kinds is the better boundary and needs a migration, which
+    #825 holds the slot for.
+    """
+
+    project = _project(session, slug, principal, designation=access.COORDINATION)
+    membership = _adopted_membership(session, project, slug, principal)
+    now = clock()
+    ranges = range_choices(session, project.id, combined=combined, declared=True)
+    try:
+        # One savepoint around the registration, so a refusal gives up its own
+        # work and this session can still render the page around it.
+        with session.begin_nested():
+            with tempfile.TemporaryDirectory(prefix="corridor-format-") as scratch:
+                outcome = approve_format_replacement(
+                    session,
+                    project_id=project.id,
+                    kind=kind,
+                    identity=identity,
+                    version=version,
+                    staged_sha256=staged_sha256,
+                    ranges=ranges,
+                    supersedes_format_id=_optional_id(supersedes_format_id),
+                    content_sha256=content_sha256,
+                    principal=principal,
+                    scratch=Path(scratch),
+                )
+    except (FormatReplacementRefused, BaselineAdoptionRefused) as refused:
+        # The domain refusal and the registration command's own, including the
+        # one it gives a member who holds no Project Coordination designation.
+        # Neither carries a code, so the sentence is what the page prints;
+        # restating the rule here to pick a status would be the second gate
+        # this route avoids.
+        return _template_and_mapping_page(
+            request,
+            project,
+            membership,
+            session,
+            now=now,
+            kind=kind,
+            identity=identity,
+            version=version,
+            ranges=ranges,
+            refusal=str(refused),
+            status_code=409,
+        )
+    session.commit()
+    return _template_and_mapping_page(
+        request,
+        project,
+        membership,
+        session,
+        now=now,
+        kind=kind,
+        identity=identity,
+        version=version,
+        ranges=range_choices(session, project.id),
+        registered=_registered_replacement(outcome),
+        status_code=201 if outcome.registered else 200,
+    )
+
+
+def _registered_replacement(outcome) -> dict[str, str]:
+    """What the registration did, in the words the page announces it with."""
+
+    words = KIND_WORDS.get(outcome.kind, outcome.kind)
+    if not outcome.registered:
+        return {
+            "heading": "Nothing changed",
+            "detail": (
+                f"This is the {words} already in force, so nothing was "
+                "registered and nobody is recorded as having changed anything."
+            ),
+        }
+    return {
+        "heading": f"{outcome.identity} {outcome.version} is in force",
+        "detail": (
+            f"This project now renders through that {words}. No accepted value "
+            "changed: the registration supersedes its predecessor and writes "
+            "no Project Record revision. Any issue prepared against the "
+            "previous registration is stale, and a fresh one is prepared on "
+            "the Work page."
+        ),
+    }
+
+
+def _safe_upload_name(filename: str | None) -> str:
+    """The offered file's name, defaulted so the byte gate always has a suffix."""
+
+    name = (filename or "").strip()
+    return name or f"replacement{REPLACEMENT_SUFFIX}"

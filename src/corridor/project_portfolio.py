@@ -122,10 +122,7 @@ from corridor.project_workflow import (
     issue_readiness_by_project,
     outstanding_follow_up_by_project,
 )
-from corridor.release_authorization import (
-    candidate_format_differences,
-    issue_state_differences,
-)
+from corridor.release_authorization import issue_state_differences
 from corridor.release_preparation import preparation_standings
 from corridor.release_candidate import (
     candidate_staleness_reasons,
@@ -427,7 +424,7 @@ def candidate_awaits_authorization(
     could not be reached from any database state at all. The precedence was
     never wrong; this predicate was missing.
 
-    Four questions, each answered by the module that owns it and none of them
+    Three questions, each answered by the module that owns it and none of them
     re-derived here:
 
     * A candidate exists. Before #529 prepares one there is nothing to
@@ -436,9 +433,10 @@ def candidate_awaits_authorization(
       the profile, the accepted revision and the comparison baseline, plus the
       candidate's own ``blocked`` readiness, which is the other half of
       ``authorization_blockers``.
-    * #533 would still accept it — ``candidate_format_differences`` for the
-      output template and field mapping, which is the one thing revalidation
-      checks that staleness does not.
+      Since #829 that includes the replaced output template and field
+      mapping, which used to be #533's own check alone
+      (``candidate_format_differences``) and is now one term of the staleness
+      rule, so a screen cannot offer an approval the authorization refuses.
     * The current issue state has not already been issued —
       ``issue_state_differences`` (#533). A candidate can be perfectly fresh
       and still describe an issue the customer already has, and offering that
@@ -458,9 +456,8 @@ def candidate_awaits_authorization(
         inventory=inventory,
         newest_revision_id=newest_revision_id,
         current_package_id=None if package is None else int(package.id),
+        formats=formats,
     ):
-        return False
-    if candidate_format_differences(candidate, formats):
         return False
     return bool(
         issue_state_differences(

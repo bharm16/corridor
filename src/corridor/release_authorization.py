@@ -120,6 +120,7 @@ from corridor.release_candidate import (
     authorization_blockers,
     candidate_artifacts,
     latest_authorized_package,
+    replaced_format_reasons,
 )
 
 
@@ -833,11 +834,24 @@ def _revalidate(
     """Refuse a candidate that no longer describes the project it was read from.
 
     Readiness is #529's, read through ``authorization_blockers`` rather than
-    derived again here. What is added is the one thing preparation checks and
-    that reading does not: the output-template and field-mapping registrations
-    in force, which a coordinator can replace between preparation and release.
+    derived again here, and since #829 that reading includes the
+    output-template and field-mapping registrations a coordinator can replace
+    between preparation and release -- so the screen that offers the approval
+    and the act that performs it can no longer disagree about whether it is
+    offerable.
+
+    The replaced registration is asked first all the same, because the refusal
+    vocabulary is closed and ``template_or_mapping_replaced`` leads a
+    coordinator somewhere ``candidate_stale`` does not: to the registration
+    page, rather than only to a fresh preparation. The general blockers answer
+    everything it does not.
     """
 
+    replaced = candidate_format_differences(
+        candidate, effective_baseline_formats(session, int(candidate.project_id))
+    )
+    if replaced:
+        raise AuthorizationRefused(TEMPLATE_OR_MAPPING_REPLACED, replaced[0])
     blockers = authorization_blockers(session, candidate, as_of=as_of)
     if blockers:
         code = (
@@ -848,11 +862,6 @@ def _revalidate(
             " ".join(blockers)
             + " Nothing is released; prepare a fresh candidate and review that.",
         )
-    replaced = candidate_format_differences(
-        candidate, effective_baseline_formats(session, int(candidate.project_id))
-    )
-    if replaced:
-        raise AuthorizationRefused(TEMPLATE_OR_MAPPING_REPLACED, replaced[0])
 
 
 def candidate_format_differences(
@@ -860,29 +869,19 @@ def candidate_format_differences(
 ) -> tuple[str, ...]:
     """Whether the template and mapping a candidate was rendered through still hold.
 
-    The one thing ``authorization_blockers`` does not cover, stated once. A
-    coordinator can replace either registration between preparation and
+    A coordinator can replace either registration between preparation and
     release, and then the sealed artifacts are not the ones the project now
-    produces. It is public because a cross-project reading (#537, #636) must
-    ask the same question before it calls a candidate ready, and asking it a
-    second way would let a portfolio row promise an authorization that #533
-    would refuse.
+    produces. The rule is ``release_candidate.replaced_format_reasons`` and
+    this is the name revalidation calls it by: #829 made it one term of
+    ``candidate_staleness_reasons``, because a rule #533 raises on while
+    ``authorization_blockers`` stays silent is a screen offering an approval
+    the authorization refuses. It stays public under this name because a
+    cross-project reading (#537, #636) asks it before it calls a candidate
+    ready, and asking it a second way would let a portfolio row promise an
+    authorization #533 would refuse.
     """
 
-    replaced: list[str] = []
-    for kind, format_id, what in (
-        ("output_template", candidate.output_template_format_id, "output template"),
-        ("field_mapping", candidate.field_mapping_format_id, "field mapping"),
-    ):
-        registered = formats.get(kind)
-        if registered is None or int(registered.id) != int(format_id):
-            replaced.append(
-                f"the {what} this project renders through was replaced after "
-                "this candidate was prepared, so the sealed artifacts would "
-                "not be the ones this project now produces. Nothing is "
-                "released; prepare a fresh candidate."
-            )
-    return tuple(replaced)
+    return replaced_format_reasons(candidate, formats)
 
 
 def _verify_retained_bytes(
