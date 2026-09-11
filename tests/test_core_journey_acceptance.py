@@ -489,7 +489,6 @@ CORE_JOURNEY_STEPS: tuple[Step, ...] = (
         sentence="They open it and read what Corridor needs next to start it",
         owner="#827",
         run=step_read_onboarding_state,
-        expected_to_fail=True,
     ),
     Step(
         name="supply_the_baseline",

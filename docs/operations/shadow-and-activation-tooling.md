@@ -10,8 +10,16 @@ project was valid when the baseline adoption committed: under
 the baseline that #535 requires is adopted under that authorization, never by
 relaxing the activation checks while the project is unadopted. Activation does
 not ask for an unexpired authorization; it asks for that proof, alongside
-current customer authorization and the ordinary activation prerequisites. #827
-builds the authorization and the proof; neither exists yet.
+current customer authorization and the ordinary activation prerequisites.
+
+#827 built the authorization, its control-plane record, the retained proof and
+the granted adoption command. The proof an activation reads is a
+`project_onboarding_acts` row for that project and the `adopt_baseline`
+operation: it carries the authorization identity and version the act ran under,
+the validity that held when it committed, and the receipt it produced. What
+that is, who may issue and withdraw one, and the **maximum stale-validity
+window before customer deployment** are in
+[the onboarding authorization guide](onboarding-authorization.md).
 
 ## Shadow capture
 

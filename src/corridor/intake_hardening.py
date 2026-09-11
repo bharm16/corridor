@@ -42,6 +42,7 @@ import zipfile
 from dataclasses import dataclass
 from typing import Protocol
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from corridor.models import Document, DocumentQuarantine
@@ -324,6 +325,38 @@ def assert_can_process_richly(session: Session, document_id: int) -> None:
     doc = session.get(Document, document_id)
     if doc is None:
         raise IntakeSecurityError(f"document {document_id} does not exist")
+
+
+def assert_staged_bytes_may_be_read_richly(
+    session: Session, *, project_id: int, sha256: str
+) -> None:
+    """Stage 3, asked of bytes that have no Document yet (#827, for #919).
+
+    Onboarding reads a workbook before anything is registered: the bytes are
+    staged by digest and the compatibility pass opens them with a rich reader.
+    ``assert_can_process_richly`` cannot answer for them, because it is keyed by
+    ``document_id`` and there is no row.
+
+    **This is the seam, not the decision.** #919 owns the typed processing hold
+    and the stage-aware answer that goes with it -- an operation needs both a
+    valid permission and no applicable prohibiting hold, and neither mechanism
+    replaces the other. Until that design exists this function keeps the
+    conservative refusal the repository already has: if this project already
+    registered a Document over these exact bytes and that Document is held, the
+    same hold applies to the same bytes under a different name, and the rich
+    read is refused. When #919 lands its typed holds, they are consulted here
+    and the conservative rule below becomes one of the cases it answers -- not
+    a second, softer gate beside it.
+    """
+
+    document = session.scalars(
+        select(Document).where(
+            Document.project_id == project_id, Document.sha256 == sha256
+        )
+    ).first()
+    if document is None:
+        return
+    assert_can_process_richly(session, int(document.id))
 
 
 def quarantine_document(session: Session, document_id: int, reason: str) -> None:

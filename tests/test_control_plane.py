@@ -820,3 +820,151 @@ def test_key_rotation_recovers_by_fresh_sign_in_without_accepting_foreign_cookie
             router.close()
             router.control_plane.engine.dispose()
             build_customer_router.cache_clear()
+
+
+# --- #827 The limited onboarding authorization (ADR-0099) -------------------
+
+
+def _registered(registry, owner_url, environment_id):
+    """One registered environment per scenario; the module keeps one registry."""
+
+    registration = EnvironmentRegistration(
+        customer_id="synthetic-onboarding",
+        environment_id=environment_id,
+        deployment_id=f"local-{environment_id}",
+        database_host=owner_url.host,
+        database_port=owner_url.port,
+        database_name=f"onboarding_{environment_id.replace('-', '_')}",
+        web_credential_ref="env:WEB_ONBOARDING",
+        worker_credential_ref="env:WORKER_ONBOARDING",
+        object_namespace_ref="namespace:synthetic-onboarding",
+        connector_configuration_ref="configuration:synthetic-onboarding",
+        hold=False,
+    )
+    return registry.register(registration)
+
+
+def test_an_issued_onboarding_authorization_carries_references_and_no_content(
+    customer_environment_databases,
+):
+    """The control plane is authoritative for it, and holds no workbook.
+
+    ADR-0099 splits the record: identifiers, versions and digests here; the
+    preview, the mapping, the answers and the adoption receipt in the customer
+    environment. This is the half that has to stay legible after that
+    environment is disposed of.
+    """
+
+    from datetime import datetime, timedelta, timezone
+
+    from corridor.control_plane import (
+        OnboardingAuthorization,
+        OnboardingAuthorizationEvent,
+        OnboardingCustody,
+        RouteRefused,
+    )
+
+    control_engine, first, _ = customer_environment_databases
+    initialize_control_plane(control_engine)
+    _registered(
+        ControlPlane(control_engine),
+        first.session_factory.kw["bind"].url,
+        "environment-onboarding",
+    )
+
+    custody = OnboardingCustody(control_engine)
+    issued_at = datetime(2026, 5, 4, 9, 0, tzinfo=timezone.utc)
+    authorization = OnboardingAuthorization(
+        authorization_id="loa-2026-05",
+        version=1,
+        environment_id="environment-onboarding",
+        customer_id="synthetic-onboarding",
+        project_slug="onboarding-project",
+        permitted_operations="inspect_compatibility adopt_baseline",
+        source_scope="ucm workbook revisions",
+        governing_authorization_id="customer-authorization-7",
+        governing_authorization_version="2026-04-01",
+        evidence_ref="s3:authorizations/customer-authorization-7.pdf",
+        evidence_sha256="a" * 64,
+        issued_by="operations:deployment-desk",
+        issued_at=issued_at,
+        expires_at=issued_at + timedelta(days=14),
+    )
+
+    assert custody.issue(authorization) == authorization
+    assert custody.authorization("loa-2026-05") == authorization
+
+    # A reissue is a higher version; the same version with different terms is
+    # refused rather than overwritten.
+    with pytest.raises(ValueError):
+        custody.issue(replace(authorization, source_scope="everything"))
+
+    # A withdrawal records who required it, who executed it, the reason, and
+    # its enforcement as a separate fact.
+    requested = OnboardingAuthorizationEvent(
+        event_id="withdrawal-1",
+        authorization_id="loa-2026-05",
+        version=1,
+        kind="withdrawal_requested",
+        requested_by="Dana Reyes, records custodian",
+        requested_at=issued_at + timedelta(days=1),
+        executed_by="security:duty-officer",
+        executed_at=issued_at + timedelta(days=1, minutes=2),
+        reason="customer paused processing pending counsel review",
+    )
+    custody.record_event(requested)
+    assert custody.events("loa-2026-05") == (requested,)
+    assert [event.kind for event in custody.events("loa-2026-05")] == [
+        "withdrawal_requested"
+    ]
+
+    with pytest.raises(RouteRefused):
+        custody.record_event(replace(requested, authorization_id="loa-unknown"))
+
+
+def test_onboarding_custody_records_are_immutable(customer_environment_databases):
+    """A withdrawal cannot be edited into never having been requested."""
+
+    from datetime import datetime, timedelta, timezone
+
+    from sqlalchemy import text
+    from sqlalchemy.exc import DBAPIError
+
+    from corridor.control_plane import OnboardingAuthorization, OnboardingCustody
+
+    control_engine, first, _ = customer_environment_databases
+    initialize_control_plane(control_engine)
+    _registered(
+        ControlPlane(control_engine),
+        first.session_factory.kw["bind"].url,
+        "environment-immutable",
+    )
+
+    issued_at = datetime(2026, 5, 4, 9, 0, tzinfo=timezone.utc)
+    OnboardingCustody(control_engine).issue(
+        OnboardingAuthorization(
+            authorization_id="loa-immutable",
+            version=1,
+            environment_id="environment-immutable",
+            customer_id="synthetic-onboarding",
+            project_slug="onboarding-project",
+            permitted_operations="adopt_baseline",
+            source_scope="ucm workbook revisions",
+            governing_authorization_id="customer-authorization-7",
+            governing_authorization_version="2026-04-01",
+            evidence_ref="s3:authorizations/customer-authorization-7.pdf",
+            evidence_sha256="b" * 64,
+            issued_by="operations:deployment-desk",
+            issued_at=issued_at,
+            expires_at=issued_at + timedelta(days=14),
+        )
+    )
+
+    with pytest.raises(DBAPIError):
+        with control_engine.begin() as connection:
+            connection.execute(
+                text(
+                    "update control_plane.onboarding_authorizations "
+                    "set expires_at = now() where authorization_id = 'loa-immutable'"
+                )
+            )

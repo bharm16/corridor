@@ -124,7 +124,15 @@ EXPECTED_SCHEMA_SHA256 = (
     # that same `document_id`, so a selected passage outside the capture's own
     # source is unrepresentable. Recomputed against a fresh disposable database
     # with template reuse off.
-    "97d5700a36ec1165c3e587d046584aef7c0269bc8218b04a51c7a7dc6a0f88cf"
+    # #827 adds the limited onboarding authorization ADR-0099 decides: the
+    # grant a restricted operations actor records in the customer environment,
+    # the append-only events that say what happened to it, the retained
+    # preview an approval request verifies without opening a workbook, and the
+    # retained proof that a permitted act committed while the grant was valid.
+    # Four relations and four sequences, their five commands, the guard that
+    # refuses every other write, and #839's designation trigger on the act.
+    # Recomputed against a fresh disposable database with template reuse off.
+    "4a02e5d8ced2dcccb78f092697d6a8f7ce2f2efaeda0210c7e1fde327ca51c83"
 )
 
 pytestmark = [pytest.mark.slow, pytest.mark.migration]
@@ -250,6 +258,7 @@ COMPOSED_UPGRADE = (
     "source_revision_declaration",
     "follow_up_plan_closure",
     "capture_correction",
+    "onboarding_authorization",
     # The sibling transitions this revision has always carried at the end, and
     # the PUBLIC sweep that runs last of all because it reads the catalog every
     # block above has finished writing.
@@ -274,6 +283,7 @@ COMPOSED_DOWNGRADE = (
     "minutes_spine",
     "project_contacts",
     "email_spine",
+    "onboarding_authorization",
     "capture_correction",
     "follow_up_plan_closure",
     "source_revision_declaration",

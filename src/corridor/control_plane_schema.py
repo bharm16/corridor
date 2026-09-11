@@ -109,6 +109,80 @@ DISPOSITION_REHEARSAL_RECEIPTS = Table(
     CheckConstraint("outcome in ('pending', 'completed', 'refused')"),
 )
 
+# --- #827 The limited onboarding authorization (ADR-0099) -------------------
+#
+# ADR-0099 makes the control plane authoritative for the permission onboarding
+# runs under, and ADR-0083's control-plane clause is why it lives here rather
+# than in the customer database: an authorization to process a named customer's
+# data is cross-customer operations state, it has to stay legible after the
+# customer environment is disposed of, and it must not put the customer's own
+# workbook in a store that spans customers.
+#
+# **Identifiers and digests only.** The row names the governing customer
+# authorization and the retained evidence that supports it, and carries neither
+# the signed document nor any of the customer's source material. The preview a
+# coordinator approved, the mapping and the adoption receipt stay in the
+# customer environment, which is the split the two ADRs already draw.
+#
+# **Immutable, like every other control-plane record.** A reissue is a new row
+# at a higher version; what happened to an authorization afterwards is an
+# append-only event. `prevent_rewrite` holds both, so a withdrawal cannot be
+# edited into never having been requested.
+ONBOARDING_AUTHORIZATIONS = Table(
+    "onboarding_authorizations",
+    CONTROL_PLANE_METADATA,
+    Column("authorization_id", String(128), primary_key=True),
+    Column("version", Integer, primary_key=True),
+    Column(
+        "environment_id",
+        ForeignKey("control_plane.customer_environments.environment_id"),
+        nullable=False,
+    ),
+    Column("customer_id", String(128), nullable=False),
+    Column("project_slug", String(128), nullable=False),
+    Column("permitted_operations", String(512), nullable=False),
+    Column("source_scope", String(256), nullable=False),
+    Column("governing_authorization_id", String(128), nullable=False),
+    Column("governing_authorization_version", String(64), nullable=False),
+    Column("evidence_ref", String(512), nullable=False),
+    Column("evidence_sha256", String(64), nullable=False),
+    Column("issued_by", String(128), nullable=False),
+    Column("issued_at", DateTime(timezone=True), nullable=False),
+    Column("expires_at", DateTime(timezone=True), nullable=False),
+    CheckConstraint("version >= 1"),
+    CheckConstraint("expires_at > issued_at"),
+    CheckConstraint("evidence_sha256 ~ '^[0-9a-f]{64}$'"),
+    CheckConstraint("length(btrim(permitted_operations)) > 0"),
+)
+
+# What happened to one authorization after it was issued. Withdrawal is three
+# separate recorded facts on purpose: the customer's request, its enforcement in
+# the customer environment, and an enforcement that failed. ADR-0099 refuses to
+# let a request be described as fully enforced while the customer database can
+# still exercise the grant, and that is only sayable if they are separate rows.
+ONBOARDING_AUTHORIZATION_EVENTS = Table(
+    "onboarding_authorization_events",
+    CONTROL_PLANE_METADATA,
+    Column("event_id", String(128), primary_key=True),
+    Column("authorization_id", String(128), nullable=False),
+    Column("version", Integer, nullable=False),
+    Column("kind", String(48), nullable=False),
+    Column("requested_by", String(256), nullable=True),
+    Column("requested_at", DateTime(timezone=True), nullable=True),
+    Column("executed_by", String(128), nullable=False),
+    Column("executed_at", DateTime(timezone=True), nullable=False),
+    Column("reason", String(1024), nullable=True),
+    Column("detail", String(1024), nullable=True),
+    CheckConstraint(
+        "kind in ('revalidated', 'withdrawal_requested', 'withdrawal_enforced', "
+        "'withdrawal_enforcement_failed', 'governing_authorization_superseded')"
+    ),
+    CheckConstraint(
+        "kind <> 'withdrawal_requested' or (requested_by is not null "
+        "and requested_at is not null and reason is not null)"
+    ),
+)
+
 OPERATIONS_ROLE = "corridor_control_operations"
 RESOLVER_ROLE = "corridor_control_resolver"
 
@@ -173,6 +247,8 @@ def initialize_control_plane(engine: Engine) -> None:
                     "destruction_receipts",
                     "disposition_plans",
                     "disposition_rehearsal_receipts",
+                    "onboarding_authorizations",
+                    "onboarding_authorization_events",
                 }
                 if schema == "control_plane"
                 else set()
@@ -244,6 +320,18 @@ def initialize_control_plane(engine: Engine) -> None:
                 for each row execute function control_plane.prevent_rewrite();
             drop trigger if exists destruction_receipts_no_truncate on control_plane.destruction_receipts;
             create trigger destruction_receipts_no_truncate before truncate on control_plane.destruction_receipts
+                for each statement execute function control_plane.prevent_rewrite();
+            drop trigger if exists onboarding_authorizations_immutable on control_plane.onboarding_authorizations;
+            create trigger onboarding_authorizations_immutable before update or delete on control_plane.onboarding_authorizations
+                for each row execute function control_plane.prevent_rewrite();
+            drop trigger if exists onboarding_authorizations_no_truncate on control_plane.onboarding_authorizations;
+            create trigger onboarding_authorizations_no_truncate before truncate on control_plane.onboarding_authorizations
+                for each statement execute function control_plane.prevent_rewrite();
+            drop trigger if exists onboarding_authorization_events_immutable on control_plane.onboarding_authorization_events;
+            create trigger onboarding_authorization_events_immutable before update or delete on control_plane.onboarding_authorization_events
+                for each row execute function control_plane.prevent_rewrite();
+            drop trigger if exists onboarding_authorization_events_no_truncate on control_plane.onboarding_authorization_events;
+            create trigger onboarding_authorization_events_no_truncate before truncate on control_plane.onboarding_authorization_events
                 for each statement execute function control_plane.prevent_rewrite();
             drop trigger if exists customer_environments_no_delete on control_plane.customer_environments;
             create trigger customer_environments_no_delete before delete on control_plane.customer_environments

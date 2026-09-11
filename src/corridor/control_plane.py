@@ -23,6 +23,8 @@ from corridor.control_plane_schema import (
     DISPOSITION_PLANS,
     DISPOSITION_REHEARSAL_RECEIPTS,
     ENVIRONMENTS,
+    ONBOARDING_AUTHORIZATION_EVENTS,
+    ONBOARDING_AUTHORIZATIONS,
 )
 
 
@@ -415,3 +417,195 @@ class ControlPlane:
             )
             if result.rowcount != 1:
                 raise RouteRefused("disposition plan unavailable")
+
+
+# --- #827 The limited onboarding authorization (ADR-0099) -------------------
+#
+# The control plane is authoritative for it, so issuing one is an operations
+# act here and the customer environment holds only a recorded grant it can
+# enforce against. Nothing below reaches a customer database: this module has
+# no Project Record model by design, and an authorization is identifiers,
+# versions and digests.
+#
+# What is deliberately **not** here: propagation. Recording a withdrawal stops
+# nothing on its own, and this module does not pretend otherwise. What makes a
+# withdrawal effective in a customer environment is the matching
+# `record_onboarding_grant_event` there, and the maximum window between the two
+# is stated in `corridor.onboarding_authorization.REVALIDATION_WINDOW` and in
+# the operations guide rather than assumed.
+
+ONBOARDING_EVENT_KINDS = (
+    "revalidated",
+    "withdrawal_requested",
+    "withdrawal_enforced",
+    "withdrawal_enforcement_failed",
+    "governing_authorization_superseded",
+)
+
+
+@dataclass(frozen=True)
+class OnboardingAuthorization:
+    """One issued limited onboarding authorization, as the control plane holds it."""
+
+    authorization_id: str
+    version: int
+    environment_id: str
+    customer_id: str
+    project_slug: str
+    permitted_operations: str
+    source_scope: str
+    governing_authorization_id: str
+    governing_authorization_version: str
+    evidence_ref: str
+    evidence_sha256: str
+    issued_by: str
+    issued_at: datetime
+    expires_at: datetime
+
+    def __post_init__(self) -> None:
+        identifier(self.authorization_id)
+        identifier(self.environment_id)
+        identifier(self.customer_id)
+        identifier(self.project_slug)
+        reference(self.evidence_ref)
+        if not isinstance(self.version, int) or self.version < 1:
+            raise ValueError("an authorization version starts at one")
+        if not re.fullmatch(r"[0-9a-f]{64}", self.evidence_sha256 or ""):
+            raise ValueError("authorization evidence is named by its digest")
+        for moment in (self.issued_at, self.expires_at):
+            if moment.tzinfo is None or moment.utcoffset() is None:
+                raise ValueError("an authorization window needs explicit timezones")
+        if self.expires_at <= self.issued_at:
+            raise ValueError("an authorization expires after it is issued")
+        if not self.permitted_operations.strip():
+            raise ValueError("an authorization names the operations it permits")
+
+
+@dataclass(frozen=True)
+class OnboardingAuthorizationEvent:
+    """What an operations or security actor recorded about one authorization."""
+
+    event_id: str
+    authorization_id: str
+    version: int
+    kind: str
+    executed_by: str
+    executed_at: datetime
+    requested_by: str | None = None
+    requested_at: datetime | None = None
+    reason: str | None = None
+    detail: str | None = None
+
+    def __post_init__(self) -> None:
+        identifier(self.event_id)
+        identifier(self.authorization_id)
+        if self.kind not in ONBOARDING_EVENT_KINDS:
+            raise ValueError("unknown onboarding authorization event")
+        if self.executed_at.tzinfo is None or self.executed_at.utcoffset() is None:
+            raise ValueError("an authorization event needs an explicit timezone")
+        if self.kind == "withdrawal_requested" and not (
+            self.requested_by and self.requested_at and self.reason
+        ):
+            raise ValueError(
+                "a withdrawal records who required it, when, and why"
+            )
+
+
+class OnboardingCustody:
+    """Issue, read and annotate limited onboarding authorizations.
+
+    Separate from ``ControlPlane`` deliberately. The registry answers "where is
+    this customer's environment"; this answers "may this project's data be
+    processed at all, and by what permission". ADR-0099 makes them different
+    grants held by different parties, and a caller that holds one engine for
+    both still has to name which question it is asking.
+    """
+
+    def __init__(self, engine: Engine):
+        if engine.dialect.name != "postgresql":
+            raise ValueError("control plane requires PostgreSQL")
+        self.engine = engine
+
+    def issue(self, authorization: OnboardingAuthorization) -> OnboardingAuthorization:
+        """Record one issued authorization. A reissue is a higher version."""
+
+        with self.engine.begin() as connection:
+            connection.execute(
+                pg_insert(ONBOARDING_AUTHORIZATIONS)
+                .values(**asdict(authorization))
+                .on_conflict_do_nothing()
+            )
+            row = (
+                connection.execute(
+                    select(ONBOARDING_AUTHORIZATIONS).where(
+                        ONBOARDING_AUTHORIZATIONS.c.authorization_id
+                        == authorization.authorization_id,
+                        ONBOARDING_AUTHORIZATIONS.c.version == authorization.version,
+                    )
+                )
+                .mappings()
+                .first()
+            )
+        if row is None or dict(row) != asdict(authorization):
+            raise ValueError(
+                "that authorization version is already recorded with different terms"
+            )
+        return authorization
+
+    def authorization(
+        self, authorization_id: str, version: int | None = None
+    ) -> OnboardingAuthorization:
+        """The named version, or the newest one recorded."""
+
+        query = select(ONBOARDING_AUTHORIZATIONS).where(
+            ONBOARDING_AUTHORIZATIONS.c.authorization_id == identifier(authorization_id)
+        )
+        if version is not None:
+            query = query.where(ONBOARDING_AUTHORIZATIONS.c.version == version)
+        query = query.order_by(ONBOARDING_AUTHORIZATIONS.c.version.desc())
+        with self.engine.connect() as connection:
+            row = connection.execute(query).mappings().first()
+        if row is None:
+            raise RouteRefused("onboarding authorization unavailable")
+        return OnboardingAuthorization(**row)
+
+    def record_event(
+        self, event: OnboardingAuthorizationEvent
+    ) -> OnboardingAuthorizationEvent:
+        """Append what happened to an authorization. Never edits one."""
+
+        with self.engine.begin() as connection:
+            known = connection.execute(
+                select(ONBOARDING_AUTHORIZATIONS.c.version).where(
+                    ONBOARDING_AUTHORIZATIONS.c.authorization_id
+                    == event.authorization_id,
+                    ONBOARDING_AUTHORIZATIONS.c.version == event.version,
+                )
+            ).first()
+            if known is None:
+                raise RouteRefused("onboarding authorization unavailable")
+            connection.execute(
+                pg_insert(ONBOARDING_AUTHORIZATION_EVENTS)
+                .values(**asdict(event))
+                .on_conflict_do_nothing()
+            )
+        return event
+
+    def events(
+        self, authorization_id: str
+    ) -> tuple[OnboardingAuthorizationEvent, ...]:
+        """Everything recorded about that authorization, oldest first."""
+
+        with self.engine.connect() as connection:
+            rows = connection.execute(
+                select(ONBOARDING_AUTHORIZATION_EVENTS)
+                .where(
+                    ONBOARDING_AUTHORIZATION_EVENTS.c.authorization_id
+                    == identifier(authorization_id)
+                )
+                .order_by(
+                    ONBOARDING_AUTHORIZATION_EVENTS.c.executed_at,
+                    ONBOARDING_AUTHORIZATION_EVENTS.c.event_id,
+                )
+            ).mappings()
+            return tuple(OnboardingAuthorizationEvent(**row) for row in rows)

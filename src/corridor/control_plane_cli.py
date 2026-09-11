@@ -24,6 +24,9 @@ from corridor.control_plane import (
     ControlPlane,
     DestructionReceipt,
     EnvironmentRegistration,
+    OnboardingAuthorization,
+    OnboardingAuthorizationEvent,
+    OnboardingCustody,
 )
 from corridor.control_plane_schema import initialize_control_plane
 from corridor.customer_routing import CustomerIdentity, bind_customer_environment
@@ -41,7 +44,13 @@ Separate PostgreSQL operations registry and external receipts (#656).
 Requires explicit role-specific URLs; never uses a default customer URL.
   make control-plane ARGS="initialize"
   make control-plane ARGS="register --file environment-registration.json"
-Full input/custody contract: docs/operations/customer-environments.md.
+Limited onboarding authorizations (#827, ADR-0099), issued and withdrawn here
+because the control plane is authoritative for them:
+  make control-plane ARGS="onboarding-issue --file onboarding-authorization.json"
+  make control-plane ARGS="onboarding-event --file withdrawal-request.json"
+  make control-plane ARGS="onboarding-show loa-2026-05"
+Full input/custody contract: docs/operations/customer-environments.md and
+docs/operations/onboarding-authorization.md.
 """
 
 
@@ -58,8 +67,9 @@ def main(argv: list[str] | None = None) -> int:
     commands.add_parser(
         "bind-customer", help="attest the customer DB identity using its owner login"
     )
-    for name in ("register", "record-destruction"):
+    for name in ("register", "record-destruction", "onboarding-issue", "onboarding-event"):
         commands.add_parser(name).add_argument("--file", type=Path, required=True)
+    commands.add_parser("onboarding-show").add_argument("authorization_id")
     for name in ("inspect", "receipts"):
         commands.add_parser(name).add_argument("environment_id")
     state = commands.add_parser("state")
@@ -91,6 +101,38 @@ def main(argv: list[str] | None = None) -> int:
             )
             bind_customer_environment(engine, identity)
             result = {"status": "bound", **asdict(identity)}
+        elif args.command.startswith("onboarding-"):
+            # The restricted operations actor's own custody commands. A
+            # coordinator reaches none of this: it is a different database, a
+            # different credential and a different party (ADR-0099).
+            custody = OnboardingCustody(engine)
+            if args.command == "onboarding-issue":
+                payload = json.loads(args.file.read_text())
+                for field in ("issued_at", "expires_at"):
+                    payload[field] = datetime.fromisoformat(payload[field])
+                result = asdict(custody.issue(OnboardingAuthorization(**payload)))
+            elif args.command == "onboarding-event":
+                payload = json.loads(args.file.read_text())
+                for field in ("executed_at", "requested_at"):
+                    if payload.get(field):
+                        payload[field] = datetime.fromisoformat(payload[field])
+                result = asdict(
+                    custody.record_event(OnboardingAuthorizationEvent(**payload))
+                )
+            else:
+                # The full record the operations audience is owed: the issued
+                # terms, and every recorded fact about what happened to them --
+                # who required a withdrawal, who executed it, its effective
+                # request time and its enforcement state.
+                result = {
+                    "authorization": asdict(
+                        custody.authorization(args.authorization_id)
+                    ),
+                    "events": [
+                        asdict(event)
+                        for event in custody.events(args.authorization_id)
+                    ],
+                }
         else:
             registry = ControlPlane(engine)
             if args.command in {"register", "record-destruction"}:

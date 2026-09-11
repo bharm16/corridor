@@ -49,14 +49,15 @@ from datetime import datetime, timezone
 from hashlib import sha256
 import json
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 from sqlalchemy import BigInteger, bindparam, cast, func, select
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Session
 
-from corridor import audit
+from corridor import audit, intake_hardening, onboarding_authorization
 from corridor.access import COORDINATION, resolve_membership
+from corridor.activation_runtime import limited_onboarding_authorization
 from corridor.baseline_workbook import (
     IMPORTER_IDENTITY,
     IMPORTER_VERSION,
@@ -86,6 +87,7 @@ from corridor.models import (
     Dependency,
     Document,
     FactDecision,
+    OnboardingPreview,
     Project,
     SourceSegment,
 )
@@ -1379,3 +1381,631 @@ def _adopted_fact_ids(session: Session, revision_id: int) -> tuple[int, ...]:
 
 def _jsonb(value: object):
     return cast(bindparam(None, json.dumps(value)), JSONB)
+
+
+# --- The product path: bounded read, retained preview, short commit (#827) ---
+#
+# `preview_baseline_adoption` and `adopt_baseline` above are the reading and
+# the Save #509 built, and until #827 neither had a production caller. Giving
+# them one is not a matter of calling them from a handler.
+#
+# Two things had to change and both are here rather than in the web module.
+#
+# **The approval request must not open the workbook.** `adopt_baseline` proves
+# the preview is current by recomputing it -- which re-reads the file, inside
+# the request that is supposed to be a short atomic commit. That is #893's
+# mistake with a different file format. So the bounded read happens once, in
+# `prepare_baseline_reading`, and everything the adoption writes is retained
+# with it. `adopt_retained_baseline` verifies identities against that retained
+# row and opens nothing.
+#
+# **The answers had to be specified.** ADR-0076 makes Adopt Baseline one bulk
+# act, and #509's signature takes a preview, a principal and a key -- not
+# answers. A coordinator reading six typed questions and clicking one button
+# has decided nothing unless what each answer *means* is written down. So
+# `PERMITTED_ANSWERS` states them, `BLOCKING_QUESTION_KINDS` says which ones
+# cannot be left open, and the answers and their effects travel into the
+# adoption receipt and into the retained proof of the act. An answer that
+# changes what would be adopted does not adopt anything: it regenerates the
+# reading, and the coordinator adopts the new one.
+
+#: What a coordinator may answer to each question kind, and nothing else. A
+#: kind is answerable in exactly the ways its own effect can be carried out;
+#: an answer outside this table is a bug in the screen, not a new option.
+PERMITTED_ANSWERS: Mapping[str, tuple[str, ...]] = {
+    # The one bulk confirmation ADR-0076 makes the adoption act itself.
+    "adopted_scope": ("confirm",),
+    # Rows sharing a business identity that describe different facilities. The
+    # preview keeps them as separate subjects; only a person can say whether
+    # that is right.
+    "likely_distinct_facilities": ("distinct", "same_facility"),
+    # More than one station origin among the adopted rows. Distances are not
+    # comparable until a person says which basis the record is kept on.
+    "conflicting_plan_basis": ("confirm_basis",),
+    # Rows repeating an identity with the same owner, type and location. The
+    # effect is stated -- kept separate -- so acknowledging it is the answer.
+    "duplicate_business_identity": ("keep_separate",),
+    # A populated material value no released reading can type. Either it stays
+    # source text outside the accepted value, or the row leaves the adoption.
+    "unmappable_material_value": ("retain_as_source_text", "exclude_row"),
+    # A row the importer proposes to leave out. Approving it is the explicit
+    # exclusion; including it puts the row back and re-reads.
+    "proposed_exclusion": ("approve_exclusion", "include_row"),
+}
+
+#: The answers that change what would be adopted, so the reading is prepared
+#: again and the coordinator adopts the new one. An answer here never adopts.
+REGENERATING_ANSWERS = frozenset({"exclude_row", "include_row", "same_facility"})
+
+#: The questions that cannot be left open. Each is one where the preview
+#: genuinely cannot state the effect on its own, so clicking Adopt past it
+#: would be adopting something nobody decided. The other three state their
+#: effect and are acknowledged, which is what keeps a 500-row workbook from
+#: becoming 500 attributable clicks (ADR-0076).
+BLOCKING_QUESTION_KINDS = (
+    "adopted_scope",
+    "likely_distinct_facilities",
+    "conflicting_plan_basis",
+)
+
+#: What each answer does, in the words the receipt records.
+ANSWER_EFFECTS: Mapping[str, str] = {
+    "confirm": "the previewed scope is adopted as the accepted record",
+    "distinct": "the rows are kept as separate Project Record subjects",
+    "same_facility": "the repeated rows are proposed for exclusion and the reading is prepared again",
+    "confirm_basis": "the named station origin is recorded as the plan basis of the adopted rows",
+    "keep_separate": "the repeated rows are kept as separate subjects, not merged",
+    "retain_as_source_text": "the value is retained as source text and left out of the accepted value",
+    "exclude_row": "the row leaves the adoption and the reading is prepared again",
+    "approve_exclusion": "the row is excluded from the accepted record, explicitly",
+    "include_row": "the row is put back into the adoption and the reading is prepared again",
+}
+
+
+class BaselineAnswerRefused(BaselineAdoptionRefused):
+    """An answer is not one this question kind has."""
+
+
+@dataclass(frozen=True)
+class QuestionAnswer:
+    """One coordinator answer, and what it does."""
+
+    kind: str
+    subject: str
+    answer: str
+    choice: str = ""
+
+    @property
+    def effect(self) -> str:
+        return ANSWER_EFFECTS[self.answer]
+
+    @property
+    def regenerates(self) -> bool:
+        return self.answer in REGENERATING_ANSWERS
+
+    def as_payload(self) -> dict[str, str]:
+        return {
+            "kind": self.kind,
+            "subject": self.subject,
+            "answer": self.answer,
+            "choice": self.choice,
+            "effect": self.effect,
+        }
+
+
+def prove_answers(
+    questions: Sequence[CoordinatorQuestion], answers: Sequence[QuestionAnswer]
+) -> tuple[QuestionAnswer, ...]:
+    """Every answer is one its question has, and no blocking question is open."""
+
+    by_subject = {(item.kind, item.subject) for item in questions}
+    seen: set[tuple[str, str]] = set()
+    for answer in answers:
+        permitted = PERMITTED_ANSWERS.get(answer.kind)
+        if permitted is None:
+            raise BaselineAnswerRefused(
+                f"{answer.kind!r} is not a question a coordinator is asked"
+            )
+        if answer.answer not in permitted:
+            raise BaselineAnswerRefused(
+                f"{answer.answer!r} is not an answer to a {answer.kind!r} question"
+            )
+        if (answer.kind, answer.subject) not in by_subject:
+            raise BaselineAnswerRefused(
+                f"this reading asks no {answer.kind!r} question about "
+                f"{answer.subject!r}"
+            )
+        if answer.answer == "confirm_basis" and not answer.choice.strip():
+            raise BaselineAnswerRefused(
+                "confirming a plan basis names which station origin the record "
+                "is kept on"
+            )
+        seen.add((answer.kind, answer.subject))
+    open_blocking = sorted(
+        item.subject
+        for item in questions
+        if item.kind in BLOCKING_QUESTION_KINDS and (item.kind, item.subject) not in seen
+    )
+    if open_blocking:
+        raise BaselineAnswerRefused(
+            "these questions have to be decided before the baseline is adopted: "
+            + ", ".join(open_blocking)
+        )
+    return tuple(answers)
+
+
+@dataclass(frozen=True)
+class RetainedPreview:
+    """A prepared reading, as the approval request receives it.
+
+    Everything an adoption writes, taken off the one bounded read. No field
+    here needs a workbook to reconstruct, which is the whole point: the
+    committing request verifies identities and writes, and opens nothing.
+    """
+
+    preview_id: int
+    project_id: int
+    binding_fingerprint: str
+    content_sha256: str
+    byte_size: int
+    filename: str
+    customer: str
+    source_identity: str
+    source_kind: str
+    output_template: FormatIdentity
+    field_mapping: FormatIdentity
+    mapping_declaration_json: str
+    questions: tuple[CoordinatorQuestion, ...]
+    rows: tuple[dict[str, Any], ...]
+    adopted_values: tuple[dict[str, Any], ...]
+    baseline_payload: dict[str, Any]
+    document_id: int
+    fact_ids: tuple[int, ...]
+    operations_resolved: bool
+    blocking_question_count: int
+    adoptable: bool
+    prepared_at: datetime
+
+    @property
+    def open_blocking_questions(self) -> tuple[CoordinatorQuestion, ...]:
+        return tuple(
+            item for item in self.questions if item.kind in BLOCKING_QUESTION_KINDS
+        )
+
+
+def _retained_payload(preview: BaselinePreview) -> dict[str, Any]:
+    """The preview, flattened to exactly what an adoption needs and no more."""
+
+    return {
+        "project_id": preview.project_id,
+        "binding_fingerprint": preview.binding_fingerprint,
+        "content_sha256": preview.content_sha256,
+        "byte_size": preview.byte_size,
+        "filename": preview.filename,
+        "customer": preview.customer,
+        "source_identity": preview.source_identity,
+        "source_kind": preview.source_kind,
+        "output_template": preview.output_template.as_payload(),
+        "field_mapping": preview.field_mapping.as_payload(),
+        "mapping_declaration_json": preview.field_mapping_manifest.declaration_json,
+        "questions": [item.as_payload() for item in preview.questions],
+        "rows": [item.as_payload() for item in preview.rows],
+        "adopted_values": [
+            {
+                "source_row_key": item.row.source_row_key,
+                "field": value.field,
+                "sheet_name": value.sheet_name,
+                "cell_range": value.cell_range,
+            }
+            for item in preview.adopted_rows
+            for value in item.row.values
+        ],
+        "baseline_payload": {
+            key: value
+            for key, value in _baseline_payload(preview, 0).items()
+            if key != "document_id"
+        },
+    }
+
+
+def _retained_from_row(row: OnboardingPreview) -> RetainedPreview:
+    payload = dict(row.payload)
+    return RetainedPreview(
+        preview_id=int(row.id),
+        project_id=int(row.project_id),
+        binding_fingerprint=row.binding_fingerprint,
+        content_sha256=payload["content_sha256"],
+        byte_size=int(payload["byte_size"]),
+        filename=payload["filename"],
+        customer=payload["customer"],
+        source_identity=payload["source_identity"],
+        source_kind=payload["source_kind"],
+        output_template=FormatIdentity(
+            kind=payload["output_template"]["format_kind"],
+            identity=payload["output_template"]["format_identity"],
+            version=payload["output_template"]["format_version"],
+            content_sha256=payload["output_template"]["content_sha256"],
+        ),
+        field_mapping=FormatIdentity(
+            kind=payload["field_mapping"]["format_kind"],
+            identity=payload["field_mapping"]["format_identity"],
+            version=payload["field_mapping"]["format_version"],
+            content_sha256=payload["field_mapping"]["content_sha256"],
+        ),
+        mapping_declaration_json=payload["mapping_declaration_json"],
+        questions=tuple(
+            CoordinatorQuestion(
+                kind=item["kind"],
+                subject=item["subject"],
+                detail=item["detail"],
+                source_rows=tuple(item.get("source_rows") or ()),
+            )
+            for item in payload["questions"]
+        ),
+        rows=tuple(payload["rows"]),
+        adopted_values=tuple(payload["adopted_values"]),
+        baseline_payload=dict(payload["baseline_payload"]),
+        document_id=int(payload["document_id"]),
+        fact_ids=tuple(int(one) for one in payload["fact_ids"]),
+        operations_resolved=bool(row.operations_resolved),
+        blocking_question_count=int(row.blocking_question_count),
+        adoptable=bool(row.adoptable),
+        prepared_at=row.prepared_at,
+    )
+
+
+def prepare_baseline_reading(
+    session: Session,
+    *,
+    project: Project,
+    staged: StagedSource,
+    customer: str,
+    source_identity: str,
+    principal: HumanPrincipal,
+    at: datetime,
+    source_kind: str = "ucm_workbook",
+    output_template: FormatIdentity | None = None,
+    field_mapping: MappingDeclaration | None = None,
+    images_dir: Path | str | None = None,
+) -> RetainedPreview:
+    """The one bounded read, retained for the approval request that follows.
+
+    Everything expensive happens here and nowhere else: the rich read of the
+    workbook, the registration of the Document, and the Source Segments the
+    adoption's captures cite. All three are preparatory operations ADR-0099
+    permits and none of them consumes anything, so preparing a reading twice,
+    or preparing one that is never adopted, costs the project nothing.
+
+    It runs under the authorization's ``inspect_compatibility`` permission,
+    proved in the database before the first read.
+    ``retain_onboarding_preview`` proves it again and decides adoptability from
+    the project's own operating mode, so a reading prepared after the project
+    adopted is retained for checking and is not an adoptable baseline.
+    """
+
+    actor = require_human_principal(principal)
+    intake_hardening.assert_staged_bytes_may_be_read_richly(
+        session, project_id=int(project.id), sha256=staged.sha256
+    )
+    with limited_onboarding_authorization(
+        session,
+        project_id=int(project.id),
+        operation=onboarding_authorization.INSPECT_COMPATIBILITY,
+        at=at,
+    ):
+        preview = preview_baseline_adoption(
+            session,
+            project=project,
+            staged=staged,
+            customer=customer,
+            source_identity=source_identity,
+            source_kind=source_kind,
+            output_template=output_template,
+            field_mapping=field_mapping,
+        )
+        intake = preview_intake(session, project, staged, BASELINE_DOC_TYPE)
+        try:
+            confirmation = confirm_intake(
+                session,
+                project=project,
+                sha256=staged.sha256,
+                filename=staged.filename,
+                doc_type=BASELINE_DOC_TYPE,
+                binding_fingerprint=intake.binding_fingerprint,
+                principal=actor,
+                images_dir=images_dir,
+            )
+        except IntakeConflict as exc:
+            raise BaselineAdoptionRefused(str(exc)) from exc
+        # The capture, here rather than in the approval request. ADR-0076
+        # already separates capture from decision -- these Facts are statements
+        # about the workbook, and only the adoption command makes them the
+        # accepted record -- so capturing them when the source is read is
+        # faithful to that split and is one of the preparatory operations
+        # ADR-0099 permits. It is also the whole of the cost: a 120-row
+        # workbook is ~1,300 Source Facts and their Support Assessments, and
+        # leaving that inside the approval request made a "short atomic
+        # commit" take fifteen seconds. A second preparation over the same
+        # bytes converges, because `append_fact` is keyed by a content digest
+        # that names the baseline, the importer version, the source row, the
+        # field and the segment.
+        fact_ids = _capture_baseline_facts(
+            session,
+            project=project,
+            document_id=confirmation.document_id,
+            preview=preview,
+            actor=actor,
+        )
+    blocking = sum(
+        1 for item in preview.questions if item.kind in BLOCKING_QUESTION_KINDS
+    )
+    payload = _retained_payload(preview)
+    payload["document_id"] = confirmation.document_id
+    payload["fact_ids"] = [int(one) for one in fact_ids]
+    outcome = onboarding_authorization.retain_preview(
+        session,
+        project_id=int(project.id),
+        source_sha256=preview.content_sha256,
+        filename=preview.filename,
+        source_identity=preview.source_identity,
+        mapping_identity=preview.field_mapping.identity,
+        mapping_version=preview.field_mapping.version,
+        binding_fingerprint=preview.binding_fingerprint,
+        payload=payload,
+        operations_resolved=preview.operations.resolved,
+        blocking_question_count=blocking,
+        prepared_by_actor=actor.subject,
+        prepared_at=at,
+    )
+    session.flush()
+    return _retained_from_row(
+        session.get_one(OnboardingPreview, int(outcome["preview_id"]))
+    )
+
+
+def retained_baseline_reading(
+    session: Session, *, project_id: int, binding_fingerprint: str
+) -> RetainedPreview | None:
+    """The reading this project retained under that fingerprint, or nothing."""
+
+    row = session.scalars(
+        select(OnboardingPreview).where(
+            OnboardingPreview.project_id == project_id,
+            OnboardingPreview.binding_fingerprint == binding_fingerprint,
+        )
+    ).first()
+    return None if row is None else _retained_from_row(row)
+
+
+def latest_baseline_reading(
+    session: Session, *, project_id: int
+) -> RetainedPreview | None:
+    """The newest reading prepared for this project."""
+
+    row = session.scalars(
+        select(OnboardingPreview)
+        .where(OnboardingPreview.project_id == project_id)
+        .order_by(OnboardingPreview.id.desc())
+        .limit(1)
+    ).first()
+    return None if row is None else _retained_from_row(row)
+
+
+def adoption_material_payload(
+    retained: RetainedPreview, answers: Sequence[QuestionAnswer]
+) -> dict[str, Any]:
+    """The canonical material this submission adopts, and nothing incidental.
+
+    A fresh session cookie and a fresh request-forgery token are not adoption
+    content, so neither is in here; what is in here is the reading identity,
+    the exact bytes, the mapping revision and every answer with its effect.
+    """
+
+    return {
+        "operation": "adopt_baseline",
+        "project_id": retained.project_id,
+        "content_sha256": retained.content_sha256,
+        "preview_fingerprint": retained.binding_fingerprint,
+        "output_template": retained.output_template.as_payload(),
+        "field_mapping": retained.field_mapping.as_payload(),
+        "answers": [item.as_payload() for item in sorted(
+            answers, key=lambda one: (one.kind, one.subject, one.answer)
+        )],
+    }
+
+
+def adopt_retained_baseline(
+    session: Session,
+    *,
+    retained: RetainedPreview,
+    principal: HumanPrincipal,
+    answers: Sequence[QuestionAnswer],
+    request_key: str,
+    at: datetime,
+) -> BaselineAdoptionResult:
+    """Adopt the retained reading, in the coordinator's own session.
+
+    Short and atomic. It opens no workbook, enters no owner bootstrap, and
+    holds no schema-owner credential: the authority is the limited onboarding
+    authorization, proved in the database for this project and this operation,
+    and the act's consumption and its retained proof of validity are written in
+    the same transaction as the adoption they attribute.
+    """
+
+    actor = require_human_principal(principal)
+    answered = prove_answers(retained.questions, answers)
+    if any(item.regenerates for item in answered):
+        raise BaselineAnswerRefused(
+            "an answer that changes what would be adopted prepares the reading "
+            "again; adopt the reading those answers produce"
+        )
+    material = onboarding_authorization.canonical_material_digest(
+        adoption_material_payload(retained, answered)
+    )
+    checked = onboarding_authorization.check_onboarding_act(
+        session,
+        project_id=retained.project_id,
+        operation=onboarding_authorization.ADOPT_BASELINE,
+        request_key=request_key,
+        material_sha256=material,
+        at=at,
+        preview_fingerprint=retained.binding_fingerprint,
+        answers=[item.as_payload() for item in answered],
+    )
+    if checked.replay:
+        # Retrieval of a prior result, not the exercise of expired authority:
+        # the receipt this key already named, without a second Document, a
+        # second attributable confirmation, or a second workbook read.
+        return _result_from_payload(checked.result or {})
+
+    project = session.get_one(Project, retained.project_id)
+    with limited_onboarding_authorization(
+        session,
+        project_id=retained.project_id,
+        operation=onboarding_authorization.ADOPT_BASELINE,
+        at=at,
+    ):
+        result = _write_retained_adoption(
+            session,
+            project=project,
+            retained=retained,
+            actor=actor,
+            answers=answered,
+            request_key=request_key,
+        )
+    onboarding_authorization.commit_onboarding_act(
+        session,
+        project_id=retained.project_id,
+        operation=onboarding_authorization.ADOPT_BASELINE,
+        request_key=request_key,
+        material_sha256=material,
+        principal=actor.subject,
+        at=at,
+        preview_fingerprint=retained.binding_fingerprint,
+        answers=[item.as_payload() for item in answered],
+        result={
+            **_result_payload(result),
+            # The retained proof binds what was decided, not only that
+            # something was: an answer is part of the act, not a rendering of
+            # the screen it was given on.
+            "coordinator_answers": [item.as_payload() for item in answered],
+        },
+    )
+    return result
+
+
+def _write_retained_adoption(
+    session: Session,
+    *,
+    project: Project,
+    retained: RetainedPreview,
+    actor: HumanPrincipal,
+    answers: Sequence[QuestionAnswer],
+    request_key: str,
+) -> BaselineAdoptionResult:
+    """The writes, from the retained reading alone. Nothing here opens a file."""
+
+    document = session.get(Document, retained.document_id)
+    if (
+        document is None
+        or int(document.project_id) != int(project.id)
+        or document.sha256 != retained.content_sha256
+    ):
+        raise StaleBaselinePreview(
+            "The source this reading was prepared from is no longer the one "
+            "this project holds. Prepare the baseline reading again."
+        )
+    document_id = int(document.id)
+    fact_ids = retained.fact_ids
+    payload = {
+        **retained.baseline_payload,
+        "document_id": document_id,
+        # The receipt binds the answers and what each one did, so what a
+        # coordinator decided is part of the adopted record rather than a
+        # rendering of the screen they saw.
+        "coordinator_answers": [item.as_payload() for item in answers],
+    }
+    outcome = session.scalar(
+        select(
+            func.adopt_project_record_baseline(
+                project.id,
+                actor.subject,
+                request_key,
+                _jsonb(payload),
+                _jsonb(list(retained.rows)),
+                _jsonb(
+                    [
+                        retained.output_template.as_payload(),
+                        retained.field_mapping.as_payload(),
+                    ]
+                ),
+                cast(bindparam(None, list(fact_ids)), ARRAY(BigInteger)),
+            )
+        )
+    )
+    revision_id = int(outcome["revision_id"])
+    registered_mapping = effective_baseline_formats(session, project.id)["field_mapping"]
+    session.scalar(
+        select(
+            func.attach_baseline_format_manifest(
+                project.id, registered_mapping.id, retained.mapping_declaration_json
+            )
+        )
+    )
+    session.expire_all()
+    adoption = adopt_project_baseline(
+        session,
+        project_id=project.id,
+        adopted_by_principal=actor.subject,
+        baseline_source_sha256=retained.content_sha256,
+        importer_identity=IMPORTER_IDENTITY,
+        importer_version=IMPORTER_VERSION,
+        idempotency_key=request_key,
+        revision_id=revision_id,
+    )
+    audit.record(
+        session,
+        principal=actor,
+        action=audit.ADOPT_BASELINE,
+        entity_type=audit.PROJECT,
+        entity_id=project.id,
+        after={
+            "revision_id": revision_id,
+            "baseline_source_id": int(outcome["baseline_source_id"]),
+            "content_sha256": retained.content_sha256,
+            "preview_fingerprint": retained.binding_fingerprint,
+            "adopted_values": len(fact_ids),
+            "coordinator_answers": [item.as_payload() for item in answers],
+        },
+    )
+    session.flush()
+    return BaselineAdoptionResult(
+        revision_id=revision_id,
+        baseline_source_id=int(outcome["baseline_source_id"]),
+        document_id=document_id,
+        adoption_id=adoption.id,
+        fact_ids=fact_ids,
+        created=bool(outcome["created"]),
+    )
+
+
+def _result_payload(result: BaselineAdoptionResult) -> dict[str, Any]:
+    return {
+        "revision_id": result.revision_id,
+        "baseline_source_id": result.baseline_source_id,
+        "document_id": result.document_id,
+        "adoption_id": result.adoption_id,
+        "fact_ids": list(result.fact_ids),
+        "created": result.created,
+    }
+
+
+def _result_from_payload(payload: Mapping[str, Any]) -> BaselineAdoptionResult:
+    return BaselineAdoptionResult(
+        revision_id=int(payload["revision_id"]),
+        baseline_source_id=int(payload["baseline_source_id"]),
+        document_id=int(payload["document_id"]),
+        adoption_id=int(payload["adoption_id"]),
+        fact_ids=tuple(int(one) for one in payload.get("fact_ids") or ()),
+        created=False,
+    )

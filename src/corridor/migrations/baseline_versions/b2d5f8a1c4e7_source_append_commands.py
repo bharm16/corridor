@@ -167,6 +167,7 @@ from corridor.migrations.source_append_commands import (
     follow_up_plan_closure,
     issue_profile,
     native_segments,
+    onboarding_authorization,
     operating_mode,
     outgoing_requests,
     partition_declaration,
@@ -1528,6 +1529,16 @@ def upgrade() -> None:
     # the binding. It creates one relation nothing later in the revision names.
     capture_correction.upgrade(op)
 
+    # --- #827 The limited onboarding authorization ADR-0099 decides -------
+    # Last of the feature blocks, because it is the only one that reads
+    # several of the others: `operating_mode`'s `project_operating_mode`
+    # decides whether a retained preview is adoptable at all,
+    # `coverage_preparation`'s `enforce_coordination_designation` proves the
+    # coordinator on the act row, and `project_partition`'s
+    # `current_project_partition` scopes its four relations. Nothing later in
+    # the revision names them.
+    onboarding_authorization.upgrade(op)
+
     from corridor.migrations import email_spine
 
     email_spine.upgrade(op, APPEND_NATIVE_SOURCE_SEGMENTS, APPEND_FACT)
@@ -1586,6 +1597,12 @@ def downgrade() -> None:
     minutes_spine.downgrade(op)
     project_contacts.downgrade(op)
     email_spine.downgrade(op)
+
+    # --- #827 The limited onboarding authorization ADR-0099 decides -------
+    # First among the feature reversals, because the upgrade added it last,
+    # and before the operating mode, the designation proof and the partition
+    # function its relations and commands name unwind.
+    onboarding_authorization.downgrade(op)
 
     # --- #836 What a coordinator reported about one capture ---------------
     # First among the feature reversals, because the upgrade added it last,

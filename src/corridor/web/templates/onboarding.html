@@ -1,0 +1,179 @@
+{% import "_primitives.html" as ui -%}
+<!doctype html>
+<meta charset="utf-8">
+<title>Starting {{ view.project_name }}</title>
+{#
+  A provisioned project that has not adopted a baseline (#827, ADR-0099).
+
+  It is deliberately not the Work List: there is no accepted record to work on
+  yet, and every relation that list reads is revoked under the pilot boundary.
+  What a coordinator needs here is one sentence saying what Corridor needs next
+  and, when a reading has been prepared, the material questions ADR-0076
+  entitles them to decide and the one act that adopts what they answered.
+
+  What is deliberately absent. No importer diagnostic reaches this page: #509
+  keeps workbook mechanics with operations, and a question kind outside the
+  closed set has nowhere to render. No control-plane registry and no customer
+  authorization evidence: a paused onboarding says why it is paused and what is
+  still available, and that is all a project coordinator is owed here.
+#}
+<style>
+  :root { --line:#e2e2e2; --muted:#666; }
+  * { box-sizing: border-box; }
+  body { font: 14px/1.5 system-ui, sans-serif; margin: 0; color:#111;
+         background:#fff; }
+  header { display:flex; justify-content:space-between; align-items:baseline;
+           padding:.7rem 1.2rem; border-bottom:1px solid var(--line); }
+  header b { font-size:1rem; }
+  header a { color:#111; }
+  main { max-width: 56rem; margin: 2.5rem auto; padding: 0 1.2rem; }
+  h1 { font-size:1.4rem; margin:0 0 .3rem; letter-spacing:-.01em; }
+  h2 { font-size:1.05rem; margin:1.8rem 0 .4rem; }
+  h3 { font-size:.95rem; margin:1rem 0 .3rem; }
+  .lead { color:var(--muted); margin:0 0 1.6rem; font-size:.95rem; }
+  .quiet { color:var(--muted); font-size:.9rem; }
+  .mono { font-family:ui-monospace, monospace; font-size:.78rem;
+          color:var(--muted); word-break:break-all; }
+  .panel { border:1px solid var(--line); border-radius:6px;
+           padding:.8rem 1rem; margin:.8rem 0; }
+  ul.plain { list-style:none; margin:.3rem 0; padding:0; }
+  ul.plain li { padding:.15rem 0; }
+  fieldset { border:1px solid var(--line); border-radius:6px;
+             padding:.6rem .9rem; margin:.8rem 0; }
+  legend { font-weight:600; padding:0 .3rem; }
+  button { font:inherit; padding:.35rem .9rem; border:1px solid #111;
+           background:#111; color:#fff; border-radius:4px; }
+  button.secondary { background:#fff; color:#111; }
+</style>
+{{ ui.styles() }}
+
+{% include "_shell.html" %}
+
+<header>
+  <b>{{ view.project_name }}</b>
+  <span class="quiet">Starting this project</span>
+</header>
+
+<main>
+  <h1>Starting {{ view.project_name }}</h1>
+  <p class="lead">{{ view.next_action }}</p>
+
+  {% if refusal %}
+    {{ ui.reason_presented(refusal) }}
+  {% endif %}
+
+  {% if view.paused %}
+    <section class="panel">
+      <h2>Onboarding is paused</h2>
+      <p>{{ view.paused.notice }}</p>
+      {% if view.paused.remaining %}
+        <p class="quiet">Still available on this project:</p>
+        <ul class="plain">
+          {% for item in view.paused.remaining %}<li>{{ item }}</li>{% endfor %}
+        </ul>
+      {% else %}
+        <p class="quiet">
+          No onboarding step is available on this project right now. Corridor
+          operations can say what happens next.
+        </p>
+      {% endif %}
+    </section>
+  {% endif %}
+
+  {% for finding in view.findings %}
+    <p class="panel">{{ finding.sentence }} <span class="mono">{{ finding.code }}</span></p>
+  {% endfor %}
+
+  {% if view.adopted %}
+    <section class="panel">
+      <h2>The baseline this project accepted</h2>
+      <ul class="plain">
+        <li>Adopted {{ view.adopted.adopted_at }} by {{ view.adopted.adopted_by_principal }}</li>
+        <li>Retained source <span class="mono">{{ view.adopted.baseline_source_sha256 }}</span></li>
+        <li>Read by {{ view.adopted.importer }}</li>
+        {% if view.reading %}
+          <li>Column mapping {{ view.reading.mapping_identity }} {{ view.reading.mapping_version }}</li>
+        {% endif %}
+      </ul>
+      <p>Next: {{ view.adopted.next_step }}</p>
+    </section>
+  {% elif view.awaiting_source %}
+    <section class="panel">
+      <h2>The baseline workbook</h2>
+      <p>
+        Corridor starts from the record your team already keeps. Supply the
+        customer's UCM workbook and Corridor will read it and show you what
+        adopting it would accept.
+      </p>
+      <p><a href="/projects/{{ view.project_slug }}/sources/upload">Supply the baseline workbook &rarr;</a></p>
+    </section>
+  {% else %}
+    <section class="panel">
+      <h2>What adopting this would accept</h2>
+      <ul class="plain">
+        <li>{{ view.reading.source_identity }} &mdash; {{ view.reading.filename }}</li>
+        <li>{{ view.reading.adopted_rows }} rows become the accepted record;
+            {{ view.reading.excluded_rows }} are proposed for exclusion</li>
+        <li>Column mapping {{ view.reading.mapping_identity }} {{ view.reading.mapping_version }}</li>
+        <li class="mono">{{ view.reading.content_sha256 }}</li>
+      </ul>
+    </section>
+
+    {% if view.reading.questions %}
+      <h2>Questions only you can answer</h2>
+      <p class="quiet">
+        Each of these is a fact about your project, not about the spreadsheet.
+        The ones marked as needing a decision have to be settled before the
+        baseline is adopted.
+      </p>
+    {% endif %}
+
+    <form method="post"
+          action="/projects/{{ view.project_slug }}/baseline/adopt">
+      {{ csrf_field() }}
+      <input type="hidden" name="binding_fingerprint"
+             value="{{ view.reading.binding_fingerprint }}">
+      <input type="hidden" name="request_key" value="{{ request_key }}">
+      {% for question in view.reading.questions %}
+        <fieldset>
+          <legend>
+            {{ question.subject }}
+            {% if question.blocking %}{{ ui.state("Needs a decision") }}{% endif %}
+          </legend>
+          <p>{{ question.detail }}</p>
+          {% for answer, effect in question.answers %}
+            <p>
+              <label>
+                <input type="radio"
+                       name="answer:{{ question.kind }}:{{ loop.index0 }}:{{ question.subject }}"
+                       value="{{ answer }}"
+                       {% if loop.first and question.blocking %}checked{% endif %}>
+                {{ effect }}
+              </label>
+            </p>
+          {% endfor %}
+          {% if question.needs_choice %}
+            {{ ui.field("choice-" ~ loop.index, "Which station origin the record is kept on") }}
+            <input id="choice-{{ loop.index }}" type="text"
+                   name="choice:{{ question.kind }}:{{ question.subject }}"
+                   value="{{ question.subject }}">
+          {% endif %}
+          {% if question.source_rows %}
+            <p class="mono">{{ question.source_rows | join(", ") }}</p>
+          {% endif %}
+        </fieldset>
+      {% endfor %}
+      <p>
+        <button type="submit"
+                {% if not view.reading.adoptable or not view.reading.operations_resolved %}disabled{% endif %}>
+          Adopt the baseline
+        </button>
+        {% if not view.may_adopt %}
+          <span class="quiet">
+            Adopting is the project coordinator's act; this will be refused.
+          </span>
+        {% endif %}
+      </p>
+    </form>
+  {% endif %}
+</main>
