@@ -1786,6 +1786,11 @@ COUNTS_ONE_FAMILY_ACROSS_AN_ACT_THAT_WRITES = {
         "the counts are absolute zeroes, not a before-and-after; a relative "
         "reading would be the weaker claim"
     ),
+    "test_source_intake._document_state": (
+        "the two tables are the read's own output for one document -- the "
+        "pages and the segments a parse writes -- so this is a reading of "
+        "what the act produced rather than a claim about what it left alone"
+    ),
 }
 
 def _row_count_subjects(node: ast.AST) -> list[str]:
@@ -4096,6 +4101,71 @@ def test_the_migration_revokes_exactly_the_relations_the_boundary_denies():
     assert len(module.WEB_DENIED_RELATIONS) == len(set(module.WEB_DENIED_RELATIONS))
     assert set(module.WEB_PARTITIONED_TABLES) <= set(
         web_boundary.PROTECTED_RELATIONS
+    )
+
+
+def test_the_write_revoke_is_one_list_the_migration_and_the_boundary_share():
+    """#893's narrower revoke, held to the same no-drift rule as #680's.
+
+    A relation may be *read* by the web capability and never written by it, and
+    these four are that: #824 granted them the schema owner's default writes
+    because the confirmation route rendered and parsed the uploaded file inside
+    the request, and #893 moved that read to the standing pass. The two halves
+    can drift exactly as the denied set can, so they are compared here -- and
+    with the assertions that say what kind of relation may be on this list at
+    all: one the boundary protects (so it is partitioned and still readable),
+    and never one it denies outright (which would be a contradiction rather
+    than a narrower rule).
+    """
+
+    import importlib.util
+
+    from corridor import web_boundary
+
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "src/corridor/migrations/baseline_versions"
+        / "b2d5f8a1c4e7_source_append_commands.py"
+    )
+    spec = importlib.util.spec_from_file_location("_b2d5f8a1c4e7_893", path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+
+    assert frozenset(module.WEB_DENIED_WRITES) == web_boundary.WRITE_DENIED_RELATIONS
+    assert len(module.WEB_DENIED_WRITES) == len(set(module.WEB_DENIED_WRITES))
+    assert web_boundary.WRITE_DENIED_RELATIONS <= web_boundary.PROTECTED_RELATIONS
+    assert (
+        web_boundary.WRITE_DENIED_RELATIONS & web_boundary.DENIED_RELATIONS
+        == frozenset()
+    )
+
+
+def test_no_enabled_pilot_route_writes_a_relation_the_boundary_makes_read_only():
+    """The application half of #893's write revoke.
+
+    A route recorded as reaching one of these is not proof it writes it -- the
+    instrument records every statement, read or write -- so this is the weaker
+    claim the static reading can carry: none of the four is in any enabled
+    route's recorded set at all. The live proof that the privilege is really
+    gone is in `tests/test_project_partition_and_offboarding.py`, against the
+    deployed login.
+    """
+
+    from corridor import web_boundary
+
+    reached = sorted(
+        {
+            relation
+            for route in web_boundary.PILOT_ROUTES.values()
+            for relation in route.relations & web_boundary.WRITE_DENIED_RELATIONS
+        }
+    )
+
+    assert reached == [], (
+        "an enabled pilot route is recorded as reaching a relation the web "
+        "capability may no longer write; either it only reads it -- in which "
+        "case say so here -- or the revoke is wrong"
     )
 
 

@@ -615,17 +615,41 @@ def issue_readiness_by_project(
         .order_by(Document.id)
     ).all()
     for document in unread:
-        problems[int(document.project_id)].append(
-            ReadinessProblem(
-                UNREAD_SOURCE,
-                f"{document.filename} was delivered but could not be read "
-                f"({document.parse_status}), so this issue's coverage is "
-                "incomplete.",
-                OPERATIONS_OWNER,
+        # Two different facts, and they were one sentence until #893 made the
+        # second of them survive a commit. A source that *failed* to parse
+        # needs somebody; a source the standing pass has not read yet needs
+        # nobody, and telling a coordinator that Corridor Operations must read
+        # it again would be asking for action on Corridor's own queued work.
+        # Both still block the issue, because its coverage really is
+        # incomplete either way.
+        if document.parse_status == "failed":
+            sentence = (
+                f"{document.filename} was delivered but could not be read, so "
+                "this issue's coverage is incomplete."
+            )
+            next_action = (
                 "Corridor Operations reads this source again, or asks for a "
                 "copy it can read. Nothing on this page retries it, and the "
                 "coverage for this issue keeps saying this source was not "
-                "read until one of those succeeds.",
+                "read until one of those succeeds."
+            )
+        else:
+            sentence = (
+                f"{document.filename} was confirmed and is waiting for the "
+                "processing pass, so this issue's coverage is incomplete."
+            )
+            next_action = (
+                "The processing pass reads this source on its next run; "
+                "nobody has to start it. Nothing on this page waits for it, "
+                "and the coverage for this issue keeps saying this source was "
+                "not read until it succeeds."
+            )
+        problems[int(document.project_id)].append(
+            ReadinessProblem(
+                UNREAD_SOURCE,
+                sentence,
+                OPERATIONS_OWNER,
+                next_action,
             )
         )
     # A preparation that ran and produced nothing (#675). A request still in

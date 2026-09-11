@@ -358,7 +358,37 @@ def test_a_failed_processing_receipt_reads_as_not_read(session, adopted):
     reading = _read(session, adopted)
 
     assert _state(reading, "Meeting minutes.pdf") == "failed"
-    assert "processing failed" in reading.lines[0].detail
+    assert "could not be read" in reading.lines[0].detail
+
+
+def test_a_source_waiting_for_the_processing_pass_is_not_called_a_failure(
+    session, adopted
+):
+    """#893 made "registered and not read yet" a state that survives a commit.
+
+    The confirmation no longer reads the file, so a coverage line must tell a
+    coordinator the difference between a source Corridor could not read and one
+    it has not reached. Both leave the coverage incomplete; only the first is
+    somebody's to put right.
+    """
+
+    _configure(session, adopted)
+    waiting = _document(
+        session, adopted, filename="Later revision.xlsx", parse_status="pending"
+    )
+    _deliver(
+        session,
+        adopted,
+        name="later",
+        received_at=CUTOFF - timedelta(days=1),
+        document=waiting,
+    )
+
+    reading = _read(session, adopted)
+
+    assert _state(reading, "Later revision.xlsx") == "failed"
+    assert reading.lines[0].detail == "received, and waiting for the processing pass"
+    assert "could not be read" not in reading.lines[0].detail
 
 
 def test_a_quarantined_delivery_reads_as_not_read_and_quotes_its_evidence(

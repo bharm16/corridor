@@ -68,6 +68,20 @@ can ask the question without importing the engines that act on it.  This is not
 a blocked row: nothing is lost and nobody has to do anything, and the register
 says exactly that.
 
+**"Waiting for the processing pass" is now a state a row really sits in
+(#893).**  The confirmation used to render and parse the file inside the web
+request, so a registered source was read or unreadable by the time anybody
+could look at this page, and ``pending`` covered only the gap between a
+completed read and the extraction that had not run yet.  The read is the
+standing pass's now, so a source can be registered and genuinely unread for as
+long as the cadence takes.  The words did not have to change, because they were
+already the true ones; what had to be true is that the pass really takes it,
+and ``project_processing`` selects exactly this state.  Nothing about the row
+changes either: it names no owner and no next action, because nobody has to do
+anything.  A read that fails leaves ``parse_failed`` here, which does name an
+owner -- that is the difference between unread and unreadable, and this page is
+where a coordinator sees it.
+
 **No clock.**  Every ordering and every filter is read from the rows' own
 recorded times and from the caller's declared bounds, so two readings of the
 same records land on the same page.

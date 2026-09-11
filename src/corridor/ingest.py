@@ -97,6 +97,7 @@ from corridor.source_segments import (
     SPREADSHEET_SUFFIXES,
     append_ingested_source_segments,
 )
+from corridor.storage import stored_file
 from corridor.token_layers import (
     TEXTRACT_ENGINE,
     TokenLayer,
@@ -217,7 +218,15 @@ def ingest_document(
     expected_sha256: str | None = None,
     numbering_scheme: str | None = None,
     source_delivery_id: int | None = None,
+    parse: bool = True,
 ) -> Document:
+    # `parse=False` registers the document and stops, leaving `parse_status`
+    # at `pending` for `parse_registered_document` to finish (#893). It exists
+    # for one caller: the web confirmation, where registering is the person's
+    # attributable act and rendering and reading the file is a worker's job
+    # rather than something a person waits on. Every other caller is already a
+    # batch or a worker, so reading on the way in costs nobody a request.
+
     # `source_delivery_id` is the ledger row of the delivery that carried these
     # exact bytes in (#687). It is the caller's proven fact, never derived here:
     # only an intake path that already holds a `source_deliveries` row for these
@@ -277,6 +286,7 @@ def ingest_document(
             filename=filename,
             source_delivery_id=source_delivery_id,
             numbering_scheme=numbering_scheme,
+            parse=parse,
         )
 
     if registered is not None:
@@ -315,6 +325,13 @@ def ingest_document(
         document.parse_status = "failed"
         document.pages = 0
         session.flush()
+        return document
+
+    if not parse:
+        # Registered, and visibly waiting to be read. `pending` is the status
+        # the register already prints as "waiting for the processing pass",
+        # and that pass now really does take it: `_parse_landed_documents`
+        # selects exactly this state (`corridor.project_processing`).
         return document
 
     token_dir = Path(images_dir) / sha256
@@ -418,6 +435,7 @@ def _backfill_registered_provenance(
     filename: str,
     source_delivery_id: int | None,
     numbering_scheme: str | None,
+    parse: bool = True,
 ) -> Document:
     """Re-ingest of identical bytes: provenance may be completed, never rewritten."""
 
@@ -445,12 +463,19 @@ def _backfill_registered_provenance(
     # (ADR-0030).
     if numbering_scheme is not None:
         existing.numbering_scheme = numbering_scheme
-    if path.suffix.lower() == ".pdf":
-        ingest_native_reader(
-            session, document=existing, path=path, images_dir=images_dir
-        )
-    else:
-        append_ingested_source_segments(session, existing, path)
+    if parse:
+        if path.suffix.lower() == ".pdf":
+            ingest_native_reader(
+                session, document=existing, path=path, images_dir=images_dir
+            )
+        else:
+            append_ingested_source_segments(session, existing, path)
+    # A caller that is not reading the file leaves the reader alone here too
+    # (#893). Nothing is lost by it: these exact bytes are already registered,
+    # so they are already read, already `pending` for the standing pass, or
+    # already failed and owned by the bounded re-parse -- and re-running the
+    # reader in a web request to re-derive segments it has or will have is the
+    # work this stopped doing.
     _quarantine_unmodeled_semantics(session, existing)
     session.flush()
     _emit_registered_capture(session, existing, path, outcome="replayed")
@@ -478,7 +503,7 @@ def reparse_document(
     path: Path | str,
     images_dir: Path | str,
 ) -> bool:
-    """Re-run parsing for one document whose earlier parse failed (#350).
+    """Read one registered document whose bytes this database has not read (#350).
 
     Ordinary re-ingest returns the existing document untouched when the bytes are
     identical, which is correct for provenance but leaves a document that failed to
@@ -488,6 +513,13 @@ def reparse_document(
     and flips the status. It refuses to touch a document that already parsed, so a
     successfully parsed history is never rewritten as a retry; the caller is
     responsible for the attributable receipt and for excluding held inputs.
+
+    Since #893 it also reads a document whose parse has not been *attempted* —
+    one `ingest_document(parse=False)` registered and handed to the standing
+    pass. The two are the same act against this table: the caller holds bytes
+    nothing has turned into pages, and it either produces them or records why
+    it could not. The page delete below is what makes the retry of either
+    safe, so a crash mid-read cannot leave a half-read document behind.
 
     Returns ``True`` when the document is now parsed, ``False`` when it failed
     again. Either way the prior state is preserved rather than corrupted: a second
@@ -524,6 +556,36 @@ def reparse_document(
     )
     session.flush()
     return document.parse_status == "parsed"
+
+
+def parse_registered_document(
+    session: Session, *, document: Document, images_dir: Path | str
+) -> bool:
+    """Read a document registered without a read, from wherever its bytes are.
+
+    The standing pass's half of `ingest_document(parse=False)` (#893). It adds
+    one thing to `reparse_document`: it resolves the registered bytes itself,
+    because the pass holds a Document and not a path, and a document whose
+    bytes the store has lost has to end up *visibly failed* rather than
+    selected again for ever by a pass that cannot read it.
+    """
+
+    path = stored_file(document)
+    if path is None:
+        document._parse_failure = DocumentParseFailure(
+            stage="locate_source",
+            error_type="FileNotFoundError",
+            error_message=(
+                f"document {document.sha256} is missing from the store"
+            ),
+        )
+        document.parse_status = "failed"
+        document.pages = 0
+        session.flush()
+        return False
+    return reparse_document(
+        session, document=document, path=path, images_dir=images_dir
+    )
 
 
 def ingest_native_reader(

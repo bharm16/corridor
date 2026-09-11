@@ -351,6 +351,106 @@ WEB_DENIED_RELATIONS = (
     WEB_DENIED_READ_ONLY + WEB_DENIED_APPEND + WEB_DENIED_DEFAULT_PRIVILEGES
 )
 
+# What the human web capability may read and may not write (#893).
+#
+# These four are here because #824 measured the confirmation *writing* them:
+# it rendered and parsed the uploaded file inside the web request, so the
+# pages, the token layers, the render derivatives and the Class B receipts a
+# read produces were a web request's own writes. #893 moved that read to the
+# standing project-processing pass, and the instrumented walk of the intake
+# path now names none of the four. The web capability held select, insert,
+# update and delete on each of them by the schema owner's default, and the
+# reason to leave the writes standing has gone with the read.
+#
+# They keep SELECT, and that is a decision rather than an oversight. Each one
+# carries the project partition this block writes, so a read answers with the
+# caller's own project; a page image and a rendered page are what a human
+# review surface reads; and singling these four out of the ninety-odd
+# partitioned relations for a revoke of reading would state a rule this
+# boundary does not hold. The rule it does hold is #492's, one capability
+# wider: a runtime login does not write what a command or a worker owns.
+#
+# `document_quarantines` and `extraction_runs` are the two of #824's six that
+# are not here. The confirmation still writes a quarantine — a `schedule`
+# upload is registered deliberately unread (#149), and that row is written in
+# the request that registers it. `extraction_runs` is a receipt no web request
+# has ever written, and revoking a write nothing was measured making is a
+# claim this block did not measure; #893 named neither.
+WEB_DENIED_WRITES = (
+    "doc_pages",
+    "page_render_derivatives",
+    "processing_artifacts",
+    "token_layers",
+)
+
+_WEB_DENIED_WRITES_SQL = ", ".join(f"'{table}'" for table in WEB_DENIED_WRITES)
+
+# `insert, update, delete` named rather than `revoke all`, because the reading
+# is deliberately kept: this is the one place in the block where the privilege
+# taken away is narrower than the relation. The owned sequences go with the
+# insert, since a capability that cannot insert has no use for a sequence and
+# an advanceable counter it still holds is a row count it should not have.
+WEB_CAPABILITY_WRITE_REVOKE = f"""
+do $$
+declare
+    v_table text;
+    v_sequence text;
+begin
+    foreach v_table in array array[{_WEB_DENIED_WRITES_SQL}] loop
+        execute format(
+            'revoke insert, update, delete on public.%I from corridor_web',
+            v_table
+        );
+    end loop;
+    for v_sequence in
+        select s.relname
+          from pg_class s
+          join pg_depend d
+            on d.objid = s.oid and d.classid = 'pg_class'::regclass
+          join pg_class t on t.oid = d.refobjid
+          join pg_namespace n on n.oid = t.relnamespace
+         where s.relkind = 'S'
+           and n.nspname = 'public'
+           and t.relname in ({_WEB_DENIED_WRITES_SQL})
+    loop
+        execute format(
+            'revoke all on sequence public.%I from corridor_web', v_sequence
+        );
+    end loop;
+end $$;
+"""
+
+WEB_CAPABILITY_WRITE_RESTORE = f"""
+do $$
+declare
+    v_table text;
+    v_sequence text;
+begin
+    foreach v_table in array array[{_WEB_DENIED_WRITES_SQL}] loop
+        execute format(
+            'grant insert, update, delete on public.%I to corridor_web',
+            v_table
+        );
+    end loop;
+    for v_sequence in
+        select s.relname
+          from pg_class s
+          join pg_depend d
+            on d.objid = s.oid and d.classid = 'pg_class'::regclass
+          join pg_class t on t.oid = d.refobjid
+          join pg_namespace n on n.oid = t.relnamespace
+         where s.relkind = 'S'
+           and n.nspname = 'public'
+           and t.relname in ({_WEB_DENIED_WRITES_SQL})
+    loop
+        execute format(
+            'grant select, usage on sequence public.%I to corridor_web',
+            v_sequence
+        );
+    end loop;
+end $$;
+"""
+
 _WEB_DENIED_SQL = ", ".join(f"'{table}'" for table in sorted(WEB_DENIED_RELATIONS))
 
 # Three relations carried a grant of SELECT to PUBLIC, left by the command role
@@ -450,6 +550,10 @@ def upgrade(op) -> None:
     op.execute(WEB_PARTITION_POLICIES)
     op.execute(WEB_DOCUMENT_CHILD_PARTITION_POLICIES)
     op.execute(WEB_CAPABILITY_REVOKE)
+    # After the blanket revoke, because these four keep their reading: a
+    # relation that had lost everything above would gain nothing here, and the
+    # order says which of the two statements is the narrower one.
+    op.execute(WEB_CAPABILITY_WRITE_REVOKE)
 
 
 def downgrade(op) -> None:
@@ -458,6 +562,7 @@ def downgrade(op) -> None:
     # the policies come off after it so no window exists where a relation is
     # readable again and still partitioned against a partition no caller
     # declared.
+    op.execute(WEB_CAPABILITY_WRITE_RESTORE)
     op.execute(WEB_CAPABILITY_RESTORE)
     op.execute(WEB_DOCUMENT_CHILD_PARTITION_POLICIES_DOWN)
     op.execute(WEB_PARTITION_POLICIES_DOWN)
