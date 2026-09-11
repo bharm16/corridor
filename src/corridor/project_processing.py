@@ -21,10 +21,12 @@ recoverable and idempotent:
    (#893) — and this is what makes that safe rather than a permanent pending
    state. Selection is the document's own ``pending`` status, so a crash
    before or during a read leaves the document selected for the next pass and
-   a read that committed is never repeated. It covers every registered
-   document and not only the extractable ones, because a source no extractor
-   reads still has pages and segments a citation is replayed against, and a
-   kind this act skipped would wait for a reader that never came.
+   a read that committed is never repeated, and the row is claimed for the
+   duration of its own read so two overlapping workers cannot both take it.
+   It covers every registered document and not only the extractable ones,
+   because a source no extractor reads still has pages and segments a citation
+   is replayed against, and a kind this act skipped would wait for a reader
+   that never came.
 2. Scope: load the project (refuse an unknown one before any model work) and
    select the eligible extractable documents. Held (quarantined), superseded
    (sealed), unread, unreadable, and permanently unreadable documents are
@@ -90,8 +92,8 @@ class ProcessingPassResult:
     it from row counts. ``excluded`` names the eligible-but-held-out documents by
     reason. ``reconciled`` and ``load`` describe the Record Inclusion pass.
     ``parsed_document_count`` is how many documents this pass read for the
-    first time, which is the one number that says a confirmed upload was
-    picked up rather than left waiting (#893).
+    first time and *committed*, which is the one number that says a confirmed
+    upload was picked up rather than left waiting (#893).
     """
 
     project_id: int
@@ -233,6 +235,22 @@ def _parse_landed_documents(
     rather than to a pass that would fail on it every hour for ever. That
     failure is this pass's own, so it is reported as a processing failure and
     not as a held-out steady state.
+
+    **Why the row is claimed and not merely re-checked.** Production scheduling
+    does not keep two workers out of this loop. ``due_work.claim_due_work``
+    locks its candidate occurrences ``for update skip locked`` and holds the
+    project-processing schedule to one live claim, but an occurrence whose
+    lease has expired is deliberately claimable again -- that is how a killed
+    worker's work is recovered -- and nothing stops the first worker, which may
+    still be alive and mid-pass, from carrying on. ``process_project`` never
+    re-checks its claim token, so the two overlap here. Re-reading the status
+    is not enough on its own: both workers can see ``pending`` before either
+    commits, and both would then render the same file and write the same pages.
+    The ``for update skip locked`` below is the per-document exclusion that
+    answers it. The second worker's ``select`` returns nothing, so it leaves
+    the document to the worker that holds it rather than blocking behind a
+    render; the row stays ``pending`` and the next pass takes it if that worker
+    never commits.
     """
 
     images_dir = settings.corpus_images
@@ -252,23 +270,36 @@ def _parse_landed_documents(
         with session_factory() as reading:
             try:
                 with reading.begin():
-                    document = reading.get(Document, document_id)
+                    document = reading.scalars(
+                        select(Document)
+                        .where(Document.id == document_id)
+                        .with_for_update(skip_locked=True)
+                    ).first()
                     if document is None or document.parse_status != "pending":
-                        # Another worker read it between the selection and
+                        # Either another worker is holding this row's read open
+                        # right now, or one committed between the selection and
                         # here. Its commit is the one that counts.
                         continue
                     sha256 = document.sha256
-                    if parse_registered_document(
+                    read = parse_registered_document(
                         reading, document=document, images_dir=images_dir
-                    ):
-                        parsed += 1
-                    else:
-                        failures.append(f"{sha256}: parse failed")
+                    )
             except Exception as exc:  # noqa: BLE001 — one document must not sink its siblings
                 # The transaction is already rolled back by the failing
                 # ``begin`` block, so the document is still ``pending`` and
                 # the next pass takes it again.
                 failures.append(f"document {document_id}: {type(exc).__name__}: {exc}")
+                continue
+        # Counted here rather than inside the block above, because the number
+        # this returns is a claim about committed state: a read that succeeded
+        # and then failed to commit rolled its pages back with it, and a
+        # receipt that had already counted it would report a parse this
+        # database does not hold. The commit is behind us on this line, and a
+        # commit that raised took the ``except`` above instead.
+        if read:
+            parsed += 1
+        else:
+            failures.append(f"{sha256}: parse failed")
     return parsed, failures
 
 

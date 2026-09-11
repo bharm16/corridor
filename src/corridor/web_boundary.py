@@ -91,9 +91,21 @@ a fresh instrumented walk of the intake path names no ``doc_pages``, no
 ``token_layers``, no ``page_render_derivatives``, no ``processing_artifacts``
 and no ``source_segments``.  The partition stays on all of them -- a relation
 does not stop belonging to one project because one route stopped writing it --
-but the writes go, through ``WRITE_DENIED_RELATIONS`` below.  That is the one
-revoke in this boundary aimed at a privilege rather than a relation, and the
-reason it is narrower is written there.
+and no enabled route reads any of them either, so the grant goes with the
+write, through ``PARTITIONED_UNGRANTED_RELATIONS`` below.
+
+That is this boundary's third answer, and it took a correction to see that it
+was one.  Privileges and row-level security are independent controls: a grant
+decides whether a role may touch the relation at all, a policy decides which
+rows it then sees, and PostgreSQL never requires dropping the second to
+withdraw the first.  What did couple them was *this repository*.  Every guard
+had two states -- protected, and denied because the classification calls the
+relation unpartitioned -- so the only way to say "granted nothing" was to
+reclassify the relation, which would have dropped its policy and raised the
+ceiling to express a reduced privilege.  The guard was the constraint, and the
+guard is what changed: ``PROTECTED_RELATIONS`` answers partition coverage,
+``GRANTED_RELATIONS`` answers what the capability may open, and a route needs
+the second.
 """
 
 from __future__ import annotations
@@ -952,32 +964,54 @@ PROTECTED_RELATIONS: frozenset[str] = frozenset(
 # capability holds no privilege on any of them.
 DENIED_RELATIONS: frozenset[str] = frozenset(access.NOT_YET_PARTITIONED_RELATIONS)
 
-# The narrower revoke, and the only one in this boundary that takes a
-# privilege rather than a relation (#893).
+# Partitioned, policied, and granted nothing (#893).
 #
 # #824 partitioned these four and left the schema owner's default grant --
 # select, insert, update and delete -- standing on all of them, because the
 # confirmation route *wrote* every one: it rendered and parsed the uploaded
 # file inside the web request. #893 moved that read to the standing pass, so
 # the route writes none of them and the recorded set above no longer names
-# them. What that leaves is a human web capability that may still insert a
+# them. What that left was a human web capability that could still insert a
 # page's text, update a Class B receipt or delete a token layer on its own
 # project's sources -- privileges nothing asks for, on exactly the rows a
-# citation is later replayed against. Row-level security answers *whose* rows
-# a capability reaches; it does not answer what a capability should be able to
-# do to them, and #492 already drew that second line for the source tables.
+# citation is later replayed against. Those writes went then and stay gone.
 #
-# The reading stays. Each is partitioned, a human review surface reads a page
-# and a render, and taking SELECT from these four alone would state a rule
-# this boundary does not hold about the ninety-odd other partitioned relations
-# no enabled route reads.
-WRITE_DENIED_RELATIONS: frozenset[str] = frozenset(
+# The reading goes with them, which the first draft kept for two reasons that
+# did not hold. It said a human review surface reads a page and a render: no
+# *enabled* route does. `/page-image` and the statement screens read
+# `doc_pages`, and neither is in `PILOT_ROUTES`, so neither is served at all;
+# #831's exact-source view -- the one pilot reading that could have needed a
+# page -- says in its own entry above that it reads neither `doc_pages` nor
+# `page_render_derivatives`, because its nearby context is the spine's own
+# Source Segments. A capability that opens nothing here loses nothing served.
+#
+# And it said taking SELECT would mean giving up the partition. PostgreSQL
+# asks for no such thing; the coupling was this file's own, because every
+# guard had two states and "granted nothing" could only be said by calling the
+# relation unpartitioned. `GRANTED_RELATIONS` below is the third state, and
+# the policies are untouched.
+#
+# What this is not: a rule about the ninety-odd other partitioned relations no
+# enabled route reads. Those keep their grants because taking them would be a
+# sweep this boundary has not measured. These four are named because #893
+# measured them -- the instrumented walk that removed their writes is the same
+# walk that found no reader.
+PARTITIONED_UNGRANTED_RELATIONS: frozenset[str] = frozenset(
     {
         "doc_pages",
         "page_render_derivatives",
         "processing_artifacts",
         "token_layers",
     }
+)
+
+# What the human web capability may actually open: partition coverage minus the
+# relations it is granted nothing on. An enabled route needs a relation to be
+# on *this* list, not merely protected -- the two came apart the moment a third
+# state existed, and a check that kept asking the wrong one would pass while
+# the route met `permission denied`.
+GRANTED_RELATIONS: frozenset[str] = (
+    PROTECTED_RELATIONS - PARTITIONED_UNGRANTED_RELATIONS
 )
 
 
@@ -1141,9 +1175,14 @@ def unprotected_route_relations() -> tuple[str, ...]:
     Non-empty means the two halves of the boundary disagree: the application
     would serve a route whose data the database no longer hands it. That is a
     build failure, not a runtime surprise.
+
+    Measured against what the capability is *granted*, not against what the
+    partition covers. A relation can be policied and hold no grant, and a
+    route reaching one of those meets ``permission denied`` exactly as it does
+    on a denied relation.
     """
 
-    return tuple(sorted(pilot_relations() - PROTECTED_RELATIONS))
+    return tuple(sorted(pilot_relations() - GRANTED_RELATIONS))
 
 
 # --- #694 What the deployment does when the boundary is not enforced -------

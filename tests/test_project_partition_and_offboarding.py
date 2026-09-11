@@ -1565,11 +1565,18 @@ def test_the_relations_named_as_uncovered_really_are_uncovered(runtime_database)
 # careless reader would write.
 
 
+# The partitioned relations the web capability is also *granted*, which is what
+# lets a row-level claim be demonstrated as the real login. `processing_artifacts`
+# left this list when #893's correction revoked its grant: it is still
+# partitioned and still carries the policy -- proved from the catalog by
+# `test_every_relation_classified_as_partitioned_really_carries_the_policy` and
+# by `test_the_parse_output_is_partitioned_and_granted_to_nobody` -- but a
+# capability that may not open the relation cannot be shown which rows it would
+# have seen, and the refusal is the stronger claim anyway.
 PILOT_PARTITIONED_RELATIONS = (
     "documents",
     "external_report_artifacts",
     "external_report_releases",
-    "processing_artifacts",
     "source_deliveries",
 )
 
@@ -1579,16 +1586,19 @@ PILOT_PARTITIONED_RELATIONS = (
 # "is the document this page belongs to in the caller's partition". The
 # assertions below are the same two the family above gets, written against
 # each relation's own key because there is no project column to select.
+#
+# Three of the five -- `doc_pages`, `page_render_derivatives` and
+# `token_layers` -- left this list with #893's correction for the reason
+# `processing_artifacts` left the one above: the policy is still on them and
+# still proved from the catalog, and the web capability now holds no grant to
+# demonstrate it through. The register reads the two that remain.
 PILOT_DOCUMENT_CHILD_RELATIONS = (
-    "doc_pages",
     "document_quarantines",
     "extraction_runs",
-    "page_render_derivatives",
-    "token_layers",
 )
 
-#: The column that names one row of each, because one of the five is keyed by
-#: the document it belongs to rather than by a surrogate of its own.
+#: The column that names one row of each, because one of them is keyed by the
+#: document it belongs to rather than by a surrogate of its own.
 PILOT_DOCUMENT_CHILD_KEYS = {
     relation: "document_id" if relation == "document_quarantines" else "id"
     for relation in PILOT_DOCUMENT_CHILD_RELATIONS
@@ -1806,17 +1816,20 @@ def test_the_live_pilot_login_holds_no_privilege_on_a_denied_relation(
     )
 
 
-def test_the_web_capability_reads_the_parse_output_and_can_no_longer_write_it(
-    runtime_database,
-):
-    """#893's narrower revoke, asked of PostgreSQL rather than of the list.
+def test_the_parse_output_is_partitioned_and_granted_to_nobody(runtime_database):
+    """#893's second revoke, asked of PostgreSQL rather than of the list.
 
     #824 left the schema owner's default select/insert/update/delete standing
     on these four because the confirmation route rendered and parsed the
     uploaded file inside the web request and therefore wrote every one of them.
-    The read is the standing pass's now, so the writes go and the reading
-    stays: a human review surface still shows a page and a render, and the
-    partition still decides whose.
+    The read is the standing pass's now and no enabled route reads them, so the
+    human web capability holds nothing here at all.
+
+    Both halves are asserted together on purpose, because the first draft
+    treated them as one control: the policy is still on the relation *and* the
+    grant is gone. Dropping the policy to express the reduced privilege would
+    have satisfied half of this and quietly widened the relation for every
+    other role that reaches it.
     """
 
     with runtime_database.session_factory() as owner:
@@ -1834,16 +1847,56 @@ def test_the_web_capability_reads_the_parse_output_and_can_no_longer_write_it(
                 ),
                 {
                     "privileges": list(_TABLE_PRIVILEGES),
-                    "relations": sorted(web_boundary.WRITE_DENIED_RELATIONS),
+                    "relations": sorted(
+                        web_boundary.PARTITIONED_UNGRANTED_RELATIONS
+                    ),
                 },
             ).all()
         }
+        policied = _partition_policy_relations(owner.connection())
 
-    assert held == {
-        (relation, "SELECT") for relation in web_boundary.WRITE_DENIED_RELATIONS
-    }, (
-        "the human web capability should hold exactly SELECT on the relations "
-        "the parse used to write in the request, and nothing else"
+    assert held == set(), (
+        "the human web capability should hold no privilege at all on the "
+        "relations the parse used to write in the request"
+    )
+    assert sorted(
+        web_boundary.PARTITIONED_UNGRANTED_RELATIONS - policied
+    ) == [], (
+        "the partition policy is what still covers these relations for every "
+        "role that does hold a grant; the revoke must not have taken it"
+    )
+
+
+def test_a_naked_select_on_a_partitioned_ungranted_relation_is_refused(
+    their_pilot_rows, two_projects, web_connection
+):
+    """The catalog claim made the way this file makes claims: by asking.
+
+    A partitioned relation the capability holds no grant on answers the same
+    `permission denied` a denied relation answers, and it answers it whether or
+    not a partition is open -- the grant is checked before the policy. That is
+    the observable difference between "protected" and "granted", and it is why
+    `unprotected_route_relations` measures the second.
+    """
+
+    ours, _theirs = two_projects
+    served: list[str] = []
+    with OrmSession(bind=web_connection) as web:
+        access.open_project_partition(
+            web, principal_subject=LEAVER.subject, project_id=ours
+        )
+        for relation in sorted(web_boundary.PARTITIONED_UNGRANTED_RELATIONS):
+            savepoint = web_connection.begin_nested()
+            try:
+                web.execute(text(f"select * from {relation} limit 1"))
+            except ProgrammingError:
+                savepoint.rollback()
+            else:
+                savepoint.rollback()
+                served.append(relation)
+
+    assert served == [], (
+        "the live-pilot web capability can still select from these relations"
     )
 
 
@@ -1968,11 +2021,11 @@ def test_the_newly_partitioned_relations_read_nothing_without_a_partition(
 def test_a_naked_select_on_a_document_child_reads_one_project(
     their_pilot_rows, two_projects, web_connection
 ):
-    """#824's parent-join family: a page belongs to whoever owns its document.
+    """#824's parent-join family: a receipt belongs to whoever owns its document.
 
-    These five carry no `project_id`, and #680 read that as a reason a policy
-    could not be written. It is not: the policy tests the parent each row
-    already names, so a careless `select * from doc_pages` answers with the
+    These carry no `project_id`, and #680 read that as a reason a policy could
+    not be written. It is not: the policy tests the parent each row already
+    names, so a careless `select * from extraction_runs` answers with the
     caller's project and nobody else's.
     """
 
@@ -2059,19 +2112,29 @@ def test_the_boundary_leaves_the_machine_capability_whole(runtime_database):
 def test_the_classification_and_the_grants_agree_about_every_relation(
     runtime_database,
 ):
-    """The boundary restated as one sentence PostgreSQL can answer.
+    """The boundary restated as sentences PostgreSQL can answer.
 
     Everything `corridor_web` can read is a relation the classification
     answers with something other than "not yet partitioned", and everything it
     answers that way is a relation `corridor_web` cannot read. Either
     direction failing is drift.
+
+    The third sentence is the one #893's correction added, and it is why this
+    asks about `GRANTED_RELATIONS` rather than about `PROTECTED_RELATIONS`.
+    Partition coverage and a grant are independent: a relation can carry the
+    policy and hand the capability nothing, and the four the standing pass now
+    writes are exactly that. Asserting "everything protected is readable" would
+    have failed on them for the right fact and the wrong reason, and answering
+    it by dropping their policies would have widened the relation to make a
+    check pass.
     """
 
     with runtime_database.session_factory() as owner:
         readable = set(_web_readable_relations(owner.connection()))
 
     assert sorted(readable & web_boundary.DENIED_RELATIONS) == []
-    assert sorted(web_boundary.PROTECTED_RELATIONS - readable) == []
+    assert sorted(web_boundary.GRANTED_RELATIONS - readable) == []
+    assert sorted(readable & web_boundary.PARTITIONED_UNGRANTED_RELATIONS) == []
 
 
 # --- #693 A grant to PUBLIC is a grant to every role, decided by nobody ----
@@ -2786,7 +2849,7 @@ def test_the_admitted_intake_path_serves_as_the_real_web_login(
     assert [
         relation
         for statement in statements_in_flight
-        for relation in sorted(web_boundary.WRITE_DENIED_RELATIONS)
+        for relation in sorted(web_boundary.PARTITIONED_UNGRANTED_RELATIONS)
         if re.search(rf"\b{relation}\b", statement)
     ] == []
 

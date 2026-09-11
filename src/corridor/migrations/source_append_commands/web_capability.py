@@ -351,54 +351,55 @@ WEB_DENIED_RELATIONS = (
     WEB_DENIED_READ_ONLY + WEB_DENIED_APPEND + WEB_DENIED_DEFAULT_PRIVILEGES
 )
 
-# What the human web capability may read and may not write (#893).
+# Partitioned above, and granted nothing here (#893).
 #
 # These four are here because #824 measured the confirmation *writing* them:
 # it rendered and parsed the uploaded file inside the web request, so the
 # pages, the token layers, the render derivatives and the Class B receipts a
 # read produces were a web request's own writes. #893 moved that read to the
 # standing project-processing pass, and the instrumented walk of the intake
-# path now names none of the four. The web capability held select, insert,
-# update and delete on each of them by the schema owner's default, and the
-# reason to leave the writes standing has gone with the read.
+# path now names none of the four -- not as a writer and not as a reader.
 #
-# They keep SELECT, and that is a decision rather than an oversight. Each one
-# carries the project partition this block writes, so a read answers with the
-# caller's own project; a page image and a rendered page are what a human
-# review surface reads; and singling these four out of the ninety-odd
-# partitioned relations for a revoke of reading would state a rule this
-# boundary does not hold. The rule it does hold is #492's, one capability
-# wider: a runtime login does not write what a command or a worker owns.
+# The first draft of this block kept SELECT, on the ground that taking it
+# would mean giving up the partition. PostgreSQL asks for no such thing: a
+# grant decides whether the role may touch the relation, a policy decides
+# which rows it then sees, and neither is a precondition of the other. So the
+# policies above are untouched and each of these four stays partitioned, while
+# the human web capability holds nothing on it. The only readers that exist --
+# `/page-image` and the statement screens -- are not enabled pilot routes, so
+# nothing served loses a reading.
 #
 # `document_quarantines` and `extraction_runs` are the two of #824's six that
 # are not here. The confirmation still writes a quarantine — a `schedule`
 # upload is registered deliberately unread (#149), and that row is written in
-# the request that registers it. `extraction_runs` is a receipt no web request
-# has ever written, and revoking a write nothing was measured making is a
-# claim this block did not measure; #893 named neither.
-WEB_DENIED_WRITES = (
+# the request that registers it — and the source register reads both.
+WEB_DENIED_PARTITIONED = (
     "doc_pages",
     "page_render_derivatives",
     "processing_artifacts",
     "token_layers",
 )
 
-_WEB_DENIED_WRITES_SQL = ", ".join(f"'{table}'" for table in WEB_DENIED_WRITES)
+_WEB_DENIED_PARTITIONED_SQL = ", ".join(
+    f"'{table}'" for table in WEB_DENIED_PARTITIONED
+)
 
-# `insert, update, delete` named rather than `revoke all`, because the reading
-# is deliberately kept: this is the one place in the block where the privilege
-# taken away is narrower than the relation. The owned sequences go with the
-# insert, since a capability that cannot insert has no use for a sequence and
-# an advanceable counter it still holds is a row count it should not have.
-WEB_CAPABILITY_WRITE_REVOKE = f"""
+# `revoke all`, for the reason the blanket revoke above gives: a capability
+# that keeps INSERT on a relation it may not read is still a capability on
+# that relation. The owned sequences go with it, since an advanceable counter
+# a capability still holds is a row count and a write path that outlived the
+# table it belongs to. What separates this statement from the one above is not
+# the privilege it takes -- it is that these relations keep their policies and
+# stay in the partitioned classification, so the ceiling does not move.
+WEB_CAPABILITY_PARTITIONED_REVOKE = f"""
 do $$
 declare
     v_table text;
     v_sequence text;
 begin
-    foreach v_table in array array[{_WEB_DENIED_WRITES_SQL}] loop
+    foreach v_table in array array[{_WEB_DENIED_PARTITIONED_SQL}] loop
         execute format(
-            'revoke insert, update, delete on public.%I from corridor_web',
+            'revoke all on public.%I from corridor_web',
             v_table
         );
     end loop;
@@ -411,7 +412,7 @@ begin
           join pg_namespace n on n.oid = t.relnamespace
          where s.relkind = 'S'
            and n.nspname = 'public'
-           and t.relname in ({_WEB_DENIED_WRITES_SQL})
+           and t.relname in ({_WEB_DENIED_PARTITIONED_SQL})
     loop
         execute format(
             'revoke all on sequence public.%I from corridor_web', v_sequence
@@ -420,15 +421,15 @@ begin
 end $$;
 """
 
-WEB_CAPABILITY_WRITE_RESTORE = f"""
+WEB_CAPABILITY_PARTITIONED_RESTORE = f"""
 do $$
 declare
     v_table text;
     v_sequence text;
 begin
-    foreach v_table in array array[{_WEB_DENIED_WRITES_SQL}] loop
+    foreach v_table in array array[{_WEB_DENIED_PARTITIONED_SQL}] loop
         execute format(
-            'grant insert, update, delete on public.%I to corridor_web',
+            'grant select, insert, update, delete on public.%I to corridor_web',
             v_table
         );
     end loop;
@@ -441,7 +442,7 @@ begin
           join pg_namespace n on n.oid = t.relnamespace
          where s.relkind = 'S'
            and n.nspname = 'public'
-           and t.relname in ({_WEB_DENIED_WRITES_SQL})
+           and t.relname in ({_WEB_DENIED_PARTITIONED_SQL})
     loop
         execute format(
             'grant select, usage on sequence public.%I to corridor_web',
@@ -550,10 +551,10 @@ def upgrade(op) -> None:
     op.execute(WEB_PARTITION_POLICIES)
     op.execute(WEB_DOCUMENT_CHILD_PARTITION_POLICIES)
     op.execute(WEB_CAPABILITY_REVOKE)
-    # After the blanket revoke, because these four keep their reading: a
-    # relation that had lost everything above would gain nothing here, and the
-    # order says which of the two statements is the narrower one.
-    op.execute(WEB_CAPABILITY_WRITE_REVOKE)
+    # After the blanket revoke, because these four are the partitioned ones:
+    # they are not in the denied list that statement sweeps, and taking their
+    # grants is a separate decision from taking an unpartitioned relation away.
+    op.execute(WEB_CAPABILITY_PARTITIONED_REVOKE)
 
 
 def downgrade(op) -> None:
@@ -562,7 +563,7 @@ def downgrade(op) -> None:
     # the policies come off after it so no window exists where a relation is
     # readable again and still partitioned against a partition no caller
     # declared.
-    op.execute(WEB_CAPABILITY_WRITE_RESTORE)
+    op.execute(WEB_CAPABILITY_PARTITIONED_RESTORE)
     op.execute(WEB_CAPABILITY_RESTORE)
     op.execute(WEB_DOCUMENT_CHILD_PARTITION_POLICIES_DOWN)
     op.execute(WEB_PARTITION_POLICIES_DOWN)

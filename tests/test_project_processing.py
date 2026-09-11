@@ -14,11 +14,12 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timezone
 import hashlib
-from threading import Barrier
+from threading import Barrier, Event
 from uuid import uuid4
 
 import pytest
 from sqlalchemy import func, select
+from sqlalchemy.orm import SessionTransaction
 
 from corridor.extract_project import extract_project
 from corridor.models import (
@@ -138,7 +139,8 @@ def _project(factory, **overrides) -> int:
 
 
 def _matrix(
-    factory, project_id, filename, *, parse_status="parsed", doc_date=None
+    factory, project_id, filename, *, parse_status="parsed", doc_date=None,
+    page=True,
 ) -> int:
     with factory() as setup:
         document = Document(
@@ -152,7 +154,10 @@ def _matrix(
         )
         setup.add(document)
         setup.flush([document])
-        setup.add(DocPage(document_id=document.id, page_no=1, text="rows"))
+        # A document the read act has not reached yet has no pages; `page=False`
+        # is how a test says the read is the thing under test.
+        if page:
+            setup.add(DocPage(document_id=document.id, page_no=1, text="rows"))
         document_id = document.id
         setup.commit()
     return document_id
@@ -481,6 +486,158 @@ def test_a_document_the_read_act_could_not_reach_is_counted_apart_from_a_failure
     receipt = summarize_pass(result, configuration_version="v", observed_at=NOW)
     assert receipt["health"] == "processing_attention_required"
     assert receipt["parsed"] == 0
+
+
+def test_two_committed_workers_do_not_both_read_one_landed_document(
+    runtime_database, monkeypatch
+):
+    """Two live passes meeting on one pending document, in real transactions.
+
+    Production scheduling does not keep them apart on its own. `claim_due_work`
+    locks its candidates `for update skip locked` and holds project processing
+    to one live claim, but an occurrence whose lease expired is deliberately
+    claimable again -- that is lease recovery -- and the worker whose lease ran
+    out is not stopped, notified, or fenced: `process_project` never re-checks
+    its claim token. So two passes can be inside the read act at once, and
+    re-reading `pending` does not settle it, because neither has committed when
+    the other looks.
+
+    This is the shape that proves it, and a repeated sequential pass could not:
+    worker A is held *inside* its own uncommitted read while worker B runs a
+    whole pass over the same project. Without the per-document claim B sees
+    `pending`, opens the same bytes, and the two race to write the same pages.
+    """
+
+    import corridor.project_processing as project_processing
+
+    factory = runtime_database.session_factory
+    project_id = _project(factory)
+    landed = _matrix(
+        factory, project_id, "landed.pdf", parse_status="pending",
+        doc_date=date(2025, 1, 1), page=False,
+    )
+
+    inside = Event()
+    release = Event()
+    readers: list[str] = []
+
+    def read(session, *, document, images_dir):
+        first = not readers
+        readers.append(document.filename)
+        if first:
+            inside.set()
+            release.wait(timeout=10)
+        document.parse_status = "parsed"
+        document.pages = 1
+        session.add(DocPage(document_id=document.id, page_no=1, text="rows"))
+        session.flush()
+        return True
+
+    monkeypatch.setattr(project_processing, "parse_registered_document", read)
+    route = ScriptedRoute({"landed.pdf": ["PL1"]})
+
+    def pass_over_the_project():
+        return process_project(
+            factory,
+            project_id=project_id,
+            select_route=route,
+            clock=ControlledClock(NOW),
+        )
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        worker_a = pool.submit(pass_over_the_project)
+        assert inside.wait(timeout=10), "worker A never reached the read"
+        result_b = pass_over_the_project()
+        release.set()
+        result_a = worker_a.result(timeout=30)
+
+    assert readers == ["landed.pdf"], (
+        "the second worker opened bytes the first was already reading"
+    )
+    # B leaves the document exactly as it found it, and says so honestly: this
+    # is not B's failure, and it is not a held-out steady state either.
+    assert result_b.parsed_document_count == 0
+    assert result_b.processing_failures == []
+    assert result_b.excluded["awaiting_parse"] == 1
+    assert result_b.eligible_document_count == 0
+    # A's read is the one that counts, and there is one of everything after it.
+    assert result_a.parsed_document_count == 1
+    assert result_a.extracted == 1
+    with factory() as verify:
+        assert verify.get(Document, landed).parse_status == "parsed"
+        assert verify.scalar(
+            select(func.count()).select_from(DocPage).where(
+                DocPage.document_id == landed
+            )
+        ) == 1
+        assert _completed_runs(verify, project_id) == 1
+        assert _dependencies(verify, project_id) == {"PL1"}
+
+
+def test_a_read_whose_commit_fails_is_not_counted_as_a_parse(
+    runtime_database, monkeypatch
+):
+    """The receipt counts committed reads, so the count is taken after the commit.
+
+    A parse that succeeded and then failed to commit rolled its pages, its
+    segments and its status flip back together. Incrementing inside the
+    transaction leaves the pass reporting a read this database does not hold --
+    and the document still `pending`, so the very next pass reads it again and
+    the receipt has counted one source twice.
+    """
+
+    import corridor.project_processing as project_processing
+
+    factory = runtime_database.session_factory
+    project_id = _project(factory)
+    landed = _matrix(
+        factory, project_id, "landed.pdf", parse_status="pending",
+        doc_date=date(2025, 1, 1), page=False,
+    )
+
+    losing: dict[str, object] = {}
+    real_commit = SessionTransaction.commit
+
+    def commit(self, *args, **kwargs):
+        if self.session is losing.get("session"):
+            raise RuntimeError("lost the commit")
+        return real_commit(self, *args, **kwargs)
+
+    monkeypatch.setattr(SessionTransaction, "commit", commit)
+
+    def read_then_lose_the_commit(session, *, document, images_dir):
+        document.parse_status = "parsed"
+        document.pages = 1
+        session.add(DocPage(document_id=document.id, page_no=1, text="rows"))
+        session.flush()
+        # The read itself succeeded; the transaction carrying it does not land.
+        losing["session"] = session
+        return True
+
+    monkeypatch.setattr(
+        project_processing, "parse_registered_document", read_then_lose_the_commit
+    )
+    result = process_project(
+        factory,
+        project_id=project_id,
+        select_route=ScriptedRoute({}),
+        clock=ControlledClock(NOW),
+    )
+
+    assert result.parsed_document_count == 0, (
+        "a parse that rolled back must not be counted"
+    )
+    assert any("lost the commit" in failure for failure in result.processing_failures)
+    receipt = summarize_pass(result, configuration_version="v", observed_at=NOW)
+    assert receipt["parsed"] == 0
+    assert receipt["health"] == "processing_attention_required"
+    with factory() as verify:
+        assert verify.get(Document, landed).parse_status == "pending"
+        assert verify.scalar(
+            select(func.count()).select_from(DocPage).where(
+                DocPage.document_id == landed
+            )
+        ) == 0
 
 
 def test_an_unknown_project_is_refused_before_any_model_work(runtime_database):
