@@ -243,6 +243,11 @@ docs:
 adr-index:
 	uv run python scripts/adr_index.py
 
+# Regenerate the frontend receipt route-contract page from the one registry
+# (make check fails when it is stale, or when a receipt route has no contract).
+route-contracts:
+	uv run python scripts/frontend_route_contracts.py
+
 # Coordination review UI at http://localhost:8412
 # The coordination UI. It connects as `corridor_web`, which #680 restricted to
 # the live-pilot route surface: the frozen legacy screens (/ledger, /queue,

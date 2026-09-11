@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import functools
 import hashlib
 import importlib.util
 import json
@@ -3028,7 +3029,7 @@ def test_no_template_mints_a_customer_sentence_in_a_set():
     )
 
 
-# --- Every authenticated form on a live-pilot page echoes its token (#821) ----
+# --- Every authenticated form echoes its token (#821, widened by #880) -------
 #
 # `get_human_principal` refuses an unsafe method whose request-forgery token is
 # missing or does not match the session's, and the token reaches the server
@@ -3038,14 +3039,21 @@ def test_no_template_mints_a_customer_sentence_in_a_set():
 # every test that drove them replaced `get_human_principal`, so nothing failed
 # until a real coordinator clicked.
 #
-# The rule below is the one a review would have to remember otherwise.  Scope
-# is the live-pilot boundary: the templates the manifest's own routes render,
-# plus the partials composed into them, because a form in a partial is markup
-# that page sends.  A `method="post"` form there must emit the field, unless
-# the route it posts to takes no signed-in person at all -- the public sign-in
-# form, which has its own contract and could not echo a token it has not been
-# issued.  An action that resolves to no route is held to the rule rather than
-# excused by it.
+# The rule below is the one a review would have to remember otherwise.  #821
+# scoped it to the live-pilot boundary, and that scoping is what let three more
+# inoperable forms sit outside it -- two on `key_dates.html`, one on
+# `queue.html` -- until #880 found them by reading the templates rather than
+# the manifest.  A form only becoming covered when its route is admitted to the
+# boundary is the wrong ratchet: admission is a capability decision, and
+# "signed-in people can click this" is true of the form either way.
+#
+# So the scope is every template this application renders.  A `method="post"`
+# form must emit the field, unless the route it posts to takes no signed-in
+# person at all -- the public sign-in form, which has its own contract and
+# could not echo a token it has not been issued.  An action that resolves to no
+# route is held to the rule rather than excused by it.  Being covered here
+# admits nothing to the boundary manifest: the two lists answer different
+# questions and `web_boundary.PILOT_ROUTES` is untouched by this rule.
 
 WEB_APP = SOURCE_ROOT / "web" / "app.py"
 
@@ -3157,13 +3165,17 @@ def _manifest_page_templates() -> frozenset[Path]:
     return frozenset(closed)
 
 
-def _post_forms_on_manifest_pages() -> list[tuple[str, str, bool, bool]]:
-    """Every state-changing form on a live-pilot page, classified.
+def _post_forms_on_every_page() -> list[tuple[str, str, bool, bool]]:
+    """Every state-changing form this application renders, classified.
 
     One entry per `method="post"` form: where it is, the action it posts to,
     whether that route takes a signed-in person, and whether the form emits the
     field. A form with no `action`, or one whose action matches no route, is
     read as authenticated: the rule holds it rather than excusing it.
+
+    Every template is read, partials included, rather than the manifest pages
+    alone (#880). A partial is markup some page sends, and a template outside
+    the live-pilot boundary is still a screen a signed-in person clicks.
     """
     functions = _web_app_functions()
     posts = {
@@ -3185,7 +3197,7 @@ def _post_forms_on_manifest_pages() -> list[tuple[str, str, bool, bool]]:
         return None
 
     forms = []
-    for path in sorted(_manifest_page_templates()):
+    for path in sorted(TEMPLATE_ROOT.rglob("*.html")):
         markup = path.read_text(encoding="utf-8")
         for opening in _FORM_TAG.finditer(markup):
             if not _FORM_METHOD.search(opening.group(0)):
@@ -3206,22 +3218,42 @@ def _post_forms_on_manifest_pages() -> list[tuple[str, str, bool, bool]]:
 def test_the_forgery_field_rule_reaches_the_pages_it_is_written_for():
     """The check is worthless if it silently covers nothing.
 
-    Its reach is the point, and both halves of it: `project_workflow.html` and
-    `review.html` are manifest pages carrying authenticated forms, and
-    `sign_in.html` is the manifest page whose one form is public, so the
-    exemption is exercised rather than theoretical.
+    Its reach is the point, and all three parts of it: `project_workflow.html`
+    and `review.html` are manifest pages carrying authenticated forms;
+    `key_dates.html` and `queue.html` carry authenticated forms and are *not*
+    manifest pages, which is the widening #880 asked for and the reason their
+    three forms sat inoperable outside #821's scope; and `sign_in.html` is the
+    one page whose form is public, so the exemption is exercised rather than
+    theoretical.
     """
-    pages = {path.name for path in _manifest_page_templates()}
-    assert {"project_workflow.html", "review.html", "sign_in.html"} <= pages
+    from corridor.web_boundary import PILOT_ROUTES
 
-    forms = _post_forms_on_manifest_pages()
-    assert [where for where, _, authenticated, _ in forms if authenticated]
+    manifest = {path.name for path in _manifest_page_templates()}
+    assert {"project_workflow.html", "review.html", "sign_in.html"} <= manifest
+    assert not ({"key_dates.html", "queue.html"} & manifest)
+
+    forms = _post_forms_on_every_page()
+    covered = {
+        where.split(":")[0] for where, _, authenticated, _ in forms if authenticated
+    }
+    assert {"project_workflow.html", "review.html"} <= covered
+    assert {"key_dates.html", "queue.html"} <= covered
     assert [where for where, _, authenticated, _ in forms if not authenticated] == [
         where for where, action, _, _ in forms if action == "/sign-in/request"
     ]
 
+    # Covering a form admits nothing. The three routes #880 named are still
+    # outside the live-pilot boundary; a form that now works is not a
+    # capability decision, and this rule may never become one.
+    assert ("POST", "/key-dates/{slug}/preview") not in PILOT_ROUTES
+    assert ("POST", "/key-dates/{slug}/confirm") not in PILOT_ROUTES
+    assert (
+        "POST",
+        "/candidates/{candidate_id}/confirm-organization",
+    ) not in PILOT_ROUTES
 
-def test_every_authenticated_form_on_a_pilot_page_carries_the_forgery_field():
+
+def test_every_authenticated_form_carries_the_forgery_field():
     """A form the write path would refuse is a control that cannot be clicked.
 
     `get_human_principal` requires the token on every unsafe method, and a
@@ -3232,12 +3264,12 @@ def test_every_authenticated_form_on_a_pilot_page_carries_the_forgery_field():
     """
     offenders = [
         f"{where} posts to {action!r}"
-        for where, action, authenticated, carried in _post_forms_on_manifest_pages()
+        for where, action, authenticated, carried in _post_forms_on_every_page()
         if authenticated and not carried
     ]
 
     assert offenders == [], (
-        f"{offenders}: a state-changing form on a live-pilot page omits "
+        f"{offenders}: a state-changing form omits "
         "`{{ csrf_field() }}`, so a signed-in person clicking it is refused "
         "with 403. Emit the field as the first thing inside the form"
     )
@@ -3854,6 +3886,113 @@ def test_every_frontend_receipt_route_is_a_route_the_application_serves():
         "these frontend receipt contracts name no route the application serves "
         "with one GET or POST method; remove them from "
         "corridor.frontend_request_receipts.ROUTE_CONTRACTS or restore the route"
+    )
+
+
+# --- The receipt registry, checked in both directions (#909) -----------------
+#
+# `record_frontend_request` raises when a route's name is not in
+# `ROUTE_CONTRACTS`, so a handler writing a receipt under an unregistered name
+# 500s on every request. The check above reads the registry against the router;
+# nothing read the *call sites*, and #837 built two routes that would both have
+# 500'd on first use. The scan below is the missing direction, and it reads the
+# application rather than one file's literals: `_project_workflow_response`
+# takes `route_name` as a parameter with a default, and seven routes write
+# their receipt through it, so a search for `route_name=` in `web/app.py` would
+# cover neither the default nor a future call site in another module.
+#
+# A name the scan cannot determine statically is a failure, never a call site
+# it drops: an unreadable registration is precisely the case where the 500
+# would still be waiting at runtime.
+
+
+@functools.lru_cache(maxsize=1)
+def _route_contracts_module():
+    """The guard, loaded once: it caches a scan the three checks below share."""
+
+    spec = importlib.util.spec_from_file_location(
+        "frontend_route_contracts", REPO_ROOT / "scripts" / "frontend_route_contracts.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_every_route_that_records_a_frontend_receipt_has_a_contract():
+    """A receipt written under an unregistered name is a 500, not a bad record.
+
+    `ROUTE_CONTRACTS.get(route_name)` returning `None` raises inside the
+    route's own transaction, so the whole request fails -- on every request,
+    for as long as the entry is missing. Nothing in `make check` said so, and
+    both halves of the failure were hit in one afternoon (#909).
+    """
+
+    from corridor.frontend_request_receipts import ROUTE_CONTRACTS
+
+    written, problems = _route_contracts_module().receipt_route_names()
+
+    assert problems == [], (
+        f"{problems}: a frontend receipt's route name cannot be read from the "
+        "source, so whether it has a contract cannot be decided here. Pass a "
+        "literal route name, or a parameter whose callers pass literals"
+    )
+    unregistered = sorted(
+        f"{name} (written at {', '.join(written[name])})"
+        for name in set(written) - set(ROUTE_CONTRACTS)
+    )
+    assert unregistered == [], (
+        f"{unregistered}: these routes record a Product Proving receipt and "
+        "have no entry in corridor.frontend_request_receipts.ROUTE_CONTRACTS, "
+        "so every request to them raises. Add the route and the statuses it "
+        "may return, then run `make route-contracts`"
+    )
+
+
+def test_the_receipt_scan_reaches_the_call_sites_it_is_written_for():
+    """The scan is worthless if it silently reads nothing.
+
+    Its reach is the point, and the interprocedural half of it especially:
+    `coordinator_home` is reachable only through `_project_workflow_response`'s
+    own default, and `authorize_project_issue` only through a caller's keyword
+    into that same helper. A scan of literal `route_name=` arguments beside
+    `record_frontend_request` would find neither.
+    """
+
+    from corridor.frontend_request_receipts import ROUTE_CONTRACTS
+
+    written, problems = _route_contracts_module().receipt_route_names()
+
+    assert problems == []
+    # Both halves of the resolution, exercised rather than theoretical.
+    assert {"coordinator_home", "authorize_project_issue"} <= set(written)
+    # And every contract is reached, so the scan is reading the application and
+    # not three easy literals. A contract no call site writes fails here too,
+    # which is the remaining way the registry and the routes fall out of step.
+    assert set(written) == set(ROUTE_CONTRACTS)
+    assert all(
+        site.startswith("src/corridor/") for sites in written.values() for site in sites
+    )
+
+
+def test_the_frontend_route_contract_documentation_is_current():
+    """Documentation generated from the registry, not authored beside it.
+
+    `product_proving_frontend_capture.py` used to keep a second, hand-written
+    copy of this table and raise at import when the two disagreed -- a drift
+    that cost three red CI jobs to discover, because `make check` never imports
+    that module. There is one registry now, and this is the readable page it
+    produces (#909).
+    """
+
+    contracts = _route_contracts_module()
+    text, problems = contracts.documentation()
+
+    assert problems == [], problems
+    assert contracts.DOCUMENT_PATH.read_text(encoding="utf-8") == text, (
+        f"{contracts.DOCUMENT_PATH.relative_to(REPO_ROOT)} no longer matches "
+        "corridor.frontend_request_receipts.ROUTE_CONTRACTS and the routes the "
+        "application serves; run `make route-contracts`"
     )
 
 

@@ -45,6 +45,15 @@ _METHODS = frozenset({"GET", "POST"})
 # be registered here and must name the route the router matched. Status
 # remains response-derived, then must be one the registered route can
 # actually return. The template and method come from the matched route.
+#
+# This is the one registry, and both directions of it are checked where
+# `make check` runs them rather than at the first request or at the import of
+# some other module (#909): `scripts/frontend_route_contracts.py` reads the
+# route names the application actually writes receipts under -- through the
+# helpers they are handed to, and failing rather than skipping a name it
+# cannot read -- and generates the readable page from this table into
+# docs/operations/frontend-request-route-contracts.md. `make route-contracts`
+# regenerates it after a change here.
 ROUTE_CONTRACTS: Mapping[str, frozenset[int]] = {
     "coordinate_statement_screen": frozenset({200}),
     "save_coordinated_statement": frozenset({303}),

@@ -641,10 +641,18 @@ class IssueView:
         if self.state == PREPARING:
             return PREPARING_RULE
         if self.state == NOTHING_PREPARED:
+            # Preparing one *is* something this page does, and has been since
+            # #675 put the confirmation on it. The act is named from
+            # ``PREPARE_ACTION`` rather than described a second way, for the
+            # reason ``FRESH_PREPARATION_NEXT`` is (ADR-0048), and it names the
+            # act and not where the control is: a reader holding no
+            # project-coordination designation reads this sentence with no form
+            # under it, and ``preparation_capability`` is what tells them why.
             return (
                 "No issue has been prepared for this project yet, so there is "
-                "nothing here to approve. Preparing one is not something this "
-                "page does."
+                f"nothing here to approve. {PREPARE_ACTION} is what prepares "
+                "one, from the coverage and the cutoff shown here; the "
+                "candidate it produces is what can then be approved."
             )
         if self.state == ALREADY_AUTHORIZED:
             assert self.authorized is not None

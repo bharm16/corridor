@@ -139,64 +139,14 @@ _FRONTEND_SUBJECT_KEYS = frozenset(
         "check_configuration_id",
     }
 )
-_PRODUCT_PROVING_ROUTE_CONTRACT_DOCUMENTATION = {
-    "coordinate_statement_screen": frozenset({200}),
-    "save_coordinated_statement": frozenset({303}),
-    "save_admitted_statement_scope": frozenset({400}),
-    "keep_unresolved_statement": frozenset({303}),
-    "save_admitted_statement_owner": frozenset({303}),
-    "save_admitted_statement_next_action": frozenset({303}),
-    "mark_waiting_statement_not_relevant": frozenset({303}),
-    "correct_statement_screen": frozenset({200}),
-    "correct_statement_scope_from_screen": frozenset({303, 400, 409}),
-    "correct_statement_facts_from_screen": frozenset({303}),
-    "clarify_dispute": frozenset({303}),
-    "reports": frozenset({200}),
-    "review_report": frozenset({200}),
-    "download_prepared_report": frozenset({200}),
-    "preview_prepared_report": frozenset({200}),
-    "release_prepared_report": frozenset({201}),
-    "render_report": frozenset({201}),
-    "release_report": frozenset({201}),
-    "coordinator_home": frozenset({200}),
-    "authorize_project_issue": frozenset({201, 403, 409}),
-    "prepare_project_issue": frozenset({202, 403, 409}),
-    "reschedule_deferred_change": frozenset({200, 201, 400, 409}),
-    "close_project_follow_up_plan": frozenset({201, 400, 409}),
-    "record_follow_up_request_sent": frozenset({201, 409}),
-    "record_follow_up_response": frozenset({201, 409}),
-    "queue": frozenset({200}),
-    "internal_report": frozenset({200}),
-    "internal_report_full": frozenset({200}),
-    "internal_report_alerts": frozenset({200}),
-    "internal_report_workbook": frozenset({200}),
-    "read_internal_coordination_summary": frozenset({200}),
-    "operations_checks": frozenset({200}),
-    "operations_checks_preview": frozenset({200, 400}),
-    "save_operations_checks": frozenset({303, 400}),
-    "save_dependency_follow_up_plan": frozenset({303}),
-    "processing_operations": frozenset({200}),
-    "declare_operations_active_run": frozenset({303}),
-    "suspend_operations_unknown_scope": frozenset({303}),
-    "lift_operations_unknown_scope": frozenset({303}),
-    "confirm_documentation_approval": frozenset({303}),
-    "clarify_documentation_review": frozenset({303}),
-    "keep_unresolved_candidate": frozenset({303}),
-    "accept": frozenset({303}),
-    "confirm_organization": frozenset({303}),
-    "edit_accept": frozenset({303}),
-    "merge": frozenset({303}),
-    "reject": frozenset({303}),
-}
-# The write seam owns the canonical registry; the local literal above remains
-# readable documentation of the Product Proving subset, while validation uses
-# exactly the contracts the routes use to write their receipts. The registry
-# holds each route's permitted statuses; its template and method are the
-# router's, read through the same lookup the architecture test uses.
-if _PRODUCT_PROVING_ROUTE_CONTRACT_DOCUMENTATION != dict(
-    REGISTERED_FRONTEND_ROUTE_CONTRACTS
-):
-    raise RuntimeError("Product Proving frontend route contracts drifted")
+# One registry, not two. The write seam owns it: the contracts this module
+# validates against are exactly the ones the routes write their receipts under,
+# and their template and method are the router's, read through the same lookup
+# the architecture test uses. A hand-authored copy of the table used to sit
+# here as "readable documentation" and raise at import when the two disagreed,
+# which cost three red CI jobs to learn something `make check` can say locally.
+# The readable version is generated from the registry now, into
+# docs/operations/frontend-request-route-contracts.md (#909).
 _FRONTEND_ROUTE_CONTRACTS = REGISTERED_FRONTEND_ROUTE_CONTRACTS
 FRONTEND_PASS_BUNDLE_SCHEMA_VERSION = "corridor.product-proving-frontend-pass.v1"
 FRONTEND_PASS_BUNDLE_FILES = (

@@ -87,6 +87,7 @@
     {% endcall %}
   {% endif %}
   <form class="import" method="post" action="/key-dates/{{ project.slug }}/preview">
+    {{ csrf_field() }}
     <label for="source_name">Source name (what you typed this from)</label>
     <input type="text" id="source_name" name="source_name" value="{{ source_name }}"
            placeholder="e.g. seg3c2-utility-milestones-typed.csv">
@@ -151,6 +152,7 @@
         </tbody>
       </table>
       <form method="post" action="/key-dates/{{ project.slug }}/confirm">
+        {{ csrf_field() }}
         <input type="hidden" name="source_name" value="{{ preview.source_name }}">
         <input type="hidden" name="expected_sha256" value="{{ preview.source_sha256 }}">
         <input type="hidden" name="expected_predecessors" value="{{ predecessors_json }}">
