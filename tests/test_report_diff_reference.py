@@ -20,20 +20,15 @@ from corridor.changes import diff_since_last, record_run
 from corridor.exceptions import evaluate_project
 from corridor.fact_decisions import include_structured_cell_fact_by_policy
 from corridor.models import (
-    ActiveExtractionRun,
     Candidate,
     Dependency,
-    Document,
     ExtractedProposal,
     ExtractedProposalFact,
-    ExtractionRun,
-    Fact,
-    FactSource,
     Project,
     ProjectRecordRevision,
     ReportRun,
-    SourceSegment,
 )
+from source_capture_support import Rendition
 from corridor.principals import HumanPrincipal
 from corridor.report_reading import (
     PAYLOAD_SCHEMA_VERSION,
@@ -64,10 +59,11 @@ def corpus(session):
 
 
 class Corpus:
-    def __init__(self, project, document, run, dependencies):
+    def __init__(self, project, rendition, dependencies):
         self.project = project
-        self.document = document
-        self.run = run
+        self.rendition = rendition
+        self.document = rendition.document
+        self.run = rendition.run
         self.dependencies = dependencies
         self._ordinal = 0
 
@@ -80,32 +76,14 @@ def build_corpus(session, *, slug: str, rows: int) -> Corpus:
     project = Project(slug=slug, name=slug, is_synthetic=True)
     session.add(project)
     session.flush()
-    document = Document(
-        project_id=project.id,
-        sha256=sha256(slug.encode()).hexdigest(),
-        filename="matrix.xlsx",
-        doc_type="matrix",
-        numbering_scheme="project-unique",
-        pages=1,
-        parse_status="parsed",
-    )
-    session.add(document)
-    session.flush()
-    extraction = ExtractionRun(
-        document_id=document.id,
+    rendition = Rendition(
+        session,
+        project,
+        "matrix.xlsx",
+        document_sha256=sha256(slug.encode()).hexdigest(),
         prompt_version="diff_reference_fixture_v1",
-        outcome="completed",
-        candidate_count=0,
-        page_errors=0,
     )
-    session.add(extraction)
-    session.flush()
-    session.add(
-        ActiveExtractionRun(
-            document_id=document.id, extraction_run_id=extraction.id
-        )
-    )
-    corpus = Corpus(project, document, extraction, [])
+    corpus = Corpus(project, rendition, [])
     for index in range(1, rows + 1):
         corpus.dependencies.append(_row(session, corpus, index))
     return corpus
@@ -162,7 +140,6 @@ def _row(session, corpus, index: int):
         proposal,
         fact_type="need_date",
         printed=dependency.need_date.isoformat(),
-        date_value=dependency.need_date,
     )
     return dependency
 
@@ -174,48 +151,16 @@ def include_cell(
     *,
     fact_type: str,
     printed: str,
-    date_value: date | None = None,
 ):
     """Capture one source cell as a Fact and project it into the record."""
 
     ordinal = corpus.next_ordinal()
     identity = f"{proposal.subject_key}:{fact_type}:{printed}:{ordinal}"
-    segment = SourceSegment(
-        project_id=corpus.project.id,
-        document_id=corpus.document.id,
-        kind="spreadsheet_cell",
-        exact_text=printed,
-        content_sha256=sha256(identity.encode()).hexdigest(),
-        ordinal=ordinal,
-        sheet_name="Utility Conflicts",
-        cell_range=f"D{ordinal}",
-    )
-    session.add(segment)
-    session.flush()
-    fact = Fact(
-        project_id=corpus.project.id,
-        document_id=corpus.document.id,
-        extraction_run_id=corpus.run.id,
+    fact, _segment = corpus.rendition.capture(
         fact_type=fact_type,
-        subject_kind="source_row",
+        value=printed,
         subject_key=proposal.subject_key,
-        text_value=None if date_value else printed,
-        date_value=date_value,
-        transformation="iso_date_cell_v1" if date_value else "trim_cell_text_v1",
-        recorded_by="extractor:diff_reference_fixture_v1",
-        content_sha256=sha256(f"fact:{identity}".encode()).hexdigest(),
-    )
-    session.add(fact)
-    session.flush()
-    session.add(
-        FactSource(
-            project_id=corpus.project.id,
-            document_id=corpus.document.id,
-            fact_id=fact.id,
-            source_segment_id=segment.id,
-            role="value_source",
-            ordinal=1,
-        )
+        cell=f"D{ordinal}",
     )
     session.add(
         ExtractedProposalFact(
@@ -656,7 +601,6 @@ def test_the_diff_is_unchanged_by_reading_the_reference(
         proposal,
         fact_type="need_date",
         printed="2027-06-01",
-        date_value=date(2027, 6, 1),
     )
     corpus.dependencies.append(_row(session, corpus, 4))
 
