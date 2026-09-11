@@ -284,11 +284,13 @@ from corridor.render_profiles import render_path_for_page
 from corridor.storage import staged_file
 from corridor.locator_validation import (
     evidence_link_locator_validation_status as locator_validation_status,
+    evidence_link_verified,
 )
 from corridor.presentation import (
     attention_reason_sentence,
     authority_gap_label,
     documentation_review_label,
+    documentation_state_label,
     field_label,
     input_reference_label,
     label,
@@ -496,14 +498,18 @@ TEMPLATES.env.globals.update(
     label=label,
     field_label=field_label,
     documentation_review_label=documentation_review_label,
+    documentation_state_label=documentation_state_label,
     input_reference_label=input_reference_label,
     provenance_label=provenance_label,
     resolution_strategy_label=resolution_strategy_label,
     statement_type_label=statement_type_label,
-    # The Source Passage Check, as its own two steps: the mechanical status of
-    # one locator, then the customer word for that state (ADR-0082). A screen
-    # never reads the retired `verified` flag itself.
+    # The Source Passage Check, as its own three steps: the mechanical status
+    # of one locator, whether that status is the passed one, then the customer
+    # word for the state (ADR-0082). A screen never reads the retired
+    # `verified` column itself, and never re-derives the passed predicate as
+    # `== 'valid'`: `locator_validation` is the one place that spells it.
     locator_validation_status=locator_validation_status,
+    evidence_link_verified=evidence_link_verified,
     source_passage_check_label=source_passage_check_label,
     # Whether a Constraint reading's field is a value at all, so a screen can
     # print the reading's stated reason instead of an em dash that reads as an

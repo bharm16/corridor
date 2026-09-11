@@ -56,6 +56,7 @@ from corridor.supersession import SupersessionDeclaration, register_supersession
 from corridor.supersession_review import build_reviewer_worklist
 from corridor.web.app import app, get_human_principal, get_session
 from corridor.web.queue import build_view, next_candidate, pending_counts
+from corridor.web.ui_primitives import MARKS
 from corridor.work_decisions import (
     FOLLOW_UP_NEXT_ACTION_CHOICES,
     current_internal_owner_decision,
@@ -2466,6 +2467,19 @@ def test_a_constraint_page_names_the_source_passage_check_and_its_state(
     assert "Source passage check" in page.text
     assert ">Found at cited location</span>" in page.text
     assert ">Not found at cited location</span>" in page.text
+    # The state's tone follows the check's own predicate. The page used to
+    # re-derive it as `== 'valid'` beside every other spelling of the same
+    # question; `locator_validation.evidence_link_verified` is the one place
+    # that says which status passed, and nothing pinned which tone it chose.
+    settled, refused = MARKS["settled"], MARKS["refused"]
+    assert (
+        f'state-settled"><span class="mark" aria-hidden="true">{settled} </span>'
+        "Found at cited location" in page.text
+    )
+    assert (
+        f'state-refused"><span class="mark" aria-hidden="true">{refused} </span>'
+        "Not found at cited location" in page.text
+    )
     # The retired word is gone from the page, and so are the yes/no cells
     # that used to stand in for the check's state.
     assert "unverified" not in page.text

@@ -1925,6 +1925,62 @@ def test_every_declared_state_class_is_defined_by_the_primitives():
     )
 
     assert STATE_CLASSES <= defined
+
+
+# --- A template renders customer words; it never mints them -------------------
+#
+# `ui_primitives.py:19-20` states the rule for the Python half of the screen
+# vocabulary: words come from `corridor.presentation`, "which holds the adopted
+# customer vocabulary. This module never coins a domain term." The Jinja half
+# had no such guard, and `dependency.html` minted six sentences — a
+# documentation-state pair and one next step for each routed support-update
+# destination — that appeared nowhere in `src/` and that nothing but four
+# full-stack HTTP assertions pinned. A word a customer reads needs an owner:
+# that is where terminology review looks, and it is what a test can assert
+# without a browser.
+#
+# The rule is mechanical. A `{% set %}` binds names, values and identifiers; a
+# string literal with whitespace inside it is prose, and prose a customer reads
+# comes from a vocabulary function the template calls. It is deliberately
+# narrower than "no sentence anywhere in a template": a screen's own static
+# markup is where its words belong. The `{% set %}` is where a sentence gets
+# *chosen* — branched on record state — and that choice belongs to the module
+# that owns the state, not to the screen that shows it.
+
+_TEMPLATE_PROSE = re.compile(r"\S\s+\S")
+
+
+def _minted_sentences(path: Path) -> list[str]:
+    """Every prose literal a `{% set %}` in this template composes for itself."""
+    import jinja2
+
+    tree = jinja2.Environment(autoescape=True).parse(path.read_text(encoding="utf-8"))
+    minted: list[str] = []
+    for assignment in tree.find_all((jinja2.nodes.Assign, jinja2.nodes.AssignBlock)):
+        for node in assignment.find_all(
+            (jinja2.nodes.Const, jinja2.nodes.TemplateData)
+        ):
+            words = node.value if isinstance(node, jinja2.nodes.Const) else node.data
+            if isinstance(words, str) and _TEMPLATE_PROSE.search(words):
+                minted.append(words.strip())
+    return minted
+
+
+def test_no_template_mints_a_customer_sentence_in_a_set():
+    """A screen chooses which adopted word to render, never which one to write."""
+    offenders = {
+        path.name: sorted(set(minted))
+        for path in sorted(TEMPLATE_ROOT.glob("*.html"))
+        if (minted := _minted_sentences(path))
+    }
+
+    assert offenders == {}, (
+        f"{offenders}: a template composes a customer sentence in a set tag "
+        "instead of calling the module that owns that vocabulary. Move the "
+        "words beside their meaning — `corridor.presentation` for an adopted "
+        "label, the reader that owns the state for a sentence about it — and "
+        "render the value"
+    )
 # The families ADR-0081 converges on, and the constraint in each that makes a
 # duplicate unrepresentable (#457).  A dedup identity that lives in a writer —
 # a ``SECURITY DEFINER`` command's body, or the Python calling it — holds only

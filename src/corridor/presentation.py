@@ -134,6 +134,33 @@ def documentation_review_label(sufficient: bool) -> str:
     return "Documents marked sufficient" if sufficient else "Not confirmed"
 
 
+def documentation_state_label(is_ready: bool, *, uses_standard_checklist: bool) -> str:
+    """Name the documentation state one Constraint's screen reports.
+
+    Two different facts, not two spellings of one.  A Constraint on the
+    standard checklist reports whether the exact current Project Record fills
+    its required documentation fields, which ``documentation_checklist``
+    derives and which judges nothing about the documents themselves.  A
+    Constraint still carrying the retained legacy sufficiency mark reports
+    that marker instead, in ``documentation_review_label``'s words.  Neither
+    is a Documentation Review: that is a named person's judgment that the
+    current passages satisfy a stated requirement.
+
+    The standard-checklist words were minted inside ``dependency.html`` and
+    existed nowhere else, so one Project Record question was answered by an
+    owned label on one path and a Jinja literal on the other.  They are moved
+    here unchanged; adopting different wording is a terminology decision
+    (``docs/agents/domain.md``), not a relocation.
+    """
+    if not uses_standard_checklist:
+        return documentation_review_label(is_ready)
+    return (
+        "Documentation fields complete"
+        if is_ready
+        else "Documentation fields not complete"
+    )
+
+
 def resolution_strategy_label(strategy: str) -> str:
     """Explain a known method enum without rewriting a source field value."""
     return {
