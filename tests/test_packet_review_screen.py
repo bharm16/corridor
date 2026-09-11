@@ -26,7 +26,14 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from corridor.analytics import EventFamily, capture_events
-from corridor.models import DeltaDisposition, DeltaFollowUpPlan, Project
+from corridor.models import (
+    DeltaDisposition,
+    DeltaFollowUpPlan,
+    DeltaReviewPacketReceipt,
+    Project,
+    ProjectRecordRevision,
+)
+from corridor.native_follow_up_reading import undone_follow_up_plan_ids
 from corridor.packet_review import (
     CUSTOMER_WORKBOOK,
     read_review_items,
@@ -36,17 +43,23 @@ from corridor.review_packet_reading import (
     HELD_OUT_OWNER_MISMATCH,
     SOURCE_REVISION,
 )
-from corridor.review_packets import NEEDS_COORDINATION
+from corridor.review_packets import (
+    NEEDS_COORDINATION,
+    packet_children,
+    packet_reversal,
+)
 from corridor.web.app import (
     app,
     get_human_principal,
     get_review_clock,
     get_session,
 )
+from corridor.web.packet_receipt import read_packet_receipt
 from corridor.web.ui_primitives import FOCUS_IDS
 
 from access_support import seed_membership
 from harness_support import move_accepted_value
+from record_counts import nothing_written
 from packet_review_support import (
     Rendition,
     accept_baseline_fact,
@@ -371,21 +384,46 @@ def test_every_child_is_a_labelled_native_checkbox(
     assert "<fieldset" in body and "<legend>" in body
 
 
-def test_the_primary_actions_name_their_scope_and_the_selected_count(
+def test_the_primary_actions_name_their_scope_and_carry_no_count(
     session: Session, project: Project, client
 ):
-    """Criterion 7, including the secondary dated Defer."""
+    """Criterion 7, including the secondary dated Defer.
+
+    The count these actions used to print was the server's reading of the
+    selection at the moment the page was sent, and a checkbox ticked afterwards
+    did not change it (#834). The scope is still named; the number is gone, and
+    no digit of any kind reaches an action.
+    """
 
     _revision(session, project, changes=3)
     body = _open(client, project, _batch_key(session, project)).text
 
-    assert "Apply 3 selected changes" in body
-    assert "Keep current for 3 selected changes" in body
-    assert "Defer 3 selected changes until the date above" in body
+    assert "Apply the selected changes" in body
+    assert "Keep current for the selected changes" in body
+    assert "Defer the selected changes until the date above" in body
+    assert not re.search(r"(Apply|Keep current for|Defer)\s+\d", body)
     assert "Return date for Defer" in body
     assert "Leaving an item records nothing." in body
     # ADR-0085 rejected a second customer word for the same act.
     assert "Snooze" not in body
+
+
+def test_the_selection_and_the_held_out_state_stay_readable_on_each_change(
+    session: Session, project: Project, client
+):
+    """Removing the count removes no information: the checkbox carried it.
+
+    Each change states whether it is selected and, where it cannot join the
+    batch, why -- through the shared child-selection primitive, in text a
+    screen reader announces beside the control it belongs to.
+    """
+
+    _revision(session, project, changes=2, exceptions=True)
+    body = _open(client, project, _batch_key(session, project)).text
+
+    assert body.count(" checked>") == 2
+    assert body.count(" disabled ") == 2
+    assert body.count("Held out of this batch:") == 2
 
 
 def test_the_before_and_after_values_read_in_order_with_their_source(
@@ -633,7 +671,7 @@ def test_a_burst_of_forty_changes_is_one_bounded_item_on_the_screen(
     assert body.count('<form method="post"') == 1
     assert body.count('type="checkbox"') == 42  # forty selectable, two held out
     assert body.count("disabled") == 2
-    assert "Apply 40 selected changes" in body
+    assert "Apply the selected changes" in body
     assert "Held out of this batch</dt><dd>2" in body.replace("\n", "").replace(
         "  ", ""
     )
@@ -794,3 +832,419 @@ def test_this_screens_left_the_reading_refusal_is_the_shared_sentence(
     assert response.status_code == 409
     assert shared["heading"] in response.text
     assert shared["detail"] in response.text
+
+
+# --- One recorded decision, and Undo (#834) --------------------------------
+#
+# The saved result used to name a count and a Project Record revision with no
+# link to anything, and a packet of dated Defers writes no revision at all, so
+# for that act there was nothing a revision link could have pointed at. What
+# every act has is its own receipt, so that is what the saved result links to
+# and what carries Undo.
+#
+# Nothing here re-proves `reverse_review_packet`. `tests/test_review_packets.py`
+# owns the compensation itself -- the restored predecessor decisions, the
+# refusal when a later act depends on a result, the deferral-only act that
+# writes no revision -- and `tests/test_native_follow_up_reading.py` owns the
+# Follow-up Plan an undone act stops asking for. These prove the route reaches
+# those behaviours and renders what they answer.
+
+_RECEIPT_LINK = re.compile(r'href="(/review/[^"]+/packet/(\d+))"')
+
+
+def _receipt_link(response) -> tuple[str, int]:
+    match = _RECEIPT_LINK.search(response.text)
+    assert match is not None, response.text[:2000]
+    return match.group(1), int(match.group(2))
+
+
+def test_every_outcome_a_child_can_carry_has_words_on_the_receipt():
+    """A new decision cannot reach this screen without words for it.
+
+    The receipt reads the outcome each child row recorded, so an outcome the
+    table does not know would be a page that fails while rendering. The keys
+    are #526's own, and this is the check that the two stay the same set.
+    """
+
+    from corridor.models import PACKET_CHILD_OUTCOMES
+    from corridor.web.packet_receipt import OUTCOME_RECORDED
+
+    assert set(OUTCOME_RECORDED) == set(PACKET_CHILD_OUTCOMES)
+
+
+def test_the_saved_result_links_to_the_act_and_lists_every_childs_outcome(
+    session: Session, project: Project, client
+):
+    """Criterion 1: the exact act, and what each change in it became."""
+
+    _revision(session, project, changes=3)
+    key = _batch_key(session, project)
+    ids = _delta_ids(session, project)
+
+    saved = client.post(
+        f"/review/{project.slug}",
+        data={
+            "item_key": key,
+            "outcome": "apply",
+            "child": [str(value) for value in ids],
+        },
+    )
+    url, receipt_id = _receipt_link(saved)
+    receipt = client.get(url)
+
+    assert saved.status_code == 200
+    assert receipt.status_code == 200
+    assert receipt.text.count("Applied this source") == 3
+    # The act itself, not a search of record history: every child it decided is
+    # here, named by the Utility Conflict and field it moved.
+    assert receipt.text.count('<th scope="row">') == 3
+    recorded = session.get(DeltaReviewPacketReceipt, receipt_id)
+    assert recorded.project_id == project.id
+    assert str(recorded.revision_id) in receipt.text
+
+
+def test_a_defer_only_save_links_to_its_receipt_and_claims_no_revision(
+    session: Session, project: Project, client
+):
+    """Criterion 1: ADR-0084's scheduling act has a receipt and no revision."""
+
+    _revision(session, project, changes=2)
+    key = _batch_key(session, project)
+    ids = _delta_ids(session, project)
+
+    saved = client.post(
+        f"/review/{project.slug}",
+        data={
+            "item_key": key,
+            "outcome": "defer",
+            "child": [str(value) for value in ids],
+            "defer_until": "2026-10-01",
+        },
+    )
+    url, receipt_id = _receipt_link(saved)
+    receipt = client.get(url)
+
+    assert receipt.status_code == 200
+    assert receipt.text.count("Deferred until a date") == 2
+    assert "it recorded no Project Record revision," in receipt.text
+    assert "none written" in receipt.text
+    assert session.get(DeltaReviewPacketReceipt, receipt_id).revision_id is None
+
+
+def test_a_receipt_is_read_inside_its_own_project_or_not_at_all(
+    session: Session, project: Project, client
+):
+    """Project scope is part of the lookup, so another project's act is absent.
+
+    The reader is exercised directly for the cross-project half: one
+    transaction declares one project-authorization scope (#657, #662), so a
+    test cannot make two projects' requests inside one, and the route half is
+    proved by the receipt this project genuinely does not hold.
+    """
+
+    _revision(session, project, changes=1)
+    key = _batch_key(session, project)
+    ids = _delta_ids(session, project)
+    saved = client.post(
+        f"/review/{project.slug}",
+        data={"item_key": key, "outcome": "apply", "child": [str(ids[0])]},
+    )
+    _, receipt_id = _receipt_link(saved)
+    other = Project(
+        slug=f"review-elsewhere-{uuid4().hex[:8]}", name="Elsewhere", is_synthetic=True
+    )
+    session.add(other)
+    session.flush()
+
+    assert read_packet_receipt(
+        session, project_id=other.id, receipt_id=receipt_id
+    ) is None
+    assert read_packet_receipt(
+        session, project_id=project.id, receipt_id=receipt_id
+    ) is not None
+    absent = f"/review/{project.slug}/packet/{receipt_id + 10 ** 6}"
+    assert client.get(absent).status_code == 404
+    assert client.post(f"{absent}/undo").status_code == 404
+
+
+def test_the_undo_form_carries_the_request_forgery_token(
+    session: Session, project: Project, client
+):
+    """Criterion 4: the one state-changing form this screen adds echoes it."""
+
+    _revision(session, project, changes=1)
+    key = _batch_key(session, project)
+    ids = _delta_ids(session, project)
+    saved = client.post(
+        f"/review/{project.slug}",
+        data={"item_key": key, "outcome": "apply", "child": [str(ids[0])]},
+    )
+    url, receipt_id = _receipt_link(saved)
+
+    body = client.get(url).text
+
+    assert f'action="/review/{project.slug}/packet/{receipt_id}/undo"' in body
+    assert body.count('name="csrf_token"') == 1
+
+
+def test_reading_one_act_moves_no_focus_and_answering_undo_announces_one(
+    session: Session, project: Project, client
+):
+    """The accessibility checklist, items 2 and 4, for this screen.
+
+    Reading a recorded act performs no act, so nothing on it claims the
+    keyboard; the response to Undo has an outcome and announces exactly one.
+    """
+
+    _revision(session, project, changes=2)
+    key = _batch_key(session, project)
+    ids = _delta_ids(session, project)
+    saved = client.post(
+        f"/review/{project.slug}",
+        data={
+            "item_key": key,
+            "outcome": "apply",
+            "child": [str(value) for value in ids],
+        },
+    )
+    url, _ = _receipt_link(saved)
+
+    reading = client.get(url).text
+    undone = client.post(f"{url}/undo").text
+
+    assert reading.count("autofocus") == 0
+    assert reading.count("<h1") == 1
+    assert reading.count("<main") == 1
+    assert "<h3" not in reading
+    assert f'id="{FOCUS_IDS["item"]}" tabindex="-1"' in reading
+    assert undone.count("autofocus") == 1
+    assert f'id="{FOCUS_IDS["outcome"]}"' in undone
+    assert 'role="status"' in undone
+
+
+def test_undo_compensates_the_decision_and_deletes_nothing(
+    session: Session, project: Project, client
+):
+    """Criterion 2: the route reaches #526's reversal command, and appends."""
+
+    _revision(session, project, changes=2)
+    key = _batch_key(session, project)
+    ids = _delta_ids(session, project)
+    saved = client.post(
+        f"/review/{project.slug}",
+        data={
+            "item_key": key,
+            "outcome": "apply",
+            "child": [str(value) for value in ids],
+        },
+    )
+    url, receipt_id = _receipt_link(saved)
+    decided_revision = session.get(DeltaReviewPacketReceipt, receipt_id).revision_id
+
+    response = client.post(f"{url}/undo")
+
+    assert response.status_code == 200
+    assert "This decision was undone" in response.text
+    reversal = packet_reversal(session, receipt_id)
+    assert reversal is not None
+    assert reversal.reversed_by_principal == COORDINATOR.subject
+    compensating = session.get(ProjectRecordRevision, reversal.revision_id)
+    assert compensating.command_type == "reverse_review_packet"
+    assert str(reversal.revision_id) in response.text
+    # Nothing about the original act was removed or rewritten.
+    assert session.get(DeltaReviewPacketReceipt, receipt_id).revision_id == (
+        decided_revision
+    )
+    assert [child.delta_id for child in packet_children(session, receipt_id)] == ids
+    # And the page now says so instead of offering the button again.
+    assert "was already undone by" in client.get(url).text
+    assert "csrf_token" not in client.get(url).text
+
+
+def test_undoing_a_defer_only_act_returns_the_changes_to_immediate_work(
+    session: Session, project: Project, client
+):
+    """Criterion 2: compensating scheduling writes no revision and says so.
+
+    A reversed scheduling receipt holds nothing out any more
+    (`review_packet_reading.live_deferrals_by_project`), so the changes this
+    act put away are offered again -- and the response claims no revision,
+    because ADR-0084's act wrote none to compensate for.
+    """
+
+    _revision(session, project, changes=2)
+    key = _batch_key(session, project)
+    ids = _delta_ids(session, project)
+    saved = client.post(
+        f"/review/{project.slug}",
+        data={
+            "item_key": key,
+            "outcome": "defer",
+            "child": [str(value) for value in ids],
+            "defer_until": "2026-10-01",
+        },
+    )
+    url, receipt_id = _receipt_link(saved)
+    assert read_review_items(session, project_id=project.id, as_of=NOW).items == ()
+
+    response = client.post(f"{url}/undo")
+    session.expire_all()
+
+    assert response.status_code == 200
+    assert "back in immediate work" in response.text
+    assert "Project record revision" not in response.text
+    assert packet_reversal(session, receipt_id).revision_id is None
+    returned = read_review_items(session, project_id=project.id, as_of=NOW)
+    assert sorted(returned.reading.actionable_delta_ids) == sorted(ids)
+
+
+def test_undo_surfaces_the_commands_own_refusal_when_a_later_act_depends(
+    session: Session, project: Project, client
+):
+    """Criterion 2: the stale and successor rules stay PostgreSQL's.
+
+    The screen neither anticipates the refusal nor rewrites its words: it asks
+    the command, and prints the sentence the command raised with the machine
+    token that routes it taken off the front.
+    """
+
+    built = _revision(session, project, changes=1)
+    key = _batch_key(session, project)
+    ids = _delta_ids(session, project)
+    saved = client.post(
+        f"/review/{project.slug}",
+        data={"item_key": key, "outcome": "apply", "child": [str(ids[0])]},
+    )
+    url, receipt_id = _receipt_link(saved)
+    moved, _ = built.adopted.capture(
+        fact_type="station_from", value="9999+00", subject_key=subject(1)
+    )
+    move_accepted_value(session, project, moved)
+
+    refused = client.post(f"{url}/undo")
+
+    assert refused.status_code == 409
+    assert 'role="alert"' in refused.text
+    assert refused.text.count("autofocus") == 1
+    assert (
+        "a later decision already superseded a value this packet made effective"
+        in refused.text
+    )
+    # The token is how the two halves of the rule agree, not a sentence.
+    assert "review_packet:" not in refused.text
+    assert packet_reversal(session, receipt_id) is None
+
+
+def test_undo_reaches_no_record_beyond_the_compensation_it_appends(
+    session: Session, project: Project, client
+):
+    """Criterion 2: an approved issue package is not something Undo can alter.
+
+    ADR-0086 binds an approved package to the accepted revision it released,
+    and that binding is a row Undo never reaches: the compensation appends one
+    new revision and its decisions beside the released one, so the package goes
+    on saying exactly what it said. This is the whole reach of the act, read
+    over every table the project graph holds rather than the handful a test
+    would otherwise pick.
+    """
+
+    _revision(session, project, changes=2)
+    key = _batch_key(session, project)
+    ids = _delta_ids(session, project)
+    saved = client.post(
+        f"/review/{project.slug}",
+        data={
+            "item_key": key,
+            "outcome": "apply",
+            "child": [str(value) for value in ids],
+        },
+    )
+    url, receipt_id = _receipt_link(saved)
+    released = session.get(DeltaReviewPacketReceipt, receipt_id).revision_id
+    as_released = session.get(ProjectRecordRevision, released).command_type
+
+    with nothing_written(
+        session,
+        project.id,
+        apart_from={
+            "project_record_revisions",
+            "fact_decisions",
+            "delta_review_packet_reversals",
+        },
+    ):
+        response = client.post(f"{url}/undo")
+
+    assert response.status_code == 200
+    # The revision an approved package binds is still there, saying what it
+    # said; the compensation is a new one appended beside it.
+    assert session.get(ProjectRecordRevision, released).command_type == as_released
+    assert packet_reversal(session, receipt_id).revision_id != released
+
+
+def test_undo_reaches_the_follow_up_plan_compensation_the_command_proves(
+    session: Session, project: Project, client
+):
+    """Criterion 2: a Needs coordination answer is compensated through the route.
+
+    What an undone plan means is decided in one place and proved there
+    (`native_follow_up_reading.undone_follow_up_plan_ids`,
+    `tests/test_native_follow_up_reading.py`). This proves the route arrives at
+    it, and that the plan itself is still in history rather than deleted.
+    """
+
+    _revision(session, project, changes=3, exceptions=True)
+    reading = read_review_items(session, project_id=project.id, as_of=NOW)
+    (item,) = [
+        row for row in reading.items if row.held_out_reason == HELD_OUT_OWNER_MISMATCH
+    ]
+    (child,) = item.children
+    saved = client.post(
+        f"/review/{project.slug}/answers",
+        data={
+            "item_key": item.item_key,
+            "answer_delta": str(child.delta_id),
+            "answer_outcome": NEEDS_COORDINATION,
+            "answer_source": "",
+            "answer_question": "Does this correct the name, or did ownership move?",
+            "answer_person": "",
+            "answer_organization": "AT&T Texas",
+            "answer_return": "2026-09-24",
+        },
+    )
+    url, receipt_id = _receipt_link(saved)
+    (plan,) = session.scalars(
+        select(DeltaFollowUpPlan).where(DeltaFollowUpPlan.project_id == project.id)
+    ).all()
+    assert "Needs coordination" in client.get(url).text
+
+    response = client.post(f"{url}/undo")
+    session.expire_all()
+
+    assert response.status_code == 200
+    assert session.scalars(undone_follow_up_plan_ids((project.id,))).all() == [plan.id]
+    # Compensated, not deleted: the plan and its child are still recorded.
+    assert session.get(DeltaFollowUpPlan, plan.id) is not None
+    assert packet_children(session, receipt_id)[0].follow_up_plan_id == plan.id
+
+
+def test_a_member_without_the_coordination_designation_cannot_undo(
+    session: Session, project: Project, client
+):
+    """Reading one act is the plain read boundary; compensating it is not."""
+
+    _revision(session, project, changes=1)
+    key = _batch_key(session, project)
+    ids = _delta_ids(session, project)
+    saved = client.post(
+        f"/review/{project.slug}",
+        data={"item_key": key, "outcome": "apply", "child": [str(ids[0])]},
+    )
+    url, receipt_id = _receipt_link(saved)
+    seed_membership(session, project, COORDINATOR, designations=())
+
+    reading = client.get(url)
+    refused = client.post(f"{url}/undo")
+
+    assert reading.status_code == 200
+    assert refused.status_code == 403
+    assert packet_reversal(session, receipt_id) is None

@@ -182,8 +182,12 @@
   Child selection, complete from the keyboard. Every child is a native
   checkbox inside its own label, so Tab reaches it and Space toggles it; a
   child that cannot join the batch is disabled and says why in text rather
-  than being greyed out and left unexplained. The counts are rendered by the
-  server, so no script is needed to read them.
+  than being greyed out and left unexplained.
+
+  Each checkbox is where the selection is readable, and it is the only place.
+  A server-rendered count of the selection was tried and retired (#834): it
+  was correct when the page was sent and wrong the moment a box was ticked,
+  and the answer to that is no number rather than script to keep one current.
 #}
 {% macro child_selection(name, legend, children, described_by="") %}
 <fieldset class="child-selection"{% if described_by %} aria-describedby="{{ described_by }}"{% endif %}>

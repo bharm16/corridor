@@ -305,7 +305,8 @@
           {%- endif %}
           {%- for packet in delta.packets %}
           <p class="quiet">
-            Answered {{ packet.outcome }} in packet act {{ packet.receipt_id }}
+            Answered {{ packet.outcome }} in
+            <a href="/review/{{ project.slug }}/packet/{{ packet.receipt_id }}">packet act {{ packet.receipt_id }}</a>
             by {{ packet.decided_by_principal }} on {{ packet.decided_at }}
             {%- if packet.undone %}, and that act was undone on {{ packet.reversed_at }}{% endif %}.
           </p>

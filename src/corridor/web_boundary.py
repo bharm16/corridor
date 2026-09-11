@@ -450,6 +450,43 @@ PILOT_ROUTES: dict[tuple[str, str], PilotRoute] = {
             }
         ),
     ),
+    ("GET", "/review/{slug}/packet/{receipt_id}"): PilotRoute(
+        why=(
+            "#834 read back one recorded Review Packet act and what each of "
+            "its children became"
+        ),
+        relations=frozenset(
+            {
+                "delta_review_packet_children",
+                "delta_review_packet_receipts",
+                "delta_review_packet_reversals",
+                "project_baseline_source_rows",
+                "project_roster_entries",
+                "projects",
+                "proposed_deltas",
+            }
+        ),
+    ),
+    ("POST", "/review/{slug}/packet/{receipt_id}/undo"): PilotRoute(
+        why=(
+            "#834 compensate for one recorded Review Packet act through #526's "
+            "own reversal command. The compensating revision and its decisions "
+            "are written by `reverse_review_packet` as its own owner (#492), "
+            "so the human web capability reaches the same relations here as "
+            "the reading beside it and no revision relation of its own"
+        ),
+        relations=frozenset(
+            {
+                "delta_review_packet_children",
+                "delta_review_packet_receipts",
+                "delta_review_packet_reversals",
+                "project_baseline_source_rows",
+                "project_roster_entries",
+                "projects",
+                "proposed_deltas",
+            }
+        ),
+    ),
     ("POST", "/review/{slug}/answers"): PilotRoute(
         why=(
             "#526 record the Review Packet answers"

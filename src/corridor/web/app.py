@@ -441,9 +441,12 @@ from corridor.review_packets import (
     EDIT_AND_APPLY,
     KEEP_CURRENT,
     NEEDS_COORDINATION,
+    REVERSED,
     resolve_review_packet,
+    reverse_review_packet,
 )
 from corridor.work_list import build_work_list
+from corridor.web.packet_receipt import read_packet_receipt, refusal_words
 from corridor.web.statement_forms import (
     optional_form_date,
     required_positive_form_id,
@@ -4883,6 +4886,10 @@ def save_source_changes(
                     "and the accepted record is unchanged."
                 )
             ),
+            # The act, not only the revision: a packet of dated Defers records
+            # no revision at all (ADR-0084), and the receipt is what every save
+            # has (#834).
+            "receipt_id": result.receipt_id,
         },
         status_code=200,
     )
@@ -5066,6 +5073,10 @@ def save_focused_answers(
                     "and the accepted record is unchanged."
                 )
             ),
+            # The act, not only the revision: a packet of dated Defers records
+            # no revision at all (ADR-0084), and the receipt is what every save
+            # has (#834).
+            "receipt_id": result.receipt_id,
         },
         status_code=200,
     )
@@ -5122,6 +5133,152 @@ def _render_review_response(request, session, context, *, principal, status_code
         emit_packet_opening(context["reading"], context["opened"],
                            principal_subject=principal.subject, binding=binding)
     return response
+
+
+# --- One recorded decision, and Undo (#834) --------------------------------
+#
+# The saved result used to name a count and a Project Record revision with no
+# link, and a packet of dated Defers writes no revision at all (ADR-0084), so
+# there was nothing to link to at all for that act. The receipt is the one
+# thing every act has, so the saved result links here and every decided
+# child's outcome is read from the act itself rather than searched for in
+# record history.
+#
+# Reading the act is the project's plain read boundary, exactly as the review
+# reading is. Undo is a Project Record act, so it carries `access.COORDINATION`
+# like every other write on this screen, and it decides nothing itself:
+# `reverse_review_packet` owns whether an act may be compensated, and a refusal
+# is rendered in that command's own words.
+
+
+def _packet_receipt_facts(receipt) -> tuple[tuple[str, object], ...]:
+    """The act's own terms and values, as a screen reader reads them."""
+
+    return (
+        ("Decided by", receipt.decided_by),
+        ("Decided on", receipt.decided_at),
+        ("Changes decided", len(receipt.children)),
+        (
+            "Project Record revision",
+            receipt.revision_id if receipt.revision_id is not None else "none written",
+        ),
+    )
+
+
+def _packet_receipt_response(
+    request: Request,
+    project: Project,
+    receipt,
+    *,
+    undone: dict | None = None,
+    refusal: dict | None = None,
+    status_code: int = 200,
+):
+    return TEMPLATES.TemplateResponse(
+        request,
+        "packet_receipt.html",
+        {
+            "project": project,
+            "receipt": receipt,
+            "receipt_facts": _packet_receipt_facts(receipt),
+            "undone": undone,
+            "refusal": refusal,
+            # Reading one recorded act performs no act, so nothing on it takes
+            # focus: moving focus on load carries a screen-reader user past the
+            # heading that says what they are looking at
+            # (`docs/accessibility-acceptance-checklist.md`, item 4). A
+            # response to Undo has an outcome to announce and announces it.
+            "focus": (
+                ui_primitives.focus_target(
+                    refused=refusal is not None, saved=undone is not None
+                )
+                if undone is not None or refusal is not None
+                else ""
+            ),
+        },
+        status_code=status_code,
+    )
+
+
+def _packet_receipt(session: Session, project: Project, receipt_id: int):
+    receipt = read_packet_receipt(
+        session, project_id=project.id, receipt_id=receipt_id
+    )
+    if receipt is None:
+        raise HTTPException(404, "no such recorded decision for this project")
+    return receipt
+
+
+@app.get("/review/{slug}/packet/{receipt_id}", response_class=HTMLResponse)
+def packet_receipt_screen(
+    request: Request,
+    slug: str,
+    receipt_id: int,
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """One recorded decision and what each change it decided became."""
+
+    project = _project(session, slug, principal)
+    return _packet_receipt_response(
+        request, project, _packet_receipt(session, project, receipt_id)
+    )
+
+
+@app.post("/review/{slug}/packet/{receipt_id}/undo", response_class=HTMLResponse)
+def undo_packet_decision(
+    request: Request,
+    slug: str,
+    receipt_id: int,
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+    clock=Depends(get_review_clock),
+):
+    """Compensate for exactly the decision this receipt records (#526, ADR-0035)."""
+
+    project = _project(session, slug, principal, designation=access.COORDINATION)
+    _packet_receipt(session, project, receipt_id)
+    result = reverse_review_packet(
+        session,
+        project_id=project.id,
+        receipt_id=receipt_id,
+        principal=principal,
+        reversed_at=clock(),
+        # The act's own identity is the key: one receipt can be compensated at
+        # most once, so a resubmitted form returns the compensation that was
+        # already recorded rather than refusing a second one.
+        idempotency_key=f"undo:packet:{receipt_id}",
+    )
+    if result.status != REVERSED:
+        return _packet_receipt_response(
+            request,
+            project,
+            _packet_receipt(session, project, receipt_id),
+            refusal={
+                "heading": "This decision was not undone",
+                "detail": refusal_words(result.refusal),
+            },
+            status_code=409,
+        )
+    session.commit()
+    return _packet_receipt_response(
+        request,
+        project,
+        _packet_receipt(session, project, receipt_id),
+        undone={
+            "heading": "This decision was undone",
+            "detail": (
+                "Project record revision "
+                f"{result.revision_id} records the compensation; the original "
+                "decision and everything it recorded stay in history."
+                if result.revision_id is not None
+                else (
+                    "The deferred changes are back in immediate work; nothing "
+                    "was deleted and the accepted record is unchanged."
+                )
+            ),
+        },
+    )
 
 
 @app.get("/queue/{slug}", response_class=HTMLResponse)
