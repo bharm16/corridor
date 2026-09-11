@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import json
 from types import SimpleNamespace
 
 import pytest
@@ -13,6 +12,7 @@ from corridor.automatic_carry_forward import (
     AutomaticCarryForwardResult,
 )
 from corridor.automatic_carry_forward_cli import main
+from cli_support import json_output
 
 
 @dataclass
@@ -59,12 +59,6 @@ def _status():
     )
 
 
-def _json_output(capsys) -> dict:
-    captured = capsys.readouterr()
-    assert captured.err == ""
-    return json.loads(captured.out)
-
-
 def test_help_explains_support_updates_without_changing_the_command_or_opening_db(
     capsys,
 ):
@@ -92,7 +86,7 @@ def test_status_is_stable_read_only_released_policy_json(monkeypatch, capsys):
 
     assert main(["status", "nhhip-3c2"], session_factory=_SessionFactory(session)) == 0
 
-    assert _json_output(capsys) == {
+    assert json_output(capsys) == {
         "abstentions": {
             "count": 3,
             "reason_version": "automatic-carry-forward-abstentions-v1",
@@ -147,7 +141,7 @@ def test_run_reports_receipts_abstentions_and_released_policy(monkeypatch, capsy
 
     assert main(["run", "nhhip-3c2"], session_factory=_SessionFactory(session)) == 0
 
-    output = _json_output(capsys)
+    output = json_output(capsys)
     assert output["carried_receipt_ids"] == [7, 19]
     assert output["released_policy"]["policy_version"] == "automatic-carry-forward-v2"
     assert output["abstentions"]["reasons"] == {"comparison_changed": 1}

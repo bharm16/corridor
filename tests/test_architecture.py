@@ -201,11 +201,6 @@ AWAITING_CALLER = {
         "ADR-0086/ADR-0091 move the customer's Coordination Report to "
         "`issue_rendering.render_weekly_report` (ADR-0081 stage 3)"
     ),
-    "configure_release_preparation": (
-        "due_work.py:788 -- one of fourteen one-line handler configurations, "
-        "the only one with neither a caller nor a test; audit card A7 removes "
-        "it, and this entry is the placeholder until that lane lands"
-    ),
     "due_action_inbox": (
         "notifications.py:1557 -- the recipient's own due-action inbox read, "
         "scoped to one member and one project; the screen that renders it is "

@@ -50,17 +50,10 @@ from corridor.revision_reconciliation_request import (
     revision_reconciliation_pending,
 )
 from corridor.supersession import SupersessionDeclaration, register_supersessions
+from clock_support import ControlledClock
 
 
 REVIEWER = HumanPrincipal("local:revision-reconciler")
-
-
-class ControlledClock:
-    def __init__(self, value: datetime):
-        self.value = value
-
-    def now(self) -> datetime:
-        return self.value
 
 
 CLOCK = ControlledClock(datetime(2026, 8, 29, 9, 0, tzinfo=timezone.utc))

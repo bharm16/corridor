@@ -40,10 +40,7 @@ from corridor.due_work import (
     claim_due_work,
     complete_due_work,
     configure_connector_polling,
-    configure_delta_generation,
-    configure_processing_health,
-    configure_report_preparation,
-    configure_retention_sweep,
+    configure_due_work,
     enqueue_due_work,
     fail_due_work,
     run_due_work_once,
@@ -72,14 +69,7 @@ from corridor.web.app import (
     get_machine_session,
     get_session,
 )
-
-
-class ControlledClock:
-    def __init__(self, value: datetime):
-        self.value = value
-
-    def now(self) -> datetime:
-        return self.value
+from clock_support import ControlledClock
 
 
 @pytest.fixture
@@ -133,7 +123,7 @@ def _project(session, slug_prefix: str) -> Project:
 
 
 def _hourly_schedule(session, project: Project, *, now: datetime) -> DueWorkSchedule:
-    return configure_processing_health(
+    return configure_due_work(
         session,
         ProcessingHealthDeclaration.released_hourly(
             project_id=project.id,
@@ -394,7 +384,7 @@ def _pilot_schedules(session, project, *, now: datetime) -> None:
         ),
         now=now,
     )
-    configure_delta_generation(
+    configure_due_work(
         session,
         DeltaGenerationDeclaration.released_hourly(
             project_id=project.id,
@@ -404,7 +394,7 @@ def _pilot_schedules(session, project, *, now: datetime) -> None:
         ),
         now=now,
     )
-    configure_report_preparation(
+    configure_due_work(
         session,
         ReportPreparationDeclaration.released_weekly(
             project_id=project.id,
@@ -413,7 +403,7 @@ def _pilot_schedules(session, project, *, now: datetime) -> None:
         ),
         now=now,
     )
-    configure_retention_sweep(
+    configure_due_work(
         session,
         RetentionSweepDeclaration.released_weekly(
             project_id=project.id,
@@ -460,7 +450,7 @@ def test_a_pilot_handler_attempt_logs_the_same_structured_line(
     now = datetime(2026, 9, 3, 13, 0, tzinfo=timezone.utc)
     with factory() as setup:
         project = _project(setup, "telemetry-sweep")
-        configure_retention_sweep(
+        configure_due_work(
             setup,
             RetentionSweepDeclaration.released_weekly(
                 project_id=project.id,

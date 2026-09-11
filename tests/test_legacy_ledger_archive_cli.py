@@ -23,6 +23,7 @@ from corridor.models import (
     LegacyLedgerArchive,
     Project,
 )
+from cli_support import json_output
 
 
 class _OpenSession:
@@ -159,12 +160,6 @@ def legacy_project(session):
     )
     session.flush()
     return project
-
-
-def _json_output(capsys) -> dict:
-    captured = capsys.readouterr()
-    assert captured.err == ""
-    return json.loads(captured.out)
 
 
 def test_plan_prints_stable_json_and_does_not_mutate_the_ledger(
@@ -372,7 +367,7 @@ def test_retire_verify_and_export_use_the_sealed_archive(
         ],
         session_factory=factory,
     ) == 0
-    retired = _json_output(capsys)
+    retired = json_output(capsys)
     assert retired == {
         "archive_id": retired["archive_id"],
         "content_sha256": plan.content_sha256,
@@ -391,7 +386,7 @@ def test_retire_verify_and_export_use_the_sealed_archive(
     legacy_project.slug = "archive-cli-renamed-after-retirement"
     session.flush([legacy_project])
     assert main(["verify", str(archive_id)], session_factory=factory) == 0
-    verified = _json_output(capsys)
+    verified = json_output(capsys)
     assert verified == {
         "archive_id": archive_id,
         "content_sha256": plan.content_sha256,
@@ -412,7 +407,7 @@ def test_retire_verify_and_export_use_the_sealed_archive(
     assert main(
         ["export", str(archive_id), str(output)], session_factory=factory
     ) == 0
-    exported = _json_output(capsys)
+    exported = json_output(capsys)
     assert exported == {
         **verified,
         "path": str(output),

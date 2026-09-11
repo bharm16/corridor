@@ -25,7 +25,7 @@ from corridor.due_work import (
     HANDLER_REPORT_PREPARATION,
     DueWorkRefusal,
     ReportPreparationDeclaration,
-    configure_report_preparation,
+    configure_due_work,
     due_work_status,
     enqueue_due_work,
     run_due_work_once,
@@ -49,16 +49,9 @@ from corridor.proposed_deltas import (
 )
 from corridor.support_assessments import FactProposition, record_support_assessment
 from corridor.report_preparation import execute_report_preparation
+from clock_support import ControlledClock
 from harness_support import accepted_revision
 from source_capture_support import Rendition
-
-
-class ControlledClock:
-    def __init__(self, value: datetime):
-        self.value = value
-
-    def now(self) -> datetime:
-        return self.value
 
 
 COORDINATOR = HumanPrincipal("local:coordinator")
@@ -164,7 +157,7 @@ def _seed_project(factory, now, *, with_revision=True):
             if with_revision
             else 0
         )
-        schedule = configure_report_preparation(
+        schedule = configure_due_work(
             setup,
             ReportPreparationDeclaration.released_weekly(
                 project_id=project.id,
@@ -367,8 +360,8 @@ def test_gate7_refuses_an_hourly_change_summary_reading(runtime_database):
             starts_at=now,
         )
         with pytest.raises(DueWorkRefusal, match="weekly UTC latest-only"):
-            configure_report_preparation(setup, replace(base, cadence="hourly"), now=now)
+            configure_due_work(setup, replace(base, cadence="hourly"), now=now)
         with pytest.raises(DueWorkRefusal, match="resource declaration is invalid"):
-            configure_report_preparation(
+            configure_due_work(
                 setup, replace(base, model_token_budget=1), now=now
             )

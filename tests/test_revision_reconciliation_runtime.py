@@ -22,7 +22,7 @@ from corridor.due_work import (
     DueWorkRefusal,
     HANDLER_REVISION_RECONCILIATION,
     RevisionReconciliationDeclaration,
-    configure_revision_reconciliation,
+    configure_due_work,
     due_work_status,
     enqueue_due_work,
     run_due_work_once,
@@ -44,17 +44,10 @@ from corridor.principals import HumanPrincipal
 from corridor.revision_comparison import DEFAULT_MATCHER_VERSION
 from corridor.revision_reconciliation_request import revision_reconciliation_pending
 from corridor.supersession import SupersessionDeclaration, register_supersessions
+from clock_support import ControlledClock
 
 
 REVIEWER = HumanPrincipal("local:revision-runtime")
-
-
-class ControlledClock:
-    def __init__(self, value: datetime):
-        self.value = value
-
-    def now(self) -> datetime:
-        return self.value
 
 
 def _document(session, project, *, registry_id, sha_character, filename, page_text):
@@ -188,7 +181,7 @@ def _seed_committed_transition(factory, now):
             support_rule_identity=POLICY_VERSION,
             starts_at=now.replace(minute=0, second=0, microsecond=0),
         )
-        schedule = configure_revision_reconciliation(setup, declaration, now=now)
+        schedule = configure_due_work(setup, declaration, now=now)
         ids = (project.id, schedule.id)
         setup.commit()
     return ids
@@ -295,12 +288,12 @@ def test_gate7_refuses_a_nonzero_model_budget_without_writing_a_schedule(
         # A deterministic handler authorizes no model spending: any positive
         # budget is not a valid declaration.
         with pytest.raises(DueWorkRefusal, match="resource declaration is invalid"):
-            configure_revision_reconciliation(
+            configure_due_work(
                 setup, replace(base, model_token_budget=1), now=now
             )
         # A malformed matcher identity is refused too.
         with pytest.raises(DueWorkRefusal, match="matcher identity"):
-            configure_revision_reconciliation(
+            configure_due_work(
                 setup, replace(base, matcher_identity="Bad Matcher!"), now=now
             )
         assert setup.scalars(

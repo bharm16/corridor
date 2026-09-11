@@ -23,7 +23,7 @@ from corridor.due_work import (
     HANDLER_PROJECT_PROCESSING,
     HandlerContract,
     ProjectProcessingDeclaration,
-    configure_project_processing,
+    configure_due_work,
     due_work_status,
     enqueue_due_work,
     run_due_work_once,
@@ -40,20 +40,13 @@ from corridor.models import (
 )
 from corridor.pipeline import EXTRACTED_PROPOSALS, ExtractionRoute
 from corridor.project_processing import process_project, summarize_pass
+from clock_support import ControlledClock
 
 PIPELINE = "Tejas Pipeline Co"
 PROMPT_VERSION = "matrix_v1"
 SCHEMA_VERSION = "matrix_candidate_shape_v1"
 MODEL = "gpt-test"
 EXTRACTOR_IDENTITY = "deployed-matrix-v1"
-
-
-class ControlledClock:
-    def __init__(self, value: datetime):
-        self.value = value
-
-    def now(self) -> datetime:
-        return self.value
 
 
 class SteppingClock:
@@ -195,7 +188,7 @@ def _project_with_matrix(factory, now, filename="ucm.pdf", **declaration_overrid
         )
         if declaration_overrides:
             declaration = replace(declaration, **declaration_overrides)
-        schedule = configure_project_processing(setup, declaration, now=now)
+        schedule = configure_due_work(setup, declaration, now=now)
         ids = (project.id, schedule.id)
         setup.commit()
     return ids
@@ -314,17 +307,17 @@ def test_gate7_refuses_a_silent_zero_budget_without_writing_a_schedule(
         )
         # A silent zero model budget is not a valid production declaration.
         with pytest.raises(DueWorkRefusal, match="resource declaration is invalid"):
-            configure_project_processing(
+            configure_due_work(
                 setup, replace(base, model_token_budget=0), now=now
             )
         # An unsupported cadence is refused too.
         with pytest.raises(DueWorkRefusal, match="hourly UTC"):
-            configure_project_processing(
+            configure_due_work(
                 setup, replace(base, cadence="daily"), now=now
             )
         # A malformed extractor identity is refused.
         with pytest.raises(DueWorkRefusal, match="extractor identity"):
-            configure_project_processing(
+            configure_due_work(
                 setup, replace(base, extractor_identity="Bad Identity!"), now=now
             )
         assert setup.scalars(

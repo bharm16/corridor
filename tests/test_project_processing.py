@@ -40,19 +40,12 @@ from corridor.project_processing import (
 )
 from corridor.admission import reconcile_record_inclusion
 from corridor.record_inclusion import record_inclusion_pending
+from clock_support import ControlledClock
 
 PIPELINE = "Tejas Pipeline Co"
 PROMPT_VERSION = "matrix_v1"
 SCHEMA_VERSION = "matrix_candidate_shape_v1"
 MODEL = "gpt-test"
-
-
-class ControlledClock:
-    def __init__(self, value: datetime):
-        self.value = value
-
-    def now(self) -> datetime:
-        return self.value
 
 
 def _conflict(document_id, project_id, uid):

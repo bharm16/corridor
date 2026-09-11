@@ -28,7 +28,7 @@ from corridor.due_work import (
     DeltaGenerationDeclaration,
     DueWorkRefusal,
     claim_due_work,
-    configure_delta_generation,
+    configure_due_work,
     due_work_status,
     enqueue_due_work,
     run_due_work_once,
@@ -48,20 +48,13 @@ from corridor.models import (
 )
 from source_capture_support import Rendition
 from corridor.operating_mode import ADOPTED_BASELINE, adopt_project_baseline
+from clock_support import ControlledClock
 
 
 ACCEPTED_STATION = "1149+00"
 PROPOSED_STATION = "1200+00"
 SUBJECT = "Utility Conflicts!3"
 NEW_SUBJECT = "Utility Conflicts!9"
-
-
-class ControlledClock:
-    def __init__(self, value: datetime):
-        self.value = value
-
-    def now(self) -> datetime:
-        return self.value
 
 
 def _rendition(session, project, *, registry_id, sha_character, filename):
@@ -180,7 +173,7 @@ def _seed_project(factory, now, *, adopt=False):
                 idempotency_key=f"adopt-{project.id}",
             )
 
-        schedule = configure_delta_generation(
+        schedule = configure_due_work(
             setup,
             DeltaGenerationDeclaration.released_hourly(
                 project_id=project.id,
@@ -414,10 +407,10 @@ def test_gate7_refuses_a_nonzero_model_budget_without_writing_a_schedule(
         )
         # The pass reads no model, so any positive budget is not a declaration.
         with pytest.raises(DueWorkRefusal, match="resource declaration is invalid"):
-            configure_delta_generation(
+            configure_due_work(
                 setup, replace(base, model_token_budget=1), now=now
             )
         with pytest.raises(DueWorkRefusal, match="comparison rule identity"):
-            configure_delta_generation(
+            configure_due_work(
                 setup, replace(base, comparison_rule_version="!!"), now=now
             )
