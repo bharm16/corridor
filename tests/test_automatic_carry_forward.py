@@ -31,14 +31,12 @@ from corridor.db import Session
 from corridor.exceptions import evaluate as evaluate_exceptions
 from corridor.extraction_runs import declare_active_run, record_extraction_run
 from corridor.ledger import mark_satisfies
-from spine_support import delete_project_spine, project_spine_counts
+from committed_scenario_support import delete_committed_project
 
 from corridor.models import (
-    ActiveExtractionRun,
     Assertion,
     AuditLog,
     AutomaticCarryForwardOutcome,
-    AutomaticCarryForwardReceipt,
     Candidate,
     Dependency,
     DependencyEvidenceSufficiency,
@@ -46,14 +44,9 @@ from corridor.models import (
     Document,
     EvidenceLink,
     ExternalOrg,
-    ExtractionRun,
     OperativeSupport,
-    PolicyApproval,
     PolicyRun,
     Project,
-    ReconfirmationReceipt,
-    RevisionComparisonFinding,
-    RevisionComparisonRun,
 )
 from corridor.operative_support import resolve_operative_support
 from corridor.principals import HumanPrincipal
@@ -576,133 +569,15 @@ def _human_reconfirm(session, scenario, transition) -> EvidenceLink:
 
 
 def _delete_committed_carry_forward_project(project_id: int) -> None:
+    delete_committed_project(project_id, session_factory=Session)
+    # The External Organization registry is global, not project-scoped, so
+    # deleting the project leaves the "AT&T" row _seed_transition committed
+    # behind. Left orphaned in the shared per-worker database it collides
+    # with any later test that inserts the same name (e.g. the real-corpus
+    # matrix test), so this committed scenario removes it too.
     with Session() as cleanup:
-        cleanup.execute(text("set local session_replication_role = replica"))
-        document_ids = tuple(
-            cleanup.scalars(
-                select(Document.id).where(Document.project_id == project_id)
-            ).all()
-        )
-        dependency_ids = tuple(
-            cleanup.scalars(
-                select(Dependency.id).where(Dependency.project_id == project_id)
-            ).all()
-        )
-        candidate_ids = tuple(
-            cleanup.scalars(
-                select(Candidate.id).where(Candidate.project_id == project_id)
-            ).all()
-        )
-        comparison_ids = tuple(
-            cleanup.scalars(
-                select(RevisionComparisonRun.id).where(
-                    RevisionComparisonRun.project_id == project_id
-                )
-            ).all()
-        )
-        run_ids = tuple(
-            cleanup.scalars(
-                select(PolicyRun.id).where(PolicyRun.project_id == project_id)
-            ).all()
-        )
-
-        cleanup.execute(
-            delete(AutomaticCarryForwardOutcome).where(
-                AutomaticCarryForwardOutcome.run_id.in_(run_ids)
-            )
-        )
-        cleanup.execute(delete(PolicyRun).where(PolicyRun.id.in_(run_ids)))
-        cleanup.execute(
-            delete(AutomaticCarryForwardReceipt).where(
-                AutomaticCarryForwardReceipt.dependency_id.in_(dependency_ids)
-            )
-        )
-        cleanup.execute(
-            delete(ReconfirmationReceipt).where(
-                ReconfirmationReceipt.dependency_id.in_(dependency_ids)
-            )
-        )
-        cleanup.execute(
-            delete(PolicyApproval).where(PolicyApproval.project_id == project_id)
-        )
-        cleanup.execute(
-            delete(AuditLog).where(
-                AuditLog.entity_type == audit.PROJECT,
-                AuditLog.entity_id == project_id,
-            )
-        )
-        cleanup.execute(
-            delete(AuditLog).where(
-                AuditLog.entity_type == audit.DEPENDENCY,
-                AuditLog.entity_id.in_(dependency_ids),
-            )
-        )
-        cleanup.execute(
-            delete(AuditLog).where(
-                AuditLog.entity_type == audit.CANDIDATE,
-                AuditLog.entity_id.in_(candidate_ids),
-            )
-        )
-        cleanup.execute(
-            delete(OperativeSupport).where(
-                OperativeSupport.dependency_id.in_(dependency_ids)
-            )
-        )
-        cleanup.execute(
-            delete(Assertion).where(Assertion.dependency_id.in_(dependency_ids))
-        )
-        cleanup.execute(
-            delete(EvidenceLink).where(EvidenceLink.dependency_id.in_(dependency_ids))
-        )
-        cleanup.execute(
-            delete(RevisionComparisonFinding).where(
-                RevisionComparisonFinding.revision_comparison_run_id.in_(comparison_ids)
-            )
-        )
-        cleanup.execute(
-            delete(RevisionComparisonRun).where(
-                RevisionComparisonRun.id.in_(comparison_ids)
-            )
-        )
-        cleanup.execute(delete(Candidate).where(Candidate.project_id == project_id))
-        cleanup.execute(delete(Dependency).where(Dependency.project_id == project_id))
-        # Human reconfirmation dual-writes the spine (#451 stage 3): a
-        # designate_support decision, its revision, and the
-        # supporting_documentation_in_use fact. Left behind in the shared
-        # per-worker database they break every later test that asserts an
-        # empty spine (#521), so the committed scenario removes them too.
-        delete_project_spine(cleanup, project_id)
-        cleanup.execute(
-            delete(ActiveExtractionRun).where(
-                ActiveExtractionRun.document_id.in_(document_ids)
-            )
-        )
-        cleanup.execute(
-            delete(ExtractionRun).where(ExtractionRun.document_id.in_(document_ids))
-        )
-        cleanup.execute(
-            update(Document)
-            .where(Document.project_id == project_id)
-            .values(
-                superseded_by=None,
-                superseded_on=None,
-                supersession_source_document_id=None,
-                supersession_source_page=None,
-            )
-        )
-        cleanup.execute(delete(DocPage).where(DocPage.document_id.in_(document_ids)))
-        cleanup.execute(delete(Document).where(Document.project_id == project_id))
-        cleanup.execute(delete(Project).where(Project.id == project_id))
-        # The External Organization registry is global, not project-scoped, so
-        # deleting the project leaves the "AT&T" row _seed_transition committed
-        # behind. Left orphaned in the shared per-worker database it collides
-        # with any later test that inserts the same name (e.g. the real-corpus
-        # matrix test), so this committed scenario removes it too.
         cleanup.execute(delete(ExternalOrg).where(ExternalOrg.name == "AT&T"))
         cleanup.commit()
-    with Session() as check:
-        leaked = project_spine_counts(check, project_id)
-        assert all(count == 0 for count in leaked.values()), leaked
 
 
 def test_automatic_carry_forward_is_normal_processing(session):

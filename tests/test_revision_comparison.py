@@ -14,7 +14,7 @@ from sqlalchemy import delete, select, text, update
 from sqlalchemy.exc import IntegrityError
 
 import corridor.revision_comparison as revision_comparison
-from corridor.db import Session, engine
+from corridor.db import Session
 from corridor.extraction_runs import record_extraction_run
 from corridor.models import (
     Candidate,
@@ -45,6 +45,7 @@ from corridor.revision_comparison import (
     read_revision_comparison,
 )
 from corridor.supersession import SupersessionDeclaration, register_supersessions
+from committed_scenario_support import delete_committed_project
 
 
 @pytest.fixture
@@ -322,50 +323,7 @@ def _committed_comparison_pair():
 
 
 def _delete_committed_comparison_project(project_id):
-    with engine.begin() as cleanup:
-        cleanup.execute(text("set local session_replication_role = replica"))
-        cleanup.execute(
-            text(
-                "delete from revision_comparison_findings where "
-                "revision_comparison_run_id in "
-                "(select id from revision_comparison_runs "
-                "where project_id = :project_id)"
-            ),
-            {"project_id": project_id},
-        )
-        cleanup.execute(
-            text(
-                "delete from revision_comparison_runs "
-                "where project_id = :project_id"
-            ),
-            {"project_id": project_id},
-        )
-        cleanup.execute(
-            text("delete from candidates where project_id = :project_id"),
-            {"project_id": project_id},
-        )
-        cleanup.execute(
-            text(
-                "delete from extraction_runs where document_id in "
-                "(select id from documents where project_id = :project_id)"
-            ),
-            {"project_id": project_id},
-        )
-        cleanup.execute(
-            text(
-                "delete from doc_pages where document_id in "
-                "(select id from documents where project_id = :project_id)"
-            ),
-            {"project_id": project_id},
-        )
-        cleanup.execute(
-            text("delete from documents where project_id = :project_id"),
-            {"project_id": project_id},
-        )
-        cleanup.execute(
-            text("delete from projects where id = :project_id"),
-            {"project_id": project_id},
-        )
+    delete_committed_project(project_id, session_factory=Session)
 
 
 @pytest.mark.parametrize(

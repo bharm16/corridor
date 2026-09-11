@@ -1317,60 +1317,112 @@ def test_no_module_outside_the_schema_package_imports_the_legacy_family():
     assert sorted(importers) == []
 
 
-def test_every_spine_dependent_table_is_covered_by_the_committed_scenario_cleanup():
-    """A committed test scenario deletes the spine by name pattern (#521).
+# A committed test scenario may lift the append-only guard for a purpose
+# other than removing a project: to construct the corrupt pre-state the act
+# under test must reject, to model the disposal path a sweep can only
+# happen through, or to seed an append-only row on a disposable migration
+# database. Those are classified here, with the reason, so that a new
+# module reaching for the setting has to say which it is.
+LIFTS_THE_APPEND_ONLY_GUARD_WITHOUT_DELETING_A_PROJECT = {
+    "test_automatic_carry_forward": "builds the corrupt pre-insert state the receipt trigger must reject",
+    "test_connector_polling_runtime": "models the disposal path a receipt sweep can only happen through",
+    "test_migration_baseline": "seeds an append-only row on its own disposable database",
+    "test_supersession_review": "simulates pre-sealed legacy history before inverting two acts",
+}
 
-    Any table that references the spine roots, directly or through another
-    spine table, must match the pattern and carry project_id; otherwise a
-    committed scenario could leave its rows behind for a later module.
+_DELETES_A_PROJECT = re.compile(r"delete\(Project\)|delete\s+from\s+projects\b")
+
+
+def test_a_committed_test_scenario_is_torn_down_through_one_derived_cleanup():
+    """Only `committed_scenario_support` removes a committed project (#521).
+
+    Five modules used to hand-write "delete the project I committed" — 353
+    lines naming 19, 17, 7, 4 and 3 tables in five different orders, two of
+    them naming the same audit entity type as a constant in one file and as
+    a string literal in the other, and three of them removing no spine rows
+    at all. The invariant was remembered, and remembering it is what failed.
+
+    The derivation is the seam, so this rule is about its call sites: a
+    module that deletes a project reaches the derivation rather than listing
+    tables, and a module that lifts the append-only guard for some other
+    purpose says which purpose here.
+    """
+
+    guard = Path(__file__).resolve()
+    seam = TEST_ROOT / "committed_scenario_support.py"
+    deleting = []
+    for path in _module_paths(TEST_ROOT):
+        if path.resolve() == guard or path == seam:
+            continue
+        for number, line in enumerate(read_python(path).text.splitlines(), start=1):
+            if _DELETES_A_PROJECT.search(line):
+                deleting.append(f"{path.name}:{number}")
+
+    assert sorted(deleting) == [], (
+        "a test module deletes a committed project by hand; call "
+        "committed_scenario_support.delete_committed_project instead: "
+        f"{sorted(deleting)}"
+    )
+
+    lifting = {
+        path.stem
+        for path in mentions_of(["session_replication_role"], (TEST_ROOT,))[
+            "session_replication_role"
+        ]
+        if path != seam and path.resolve() != guard
+    }
+    unclassified = sorted(
+        lifting - set(LIFTS_THE_APPEND_ONLY_GUARD_WITHOUT_DELETING_A_PROJECT)
+    )
+    assert unclassified == [], (
+        "a test module lifts the append-only guard outside the committed-scenario "
+        "cleanup; delete the project through "
+        "committed_scenario_support.delete_committed_project, or classify the "
+        f"other purpose in test_architecture.py: {unclassified}"
+    )
+    stale = sorted(set(LIFTS_THE_APPEND_ONLY_GUARD_WITHOUT_DELETING_A_PROJECT) - lifting)
+    assert stale == [], (
+        f"these modules no longer lift the append-only guard: {stale}"
+    )
+
+
+def test_every_project_scoped_table_is_covered_by_the_committed_scenario_cleanup():
+    """The cleanup's table set is derived from the schema, never listed (#521).
+
+    `place_project_tables` raises on a table it cannot place, so importing
+    the seam already refuses a new table that is neither reachable from a
+    project nor classified as global. This states the same criterion where
+    `make check` reads it, and adds the ordering the deletion depends on:
+    a dependent is selected through the rows of the parent that places it,
+    so deleting the parent first would leave the dependent behind instead
+    of removing it.
     """
     import importlib
 
-    spine_support = importlib.import_module("spine_support")
+    support = importlib.import_module("committed_scenario_support")
     from corridor.models import Base
 
-    referencing: dict[str, set[str]] = {}
-    for table in Base.metadata.sorted_tables:
-        for fk in table.foreign_keys:
-            referencing.setdefault(fk.column.table.name, set()).add(table.name)
-    dependent: set[str] = set()
-    frontier = set(spine_support.SPINE_ROOTS)
-    while frontier:
-        name = frontier.pop()
-        for child in referencing.get(name, ()):
-            if child not in dependent:
-                dependent.add(child)
-                frontier.add(child)
-    covered = {table.name for table in spine_support.SPINE_TABLES}
-
-    # The entity-resolution subsystem also references source_segments but is
-    # not part of the human-decision spine dual-write, and no committed test
-    # scenario creates its rows; two of its tables are not even project-scoped.
-    # It is classified out explicitly so that a genuinely new spine table
-    # (a support-assessment, proposed-delta, or decision table) cannot be
-    # added without either matching the cleanup pattern or being classified
-    # here on purpose.
-    resolution_subsystem = {
-        "subject_resolution_attempts",
-        "subject_resolution_candidates",
-        "subject_resolution_decisions",
-        "subject_candidate_suggestions",
-    }
+    order, placements = support.place_project_tables(Base.metadata)
+    position = {name: index for index, name in enumerate(order)}
+    out_of_order = sorted(
+        (name, parent)
+        for name, found in placements.items()
+        for _, parent, _ in found
+        if position[name] >= position[parent]
+    )
     uncovered = sorted(
-        name
-        for name in (dependent | set(spine_support.SPINE_ROOTS))
-        if name not in covered and name not in resolution_subsystem
-    )
-    missing_project_id = sorted(
-        table.name for table in spine_support.SPINE_TABLES if "project_id" not in table.c
+        set(Base.metadata.tables) - set(order) - set(support.GLOBAL_TABLES)
     )
 
-    assert uncovered == [], (
-        "a new spine-dependent table is not covered by the committed-scenario "
-        f"cleanup; extend SPINE_TABLE_PATTERN in tests/spine_support.py or "
-        f"classify it in test_architecture.py: {uncovered}"
+    assert out_of_order == [], (
+        "these tables are deleted before the parent that places them can be "
+        f"read: {out_of_order}"
     )
-    assert missing_project_id == []
+    assert uncovered == [], (
+        "a new table is neither reachable from a project nor classified as "
+        "global in tests/committed_scenario_support.py: "
+        f"{uncovered}"
+    )
 
 
 def test_only_the_storage_interface_builds_a_path_into_the_content_store():
