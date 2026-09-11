@@ -9,7 +9,6 @@ applied, which #526 closed by making the packet one transaction.
 """
 
 from datetime import date, datetime
-from hashlib import sha256
 from typing import Any
 
 from sqlalchemy import (
@@ -21,11 +20,11 @@ from sqlalchemy import (
     ForeignKeyConstraint,
     Index,
     Integer,
-    LargeBinary,
     String,
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
@@ -55,6 +54,7 @@ __all__ = [
     "CANCELLATION_REASONS",
     "CLOSURE_KINDS",
     "OutgoingRequest",
+    "OutgoingRequestPlan",
     "OutgoingRequestResponse",
     "PACKET_CHILD_OUTCOMES",
     "PACKET_GROUPING_KEY_KINDS",
@@ -652,7 +652,7 @@ class DeltaFollowUpPlanEvidence(Base):
 
 
 class OutgoingRequest(Base):
-    """A retained outgoing request, and the response boundary it declared (#652).
+    """One retained outgoing request, and the response boundary it declared (#652).
 
     The chase list's ``unanswered_request`` band is the one place Corridor may
     say a specific thing has gone unanswered, and ADR-0090 retired the legacy
@@ -661,10 +661,26 @@ class OutgoingRequest(Base):
     therefore needs a *retained request* behind it, and until this table existed
     ``follow_up_bundles.read_retained_outgoing_requests`` truthfully returned
     nothing.  This is that record: what was asked, of which External
-    Organization, covering which Utility Conflicts, its exact sent bytes or a
-    digest of them, the declared expected-response boundary (silence before it
-    is not a finding), the attributable sender and day, and the Follow-up Plan
-    the request advances.
+    Organization, covering which Utility Conflicts, where the exact sent content
+    is retained and what it digests to, the declared expected-response boundary
+    (silence before it is not a finding), the attributable sender and day, and
+    the person who recorded the send.
+
+    **The plans it advances are a relation, not a column** (#837, finishing the
+    accepted #652 contract).  A follow-up bundle already groups several
+    questions into one communication, so one email covers as many Follow-up
+    Plans as the coordinator addressed in it, and one plan may take several
+    requests before it is answered.  A singular ``follow_up_plan_id`` could only
+    record the first of those honestly, so ``outgoing_request_plans`` carries
+    the relation and this table carries no plan column at all.
+
+    **The sender and the recorder are two people.**  ``sent_by_principal`` is
+    whoever sent the message from their own mail client -- possibly a colleague
+    the roster does not know, because Corridor sends nothing -- and
+    ``recorded_by_principal`` is the person sitting in front of Corridor
+    entering it.  They are often the same string and the schema never assumes
+    it; "who sent this" and "who says it was sent" are different claims and a
+    single column would merge them.
 
     It is Corridor-originated correspondence, not source-derived evidence and
     not an accepted-record decision, so it does not join the spine's append
@@ -673,14 +689,24 @@ class OutgoingRequest(Base):
     update, delete, and truncate, and refuses an insert that does not arrive as
     that role, so not even the schema owner can write one raw (#492 idiom).
 
-    ``sent_bytes`` is the exact request when Corridor kept it and null when it
-    did not — whoever sent it, by whatever means, may not have retained the
-    bytes — so ``content_sha256`` is the digest that stands on either footing,
-    the same choice ``SourceDelivery`` makes for a delivery whose bytes were
-    never kept.  ``expected_response_by`` is the resolved boundary the band
-    reads; ``boundary_rule_version`` and ``boundary_interval_days`` record how
-    it was derived when an interval and a rule produced it rather than a date
-    stated outright.
+    **The exact sent content is retained, and a digest alone is not.**
+    ``sent_content_key`` is the object-storage key the bytes live under
+    (ADR-0079's one storage interface, never a ``bytea`` column), and because
+    that key *contains* the digest, ``ck_outgoing_requests_content_key`` proves
+    the two agree inside PostgreSQL without the bytes being present.  A chase
+    for "no response" has to be able to show a coordinator what was actually
+    sent, which a digest cannot do.
+
+    **Correction is append-only.**  A request recorded wrongly is corrected by
+    appending a corrected request naming the original in
+    ``supersedes_request_id`` with its ``correction_reason``; the original stays
+    exactly as it was, and being superseded is derived from the successor's
+    existence rather than stored as a status.  ``expected_response_by`` is the
+    resolved boundary the band reads; ``boundary_rule_version`` and
+    ``boundary_interval_days`` record how it was derived when an interval and a
+    rule produced it rather than a date stated outright -- but the date is
+    always explicit and always required, because a silently derived interval is
+    how somebody gets accused of not answering a question nobody set a date on.
     """
 
     __tablename__ = "outgoing_requests"
@@ -690,9 +716,9 @@ class OutgoingRequest(Base):
             "project_id", "idempotency_key", name="uq_outgoing_requests_key"
         ),
         ForeignKeyConstraint(
-            ["project_id", "follow_up_plan_id"],
-            ["delta_follow_up_plans.project_id", "delta_follow_up_plans.id"],
-            name="fk_outgoing_requests_plan",
+            ["project_id", "supersedes_request_id"],
+            ["outgoing_requests.project_id", "outgoing_requests.id"],
+            name="fk_outgoing_requests_supersedes",
         ),
         CheckConstraint(
             "length(btrim(external_organization)) > 0",
@@ -706,7 +732,21 @@ class OutgoingRequest(Base):
             name="ck_outgoing_requests_principal",
         ),
         CheckConstraint(
+            "length(btrim(recorded_by_principal)) > 0",
+            name="ck_outgoing_requests_recorder",
+        ),
+        CheckConstraint(
             "content_sha256 ~ '^[0-9a-f]{64}$'", name="ck_outgoing_requests_digest"
+        ),
+        # The storage key carries the digest in its own name, so the agreement
+        # between "what was sent" and "what it hashes to" is provable here
+        # without the bytes: `<sha[:2]>/<sha><suffix>` is `object_storage`'s
+        # only layout.
+        CheckConstraint(
+            "sent_content_key = substr(content_sha256, 1, 2) || '/' "
+            "|| content_sha256 "
+            "|| substr(sent_content_key, 68)",
+            name="ck_outgoing_requests_content_key",
         ),
         CheckConstraint(
             "expected_response_by >= sent_on", name="ck_outgoing_requests_boundary"
@@ -716,69 +756,239 @@ class OutgoingRequest(Base):
             name="ck_outgoing_requests_subjects",
         ),
         CheckConstraint(
-            "sent_bytes is null or octet_length(sent_bytes) > 0",
-            name="ck_outgoing_requests_bytes",
-        ),
-        CheckConstraint(
             "boundary_interval_days is null or boundary_interval_days >= 0",
             name="ck_outgoing_requests_interval",
+        ),
+        # A correction names what it corrects and why, or is not a correction.
+        CheckConstraint(
+            "(supersedes_request_id is null) = (correction_reason is null)",
+            name="ck_outgoing_requests_correction",
+        ),
+        # One correction per corrected request: a chain, never a fork, so
+        # "which record stands" has one answer.
+        Index(
+            "uq_outgoing_requests_correction",
+            "project_id",
+            "supersedes_request_id",
+            unique=True,
+            postgresql_where=text("supersedes_request_id is not null"),
         ),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
-    follow_up_plan_id: Mapped[int] = mapped_column(BigInteger, index=True)
     external_organization: Mapped[str] = mapped_column(String(255))
     responsible_role: Mapped[str | None] = mapped_column(String(255))
     question: Mapped[str] = mapped_column(Text)
     covered_subject_keys: Mapped[Any] = mapped_column(JSONB)
     content_sha256: Mapped[str] = mapped_column(String(64))
-    sent_bytes: Mapped[bytes | None] = mapped_column(LargeBinary)
+    sent_content_key: Mapped[str] = mapped_column(String(160))
     sent_on: Mapped[date] = mapped_column(Date)
     sent_by_principal: Mapped[str] = mapped_column(String(128))
+    recorded_by_principal: Mapped[str] = mapped_column(String(128))
     expected_response_by: Mapped[date] = mapped_column(Date)
     boundary_rule_version: Mapped[str | None] = mapped_column(String(64))
     boundary_interval_days: Mapped[int | None] = mapped_column(Integer)
+    supersedes_request_id: Mapped[int | None] = mapped_column(BigInteger)
+    correction_reason: Mapped[str | None] = mapped_column(Text)
     idempotency_key: Mapped[str] = mapped_column(String(160))
     recorded_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
 
     @property
-    def digest_is_valid(self) -> bool:
-        """Whether retained bytes still match the digest; true when none were kept."""
-        if self.sent_bytes is None:
-            return True
-        return sha256(self.sent_bytes).hexdigest() == self.content_sha256
+    def recorded_by_the_sender(self) -> bool:
+        """Whether the person who sent it is the person who recorded it.
+
+        Derived, never stored. The page says which of the two happened rather
+        than leaving a reader to assume that a recorded send was a first-hand
+        one.
+        """
+
+        return self.sent_by_principal == self.recorded_by_principal
+
+
+class OutgoingRequestPlan(Base):
+    """One Follow-up Plan one retained outgoing request advances (#837).
+
+    The accepted #652 contract makes this a relation for a reason a column
+    cannot carry: a follow-up bundle is *one interaction covering several
+    questions*, so a coordinator who writes to City Water about five Utility
+    Conflicts sends one email advancing five Follow-up Plans, and a plan that
+    goes unanswered takes a second and a third request. Recording that email
+    against one plan would state something false about what was asked, and
+    recording it five times would state five emails that never existed.
+
+    A row here is therefore the only place "this request covered that plan" is
+    written, and the absence of a row is just as load-bearing: a request that
+    advanced three of a bundle's five plans leaves two uncovered, and the
+    follow-up section says so rather than letting the bundle imply otherwise.
+
+    Append-only under the same guard as the request it belongs to, written only
+    through ``append_outgoing_request``, which writes the request and its whole
+    plan set in one statement so a half-related request cannot exist.
+    """
+
+    __tablename__ = "outgoing_request_plans"
+    __table_args__ = (
+        UniqueConstraint("project_id", "id", name="uq_outgoing_request_plans_row"),
+        UniqueConstraint(
+            "project_id",
+            "request_id",
+            "follow_up_plan_id",
+            name="uq_outgoing_request_plans_pair",
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "request_id"],
+            ["outgoing_requests.project_id", "outgoing_requests.id"],
+            name="fk_outgoing_request_plans_request",
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "follow_up_plan_id"],
+            ["delta_follow_up_plans.project_id", "delta_follow_up_plans.id"],
+            name="fk_outgoing_request_plans_plan",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    request_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    follow_up_plan_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
 
 
 class OutgoingRequestResponse(Base):
-    """A received response that stops one retained request's silence clock (#652).
+    """One observation that a reply arrived, with the evidence for it (#652).
 
-    Recording that a reply arrived, at least enough to stop the no-response
-    clock: the band fires only for a retained request whose boundary has passed
-    *and* which has no recorded response as of the reading's cutoff.  Full
-    receipt and delivery tracking is deliberately out of scope (#652); this row
-    exists to make "they answered" a fact the chase list can read.  It is
-    append-only and written only through ``append_outgoing_request_response``
-    under the record-decision role, held by the same guard trigger as the
-    request it answers.  One response per request stops the clock; the
-    command converges a replay on the row it already wrote.
+    Recording that a reply arrived stops one retained request's silence clock:
+    the ``unanswered_request`` band fires only for a retained request whose
+    boundary has passed *and* which has no recorded response as of the
+    reading's cutoff.
+
+    **It stops the clock and settles nothing else.**  The accepted #652
+    contract is explicit, and it is the whole reason this row is a separate
+    fact from the record question: "recording a response stops the no-response
+    clock. It does **not** automatically resolve the Follow-up Plan or change
+    an accepted project value. The question can remain open even though the
+    recipient replied."  Nothing here writes a delta disposition, a plan
+    lifecycle act, or a Project Record revision, and nothing may be added that
+    does.
+
+    **Each observation carries its evidence.**  One of four things is what a
+    coordinator actually has: the incoming ``Document``, the ``SourceDelivery``
+    that brought it, the exact ``SourceSegment`` inside it, or an attributable
+    manual observation -- somebody heard it on the telephone and says so under
+    their own name.  ``evidence_kind`` names which, a check constraint makes
+    the other three unrepresentable in that row, and ``source_reference`` is
+    the exact reference in every case, because "they replied" with nothing
+    behind it is the assumption ADR-0090 retired ``STALE`` for.
+
+    **Acknowledgement, partial and substantive are different observations**, so
+    several rows may answer one request: an acknowledgement on Monday and the
+    substance on Friday are two things that happened, and collapsing them would
+    lose the first or misdescribe the second.  ``completeness`` says which this
+    one is; it is not a status the row later moves between.
+
+    Append-only and corrected the way the request is: a mistaken observation is
+    superseded by a corrected one naming it, and the original stays.
     """
 
     __tablename__ = "outgoing_request_responses"
     __table_args__ = (
         UniqueConstraint(
-            "project_id", "request_id", name="uq_outgoing_request_responses_request"
+            "project_id", "id", name="uq_outgoing_request_responses_row"
+        ),
+        UniqueConstraint(
+            "project_id",
+            "idempotency_key",
+            name="uq_outgoing_request_responses_key",
         ),
         ForeignKeyConstraint(
             ["project_id", "request_id"],
             ["outgoing_requests.project_id", "outgoing_requests.id"],
             name="fk_outgoing_request_responses_request",
         ),
+        ForeignKeyConstraint(
+            ["project_id", "document_id"],
+            ["documents.project_id", "documents.id"],
+            name="fk_outgoing_request_responses_document",
+        ),
+        ForeignKeyConstraint(
+            ["source_delivery_id", "project_id"],
+            ["source_deliveries.id", "source_deliveries.project_id"],
+            name="fk_outgoing_request_responses_delivery",
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "source_segment_id"],
+            ["source_segments.project_id", "source_segments.id"],
+            name="fk_outgoing_request_responses_segment",
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "supersedes_response_id"],
+            [
+                "outgoing_request_responses.project_id",
+                "outgoing_request_responses.id",
+            ],
+            name="fk_outgoing_request_responses_supersedes",
+        ),
         CheckConstraint(
             "length(btrim(recorded_by_principal)) > 0",
             name="ck_outgoing_request_responses_principal",
+        ),
+        CheckConstraint(
+            "length(btrim(source_reference)) > 0",
+            name="ck_outgoing_request_responses_reference",
+        ),
+        CheckConstraint(
+            "completeness in ('acknowledgement', 'partial', 'substantive')",
+            name="ck_outgoing_request_responses_completeness",
+        ),
+        CheckConstraint(
+            "evidence_kind in ('document', 'source_delivery', 'source_segment', "
+            "'manual_observation')",
+            name="ck_outgoing_request_responses_evidence_kind",
+        ),
+        # The four kinds, made unrepresentable in each other's shape. A row
+        # that names a document and a telephone call is not a row this schema
+        # can hold, which is what stops "linked to its evidence" from becoming
+        # "has an evidence column somebody filled in".
+        CheckConstraint(
+            "(evidence_kind = 'document' and document_id is not null"
+            " and source_delivery_id is null and source_segment_id is null"
+            " and observation is null and observed_by_principal is null)"
+            " or (evidence_kind = 'source_delivery' and source_delivery_id is not null"
+            " and document_id is null and source_segment_id is null"
+            " and observation is null and observed_by_principal is null)"
+            " or (evidence_kind = 'source_segment' and source_segment_id is not null"
+            " and document_id is null and source_delivery_id is null"
+            " and observation is null and observed_by_principal is null)"
+            " or (evidence_kind = 'manual_observation' and observation is not null"
+            " and observed_by_principal is not null"
+            " and document_id is null and source_delivery_id is null"
+            " and source_segment_id is null)",
+            name="ck_outgoing_request_responses_evidence",
+        ),
+        CheckConstraint(
+            "observation is null or length(btrim(observation)) > 0",
+            name="ck_outgoing_request_responses_observation",
+        ),
+        CheckConstraint(
+            "observed_by_principal is null "
+            "or length(btrim(observed_by_principal)) > 0",
+            name="ck_outgoing_request_responses_observer",
+        ),
+        CheckConstraint(
+            "(supersedes_response_id is null) = (correction_reason is null)",
+            name="ck_outgoing_request_responses_correction",
+        ),
+        Index(
+            "uq_outgoing_request_responses_correction",
+            "project_id",
+            "supersedes_response_id",
+            unique=True,
+            postgresql_where=text("supersedes_response_id is not null"),
         ),
     )
 
@@ -786,7 +996,18 @@ class OutgoingRequestResponse(Base):
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
     request_id: Mapped[int] = mapped_column(BigInteger, index=True)
     received_on: Mapped[date] = mapped_column(Date)
+    completeness: Mapped[str] = mapped_column(String(32))
+    evidence_kind: Mapped[str] = mapped_column(String(32))
+    document_id: Mapped[int | None] = mapped_column(BigInteger)
+    source_delivery_id: Mapped[int | None] = mapped_column(BigInteger)
+    source_segment_id: Mapped[int | None] = mapped_column(BigInteger)
+    observation: Mapped[str | None] = mapped_column(Text)
+    observed_by_principal: Mapped[str | None] = mapped_column(String(128))
+    source_reference: Mapped[str] = mapped_column(String(255))
     recorded_by_principal: Mapped[str] = mapped_column(String(128))
+    supersedes_response_id: Mapped[int | None] = mapped_column(BigInteger)
+    correction_reason: Mapped[str | None] = mapped_column(Text)
+    idempotency_key: Mapped[str] = mapped_column(String(160))
     recorded_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

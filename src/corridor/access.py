@@ -950,6 +950,7 @@ PARTITIONED_RELATIONS: frozenset[str] = frozenset(
         "fact_statement_timings",
         "facts",
         "issue_coverage_declarations",
+        "outgoing_request_plans",
         "outgoing_request_responses",
         "outgoing_requests",
         "page_render_derivatives",

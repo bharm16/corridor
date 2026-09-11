@@ -385,6 +385,7 @@ from corridor.models import (
     DependencyAdmissionOutcome,
     DocumentQuarantine,
     ExtractionRun,
+    OutgoingRequest,
     PolicyRun,
     RecordInclusionRequest,
     ReleasePreparationRequest,
@@ -455,9 +456,17 @@ from corridor.project_portfolio import (
     emit_project_selection,
     read_portfolio,
 )
+from corridor.digests import canonical_sha256, sha256_bytes
 from corridor.follow_up_bundles import (
     emit_follow_up_reading,
     read_follow_up_bundles,
+)
+from corridor.outgoing_requests import (
+    OutgoingRequestRefused,
+    read_correspondence,
+    read_sent_content,
+    record_outgoing_request_response,
+    retain_outgoing_request,
 )
 from corridor.issue_coverage import CoverageRefused, confirm_coverage, derive_coverage_reading
 from corridor.issue_profile import IssueProfileRefused, effective_issue_inventory
@@ -4089,6 +4098,8 @@ def _project_workflow_response(
     schedule_refusal: str | None = None,
     plan_closed: str | None = None,
     plan_refusal: str | None = None,
+    correspondence_refusal: str | None = None,
+    correspondence_recorded: str | None = None,
     route_name: str = "coordinator_home",
     request_fields: Any = None,
     status_code: int = 200,
@@ -4108,8 +4119,19 @@ def _project_workflow_response(
     # every trigger, bundling and ordering rule stays in the one derivation
     # (#425), and `chase_view` refuses to render any sequence but the
     # reading's own (#658).
+    # The correspondence #837 retains, read once for the whole section. A
+    # request reaches a bundle only through the plans it named, so this is the
+    # input to that join and never a per-bundle query that could answer
+    # differently.
     chase = chase_view(
-        read_follow_up_bundles(session, project_id=project.id, as_of=now)
+        read_follow_up_bundles(session, project_id=project.id, as_of=now),
+        read_correspondence(session, project_id=project.id, as_of=now),
+        {
+            need.plan_id: (
+                f"{need.subject_name} — {need.field_name}: {need.open_question}"
+            )
+            for need in workflow.follow_up
+        },
     )
     # The Issue section (#529, #533). `issue_view` reads #529's own
     # `authorization_blockers` and refuses to offer an approval it named a
@@ -4152,6 +4174,12 @@ def _project_workflow_response(
             "plan_closed": plan_closed,
             "plan_refusal": plan_refusal,
             "cancellation_reasons": tuple(CANCELLATION_REASON_WORDS.items()),
+            # #837's own outcomes, kept apart from the Issue section's for the
+            # same reason: a refused recording sent nothing and recorded
+            # nothing, and announcing it under another heading would tell a
+            # coordinator something untrue about what just happened.
+            "correspondence_refusal": correspondence_refusal,
+            "correspondence_recorded": correspondence_recorded,
             # Exactly one element carries `autofocus`: a refusal first, then a
             # completed approval, and otherwise the section the coordinator's
             # work actually starts in.
@@ -4162,12 +4190,14 @@ def _project_workflow_response(
                         or prepare_refusal is not None
                         or schedule_refusal is not None
                         or plan_refusal is not None
+                        or correspondence_refusal is not None
                     ),
                     saved=(
                         approved is not None
                         or requested is not None
                         or scheduled is not None
                         or plan_closed is not None
+                        or correspondence_recorded is not None
                     ),
                 )
                 if refusal is not None
@@ -4178,6 +4208,8 @@ def _project_workflow_response(
                 or schedule_refusal is not None
                 or plan_closed is not None
                 or plan_refusal is not None
+                or correspondence_refusal is not None
+                or correspondence_recorded is not None
                 else workflow.landing
             ),
             "cutoff": workflow.cutoff.date().isoformat(),
@@ -4828,6 +4860,293 @@ def _declared_cutoff(supplied: str, now: datetime) -> datetime:
 # Nothing below catches that: serving bytes that no longer hash to what the
 # receipt recorded is the one outcome a customer deliverable may not have, so
 # the request fails and the file is not served.
+
+
+# --- #837 the correspondence a coordinator records on a follow-up -----------
+#
+# Corridor sends nothing. A person sends from their own mail client and records
+# the message here; these two routes are that recording and nothing else. They
+# write no Project Record revision, resolve no Follow-up Plan, and dispose of
+# no Proposed Delta, because the accepted #652 contract keeps the
+# correspondence and the record question apart: a reply stops the no-response
+# finding and settles nothing. Plan update, cancellation, return-date change
+# and early resume are #835's, so neither route offers one.
+
+
+def _recorded_date(value: str, *, field: str) -> date:
+    try:
+        return date.fromisoformat(value.strip())
+    except ValueError:
+        raise OutgoingRequestRefused(
+            f"{field} is a date, and {value.strip()!r} is not one"
+        ) from None
+
+
+def _corrected_record_id(value: str, *, field: str) -> int | None:
+    """A form's optional record number, refused rather than guessed at.
+
+    ``_optional_id`` below answers a malformed value with "this form was not
+    the one the page rendered", which is the right sentence for a hidden field
+    the page composed. These are typed by a person, so a mistyped number is
+    told back to them as their own mistake, on the page they typed it on.
+    """
+
+    text = value.strip()
+    if not text:
+        return None
+    if not text.isdigit():
+        raise OutgoingRequestRefused(f"{field} names a record by its number")
+    return int(text)
+
+
+@app.post("/work/{slug}/follow-up/sent", response_class=HTMLResponse)
+def record_follow_up_request_sent(
+    request: Request,
+    slug: str,
+    follow_up_plan_id: list[int] = Form(...),
+    covered_subject_key: list[str] = Form(...),
+    external_organization: str = Form(...),
+    question: str = Form(...),
+    sent_content: str = Form(...),
+    sent_on: str = Form(...),
+    sent_by: str = Form(...),
+    expected_response_by: str = Form(...),
+    responsible_role: str = Form(""),
+    corrects_request_id: str = Form(""),
+    correction_reason: str = Form(""),
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+    clock=Depends(get_review_clock),
+):
+    """Record one message that went out, against the plans it advanced (#837).
+
+    **One request, the plans it names.** The form carries a checkbox per
+    Follow-up Plan on the bundle and the coordinator ticks the ones the message
+    actually covered, so a request that advanced three of five is recorded as
+    three. The relation is the point: a bundle groups several questions into
+    one communication, and recording that communication against a single plan
+    would state something false about what was asked.
+
+    **The sender and the recorder stay apart.** ``sent_by`` is whoever sent it
+    — a colleague with no Corridor account is an ordinary answer, because
+    Corridor sends nothing — and the recorder is the signed-in principal. They
+    are often the same person and the route never assumes it.
+
+    **The expected-response date is explicit.** The form prefills it from the
+    plan's own return date, and it arrives here as a value the person recording
+    confirmed. Silence before a boundary nobody set is not a finding, and
+    deriving an interval quietly is how somebody ends up accused of not
+    answering a question that had no date.
+
+    The idempotency key is the content's own digest rather than a hidden field,
+    so a double submission converges on the record it already wrote instead of
+    retaining the same message twice.
+    """
+
+    project = _project(session, slug, principal)
+    if not is_adopted_baseline(session, project.id):
+        raise HTTPException(404, f"no project {slug!r}")
+    now = clock()
+    content = sent_content.encode("utf-8")
+    try:
+        retained = retain_outgoing_request(
+            session,
+            project_id=project.id,
+            follow_up_plan_ids=follow_up_plan_id,
+            external_organization=external_organization.strip(),
+            question=question.strip(),
+            covered_subject_keys=tuple(
+                key.strip() for key in covered_subject_key if key.strip()
+            ),
+            sent_content=content,
+            sent_on=_recorded_date(sent_on, field="The day it went out"),
+            sent_by_principal=sent_by.strip(),
+            recorded_by_principal=principal.subject,
+            expected_response_by=_recorded_date(
+                expected_response_by, field="The date a reply is expected by"
+            ),
+            responsible_role=responsible_role.strip() or None,
+            supersedes_request_id=_corrected_record_id(
+                corrects_request_id, field="The request this corrects"
+            ),
+            correction_reason=correction_reason.strip() or None,
+            idempotency_key=f"sent:{canonical_sha256({
+                'plans': sorted(set(follow_up_plan_id)),
+                'content': sha256_bytes(content),
+                'sent_on': sent_on.strip(),
+                'sent_by': sent_by.strip(),
+                'corrects': corrects_request_id.strip(),
+            })}",
+        )
+    except OutgoingRequestRefused as refused:
+        return _project_workflow_response(
+            request,
+            project,
+            principal,
+            session,
+            now=now,
+            correspondence_refusal=str(refused),
+            route_name="record_follow_up_request_sent",
+            request_fields={"follow_up_plan_id": follow_up_plan_id},
+            status_code=409,
+        )
+    return _project_workflow_response(
+        request,
+        project,
+        principal,
+        session,
+        now=now,
+        correspondence_recorded=(
+            f"Recorded as sent on {retained.sent_on.isoformat()}, advancing "
+            f"{len(set(follow_up_plan_id))} Follow-up "
+            f"Plan{'' if len(set(follow_up_plan_id)) == 1 else 's'}. A reply is "
+            f"expected by {retained.expected_response_by.isoformat()}."
+        ),
+        route_name="record_follow_up_request_sent",
+        request_fields={"follow_up_plan_id": follow_up_plan_id},
+        status_code=201,
+    )
+
+
+@app.get("/work/{slug}/follow-up/sent/{request_id}")
+def read_follow_up_request_content(
+    slug: str,
+    request_id: int,
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """Serve the exact message that was sent, not its digest (#837).
+
+    The accepted contract retains the content precisely so a coordinator
+    looking at a no-response finding can be shown what was actually asked; a
+    digest can prove two things are the same and can show nobody anything. The
+    bytes come back through the one storage interface, which verifies the
+    digest on the way out, so content that no longer hashes to what the row
+    records is a retrieval failure rather than a message.
+
+    It is a route and not a field on the week because the week must render when
+    the object store does not answer: a retrieval failure belongs to the one
+    request somebody asked to read, never to the whole page.
+    """
+
+    project = _project(session, slug, principal)
+    retained = session.get(OutgoingRequest, request_id)
+    if retained is None or retained.project_id != project.id:
+        raise HTTPException(404, "no such retained request in this project")
+    try:
+        content = read_sent_content(retained)
+    except (StorageError, OSError) as failure:
+        raise HTTPException(
+            502,
+            "the retained content of this request could not be read back: "
+            f"{type(failure).__name__}",
+        ) from failure
+    return Response(content=content, media_type="text/plain; charset=utf-8")
+
+
+@app.post("/work/{slug}/follow-up/response", response_class=HTMLResponse)
+def record_follow_up_response(
+    request: Request,
+    slug: str,
+    request_id: int = Form(...),
+    received_on: str = Form(...),
+    completeness: str = Form(...),
+    evidence_kind: str = Form(...),
+    source_reference: str = Form(...),
+    evidence_id: str = Form(""),
+    observation: str = Form(""),
+    observed_by: str = Form(""),
+    corrects_response_id: str = Form(""),
+    correction_reason: str = Form(""),
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+    clock=Depends(get_review_clock),
+):
+    """Record that something came back, and what it was linked to (#837).
+
+    **It stops the clock and settles nothing.** The no-response band reads a
+    retained request with no standing observation; this writes the observation,
+    and that is the whole effect. The Follow-up Plan stays open, the Proposed
+    Delta stays open, and the accepted record is untouched — the question is
+    settled on the surface that owns it, which is what the bundle's link back
+    to the coordination question is for.
+
+    **Acknowledgement, partial and substantive are three observations, not one
+    status.** An acknowledgement on Monday and the substance on Friday are two
+    rows, because they are two things that happened.
+
+    ``evidence_kind`` selects which of the four the coordinator has, and the
+    seam derives the kind again from what actually arrived, so a form that said
+    one thing and carried another is refused rather than recorded.
+    """
+
+    project = _project(session, slug, principal)
+    if not is_adopted_baseline(session, project.id):
+        raise HTTPException(404, f"no project {slug!r}")
+    now = clock()
+    linked = _corrected_record_id(
+        evidence_id, field="The document, delivery or passage this reply is in"
+    )
+    try:
+        record_outgoing_request_response(
+            session,
+            project_id=project.id,
+            request_id=request_id,
+            received_on=_recorded_date(
+                received_on, field="The day it came back"
+            ),
+            recorded_by_principal=principal.subject,
+            completeness=completeness.strip(),
+            source_reference=source_reference.strip(),
+            document_id=linked if evidence_kind == "document" else None,
+            source_delivery_id=(
+                linked if evidence_kind == "source_delivery" else None
+            ),
+            source_segment_id=(
+                linked if evidence_kind == "source_segment" else None
+            ),
+            observation=observation.strip() or None,
+            observed_by_principal=observed_by.strip() or None,
+            supersedes_response_id=_corrected_record_id(
+                corrects_response_id, field="The reply this corrects"
+            ),
+            correction_reason=correction_reason.strip() or None,
+            idempotency_key=f"reply:{canonical_sha256({
+                'request': request_id,
+                'received_on': received_on.strip(),
+                'completeness': completeness.strip(),
+                'evidence': f'{evidence_kind}:{evidence_id.strip()}',
+                'reference': source_reference.strip(),
+                'corrects': corrects_response_id.strip(),
+            })}",
+        )
+    except OutgoingRequestRefused as refused:
+        return _project_workflow_response(
+            request,
+            project,
+            principal,
+            session,
+            now=now,
+            correspondence_refusal=str(refused),
+            route_name="record_follow_up_response",
+            request_fields={"request_id": request_id},
+            status_code=409,
+        )
+    return _project_workflow_response(
+        request,
+        project,
+        principal,
+        session,
+        now=now,
+        correspondence_recorded=(
+            "Recorded against the request. The no-response finding stops; the "
+            "question this follow-up carries is still open until somebody "
+            "settles it on the review screen."
+        ),
+        route_name="record_follow_up_response",
+        request_fields={"request_id": request_id},
+        status_code=201,
+    )
 
 
 @app.get("/work/{slug}/issue/candidates/{candidate_id}/artifacts/{artifact_type}")

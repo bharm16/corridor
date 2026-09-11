@@ -411,6 +411,111 @@ CLAIMED_WORKFLOWS: tuple[WorkflowRow, ...] = (
 )
 
 
+#: Correspondence recording (#837), the first *selected* capability in this
+#: inventory. #652's maintainer decision classifies it exactly that way: it is
+#: "required when the partner's configured workflow or measured chase process
+#: includes response tracking" and explicitly "not a blocker for UCM
+#: compatibility intake, deterministic shadow processing, or a pilot scoped to
+#: manually managed correspondence". So it is not a step of the core journey
+#: every customer walks -- putting it there would claim every pilot needs it --
+#: and it is not omitted either, because a capability nobody exercises is
+#: exactly what #848 exists to find. It is a declared extension, exercised by
+#: its own scenario over the same harness, and held to the same three
+#: questions: every actionable state has an act, every claimed workflow has
+#: both halves, and every row names a route the product serves.
+SELECTED_CAPABILITIES: tuple[JourneyRow, ...] = (
+    JourneyRow(
+        role=COORDINATION,
+        state="A Follow-up Plan is recorded and the coordinator has written "
+        "to the External Organization from their own mail client",
+        action="Record what was sent, against the plans it advanced",
+        route="POST /work/{slug}/follow-up/sent",
+        result="The message, its digest and the plans it named are retained, "
+        "with an explicit expected-response date the person confirmed",
+        scenario="record_what_was_sent",
+        owner="#837",
+        produces="retained outgoing request",
+    ),
+    JourneyRow(
+        role=COORDINATION,
+        state="A request is retained and somebody asks what was actually sent",
+        action="Read the exact message back",
+        route="GET /work/{slug}/follow-up/sent/{request_id}",
+        result="The retained content, verified against its digest on the way "
+        "out; never the digest in place of the message",
+        scenario="record_what_was_sent",
+        owner="#837",
+        retrieves="retained outgoing request",
+    ),
+    JourneyRow(
+        role=COORDINATION,
+        state="A retained request is past the expected-response date and "
+        "nothing has been recorded back",
+        action="None: there is nothing to record until somebody replies",
+        route="GET /work/{slug}",
+        result="The follow-up carries the no-response finding, which exists "
+        "only because a request and a boundary are both retained (ADR-0090)",
+        scenario="the_boundary_passes",
+        owner="#837",
+        handoff_to=COORDINATION,
+    ),
+    JourneyRow(
+        role=COORDINATION,
+        state="Something has come back from the External Organization",
+        action="Record the response and what it was read from",
+        route="POST /work/{slug}/follow-up/response",
+        result="The no-response finding stops; the Follow-up Plan, the "
+        "Proposed Delta and the accepted record are unchanged",
+        scenario="record_what_came_back",
+        owner="#837",
+    ),
+    JourneyRow(
+        role=COORDINATION,
+        state="A recorded request or response was wrong",
+        action="Record a corrected one naming the original and why",
+        route="POST /work/{slug}/follow-up/sent",
+        result="Both records stay readable and the corrected one is the record "
+        "in force; nothing is rewritten",
+        scenario="correct_a_mistaken_record",
+        owner="#837",
+    ),
+    JourneyRow(
+        role=ENROLLED_ONLY,
+        state="A reply is recorded and the record question is still open",
+        action="None: recording a reply settles nothing",
+        route="POST /review/{slug}/answers",
+        result="The question is settled on the review screen, by a decision "
+        "that writes a Project Record revision -- not by the reply",
+        scenario="record_what_came_back",
+        owner="#837, #835",
+        handoff_to=COORDINATION,
+    ),
+)
+
+
+#: The workflows the selected capability claims, held to #848's "a writer with
+#: no caller looks exactly like a writer" question. #652 shipped exactly that
+#: and this is what closes it, so the row is the point rather than a formality.
+SELECTED_CAPABILITY_WORKFLOWS: tuple[WorkflowRow, ...] = (
+    WorkflowRow(
+        workflow="An outgoing request is retained",
+        producer="POST /work/{slug}/follow-up/sent",
+        consumer="GET /work/{slug}, the Follow-up section, and "
+        "GET /work/{slug}/follow-up/sent/{request_id} for the content",
+        scenario="record_what_was_sent",
+        owner="#837",
+    ),
+    WorkflowRow(
+        workflow="A received response is recorded",
+        producer="POST /work/{slug}/follow-up/response",
+        consumer="GET /work/{slug}, the Follow-up section, and the "
+        "no-response band that stops firing",
+        scenario="record_what_came_back",
+        owner="#837",
+    ),
+)
+
+
 #: How a row says this role may not act here. The sentence after it is the
 #: reason, and the row then has to name who can act instead.
 NO_PERMITTED_ACTION = "None:"

@@ -102,7 +102,7 @@ import json
 from typing import Any, Mapping, Sequence
 
 from sqlalchemy import exists, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from corridor.analytics import (
     AnalyticsBinding,
@@ -294,6 +294,31 @@ NO_MOVEMENT_SENTENCE = (
 )
 
 # --- asks -------------------------------------------------------------------
+
+# The declared prefix of a plan item's identity. It is a constant rather than
+# an inline f-string because a second reader depends on it: the follow-up
+# section has to know which Follow-up Plans one bundle covers before it can
+# offer to record a request against them (#837), and it recovers them from
+# ``FollowUpBundle.item_identities`` rather than from a second query that could
+# answer differently.
+PLAN_ITEM_PREFIX = "follow_up_plan:"
+
+
+def plan_ids_of(bundle: FollowUpBundle) -> tuple[int, ...]:
+    """The Follow-up Plans one bundle's items came from, in declared order.
+
+    A bundle is one interaction covering several questions, so this is the set
+    a single recorded request may advance. A bundle with no plan item — one
+    built only from accepted dates, or from a retained request — has none, and
+    says so by returning nothing rather than by guessing.
+    """
+
+    return tuple(
+        int(identity[len(PLAN_ITEM_PREFIX):])
+        for identity in bundle.item_identities
+        if identity.startswith(PLAN_ITEM_PREFIX)
+    )
+
 
 ASK_CONFIRM_ACCEPTED_DATE = "confirm_accepted_date"
 ASK_ANSWER_OPEN_QUESTION = "answer_open_question"
@@ -533,20 +558,36 @@ def read_retained_outgoing_requests(
 
     #652 gave Corridor a place to retain a sent request and the response
     boundary it declared (``outgoing_requests``), so this reads that table
-    rather than returning empty. Two things bound what it returns, both from
+    rather than returning empty. Three things bound what it returns, all from
     the reading's own declared cutoff and never from a clock: a request sent
-    *after* ``as_of`` is not yet retained as of this reading, and a request with
-    a response recorded on or before ``as_of`` has had its silence clock
-    stopped — a received answer is not a no-response, whatever the boundary
-    says. A project that has retained nothing still reads as empty, which is the
-    honest state ADR-0090 retired ``STALE`` for approximating from silence.
+    *after* ``as_of`` is not yet retained as of this reading; a request with a
+    standing observation recorded on or before ``as_of`` has had its silence
+    clock stopped — a received answer is not a no-response, whatever the
+    boundary says, and whatever the answer contained; and a request somebody
+    has corrected is read through its correction rather than twice, because
+    #837 makes correction an append that supersedes rather than a rewrite. A
+    project that has retained nothing still reads as empty, which is the honest
+    state ADR-0090 retired ``STALE`` for approximating from silence.
     """
 
     as_of_date = as_of.date()
+    correction = aliased(OutgoingRequestResponse)
+    successor = aliased(OutgoingRequest)
+    # A standing observation: one recorded by the cutoff that no later
+    # observation has corrected. An acknowledgement is one, deliberately —
+    # "they have not replied" stops being true the moment they reply.
     answered = exists().where(
         OutgoingRequestResponse.project_id == OutgoingRequest.project_id,
         OutgoingRequestResponse.request_id == OutgoingRequest.id,
         OutgoingRequestResponse.received_on <= as_of_date,
+        ~exists().where(
+            correction.project_id == OutgoingRequestResponse.project_id,
+            correction.supersedes_response_id == OutgoingRequestResponse.id,
+        ),
+    )
+    corrected = exists().where(
+        successor.project_id == OutgoingRequest.project_id,
+        successor.supersedes_request_id == OutgoingRequest.id,
     )
     rows = session.scalars(
         select(OutgoingRequest)
@@ -554,6 +595,7 @@ def read_retained_outgoing_requests(
             OutgoingRequest.project_id == project_id,
             OutgoingRequest.sent_on <= as_of_date,
             ~answered,
+            ~corrected,
         )
         .order_by(OutgoingRequest.expected_response_by, OutgoingRequest.id)
     ).all()
@@ -931,7 +973,7 @@ def _plan_items(
                 references=references + tuple(
                     quote.reference for quote in quoted
                 ),
-                identity=f"follow_up_plan:{plan.id}",
+                identity=f"{PLAN_ITEM_PREFIX}{plan.id}",
             )
         )
     return tuple(made)
