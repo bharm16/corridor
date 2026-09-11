@@ -1,3 +1,40 @@
+{% import "statement_scope_match_card.html" as scope_match -%}
+{#
+  Every fact on this page comes from `corridor.web.statement_view`; the handler
+  passes that one reading and adds only the refusal sentence its own write path
+  raised. The names below are the reading's own fields, bound once here, so
+  what this screen requires is a field list rather than a dict literal at the
+  end of a route body.
+#}
+{% set candidate = reading.candidate %}
+{% set candidate_fields = reading.candidate_fields %}
+{% set candidate_party = reading.candidate_party %}
+{% set candidate_affected_party_id = reading.candidate_affected_party_id %}
+{% set candidate_stated_party = reading.candidate_stated_party %}
+{% set candidate_stated_party_id = reading.candidate_stated_party_id %}
+{% set candidate_description = reading.candidate_description %}
+{% set candidate_event_date = reading.candidate_event_date %}
+{% set candidate_timing = reading.candidate_timing %}
+{% set candidate_evidence = reading.candidate_evidence %}
+{% set candidate_evidence_available = reading.candidate_evidence_available %}
+{% set candidate_evidence_unavailable_message = reading.candidate_evidence_unavailable_message %}
+{% set guided_save_available = reading.guided_save_available %}
+{% set guided_save_refusal = reading.guided_save_refusal %}
+{% set next_action_choices = reading.next_action_choices %}
+{% set scope_match_card = reading.scope_match_card %}
+{% set statement_suggestions = reading.statement_suggestions %}
+{% set dependencies = reading.dependencies %}
+{% set roster = reading.roster %}
+{% set parties = reading.parties %}
+{% set milestones = reading.milestones %}
+{% set receipt = reading.receipt %}
+{% set event = reading.event %}
+{% set line = reading.line %}
+{% set not_relevant = reading.not_relevant %}
+{% set history = reading.history %}
+{% set pending_authority_gap = reading.pending_authority_gap %}
+{% set pending_authority_gap_label = reading.pending_authority_gap_label %}
+{% set unresolved_acknowledgment = reading.unresolved_acknowledgment %}
 <!doctype html>
 <meta charset="utf-8">
 <title>Coordinate statement — {{ project.name }}</title>
@@ -198,7 +235,7 @@
       <fieldset>
         <legend>{{ label('applies_to') }}</legend>
         <p class="muted">Record only the constraints that the visible source passages and project record support. Keeping the links unknown preserves the organization's statement and changes no Constraint.</p>
-        {% if scope_match_card %}{% include "statement_scope_match_card.html" %}{% endif %}
+        {% if scope_match_card %}{{ scope_match.card(scope_match_card, candidate_evidence) }}{% endif %}
         {% if statement_suggestions %}
           <section class="choice" id="statement-suggestions">
             <b>Possible matching constraints</b>

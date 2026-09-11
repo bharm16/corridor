@@ -10,7 +10,9 @@ Which rasterizer the worker runs is decided here too (#735). It is one
 deployment setting, off, and the request carries the answer to the worker;
 the manifest records the engine that ran and the derivative identity carries
 it, so PDFium renders accumulate beside the MuPDF renders already retained
-rather than replacing them.
+rather than replacing them. A request may name only an engine the worker still
+has an adapter for: #741 removed MuPDF's, and a request naming it was refused
+inside the spawned process until the domain narrowed to what is served.
 """
 
 from __future__ import annotations
@@ -49,12 +51,24 @@ DEFAULT_MEASUREMENT_PATH = (
 )
 DEFAULT_WORKER_PROJECT = ROOT / "workers" / "render"
 
-# The two rasterizers the worker can run (#735). The legacy engine is the one
-# every derivative recorded before #735 was rendered with; the replacement is
-# the engine ADR-0094 decided on.
+# The two rasterizer identities a derivative can record (#735). The legacy
+# engine is the one every derivative recorded before #735 was rendered with;
+# the replacement is the engine ADR-0094 decided on. Only the replacement has
+# an adapter - #741 deleted MuPDF's with the engine - so the legacy name is an
+# identity a retained manifest carries, never a rasterizer a request may name.
+# `SERVED_RASTERIZERS` is that request domain.
 LEGACY_RASTERIZER = "pymupdf"
 REPLACEMENT_RASTERIZER = "pdfium"
-RASTERIZERS = (LEGACY_RASTERIZER, REPLACEMENT_RASTERIZER)
+SERVED_RASTERIZERS = (REPLACEMENT_RASTERIZER,)
+
+# `render_worker.rasterise` states this same refusal, because the worker is a
+# separate uv project that cannot import this module and a request file it is
+# handed may come from anywhere. Stating it here too is what makes a retired
+# request cost a sentence instead of a process start.
+RETIRED_RASTERIZER_REFUSAL = (
+    f"the {LEGACY_RASTERIZER} rasterizer was removed with the engine (#741); "
+    "its renders are retained and are not re-rendered here"
+)
 
 
 def selected_rasterizer() -> str:
@@ -436,7 +450,9 @@ def render_page_derivatives(
     if not profile_names:
         raise ValueError("render requires at least one profile")
     engine = rasterizer or selected_rasterizer()
-    if engine not in RASTERIZERS:
+    if engine == LEGACY_RASTERIZER:
+        raise ValueError(RETIRED_RASTERIZER_REFUSAL)
+    if engine not in SERVED_RASTERIZERS:
         raise ValueError(f"unknown rasterizer {engine!r}")
     bundle = load_render_profile_bundle()
     profiles = []
@@ -453,15 +469,12 @@ def render_page_derivatives(
     output = Path(output_dir).resolve()
     output.mkdir(parents=True, exist_ok=True)
     project = Path(worker_project)
-    worker_identity = None
-    raster_output = output
-    if engine == REPLACEMENT_RASTERIZER:
-        worker_identity = {
-            path.name: hashlib.sha256(path.read_bytes()).hexdigest()
-            for path in sorted((*project.glob("*.py"), project / "uv.lock"))
-        }
-        namespace = hashlib.sha256(json.dumps(worker_identity, sort_keys=True).encode()).hexdigest()
-        raster_output = output / f"worker-{namespace}"
+    worker_identity = {
+        path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in sorted((*project.glob("*.py"), project / "uv.lock"))
+    }
+    namespace = hashlib.sha256(json.dumps(worker_identity, sort_keys=True).encode()).hexdigest()
+    raster_output = output / f"worker-{namespace}"
     identity = uuid4().hex
     request_path = output / f".{identity}.request.json"
     manifest_path = output / f".{identity}.manifest.json"
@@ -471,7 +484,7 @@ def render_page_derivatives(
             "page_number": page_number,
             "profile": profile.model_dump(mode="json"),
             "rasterizer": engine,
-            **({"preprocessing_version": "pdfium-deskew-v2"} if engine == REPLACEMENT_RASTERIZER else {}),
+            "preprocessing_version": "pdfium-deskew-v2",
             "output_dir": str(raster_output.resolve()),
             "clip_page_box": (
                 clip_page_box.model_dump(mode="json") if clip_page_box else None
@@ -506,14 +519,13 @@ def render_page_derivatives(
                 "render worker failed: " + (completed.stderr or completed.stdout)
             )
         manifests = json.loads(manifest_path.read_text())["manifests"]
-        if worker_identity is not None:
-            if worker_identity != {
-                path.name: hashlib.sha256(path.read_bytes()).hexdigest()
-                for path in sorted((*project.glob("*.py"), project / "uv.lock"))
-            }:
-                raise ValueError("render worker bytes changed while the request ran")
-            for manifest in manifests:
-                manifest["parameters"]["worker_runtime_sha256s"] = worker_identity
+        if worker_identity != {
+            path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in sorted((*project.glob("*.py"), project / "uv.lock"))
+        }:
+            raise ValueError("render worker bytes changed while the request ran")
+        for manifest in manifests:
+            manifest["parameters"]["worker_runtime_sha256s"] = worker_identity
         return [
             RenderDerivative.model_validate(manifest) for manifest in manifests
         ]
@@ -656,7 +668,10 @@ def regenerate_render_derivative(
     currently selects: a derivative regenerated with the other rasterizer would
     be different pixels under the same identity, which is the one thing
     regeneration must never produce. A manifest written before #735 names no
-    engine and is MuPDF's.
+    engine and is MuPDF's, so regenerating one is refused by the same rule that
+    refuses any request for a retired engine — its pixels are retained, and
+    rendering them again with PDFium would put different pixels under the
+    identity the retained row already holds.
     """
 
     source = Path(pdf_path)

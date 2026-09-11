@@ -13,6 +13,7 @@ from copy import deepcopy
 from datetime import date
 from uuid import uuid4
 
+import pytest
 from sqlalchemy import select
 
 from corridor.adjudicate import accept_candidate
@@ -284,6 +285,69 @@ def _one(session, project_id):
     consequences = routing.route_support_update_consequences(session, project_id)
     assert len(consequences) == 1, [c.reason for c in consequences]
     return consequences[0]
+
+
+# --- each destination's own next step, beside the destinations --------------
+
+
+def test_every_customer_destination_names_its_own_next_step():
+    """The five next steps the Constraint screen used to mint, at their owner.
+
+    Each sentence lived only inside `dependency.html` and nothing asserted any
+    of them, while this module already held the destination identifiers and the
+    plain project language of `explanation` beside them. These are the exact
+    words that screen rendered, moved unchanged; changing one is a terminology
+    decision (`docs/agents/domain.md`), not an edit to this test.
+    """
+
+    assert routing.destination_next_step(routing.SOURCE_DISCREPANCY) == (
+        "Resolve the source discrepancy below, or record Needs clarification "
+        "to keep it open."
+    )
+    assert routing.destination_next_step(routing.DOCUMENTATION_REVIEW) == (
+        "Review the documentation against the stated requirement below."
+    )
+    assert routing.destination_next_step(routing.FAILED_CITATION) == (
+        "Check the citation on the supporting documents below before it is used."
+    )
+    assert routing.destination_next_step(routing.GUIDED_STATEMENT) == (
+        "Coordinate the correct statement from the kept alternatives."
+    )
+    assert routing.destination_next_step(routing.CORRECTION_REMOVAL) == (
+        "Remove this entry from the active log, or correct it, using the "
+        "controls below."
+    )
+    # An operations problem is never a customer task: a coordinator is not
+    # asked to repair processing, so the screen prints nothing for it.
+    assert routing.destination_next_step(routing.OPERATIONS) == ""
+    # Every destination this module routes to answers here, so a new one
+    # cannot be added without deciding what it asks a coordinator to do.
+    for destination in routing.DESTINATIONS:
+        routing.destination_next_step(destination)
+    with pytest.raises(ValueError):
+        routing.destination_next_step("not_a_destination")
+
+
+def test_a_routed_consequence_carries_its_next_step_beside_its_explanation():
+    """The screen reads the consequence, never the destination string itself."""
+
+    consequence = routing.RoutedSupportConsequence(
+        dependency_id=1,
+        reason="comparison_changed",
+        status="changed",
+        destination=routing.SOURCE_DISCREPANCY,
+        is_operations=False,
+        explanation="the newer document states a different value",
+        comparison_id=None,
+        finding_id=None,
+        predecessor_document_id=None,
+        successor_document_id=None,
+    )
+
+    assert consequence.next_step == routing.destination_next_step(
+        routing.SOURCE_DISCREPANCY
+    )
+    assert consequence.next_step != consequence.explanation
 
 
 # --- exact unchanged support produces no coordination question -------------

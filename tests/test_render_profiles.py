@@ -5,11 +5,13 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+import subprocess
 
 from PIL import Image
 import pytest
 from sqlalchemy import select
 
+from corridor import render_rasterizer_comparison
 from corridor.config import settings
 from corridor.db import engine
 from corridor.models import (
@@ -21,7 +23,7 @@ from corridor.models import (
 )
 from corridor.render_profiles import (
     LEGACY_RASTERIZER,
-    RASTERIZERS,
+    SERVED_RASTERIZERS,
     PageBox,
     RenderProfileMeasurement,
     load_render_profile_bundle,
@@ -388,12 +390,112 @@ def test_the_only_rasterizer_is_the_replacement_and_retained_renders_keep_their_
     What survives the removal is the retained identity: every derivative
     rendered before the switch records the MuPDF rasterizer, and the artifact
     naming rule that leaves it out of the file name is what keeps those files
-    where they are. So the constant stays and the engine does not.
+    where they are. So the constant stays and the engine does not - and
+    because the engine does not, the constant is not in the set a request may
+    name. Those are two different questions about one name, and this is both
+    of the answers.
     """
 
     assert selected_rasterizer() == "pdfium"
     assert not hasattr(settings, "pdfium_render_worker")
-    assert LEGACY_RASTERIZER in RASTERIZERS
+    assert LEGACY_RASTERIZER == "pymupdf"
+    assert SERVED_RASTERIZERS == ("pdfium",)
+
+
+def test_a_retired_rasterizer_is_refused_here_and_starts_no_worker(
+    tmp_path, monkeypatch
+):
+    """The worker's own sentence, before the process that would have said it.
+
+    `rasterizer="pymupdf"` passed this check until the request domain narrowed
+    to the served set: it reached the request file, started `uv run --project
+    workers/render`, and was refused there by name, which the caller could
+    only report as a `RuntimeError` carrying the worker's traceback. The
+    engine has had no adapter since #741, so nothing about that request was
+    ever going to succeed and none of it needs a process.
+    """
+
+    def no_worker(*args, **kwargs):
+        raise AssertionError("a refused render must not start the render worker")
+
+    monkeypatch.setattr(subprocess, "run", no_worker)
+
+    with pytest.raises(ValueError) as refusal:
+        render_page_derivative(
+            pdf_path=tmp_path / "never-opened.pdf",
+            page_number=1,
+            profile_name="review",
+            output_dir=tmp_path / "renders",
+            rasterizer=LEGACY_RASTERIZER,
+        )
+
+    assert LEGACY_RASTERIZER in str(refusal.value)
+    assert "removed with the engine (#741)" in str(refusal.value)
+    # Nothing was staged either: the refusal precedes the output directory the
+    # request file would have been written into.
+    assert not (tmp_path / "renders").exists()
+
+
+def test_regenerating_a_retained_mupdf_derivative_is_refused_at_the_same_seam(
+    tmp_path, monkeypatch
+):
+    """A manifest written before #735 names no engine and is MuPDF's.
+
+    That is the one production caller that still asks for the retired engine,
+    and it asks by replaying what the retained row recorded rather than by
+    naming an engine of its own. It has to be refused: rendering those pixels
+    again with PDFium would put different pixels under the identity the
+    retained row already holds.
+    """
+
+    def no_worker(*args, **kwargs):
+        raise AssertionError("a refused regeneration must not start the render worker")
+
+    monkeypatch.setattr(subprocess, "run", no_worker)
+
+    source = synthetic_pdf(tmp_path / "retained-source.pdf")
+    stored = PageRenderDerivative(
+        document_id=1,
+        page_number=1,
+        derivative_key="retained",
+        profile_name="review",
+        profile_id="0" * 16,
+        source_sha256=hashlib.sha256(source.read_bytes()).hexdigest(),
+        artifact_path=str(tmp_path / "retained.png"),
+        artifact_sha256="0" * 64,
+        artifact_bytes=1,
+        manifest_json={},
+        retention_class="intermediary_processing",
+    )
+
+    with pytest.raises(ValueError) as refusal:
+        regenerate_render_derivative(
+            stored, pdf_path=source, output_dir=tmp_path / "regenerated"
+        )
+
+    assert "removed with the engine (#741)" in str(refusal.value)
+    assert not (tmp_path / "regenerated").exists()
+
+
+def test_the_rasterizer_comparison_refuses_once_and_names_its_retained_receipt(
+    tmp_path,
+):
+    """The spent experiment says so, rather than failing 192 documents.
+
+    It compares the two engines per document inside `except Exception`, so
+    with one engine gone every document lands in `failed`: run against the
+    corpus store it reported 192 failures, 0 compared and no library versions
+    at all, in a receipt carrying the same schema as the real one.
+    """
+
+    unwritten = tmp_path / "unwritten.json"
+
+    with pytest.raises(RuntimeError) as refusal:
+        render_rasterizer_comparison.main(["--output", str(unwritten)])
+
+    assert "spent" in str(refusal.value)
+    assert "735-corpus-render-comparison.json" in str(refusal.value)
+    assert not unwritten.exists()
 
 
 @pytest.mark.parametrize("rotation", [0, 90, 180, 270])

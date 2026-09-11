@@ -125,7 +125,7 @@
     {{ view.org_name or 'no organization identified' }} ·
     {{ view.dependency.station_from or '—' }}{% if view.dependency.station_to %} → {{ view.dependency.station_to }}{% endif %} ·
     {% if view.dependency.resolution_strategy %}{{ resolution_strategy_label(view.dependency.resolution_strategy) }}{% else %}no resolution method recorded{% endif %}
-    {% set documentation_words = (("Documentation fields complete" if view.is_ready else "Documentation fields not complete") if checklist.uses_standard_checklist else documentation_review_label(view.is_ready)) %}
+    {% set documentation_words = documentation_state_label(view.is_ready, uses_standard_checklist=checklist.uses_standard_checklist) %}
     {{ ui.state(state_label('settled' if view.is_ready else 'neutral', documentation_words)) }}
     {% if view.contradictions %}{{ ui.state(state_label('attention', 'Sources disagree on ' ~ view.contradictions|length ~ ' field(s)')) }}{% endif %}
   </p>
@@ -167,19 +167,7 @@
           </p>
         {% endfor %}
       {% endif %}
-      <p class="muted" style="margin:.3rem 0 0;">
-        {% if support_consequence.destination == "source_discrepancy" %}
-          Resolve the source discrepancy below, or record Needs clarification to keep it open.
-        {% elif support_consequence.destination == "documentation_review" %}
-          Review the documentation against the stated requirement below.
-        {% elif support_consequence.destination == "failed_citation" %}
-          Check the citation on the supporting documents below before it is used.
-        {% elif support_consequence.destination == "guided_statement" %}
-          Coordinate the correct statement from the kept alternatives.
-        {% elif support_consequence.destination == "correction_removal" %}
-          Remove this entry from the active log, or correct it, using the controls below.
-        {% endif %}
-      </p>
+      <p class="muted" style="margin:.3rem 0 0;">{{ support_consequence.next_step }}</p>
 
       {% if revision_change_binding %}
         <div class="revision-change-explanation" aria-label="Optional explanation of the change"
@@ -448,7 +436,7 @@
             {{ a.filename or 'unknown document' }}{% if a.page_no %} p.{{ a.page_no }}{% endif %}
             {% if a.document_date %} · {{ a.document_date }}{% else %} · date unavailable{% endif %}
             {% if a.text_source %} · {{ a.text_source|replace('_', ' ') }}{% endif %}
-            {% if a.locator_validation_status != 'valid' %}{{ ui.state(state_label('refused', label('source_passage_check') ~ ': ' ~ source_passage_check_label(a.locator_validation_status)|lower)) }}{% endif %}
+            {% if not evidence_link_verified(a.locator_validation_status) %}{{ ui.state(state_label('refused', label('source_passage_check') ~ ': ' ~ source_passage_check_label(a.locator_validation_status)|lower)) }}{% endif %}
           </span>
           <span class="value">{{ a.value or '—' }}</span>
           <span class="q">{{ a.quote or '' }}</span>
@@ -770,7 +758,7 @@
                       <label>met by
                         <select name="basis_evidence_link_id">
                           <option value="">— cite a later passage —</option>
-                          {% for link, doc in view.evidence if locator_validation_status(link) == 'valid' and link.id != c.evidence_link_id %}
+                          {% for link, doc in view.evidence if evidence_link_verified(locator_validation_status(link)) and link.id != c.evidence_link_id %}
                             <option value="{{ link.id }}">{{ doc.filename }} p.{{ link.page_no }}: “{{ link.quote[:80] }}”</option>
                           {% endfor %}
                         </select>
@@ -819,7 +807,7 @@
           <td class="muted">{{ link.page_no }}</td>
           <td class="q" style="font-family:ui-monospace,monospace;font-size:.76rem">{{ link.quote[:110] }}</td>
           {% set passage_check = locator_validation_status(link) %}
-          <td>{{ ui.state(state_label('settled' if passage_check == 'valid' else 'refused', source_passage_check_label(passage_check))) }}</td>
+          <td>{{ ui.state(state_label('settled' if evidence_link_verified(passage_check) else 'refused', source_passage_check_label(passage_check))) }}</td>
           <td>
             {% if checklist.uses_standard_checklist %}
               <span class="muted">Read through the standard checklist above.</span>
@@ -828,7 +816,7 @@
                     action="/dependencies/{{ view.dependency.id }}/evidence/{{ link.id }}/satisfies">
     {{ csrf_field() }}
                 <input type="hidden" name="slug" value="{{ project.slug }}">
-                <button {% if passage_check != 'valid' %}disabled
+                <button {% if not evidence_link_verified(passage_check) %}disabled
                   title="The cited passage must be found in the source before these documents can be marked sufficient."{% endif %}>
                   {% if link.id in sufficient_evidence_ids %}Remove sufficiency mark{% else %}Mark documents sufficient{% endif %}
                 </button>

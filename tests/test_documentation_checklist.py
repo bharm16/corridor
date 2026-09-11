@@ -26,6 +26,10 @@ from corridor.models import (
     Project,
     ProjectRosterEntry,
 )
+from corridor.presentation import (
+    documentation_review_label,
+    documentation_state_label,
+)
 from corridor.principals import HumanPrincipal
 from corridor.work_decisions import (
     current_internal_owner_decision,
@@ -146,6 +150,39 @@ def test_relocation_checklist_derives_machine_field_and_requires_cited_confirmat
     assert audit.action == "confirm_documentation_interpretation"
     assert audit.actor == REVIEWER.subject
     assert audit.after_json["evidence_link_id"] == approval.id
+
+
+def test_the_two_documentation_states_are_named_by_their_own_words():
+    """Filled standard fields and a retained legacy mark are different facts.
+
+    Both sentences used to be composed inside `dependency.html`, the
+    standard-checklist pair as Jinja literals that appeared nowhere in `src/`
+    at all — so one Project Record question was answered by an owned label on
+    the legacy path and by the screen itself on the other. These are the exact
+    words the screen has always rendered; changing either is a terminology
+    decision (`docs/agents/domain.md`), not an edit to this test.
+    """
+
+    assert (
+        documentation_state_label(True, uses_standard_checklist=True)
+        == "Documentation fields complete"
+    )
+    assert (
+        documentation_state_label(False, uses_standard_checklist=True)
+        == "Documentation fields not complete"
+    )
+    # The legacy mark keeps its own adopted label rather than a second copy of
+    # it: `documentation_review_label` is still the one owner of those words.
+    assert documentation_state_label(
+        True, uses_standard_checklist=False
+    ) == documentation_review_label(True)
+    assert documentation_state_label(
+        False, uses_standard_checklist=False
+    ) == documentation_review_label(False)
+    # Neither path may describe the other's fact.
+    assert documentation_state_label(
+        True, uses_standard_checklist=False
+    ) != documentation_state_label(True, uses_standard_checklist=True)
 
 
 def test_legacy_sufficiency_stays_effective_until_a_structured_confirmation_replaces_it(

@@ -97,6 +97,41 @@ WORK_LIST_REASON_CODES: tuple[str, ...] = (
     "support_dropped_row",
 )
 
+# What a coordinator does next at each customer destination, in the same plain
+# project language as ``RoutedSupportConsequence.explanation``.  These five
+# sentences were minted inside ``dependency.html`` and existed nowhere else, so
+# the screen that named a destination also decided what it asks for; they are
+# moved here unchanged, beside the destinations they belong to.  An operations
+# problem has no customer next step — a coordinator is never asked to repair
+# processing — and the screen prints nothing for it, as it always has.
+_DESTINATION_NEXT_STEPS: dict[str, str] = {
+    SOURCE_DISCREPANCY: (
+        "Resolve the source discrepancy below, or record Needs clarification "
+        "to keep it open."
+    ),
+    DOCUMENTATION_REVIEW: (
+        "Review the documentation against the stated requirement below."
+    ),
+    FAILED_CITATION: (
+        "Check the citation on the supporting documents below before it is used."
+    ),
+    GUIDED_STATEMENT: "Coordinate the correct statement from the kept alternatives.",
+    CORRECTION_REMOVAL: (
+        "Remove this entry from the active log, or correct it, using the "
+        "controls below."
+    ),
+    OPERATIONS: "",
+}
+
+
+def destination_next_step(destination: str) -> str:
+    """The next step one routed destination asks for; empty for operations."""
+
+    if destination not in DESTINATIONS:
+        raise ValueError(f"unknown support-update destination {destination!r}")
+    return _DESTINATION_NEXT_STEPS[destination]
+
+
 # Citation-provenance failures are a failed-citation clarification, not a value
 # disagreement.
 _FAILED_CITATION_REASONS = frozenset(
@@ -212,6 +247,12 @@ class RoutedSupportConsequence:
         if self.is_operations:
             return None
         return WORK_LIST_REASONS.get(self.destination)
+
+    @property
+    def next_step(self) -> str:
+        """What a coordinator does next here, in this module's own words."""
+
+        return destination_next_step(self.destination)
 
 
 def route_support_update_consequences(
