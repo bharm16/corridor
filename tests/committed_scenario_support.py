@@ -269,8 +269,13 @@ def project_rows(table: Table, project_id: int) -> ColumnElement[bool]:
     )
 
 
-def delete_project_graph(cleanup: Session, project_id: int) -> None:
+def delete_project_graph(cleanup: Session, project_id: int) -> dict[str, list[int]]:
     """Delete one project's whole graph inside an open replica-mode cleanup.
+
+    Returns whatever survived, keyed by table, so the caller can commit the
+    rows it did remove before failing: a cleanup that rolled its whole
+    deletion back would hand the leak to the next module instead of to the
+    one that caused it.
 
     The keys are read before anything is deleted, because a dependent is
     placed by its parent's rows: were the parent deleted first, the dependent
@@ -287,7 +292,7 @@ def delete_project_graph(cleanup: Session, project_id: int) -> None:
     }
     for table in PROJECT_GRAPH_TABLES:
         cleanup.execute(delete(table).where(project_rows(table, project_id)))
-    leaked = {}
+    leaked: dict[str, list[int]] = {}
     for table in PROJECT_GRAPH_TABLES:
         keys = doomed[table.name]
         if not keys:
@@ -296,10 +301,7 @@ def delete_project_graph(cleanup: Session, project_id: int) -> None:
         surviving = cleanup.scalars(select(key).where(key.in_(keys))).all()
         if surviving:
             leaked[table.name] = sorted(surviving)
-    assert leaked == {}, (
-        f"the committed-scenario cleanup left rows of project {project_id} behind: "
-        f"{leaked}"
-    )
+    return leaked
 
 
 def delete_committed_project(
@@ -316,5 +318,9 @@ def delete_committed_project(
 
     with session_factory() as cleanup:
         cleanup.execute(text("set local session_replication_role = replica"))
-        delete_project_graph(cleanup, project_id)
+        leaked = delete_project_graph(cleanup, project_id)
         cleanup.commit()
+    assert leaked == {}, (
+        f"the committed-scenario cleanup left rows of project {project_id} behind: "
+        f"{leaked}"
+    )
