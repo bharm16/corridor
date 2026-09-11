@@ -46,6 +46,47 @@ on that view and nothing at all on ``due_work_occurrences`` or
 gate-7 declaration, or any write path into the scheduler. See
 ``corridor.migrations.source_append_commands.web_capability``.
 
+**"The latest" is the projection's selection, not an adjective added here.**
+``current_project_processing_pass`` returns one row per project, ``distinct
+on`` ordered: a ``claimed`` occurrence first, then the longest-lived lease,
+then ``due_at desc, id desc``. Every terminal state releases its lease --
+``due_work._release_occurrence`` nulls ``claimed_at`` and ``lease_expires_at``
+for ``completed``, ``failed`` and ``retry_due`` alike -- so the lease term only
+ever ranks claimed rows against each other, and among the rest the most
+recently due occurrence wins. A reading of ``failed`` therefore carries two
+facts at once: nothing is claimed, and no occurrence of this project's
+processing schedule is newer. That is what makes *latest* sayable. It is
+proved rather than assumed, in ``test_project_processing_banner.py``, by
+showing a later pass displacing the failure from each of the three states it
+can be in.
+
+**A subsequent attempt speaks from its own record.** The runtime enqueues the
+next due slot as its own occurrence, and that occurrence is what this reading
+then reports -- pending and unclaimed, claimed by a worker, or completed.
+Nothing about a retry is inferred from the failed row, and the failure
+sentence is never qualified with a promise that something is trying again. A
+pass whose retries are not yet spent is not ``failed`` at all: it is
+``retry_due``, which this module says nothing about.
+
+**A failed pass is not a failed document.** The sentence names the pass and
+counts nothing, because nothing here counts. What became of each delivery is
+the source register's own rows, which carry ``Processed``, ``Failed to
+parse``, ``Unreadable`` and ``Processing failed -- a later pass will retry``
+per document; the banner sits above that table and does not speak for it.
+A failure does not say every document failed, that completed work was rolled
+back, or that nothing is retrying -- and this module asserts none of those.
+
+**The approved sentence has a second half that has nowhere to go from here.**
+It reads "The latest document-processing pass failed. Open Sources to see the
+affected documents and next steps." The only surface that renders this banner
+is the source register at ``/projects/{slug}/sources`` -- the Sources page
+itself -- so that second sentence would tell a reader to open the page they
+are already reading, and the affected documents are the rows immediately
+below it. It is left unprinted rather than reworded: what to say instead to a
+reader who is already there is a customer-facing wording decision, and it is
+not this module's to make. A surface that shows this banner from somewhere
+else is where that half belongs.
+
 **The clock is an argument.** Whether a lease is in force is a comparison
 against an instant the caller supplies, exactly as every other review reading
 takes its cutoff (ADR-0084, #488), so a test states the moment rather than
@@ -68,7 +109,9 @@ CLAIMED = "claimed"
 CLAIM_EXPIRED = "claim_expired"
 # The runtime spent this occurrence's retries and recorded it as failed. It is
 # the one unclaimed state the page still speaks about, because a failure that
-# nothing says out loud is a failure a coordinator waits through.
+# nothing says out loud is a failure a coordinator waits through. Reaching this
+# reading at all means the projection found nothing claimed and nothing newer,
+# which is the whole of what lets the sentence say "the latest".
 FAILED = "failed"
 # The occurrence is in none of the above: pending, retried or completed. The
 # banner does not tell those apart, because "is anything holding the pass" is
@@ -91,10 +134,20 @@ UNCLAIMED = "unclaimed"
 # occurrence is still `claimed` and its lease has lapsed, which is precisely
 # `claim_due_work`'s own recovery-candidate predicate, so the sentence cannot
 # outlive the recovery it promises. A spent occurrence is `FAILED` instead.
+#
+# `FAILED` is the maintainer's own wording, and *latest* is load-bearing rather
+# than decorative: the projection hands this reader a `failed` row only when
+# nothing is claimed and nothing newer exists, so the word is a fact about the
+# selection. The sentence names no document and no count, and promises no
+# retry; the register's rows below it carry each delivery's own outcome, and a
+# subsequent attempt is a later occurrence that this same reading reports
+# instead. The approved second sentence, "Open Sources to see the affected
+# documents and next steps", is not here because the only page that prints
+# this banner is Sources -- see the module docstring.
 SENTENCES: Mapping[str, str] = {
     CLAIMED: "A worker has claimed this project's document-processing pass.",
     CLAIM_EXPIRED: "The processing claim expired. Recovery is pending.",
-    FAILED: "This project's document-processing pass failed.",
+    FAILED: "The latest document-processing pass failed.",
 }
 
 # What the record cannot settle, kept out of the sentence and put underneath

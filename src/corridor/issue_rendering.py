@@ -1894,10 +1894,27 @@ def _unaccepted_paragraph(reading: ChangeSummaryReading) -> str:
     for line in reading.unaccepted_deltas:
         counted[line.state] = counted.get(line.state, 0) + 1
     if not counted:
-        return (
-            "Every proposed change Corridor has raised for this project has "
-            "been decided, so nothing is waiting."
-        )
+        # One sentence for however this section came to be empty, and it may
+        # therefore assert only what every one of those histories has in
+        # common. There are four: nothing was ever raised below the ceiling,
+        # every proposal raised was accepted or edited and so is a change
+        # above, every remaining one was retired by a correction, or some
+        # mixture of the last two. "Every proposed change has been decided"
+        # was true of the first two and false of the others -- a retirement is
+        # precisely not a decision: nobody deferred it, nobody kept the current
+        # value, and no newer revision replaced it (ADR-0101). So the claim
+        # about what became of anything is gone and the half that survives is
+        # the half that was always true, which is also the half a reader needs:
+        # nothing is waiting on them (#955).
+        #
+        # Saying *why* it is empty was the alternative, and it is refused
+        # twice over. ADR-0101 took the retired proposal out of this
+        # disclosure rather than giving it a new state word, and its approved
+        # correction sentences are what a coordinator is told in Review and in
+        # the record history, not what a customer's issue says; naming the
+        # retirement here would put it back into the disclosure through the
+        # one paragraph that is left when it is the only thing that happened.
+        return "Nothing is waiting: this issue has no proposed change to report."
     parts = [
         f"{_things(count)} {_state_words(state, count)}"
         for state, count in sorted(counted.items())

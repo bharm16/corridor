@@ -64,6 +64,10 @@ from corridor.native_follow_up_reading import (
 )
 from corridor.presentation import accepted_record_exception_name, exception_name
 from corridor.operating_mode import adopt_project_baseline
+from corridor.capture_correction_retirement import (
+    NO_CHANGE,
+    retirements_by_delta,
+)
 from corridor.operations_repair import correct_captured_reading
 from corridor.principals import HumanPrincipal
 from corridor.proposed_deltas import (
@@ -72,7 +76,13 @@ from corridor.proposed_deltas import (
     create_proposed_delta_group,
     record_delta_deferral,
 )
-from capture_correction_support import CORRECTED_AT, Misread, WORKER_IDENTITY
+from capture_correction_support import (
+    CORRECTED_AT,
+    MISREAD_TEXT,
+    REPORTED_AT,
+    Misread,
+    WORKER_IDENTITY,
+)
 from harness_support import adopt_baseline_facts
 from source_capture_support import Rendition
 from delta_supersession_support import record_delta_supersession
@@ -897,6 +907,38 @@ def test_a_delta_raised_against_a_moved_accepted_value_reads_as_stale(
     assert states[stale.id] == "stale"
 
 
+# The paragraph of a rendered change summary that says what is still
+# undecided, in both of the forms it takes. Everything else the summary prints
+# is what it says about the accepted record, which a correction may not move.
+_DISCLOSURE_OPENINGS = (
+    "Some proposed changes are not changes to the project record",
+    "Nothing is waiting:",
+)
+
+
+def _disclosure(paragraphs: tuple[str, ...]) -> str:
+    """The one paragraph that says what is still undecided.
+
+    It asserts rather than unpacks, because the thing most likely to go wrong
+    here is the wording moving, and "not enough values to unpack" is a poor way
+    to be told that.
+    """
+
+    found = [one for one in paragraphs if one.startswith(_DISCLOSURE_OPENINGS)]
+    assert len(found) == 1, (
+        "no paragraph of this summary opens the way the undecided-proposal "
+        "paragraph opens. If that wording changed, _DISCLOSURE_OPENINGS is "
+        "what has to follow it:\n\n" + "\n\n".join(paragraphs)
+    )
+    return found[0]
+
+
+def _except_disclosure(paragraphs: tuple[str, ...]) -> tuple[str, ...]:
+    """Every other paragraph: what this issue says about the accepted record."""
+
+    return tuple(one for one in paragraphs if not one.startswith(_DISCLOSURE_OPENINGS))
+
+
 def test_a_correction_retired_proposal_is_named_by_no_state_word_at_all(
     session, member_project
 ):
@@ -908,14 +950,36 @@ def test_a_correction_retired_proposal_is_named_by_no_state_word_at_all(
     and no newer revision replaced it, so ``_unaccepted_deltas`` excludes it at
     the query and this issue names it nowhere.
 
+    **Two proposals, because one absence proves nothing.**  An issue that
+    disclosed nothing at all would satisfy "the retired one is absent" exactly
+    as well as the exclusion does, and the first of those is a defect.  So the
+    project holds a second proposal the correction never touches -- the
+    conflict below the challenged one, proposed from the same source revision
+    -- and every assertion here is about *both*: before the correction the
+    issue discloses two open proposals and says so in words, after it the
+    issue discloses one and says that.  Delete the exclusion from
+    ``_unaccepted_deltas`` and the retired proposal comes back as the second;
+    make the summary empty and the surviving one goes missing.  Neither passes.
+
+    **What the correction is allowed to change, and what it is not.**  It
+    writes no accepted value and no revision, so every paragraph of the
+    rendered summary except the one counting undecided proposals is the same
+    bytes before and after: an issue authorized before the correction is not
+    retroactively rewritten by it (ADR-0101).  The paragraph that does move is
+    exactly the open-question disclosure the ADR says a correction can change,
+    and the reason a candidate prepared before one must be prepared again.
+
     **Which module owns which half.**  The retirement itself, and the Review
     list's side of this same absence, belong to
     ``tests/test_capture_correction_retirement.py``: that a correction writes
     no zero-difference delta, no disposition and no supersession, and that the
     retired proposal is gone from ``read_open_deltas``.  This module owns the
     other reader, the prepared issue's change summary, and only that.  The
-    scenario itself is built from ``capture_correction_support`` rather than
-    copied, so both readers are answering about one retirement (#952).
+    retirement is read back here for one reason -- an issue that stops naming
+    an item owes the reader somewhere it went, and that somewhere is the
+    retained correction record, not this issue.  The scenario itself is built
+    from ``capture_correction_support`` rather than copied, so both readers are
+    answering about one retirement (#952).
     """
 
     # One principal both reports the misreading and performs the correction:
@@ -924,32 +988,135 @@ def test_a_correction_retired_proposal_is_named_by_no_state_word_at_all(
     project = member_project(ALICE)
     misread = Misread(session, project)
     _declare_adopted(session, project.id, misread.revision_id, "misread-baseline")
+    # The control: a proposal about the next conflict down, from the same
+    # incoming revision, that no correction ever names.
+    untouched = misread.neighbouring_open_proposal()
     # The issue is prepared after the correction was performed, which is the
     # only ordering in which a reader could expect to be told about it.
     prepared = CORRECTED_AT + timedelta(hours=1)
 
-    def disclosed() -> dict[int, str]:
-        """Every unaccepted proposal this issue discloses, and its state word."""
+    def prepared_issue() -> tuple[dict[int, str], tuple[str, ...]]:
+        """This issue's disclosed proposals, and the paragraphs it renders.
+
+        Both readings come from one ``read_issue_artifacts`` call, because two
+        calls would be two chances for the summary and the words on it to
+        disagree about the same question.
+        """
 
         artifacts = read_issue_artifacts(
             session,
             _bind(
                 session,
                 project,
-                misread.revision_id,
+                misread.neighbour_revision_id,
                 source_cutoff=prepared,
                 prepared_at=prepared,
+                previous_issue=PreviousApprovedIssue(
+                    issue_identity="2026-W35",
+                    accepted_revision_id=misread.revision_id,
+                    approved_at=REPORTED_AT,
+                ),
             ),
         )
-        return {
-            excluded.delta_id: excluded.state
-            for excluded in artifacts.change_summary.unaccepted_deltas
-        }
+        summary = artifacts.change_summary
+        return (
+            {line.delta_id: line.state for line in summary.unaccepted_deltas},
+            tuple(render_change_summary(summary).text.split("\n\n")),
+        )
 
-    # Before the correction this is an ordinary open proposal the issue does
-    # disclose, so its later absence is the exclusion and not an empty fixture.
-    assert disclosed() == {misread.delta.id: "open"}
+    # Before the correction both proposals are ordinary open ones this issue
+    # does disclose, so the later absence of one is the exclusion working and
+    # not an empty fixture.
+    before_states, before_paragraphs = prepared_issue()
+    assert before_states == {misread.delta.id: "open", untouched.id: "open"}
+    assert _disclosure(before_paragraphs).startswith(
+        "Some proposed changes are not changes to the project record, so none "
+        "of them appear above: 2 proposed changes are still open."
+    )
 
+    report = misread.report()
+    outcome = correct_captured_reading(
+        session,
+        request_id=int(report.id),
+        principal=ALICE,
+        performed_at=CORRECTED_AT,
+        executed_by=WORKER_IDENTITY,
+    )
+    assert outcome.retired
+
+    after_states, after_paragraphs = prepared_issue()
+    # The retired proposal is named by no state word, and the one beside it is
+    # still named by its own. An empty summary satisfies neither line.
+    assert after_states == {untouched.id: "open"}
+    assert _disclosure(after_paragraphs).startswith(
+        "Some proposed changes are not changes to the project record, so none "
+        "of them appear above: 1 proposed change is still open."
+    )
+
+    # Where the reader who remembers the retired item goes instead: the
+    # retirement and its correction result, still readable against the delta
+    # this issue stopped naming.
+    retirement = retirements_by_delta(
+        session, project_id=int(project.id), delta_ids=[misread.delta.id]
+    )[misread.delta.id]
+    assert retirement.outcome == NO_CHANGE
+    assert retirement.request_id == int(report.id)
+
+    # And nothing else the issue says moved. The correction accepted no value
+    # and wrote no revision, so an issue authorized before it still reads the
+    # way it read: same window, same accepted-change statement, same checks,
+    # same coverage -- only the count of what is still undecided.
+    assert _except_disclosure(after_paragraphs) == _except_disclosure(
+        before_paragraphs
+    )
+    assert any(
+        paragraph.startswith("This summary covers every change the project ")
+        for paragraph in _except_disclosure(after_paragraphs)
+    )
+
+
+def test_the_empty_disclosure_claims_a_decision_for_neither_history(
+    session, member_project, project
+):
+    """One sentence for an empty section, so it may only say what both histories share.
+
+    This section falls empty from more than one history, and two of them are
+    here.  A project whose only proposed change was **retired** reaches it
+    because Corridor withdrew its own comparison -- which ADR-0101 is explicit
+    is not a decision: nobody deferred it, nobody kept the current value, and
+    no newer revision replaced it.  A project whose only proposed change was
+    **accepted** reaches it because the change is stated above as an accepted
+    one.  The sentence that filled the space said every proposed change had
+    been decided, which was true of the second and a claim nobody made about
+    the first (#955).
+
+    So the assertion is that both read the same words, and that those words
+    claim nothing about what became of anything.  A sentence that only works
+    for the retirement case would be the wrong answer to this, and so would a
+    pair of sentences: saying *why* it is empty puts the retired proposal back
+    into the disclosure ADR-0101 removed it from, and the approved correction
+    wording is what a coordinator is told in Review, not what a customer's
+    issue says.
+
+    **The wording is proposed, not approved.**  "Nothing is waiting: this
+    issue has no proposed change to report." is mine; the first half is the
+    surviving half of the sentence that shipped.
+    """
+
+    def summary(bound):
+        """One prepared issue's change summary, structured and rendered."""
+
+        artifacts = read_issue_artifacts(session, bound)
+        return artifacts.change_summary, tuple(
+            render_change_summary(artifacts.change_summary).text.split("\n\n")
+        )
+
+    # One proposed change, retired. Nothing was accepted and nothing is open,
+    # and the reason the section is empty is the one nobody decided.
+    retired_only = member_project(ALICE)
+    misread = Misread(session, retired_only)
+    _declare_adopted(session, retired_only.id, misread.revision_id, "only-proposal")
+    prepared = CORRECTED_AT + timedelta(hours=1)
     outcome = correct_captured_reading(
         session,
         request_id=int(misread.report().id),
@@ -958,8 +1125,71 @@ def test_a_correction_retired_proposal_is_named_by_no_state_word_at_all(
         executed_by=WORKER_IDENTITY,
     )
     assert outcome.retired
+    retired_summary, retired_paragraphs = summary(
+        _bind(
+            session,
+            retired_only,
+            misread.revision_id,
+            source_cutoff=prepared,
+            prepared_at=prepared,
+        )
+    )
+    assert retired_summary.unaccepted_deltas == ()
+    assert retired_summary.changes == ()
 
-    assert disclosed() == {}
+    # One proposed change, accepted: the same empty section reached the way it
+    # is usually reached, with the change stated above as an accepted one.
+    source, baseline = _baseline(session, project)
+    delta = _delta(
+        session,
+        project,
+        field="committed_date",
+        accepted_value="2026-11-01",
+        proposed_value="2026-12-15",
+        baseline_revision=baseline,
+    )
+    moved = source.capture_fact(fact_type="committed_date", value="2026-12-15")
+    accepted = _accept(
+        session,
+        project,
+        delta,
+        moved,
+        at=datetime(2026, 9, 2, 9, 0, tzinfo=timezone.utc),
+        observed=baseline,
+    )
+    decided_summary, decided_paragraphs = summary(
+        _bind(
+            session,
+            project,
+            accepted.revision_id,
+            previous_issue=PreviousApprovedIssue(
+                issue_identity="2026-W35",
+                accepted_revision_id=baseline,
+                approved_at=datetime(2026, 8, 27, tzinfo=timezone.utc),
+            ),
+        )
+    )
+    assert decided_summary.unaccepted_deltas == ()
+    assert [one.field for one in decided_summary.changes] == ["committed_date"]
+
+    # The same sentence for both, and it asserts nothing about what became of
+    # anything -- which is the only thing it can honestly do while it is one
+    # sentence for both.
+    assert _disclosure(retired_paragraphs) == _disclosure(decided_paragraphs)
+    assert _disclosure(retired_paragraphs) == (
+        "Nothing is waiting: this issue has no proposed change to report."
+    )
+    for paragraph in (retired_paragraphs, decided_paragraphs):
+        assert "has been decided" not in _disclosure(paragraph)
+        assert "decided" not in _disclosure(paragraph)
+
+    # And the retired proposal is nowhere in the rendered issue, under this
+    # sentence as under any other: neither the value it proposed nor the
+    # coordinator's correction wording, because the section being empty is not
+    # a place to say what left it.
+    retired_body = "\n\n".join(retired_paragraphs)
+    assert MISREAD_TEXT not in retired_body
+    assert "corrected its reading" not in retired_body
 
 
 # --- The weekly Coordination Report ---------------------------------------
