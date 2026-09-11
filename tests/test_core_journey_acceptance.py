@@ -23,6 +23,39 @@ overrides identity to do so. It is not replaced by this file and must not be:
 until the steps below reach that segment through the product, it is the only
 proof that segment works at all. #849 is where the two become one walk.
 
+**Where this run stops today, and why nothing here is marked as allowed to
+fail.** Every ticket #849 was blocked by has merged, so a step that does not
+pass is no longer a ticket outstanding -- it is a defect in something that was
+delivered, and marking it expected-to-fail would file it under a ticket that is
+closed. Three were found by walking this journey as the deployed web login,
+and each is invisible to the tests that own its seam because those tests
+replace the identity, the session, or both:
+
+1. ``POST /projects/{slug}/baseline/prepare`` answers 500 on an enforcing
+   deployment. ``baseline_adoption._refuse_nonempty_project_record`` counts
+   legacy ``dependencies`` rows (``src/corridor/baseline_adoption.py`` 1349),
+   and the boundary revokes that relation from ``corridor_web``
+   (``src/corridor/web_boundary.py`` 56). The route is in the pilot manifest
+   (``web_boundary.py`` 1202) and its recorded relation set does not name
+   ``dependencies``. This is where the walk below stops.
+2. No page in the product renders a control for that route. ``onboarding.html``
+   links to the upload and, once a reading exists, renders the adoption form;
+   nothing offers the act in between, though ``onboarding_view`` computes
+   ``may_prepare`` (``src/corridor/web/onboarding_view.py`` 250) and no
+   template reads it.
+3. ``POST /review/{slug}/correction`` answers 500 for a report it recorded.
+   The route commits (``src/corridor/web/app.py`` 6673) and then reads
+   ``recorded.id`` to compose the receipt sentence (``app.py`` 6690); the
+   project partition is declared with ``set_config(..., true)`` and is
+   therefore transaction-local (``src/corridor/access.py`` 1944), so after the
+   commit the row is invisible and SQLAlchemy raises ``ObjectDeletedError``.
+
+A fourth is user-visible but not fatal to the walk: on an adopted project the
+intake preview renders a confirmation form carrying only its six hidden
+fields, and ``POST /projects/{slug}/sources/confirm`` refuses exactly that
+payload with 400 ``completeness must be one of [...]``. The steps below supply
+the declaration a person would type, and say so where they do.
+
 **How to read a run.** The report prints one sentence per step, and a step the
 product cannot do yet names the ticket that owes it. ``-rP`` is what shows it
 on a passing run -- xdist keeps a worker's output to itself otherwise -- and a
@@ -35,7 +68,7 @@ failing run carries the whole report in its message:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 import html
 import os
 from pathlib import Path
@@ -46,22 +79,50 @@ from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, func, select
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session as OrmSession
 from sqlalchemy.pool import NullPool
 
-from corridor import access
+from corridor import access, capture_correction, processing_holds, source_register
+from corridor.baseline_adoption import BASELINE_DOC_TYPE
 from corridor.config import settings
-from corridor.due_work import enqueue_due_work, run_due_work_once
-from corridor.models import Project, ReleaseCandidate, ReleasePackage
+from corridor.delta_generation import (
+    COMPARISON_RULE_VERSION,
+    DeltaGenerationDeclaration,
+)
+from corridor.due_work import (
+    HANDLER_RELEASE_PREPARATION,
+    ProjectProcessingDeclaration,
+    ReleasePreparationDeclaration,
+    ReportPreparationDeclaration,
+    configure_due_work,
+    enqueue_due_work,
+    run_due_work_once,
+)
+from corridor.models import (
+    DocPage,
+    Document,
+    Project,
+    ReleaseCandidate,
+    ReleasePackage,
+)
 from corridor.object_storage import content_store
+from corridor.onboarding_authorization import (
+    ADOPT_BASELINE,
+    ONBOARDING_OPERATIONS,
+    completed_act,
+    record_onboarding_grant,
+)
 from corridor.operating_mode import ADOPTED_BASELINE, project_operating_mode
+from corridor.source_revision_declaration import COMPLETE_ENUMERATION, REPLACES
 from corridor.principals import HumanPrincipal
 from corridor.web import auth
 from corridor.web.app import app, get_review_clock, get_session
 
+from browser_session_support import form_fields, sign_in, submit_form
 import journey_matrix
+import test_manifest_page_links
 from journey_harness import (
     BLOCKED,
     ControlledClock,
@@ -73,11 +134,14 @@ from journey_harness import (
 from later_revision_support import BASELINE_ROWS, workbook_bytes
 
 
-OPERATOR = HumanPrincipal("local:operations")
+PROVISIONER = HumanPrincipal("local:provisioner")
+OPERATIONS_ACTOR = "operations:journey"
 COORDINATOR = HumanPrincipal("local:journey-coordinator")
 RELEASER = HumanPrincipal("local:journey-releaser")
+OPERATOR = HumanPrincipal("local:journey-operations")
 COORDINATOR_EMAIL = "coordinator@example.test"
 RELEASER_EMAIL = "releaser@example.test"
+OPERATOR_EMAIL = "operations@example.test"
 
 # The deployed web login's own credential, read the way every other
 # real-login test reads it.
@@ -88,6 +152,41 @@ WEB_PASSWORD = os.environ.get("CORRIDOR_WEB_DB_PASSWORD") or "corridor_web"
 SIGN_IN_AT = datetime(2026, 4, 6, 8, 0, tzinfo=timezone.utc)
 WORKER_AT = datetime(2026, 4, 6, 9, 0, tzinfo=timezone.utc)
 NEXT_CYCLE_AT = datetime(2026, 4, 13, 8, 0, tzinfo=timezone.utc)
+
+# When this project's standing schedules begin.
+SCHEDULES_FROM = datetime(2026, 4, 1, 0, 0, tzinfo=timezone.utc)
+
+# The date the coordinator says they will come back to the change they defer.
+RETURN_DATE = date(2026, 5, 4)
+
+#: The later revision the customer sends: the same three conflicts, with an
+#: ordinary change to the size recorded on two of them. Two is the smallest
+#: number this journey can walk on -- one change is decided in Review and the
+#: other is the capture an extraction error is reported against, and a
+#: coordinator who had to settle a change before they could say Corridor read
+#: it wrong would have no way to report one at all. A burst of them belongs to
+#: the ticket that batches one (#527).
+LATER_ROWS = [
+    [*BASELINE_ROWS[0][:3], "16 in", *BASELINE_ROWS[0][4:]],
+    [*BASELINE_ROWS[1][:3], "10 in", *BASELINE_ROWS[1][4:]],
+    *BASELINE_ROWS[2:],
+]
+
+#: And next cycle's, so the second reporting cycle reads a revision rather
+#: than the same bytes twice.
+SECOND_LATER_ROWS = [
+    [*BASELINE_ROWS[0][:3], "18 in", *BASELINE_ROWS[0][4:]],
+    *BASELINE_ROWS[1:],
+]
+
+#: What only the coordinator can say about a later revision, chosen from the
+#: choices the confirmation offers. A complete enumeration that replaces the
+#: revision before it is what a customer's weekly UCM export is.
+REVISION_DECLARATION = {
+    "revision_identity": "UCM workbook revision D",
+    "completeness": COMPLETE_ENUMERATION,
+    "revision_relationship": REPLACES,
+}
 
 
 # --- the journey's own context ---------------------------------------------
@@ -119,32 +218,193 @@ def prose(body: str) -> str:
 _FORM = re.compile(
     r'<form[^>]*action="(?P<action>[^"]*)"[^>]*>(?P<body>.*?)</form>', re.S
 )
-_HIDDEN = re.compile(
+# --- the steps, in the order the journey happens in -------------------------
+
+
+_CHECKED = re.compile(
+    r'<input[^>]*type="(?:radio|checkbox)"[^>]*name="(?P<name>[^"]*)"[^>]*'
+    r'value="(?P<value>[^"]*)"[^>]*\bchecked\b'
+)
+_REPEATED = re.compile(
     r'<input[^>]*type="hidden"[^>]*name="(?P<name>[^"]*)"[^>]*value="(?P<value>[^"]*)"'
 )
 
 
-def rendered_form(body: str, action_suffix: str) -> dict[str, str] | None:
-    """The hidden fields of the one form on this page with this action.
+def chosen(body: str) -> dict[str, str]:
+    """The radio and checkbox controls the page rendered as already chosen.
 
-    Taken out of the rendered page rather than composed, for the reason
-    ``tests/test_issue_path_end_to_end.py`` gives: a hand-written payload
-    proves the route accepts something, and only the page's own fields prove
-    the screen offers something a person could submit. Under a real session
-    that includes the request-forgery token, which is exactly the field #821
-    found missing.
+    Read out of the markup for the reason ``form_fields`` reads the hidden
+    inputs: a payload this file invents proves the route accepts something,
+    and only the page's own controls prove a person could have sent it.
+    """
+
+    return {
+        found.group("name"): html.unescape(found.group("value"))
+        for found in _CHECKED.finditer(body)
+    }
+
+
+def repeated(body: str, action_suffix: str, name: str) -> list[str]:
+    """Every value of one repeated hidden field on the page's own form.
+
+    ``form_fields`` answers with a mapping, which is the right answer for a
+    form whose fields are distinct and the wrong one for the issue
+    configuration: its approval re-emits the selection as one hidden input per
+    artifact, and a mapping would keep the last and silently approve a
+    narrower configuration than the page printed.
     """
 
     for match in _FORM.finditer(body):
         if match.group("action").endswith(action_suffix):
-            return {
-                found.group("name"): html.unescape(found.group("value"))
-                for found in _HIDDEN.finditer(match.group("body"))
-            }
-    return None
+            return [
+                html.unescape(one.group("value"))
+                for one in _REPEATED.finditer(match.group("body"))
+                if one.group("name") == name
+            ]
+    return []
 
 
-# --- the steps, in the order the journey happens in -------------------------
+def form_on(journey: Journey, path: str, action_suffix: str) -> tuple[str, dict[str, str]]:
+    """Open a page and take one of its forms, or say which page had none."""
+
+    page = journey.client.get(path, follow_redirects=False)
+    assert page.status_code == 200, f"{path} answered {page.status_code}: {page.text}"
+    fields = form_fields(page.text, action_suffix)
+    assert fields is not None, (
+        f"{path} rendered no form whose action ends in {action_suffix!r}"
+    )
+    return page.text, fields
+
+
+def deliver(journey: Journey, name: str, rows) -> dict[str, str]:
+    """Hand a workbook over through the one control the product offers.
+
+    Returns the confirmation form the preview page rendered, which carries the
+    staged digest every later act names the bytes by.
+    """
+
+    path = journey.workbook.parent / name
+    workbook_bytes(path, rows)
+    form = journey.client.get(
+        f"/projects/{journey.slug}/sources/upload", follow_redirects=False
+    )
+    assert form.status_code == 200, (
+        f"the upload screen answered {form.status_code}: it is not served "
+        "inside the enforced boundary"
+    )
+    fields = form_fields(form.text, "/sources/upload") or {}
+    submitted = journey.client.post(
+        f"/projects/{journey.slug}/sources/upload",
+        data={**fields, "doc_type": BASELINE_DOC_TYPE},
+        files={"upload": (name, path.read_bytes())},
+        follow_redirects=False,
+    )
+    assert submitted.status_code == 200, submitted.text
+    confirmation = form_fields(submitted.text, "/sources/confirm")
+    assert confirmation is not None, (
+        "the preview of what was delivered offers nothing to confirm, so the "
+        "bytes stay staged and no document is ever registered"
+    )
+    return confirmation
+
+
+def run_the_worker(journey: Journey) -> list[str]:
+    """Publish what is due and work every occurrence until none is left.
+
+    The deployed worker, not a shortcut around it: the standing project
+    processing and delta generation this project is configured for are what
+    turn a registered revision into changes a coordinator can review, and a
+    journey that reached into the database for them would be proving its own
+    arrangement rather than the deployment's.
+    """
+
+    worked: list[str] = []
+    for _ in range(12):
+        with journey.factory() as ticking:
+            with ticking.begin():
+                enqueue_due_work(ticking, now=journey.clock.now())
+        result = run_due_work_once(
+            journey.factory, clock=journey.clock, owner="runtime:journey-harness"
+        )
+        if result is None:
+            return worked
+        assert result.execution_outcome == "completed", (
+            f"{result.handler_key} did not complete: {result.error_code}"
+        )
+        worked.append(result.handler_key)
+    raise AssertionError("the runtime never ran out of due work")
+
+
+def open_the_item(journey: Journey) -> str:
+    """The Review reading, with its one item opened, as a person opens it.
+
+    Review lists items and opens one at a time on purpose, so everything a
+    step below reads -- the exact-source links, the answers, the
+    extraction-error control -- exists only on an opened item.
+    """
+
+    review = journey.client.get(f"/review/{journey.slug}", follow_redirects=False)
+    assert review.status_code == 200, review.text
+    link = re.search(
+        rf'href="(/review/{re.escape(journey.slug)}\?item=[^"]+)"', review.text
+    )
+    assert link is not None, (
+        "Review offers no item to open, so the revision proposed no change "
+        f"a coordinator could review. What it says: {prose(review.text)[:500]}"
+    )
+    opened = journey.client.get(
+        html.unescape(link.group(1)), follow_redirects=False
+    )
+    assert opened.status_code == 200, opened.text
+    return opened.text
+
+
+_OPTION = re.compile(r'<option value="(?P<value>[^"]*)"')
+
+
+def answer_fields(body: str) -> dict[str, object]:
+    """The answers form as a browser would submit it.
+
+    Every control on this form repeats once per child, so the answers travel
+    as lists rather than as single values: a payload carrying one of each
+    would save one answer where the page asked for two, and the route pairs
+    them by position. What a person chooses is chosen here from the options
+    the page printed -- apply for the first change, and a dated return for the
+    second, which is the deferral a later step proves survives a correction.
+    """
+
+    form = form_fields(body, "/answers")
+    assert form is not None, "the opened item renders no answers form"
+    deltas = re.findall(r'name="answer_delta" value="([^"]*)"', body)
+    offered = [
+        _OPTION.findall(one)
+        for one in re.findall(
+            r'<select[^>]*name="answer_outcome"[^>]*>(.*?)</select>', body, re.S
+        )
+    ]
+    assert deltas and len(deltas) == len(offered), (
+        "the answers form asks about a different number of changes than it "
+        "offers outcomes for"
+    )
+    outcomes = ["apply" if index == 0 else "defer" for index in range(len(deltas))]
+    for outcome, choices in zip(outcomes, offered):
+        assert outcome in choices, (
+            f"the page does not offer {outcome!r} for this change"
+        )
+    return {
+        auth.CSRF_FIELD: form[auth.CSRF_FIELD],
+        "item_key": form["item_key"],
+        "answer_delta": deltas,
+        "answer_outcome": outcomes,
+        "answer_source": [""] * len(deltas),
+        "answer_question": [""] * len(deltas),
+        "answer_person": [""] * len(deltas),
+        "answer_organization": [""] * len(deltas),
+        "answer_return": [
+            RETURN_DATE.isoformat() if outcome == "defer" else ""
+            for outcome in outcomes
+        ],
+    }
 
 
 def step_sign_in(journey: Journey) -> None:
@@ -153,18 +413,7 @@ def step_sign_in(journey: Journey) -> None:
         "a person with no session must be sent to sign in, not served a page"
     )
 
-    requested = journey.client.post(
-        "/sign-in/request", data={"email": COORDINATOR_EMAIL}, follow_redirects=False
-    )
-    assert requested.status_code == 200, requested.text
-    assert journey.sender.sent, "no sign-in link was delivered"
-
-    _address, link = journey.sender.sent[-1]
-    token = parse_qs(urlsplit(link).query)["token"][0]
-    consumed = journey.client.get(
-        "/sign-in/consume", params={"token": token}, follow_redirects=False
-    )
-    assert consumed.status_code == 303, consumed.text
+    sign_in(journey.client, journey.sender, COORDINATOR_EMAIL)
     assert journey.client.cookies.get(auth.SESSION_COOKIE), (
         "consuming the link established no session cookie"
     )
@@ -188,54 +437,94 @@ def step_read_onboarding_state(journey: Journey) -> None:
         "needs next to start it"
     )
     readable = prose(page.text)
-    assert "baseline" in readable.lower(), (
-        "the project opened, but says nothing about supplying the baseline"
+    # The sentence, not the word: an unadopted project is entitled to one
+    # statement of what Corridor needs next, and this is it (#827).
+    assert (
+        "Supply the customer's UCM workbook as this project's baseline."
+        in readable
+    ), (
+        "the project opened, and does not say what Corridor needs next to "
+        f"start it. What it says: {readable[:400]}"
+    )
+    # And the work is under the limited authorization operations recorded, not
+    # under a relaxed activation check: a project with no recorded grant opens
+    # on the refusal instead of on this sentence (ADR-0099).
+    assert "has not recorded an onboarding authorization" not in readable
+    assert f'href="/projects/{journey.slug}/sources/upload"' in page.text, (
+        "the page names the act and offers no control that performs it"
     )
 
 
 def step_supply_the_baseline(journey: Journey) -> None:
-    form = journey.client.get(
-        f"/projects/{journey.slug}/sources/upload", follow_redirects=False
-    )
-    assert form.status_code == 200, (
-        "the upload screen answered "
-        f"{form.status_code}: it is not served inside the enforced boundary"
-    )
-    fields = rendered_form(form.text, "/sources/upload") or {}
-    submitted = journey.client.post(
-        f"/projects/{journey.slug}/sources/upload",
-        data=fields,
-        files={"file": (journey.workbook.name, journey.workbook.read_bytes())},
-        follow_redirects=False,
-    )
-    assert submitted.status_code in (200, 201, 303), submitted.text
-    journey.carried["baseline_delivery"] = prose(submitted.text)
+    confirmation = deliver(journey, "baseline-ucm.xlsx", BASELINE_ROWS)
+    journey.carried["baseline"] = confirmation
 
 
 def step_operations_resolves_mechanics(journey: Journey) -> None:
-    register = journey.client.get(
-        f"/projects/{journey.slug}/sources", follow_redirects=False
+    """Technical Operations reads the supplied workbook and settles its shape.
+
+    This is the one request in the journey composed rather than taken from a
+    rendered form, and the reason is a finding rather than a convenience: no
+    page in the product prints a control whose action is
+    ``/projects/{slug}/baseline/prepare``. ``onboarding.html`` offers the
+    upload link and, once a reading exists, the adoption form; nothing offers
+    the act in between, though ``onboarding_view`` computes ``may_prepare``
+    for it and never renders it. So the route is reached the way the route is
+    defined, and the step below asserts what the coordinator's page says
+    afterwards, which is the part a person does see.
+    """
+
+    baseline = journey.carried["baseline"]
+    sign_in_as(journey, OPERATOR_EMAIL)
+    prepared = journey.client.post(
+        f"/projects/{journey.slug}/baseline/prepare",
+        data={
+            auth.CSRF_FIELD: journey.client.cookies.get(auth.CSRF_COOKIE, ""),
+            "sha256": baseline["sha256"],
+            "filename": baseline["filename"],
+            "source_identity": "UCM workbook revision A",
+            "customer": "Lone Star Transit Authority",
+        },
+        follow_redirects=False,
     )
-    assert register.status_code == 200, register.text
-    readable = prose(register.text)
-    assert "Technical Operations" in readable or "operations" in readable.lower(), (
-        "a delivery Corridor cannot place names no accountable owner, so the "
-        "coordinator is shown work with no way to complete it"
+    assert prepared.status_code == 201, (
+        "the supplied workbook cannot be read for adoption on an enforcing "
+        f"deployment: the route answered {prepared.status_code}. "
+        "baseline_adoption._refuse_nonempty_project_record counts legacy "
+        "`dependencies` rows (src/corridor/baseline_adoption.py 1349) and the "
+        "boundary revokes that relation from corridor_web "
+        "(src/corridor/web_boundary.py 56), so this route raises "
+        "InsufficientPrivilege. Its recorded relation set in the pilot "
+        "manifest (web_boundary.py 1202) does not name `dependencies`, which "
+        "is why nothing caught it: every other test of this route reads as "
+        f"the schema owner. What the route answered: {prepared.text[:200]}"
     )
+    readable = prose(prepared.text)
+    assert "What adopting this would accept" in readable, readable[:400]
+    assert "rows become the accepted record" in readable
 
 
 def step_coordinator_answers_and_adopts(journey: Journey) -> None:
-    page = journey.client.get(f"/work/{journey.slug}", follow_redirects=False)
-    assert page.status_code == 200, page.text
-    adoption = rendered_form(page.text, "/baseline/adopt")
-    assert adoption is not None, (
-        "no Adopt Baseline control is offered anywhere in the product; "
-        "adoption has no production caller"
+    sign_in_as(journey, COORDINATOR_EMAIL)
+    body, adoption = form_on(journey, f"/work/{journey.slug}", "/baseline/adopt")
+    readable = prose(body)
+    assert "Questions only you can answer" in readable, (
+        "the coordinator is asked to adopt without being shown the questions "
+        "only they can answer"
     )
-    adopted = journey.client.post(
-        f"/projects/{journey.slug}/baseline/adopt", data=adoption
+    assert auth.CSRF_FIELD in adoption, (
+        "the rendered adoption form carries no request-forgery token"
     )
-    assert adopted.status_code in (200, 201, 303), adopted.text
+    answers = chosen(body)
+    assert answers, "the page raised no material question a coordinator could answer"
+
+    adopted = submit_form(
+        journey.client,
+        f"/projects/{journey.slug}/baseline/adopt",
+        {**adoption, **answers},
+    )
+    assert adopted.status_code == 201, adopted.text
+    assert "The baseline this project accepted" in prose(adopted.text)
     with journey.factory() as reading:
         project = reading.scalars(
             select(Project).where(Project.slug == journey.slug)
@@ -246,37 +535,66 @@ def step_coordinator_answers_and_adopts(journey: Journey) -> None:
             "the baseline was adopted without moving the project into adopted "
             "baseline operating mode"
         )
+        # The limited authorization's adoption permission is consumed by the
+        # committed act itself, which is what ADR-0099 means by onboarding
+        # running under it rather than under a relaxed activation check.
+        assert completed_act(
+            reading, project_id=int(project.id), operation=ADOPT_BASELINE
+        ), "the baseline was adopted without consuming the onboarding permission"
+        journey.carried["project_id"] = int(project.id)
 
 
 def step_approve_the_issue_configuration(journey: Journey) -> None:
-    page = journey.client.get(f"/work/{journey.slug}", follow_redirects=False)
-    assert page.status_code == 200, page.text
-    configuration = rendered_form(page.text, "/issue/configuration")
-    assert configuration is not None, (
+    week = journey.client.get(f"/work/{journey.slug}", follow_redirects=False)
+    assert week.status_code == 200, week.text
+    assert f'href="/issue-configuration/{journey.slug}"' in week.text, (
+        "the adopted project offers no way to reach what it externally issues"
+    )
+    opened = journey.client.get(
+        f"/issue-configuration/{journey.slug}", follow_redirects=False
+    )
+    assert opened.status_code == 200, opened.text
+    # Prepared through the page's own selection control, opened on what is
+    # configured, so preparing without touching a box proposes what the page
+    # showed rather than proposing to stop issuing everything.
+    selection = [
+        value for name, value in _CHECKED.findall(opened.text) if name == "artifact"
+    ]
+    prepared = journey.client.get(
+        f"/issue-configuration/{journey.slug}",
+        params={"propose": "1", "artifact": selection},
+        follow_redirects=False,
+    )
+    assert prepared.status_code == 200, prepared.text
+    approval = form_fields(prepared.text, "/approve")
+    assert approval is not None, (
         "the set of artifacts this project issues cannot be reviewed or "
         "approved in the product"
     )
-    approved = journey.client.post(
-        f"/work/{journey.slug}/issue/configuration", data=configuration
+    approved = submit_form(
+        journey.client,
+        f"/issue-configuration/{journey.slug}/approve",
+        {**approval, "artifact": repeated(prepared.text, "/approve", "artifact")},
     )
-    assert approved.status_code in (200, 201, 303), approved.text
+    assert approved.status_code == 201, approved.text
+    assert "is in force" in prose(approved.text)
 
 
 def step_submit_a_later_revision(journey: Journey) -> None:
-    later = journey.workbook.parent / "later-ucm.xlsx"
-    workbook_bytes(later, BASELINE_ROWS)
-    form = journey.client.get(
-        f"/projects/{journey.slug}/sources/upload", follow_redirects=False
+    confirmation = deliver(journey, "later-ucm.xlsx", LATER_ROWS)
+    registered = submit_form(
+        journey.client,
+        f"/projects/{journey.slug}/sources/confirm",
+        {**confirmation, **REVISION_DECLARATION},
     )
-    assert form.status_code == 200, form.text
-    fields = rendered_form(form.text, "/sources/upload") or {}
-    submitted = journey.client.post(
-        f"/projects/{journey.slug}/sources/upload",
-        data=fields,
-        files={"file": (later.name, later.read_bytes())},
-        follow_redirects=False,
+    assert registered.status_code == 303, registered.text
+    journey.carried["later"] = confirmation
+    # The standing passes a deployment runs: reading the registered revision,
+    # then proposing the differences it states.
+    assert "delta_generation" in run_the_worker(journey), (
+        "the registered revision was never compared with the accepted record, "
+        "so nothing it proposes can reach Review"
     )
-    assert submitted.status_code in (200, 201, 303), submitted.text
 
 
 def step_see_receipt_and_processing_state(journey: Journey) -> None:
@@ -288,57 +606,184 @@ def step_see_receipt_and_processing_state(journey: Journey) -> None:
     assert "later-ucm.xlsx" in readable, (
         "the register does not show the revision that was just submitted"
     )
+    # Its processing state in the register's own words. "Processed" is the
+    # promise the coordinator is owed; a row count is not one (#841).
+    assert source_register.STATE_WORDS["processed"] in readable, (
+        "the register shows the delivery and says nothing about what became "
+        f"of it. What it says: {readable[:600]}"
+    )
+
+
+def step_a_held_source_is_not_read_and_says_so(journey: Journey) -> None:
+    """A source prohibited from reading never reaches the parser (#919).
+
+    The register's promise is the load-bearing part. Before #919 a registered,
+    unread, held source printed "waiting for the processing pass" even where
+    that pass would skip it, which is a queue position the coordinator was
+    never in. So this asserts the sentence the register prints, and then that
+    the parser really did not run: a prohibition that only changed the wording
+    would pass the first half and fail the customer.
+    """
+
+    confirmation = deliver(journey, "held-ucm.xlsx", SECOND_LATER_ROWS)
+    submitted = submit_form(
+        journey.client,
+        f"/projects/{journey.slug}/sources/confirm",
+        {**confirmation, **REVISION_DECLARATION,
+         "revision_identity": "UCM workbook revision D2"},
+    )
+    assert submitted.status_code == 303, submitted.text
+
+    with journey.factory() as operations:
+        with operations.begin():
+            document = operations.scalars(
+                select(Document).where(
+                    Document.project_id == journey.carried["project_id"],
+                    Document.sha256 == confirmation["sha256"],
+                )
+            ).one()
+            journey.carried["held_document"] = int(document.id)
+            processing_holds.impose_hold(
+                operations,
+                document_id=int(document.id),
+                prohibited_stage=processing_holds.DOCUMENT_READING,
+                reason_code=processing_holds.INTAKE_SECURITY_FINDING,
+                reason="an intake check refused these bytes for rich reading",
+                authority=processing_holds.INTAKE_SECURITY,
+                imposed_by="operations:journey",
+                evidence="journey-intake-finding-1",
+            )
+
+    run_the_worker(journey)
+
+    register = journey.client.get(
+        f"/projects/{journey.slug}/sources", follow_redirects=False
+    )
+    assert register.status_code == 200, register.text
+    readable = prose(register.text)
+    assert source_register.STATE_WORDS[source_register.READING_HELD] in readable, (
+        "a source nobody may read is not reported as held. What the register "
+        f"says: {readable[:700]}"
+    )
+    assert "an intake check refused these bytes for rich reading" in readable, (
+        "the register reports a restriction and not the reason its writer "
+        "recorded for it"
+    )
+    with journey.factory() as reading:
+        pages = reading.scalar(
+            select(func.count())
+            .select_from(DocPage)
+            .where(DocPage.document_id == journey.carried["held_document"])
+        )
+    assert pages == 0, (
+        f"{pages} pages were written from a source whose reading is "
+        "prohibited, so the prohibition changed the wording and not the work"
+    )
 
 
 def step_inspect_exact_source_context(journey: Journey) -> None:
-    review = journey.client.get(f"/review/{journey.slug}", follow_redirects=False)
-    assert review.status_code == 200, review.text
+    opened = open_the_item(journey)
     link = re.search(
-        rf'href="(/review/{re.escape(journey.slug)}/source[^"]*)"', review.text
+        rf'href="(/sources/{re.escape(journey.slug)}/passage/\d+)"', opened
     )
-    assert link is not None, "Review offers no link to the exact source passage"
-    source = journey.client.get(html.unescape(link.group(1)), follow_redirects=False)
+    assert link is not None, (
+        "the opened item offers no link to the exact wording at its place in "
+        "the source"
+    )
+    source = journey.client.get(link.group(1), follow_redirects=False)
     assert source.status_code == 200, (
         f"the source link printed on Review answered {source.status_code}"
     )
 
 
 def step_review_routine_changes(journey: Journey) -> None:
-    review = journey.client.get(f"/review/{journey.slug}", follow_redirects=False)
-    assert review.status_code == 200, review.text
-    decision = rendered_form(review.text, f"/review/{journey.slug}")
-    assert decision is not None, "Review offers no decision form for this packet"
-    applied = journey.client.post(
-        f"/review/{journey.slug}", data={**decision, "outcome": "apply"}
+    """Answer the changes this revision proposed, on the item that holds them.
+
+    The page offers "Save the answers for these sources" rather than a bare
+    Apply: two retained sources answer the same field differently, so the
+    disagreement is the decision (ADR-0082). The answers are therefore chosen
+    per child from the options the page itself printed, which is also why this
+    step cannot post a mapping -- every control repeats once per child, in
+    document order.
+    """
+
+    opened = open_the_item(journey)
+    answers = answer_fields(opened)
+    assert answers, "the opened item offers no answer to save"
+    saved = journey.client.post(
+        f"/review/{journey.slug}/answers", data=answers, follow_redirects=False
     )
-    assert applied.status_code in (200, 201), applied.text
+    assert saved.status_code in (200, 201), saved.text
+    receipt = re.search(
+        rf'href="(/review/{re.escape(journey.slug)}/packet/\d+)"', saved.text
+    )
+    assert receipt is not None, (
+        "a decision was recorded and the page offers no receipt to read it "
+        f"back from. What it says: {prose(saved.text)[:500]}"
+    )
+    journey.carried["receipt_url"] = receipt.group(1)
 
 
 def step_report_an_extraction_error(journey: Journey) -> None:
-    review = journey.client.get(f"/review/{journey.slug}", follow_redirects=False)
-    assert review.status_code == 200, review.text
-    report = rendered_form(review.text, "/extraction-error")
-    assert report is not None, (
+    opened = open_the_item(journey)
+    assert capture_correction.CORRECTION_CONTROL in prose(opened), (
         "there is no way to say a capture is wrong at the source, so a wrong "
         "extraction can only be worked around"
+    )
+    report = form_fields(opened, "/correction")
+    assert report is not None, "the opened item renders no extraction-error form"
+    passage = re.search(
+        r'<select[^>]*name="correction_passage".*?<option value="(\d+)"[^>]*selected',
+        opened,
+        re.S,
+    )
+    assert passage is not None, (
+        "the report offers no passage of this source to point the capture at"
+    )
+    reported = journey.client.post(
+        f"/review/{journey.slug}/correction",
+        data={
+            **report,
+            "correction_passage": passage.group(1),
+            "correction_interpretation": (
+                "this row's size column reads the value the record already holds"
+            ),
+        },
+        follow_redirects=False,
+    )
+    assert reported.status_code == 200, reported.text
+    readable = prose(reported.text)
+    assert "are retained as report" in readable, (
+        f"the report was not receipted to its reporter: {readable[:500]}"
+    )
+    assert "The record is unchanged" in readable, (
+        "reporting an extraction error was described as changing something"
     )
 
 
 def step_undo_one_decision(journey: Journey) -> None:
-    review = journey.client.get(f"/review/{journey.slug}", follow_redirects=False)
-    assert review.status_code == 200, review.text
-    undo = rendered_form(review.text, "/undo")
-    assert undo is not None, (
-        "a decision that was just recorded offers no receipt and no undo"
+    receipt = journey.client.get(
+        journey.carried["receipt_url"], follow_redirects=False
     )
-    undone = journey.client.post(f"/review/{journey.slug}/undo", data=undo)
-    assert undone.status_code in (200, 201), undone.text
+    assert receipt.status_code == 200, receipt.text
+    assert "Undo this decision" in prose(receipt.text), (
+        "the receipt of a decision just recorded offers no way to undo it"
+    )
+    undo = form_fields(receipt.text, "/undo")
+    assert undo is not None, "the receipt page renders no undo form"
+    undone = submit_form(
+        journey.client, journey.carried["receipt_url"] + "/undo", undo
+    )
+    assert undone.status_code == 200, undone.text
+    assert "This decision was undone" in prose(undone.text), (
+        f"the undo did not report itself: {prose(undone.text)[:400]}"
+    )
 
 
 def step_prepare_the_issue(journey: Journey) -> None:
     page = journey.client.get(f"/work/{journey.slug}", follow_redirects=False)
     assert page.status_code == 200, page.text
-    confirmation = rendered_form(page.text, "/issue/prepare")
+    confirmation = form_fields(page.text, "/issue/prepare")
     assert confirmation is not None, (
         "the Issue section offers no coverage confirmation to submit"
     )
@@ -354,20 +799,37 @@ def step_prepare_the_issue(journey: Journey) -> None:
 
 
 def step_worker_prepares_the_candidate(journey: Journey) -> None:
+    """The deployed worker claims the request and prepares the candidate.
+
+    It runs every occurrence that is due rather than one, because by now this
+    project has three standing schedules and the deployment does not get to
+    choose which is claimed first. Taking the first occurrence and reading it
+    as the preparation is how a passing step would depend on the order two
+    unrelated schedules happened to publish in.
+    """
+
     journey.clock.advance_to(WORKER_AT)
-    with journey.factory() as ticking:
-        with ticking.begin():
-            enqueue_due_work(ticking, now=journey.clock.now())
-    result = run_due_work_once(
-        journey.factory, clock=journey.clock, owner="runtime:journey-harness"
-    )
-    assert result is not None, (
+    prepared = None
+    for _ in range(12):
+        with journey.factory() as ticking:
+            with ticking.begin():
+                enqueue_due_work(ticking, now=journey.clock.now())
+        result = run_due_work_once(
+            journey.factory, clock=journey.clock, owner="runtime:journey-harness"
+        )
+        if result is None:
+            break
+        assert result.execution_outcome == "completed", (
+            f"{result.handler_key} did not complete: {result.error_code}"
+        )
+        if result.handler_key == HANDLER_RELEASE_PREPARATION:
+            prepared = result
+    assert prepared is not None, (
         "the confirmed request was never published as an occurrence, so no "
         "deployed worker would ever run it"
     )
-    assert result.execution_outcome == "completed", result.error_code
-    assert result.handler_result["outcome"] == "prepared", result.handler_result
-    journey.carried["candidate_id"] = int(result.handler_result["candidate_id"])
+    assert prepared.handler_result["outcome"] == "prepared", prepared.handler_result
+    journey.carried["candidate_id"] = int(prepared.handler_result["candidate_id"])
     with journey.factory() as reading:
         assert reading.get(ReleaseCandidate, journey.carried["candidate_id"])
 
@@ -390,7 +852,7 @@ def step_inspect_the_actual_artifacts(journey: Journey) -> None:
 
 def step_approve_as_the_designated_releaser(journey: Journey) -> None:
     page = journey.client.get(f"/work/{journey.slug}", follow_redirects=False)
-    approval = rendered_form(page.text, "/issue/authorize")
+    approval = form_fields(page.text, "/issue/authorize")
     assert approval is not None, "no approval is offered for the prepared issue"
     assert auth.CSRF_FIELD in approval, (
         "the rendered Approve form carries no request-forgery token"
@@ -405,7 +867,7 @@ def step_approve_as_the_designated_releaser(journey: Journey) -> None:
 
     sign_in_as(journey, RELEASER_EMAIL)
     page = journey.client.get(f"/work/{journey.slug}", follow_redirects=False)
-    approval = rendered_form(page.text, "/issue/authorize")
+    approval = form_fields(page.text, "/issue/authorize")
     assert approval is not None, (
         "the designated releaser is offered no approval on the surface they "
         "were already on"
@@ -422,7 +884,7 @@ def step_approve_as_the_designated_releaser(journey: Journey) -> None:
 def step_download_the_approved_package(journey: Journey) -> None:
     page = journey.client.get(f"/work/{journey.slug}", follow_redirects=False)
     assert page.status_code == 200, page.text
-    link = re.search(r'href="([^"]*package[^"]*download[^"]*)"', page.text)
+    link = re.search(r'href="([^"]*/issue/packages/\d+/bundle)"', page.text)
     assert link is not None, (
         "the issue is described as approved and sent, and nothing on the "
         "screen retrieves the bytes that were approved"
@@ -438,26 +900,20 @@ def step_download_the_approved_package(journey: Journey) -> None:
 def step_submit_a_second_revision(journey: Journey) -> None:
     journey.clock.advance_to(NEXT_CYCLE_AT)
     sign_in_as(journey, COORDINATOR_EMAIL)
-    second = journey.workbook.parent / "second-later-ucm.xlsx"
-    workbook_bytes(second, BASELINE_ROWS)
-    form = journey.client.get(
-        f"/projects/{journey.slug}/sources/upload", follow_redirects=False
+    confirmation = deliver(journey, "second-later-ucm.xlsx", SECOND_LATER_ROWS)
+    registered = submit_form(
+        journey.client,
+        f"/projects/{journey.slug}/sources/confirm",
+        {**confirmation, **REVISION_DECLARATION,
+         "revision_identity": "UCM workbook revision E"},
     )
-    assert form.status_code == 200, form.text
-    fields = rendered_form(form.text, "/sources/upload") or {}
-    submitted = journey.client.post(
-        f"/projects/{journey.slug}/sources/upload",
-        data=fields,
-        files={"file": (second.name, second.read_bytes())},
-        follow_redirects=False,
-    )
-    assert submitted.status_code in (200, 201, 303), submitted.text
+    assert registered.status_code == 303, registered.text
 
 
 def step_retrieve_the_earlier_package_unchanged(journey: Journey) -> None:
     record = journey.client.get(f"/record/{journey.slug}", follow_redirects=False)
     assert record.status_code == 200, record.text
-    link = re.search(r'href="([^"]*package[^"]*download[^"]*)"', record.text)
+    link = re.search(r'href="([^"]*/issue/packages/\d+/bundle)"', record.text)
     assert link is not None, (
         "the Record view shows no package history from which the earlier "
         "approved package can be retrieved"
@@ -495,14 +951,12 @@ CORE_JOURNEY_STEPS: tuple[Step, ...] = (
         sentence="They supply the customer's UCM workbook as the baseline",
         owner="#823 and #824",
         run=step_supply_the_baseline,
-        expected_to_fail=True,
     ),
     Step(
         name="operations_resolves_mechanics",
         sentence="Technical Operations resolves the mechanics of that delivery",
         owner="#842",
         run=step_operations_resolves_mechanics,
-        expected_to_fail=True,
     ),
     Step(
         name="coordinator_answers_and_adopts",
@@ -510,105 +964,97 @@ CORE_JOURNEY_STEPS: tuple[Step, ...] = (
         "the baseline",
         owner="#827",
         run=step_coordinator_answers_and_adopts,
-        expected_to_fail=True,
     ),
     Step(
         name="approve_the_issue_configuration",
         sentence="They review and approve what this project issues",
         owner="#828",
         run=step_approve_the_issue_configuration,
-        expected_to_fail=True,
     ),
     Step(
         name="submit_a_later_revision",
         sentence="They submit a later UCM revision",
         owner="#823, #824 and #825",
         run=step_submit_a_later_revision,
-        expected_to_fail=True,
     ),
     Step(
         name="see_receipt_and_processing_state",
         sentence="They see its receipt and its processing state",
         owner="#841",
         run=step_see_receipt_and_processing_state,
-        expected_to_fail=True,
+    ),
+    Step(
+        name="a_held_source_is_not_read_and_says_so",
+        sentence="A source held against reading never reaches the parser, and "
+        "the register says so",
+        owner="#919",
+        run=step_a_held_source_is_not_read_and_says_so,
     ),
     Step(
         name="inspect_exact_source_context",
         sentence="They read the exact wording at its place in the source",
         owner="#831",
         run=step_inspect_exact_source_context,
-        expected_to_fail=True,
     ),
     Step(
         name="review_routine_changes",
         sentence="They review the routine changes the revision proposed",
         owner="#834",
         run=step_review_routine_changes,
-        expected_to_fail=True,
     ),
     Step(
         name="report_an_extraction_error",
         sentence="They report one extraction error against its source passage",
         owner="#832 and #836",
         run=step_report_an_extraction_error,
-        expected_to_fail=True,
     ),
     Step(
         name="undo_one_decision",
         sentence="They undo one decision they had just recorded",
         owner="#834",
         run=step_undo_one_decision,
-        expected_to_fail=True,
     ),
     Step(
         name="prepare_the_issue",
         sentence="They confirm coverage and ask for the issue to be prepared",
         owner="#821",
         run=step_prepare_the_issue,
-        expected_to_fail=True,
     ),
     Step(
         name="worker_prepares_the_candidate",
         sentence="The deployed worker claims the request and prepares the candidate",
         owner="#690",
         run=step_worker_prepares_the_candidate,
-        expected_to_fail=True,
     ),
     Step(
         name="inspect_the_actual_artifacts",
         sentence="They inspect the actual artifacts the candidate holds",
         owner="#830",
         run=step_inspect_the_actual_artifacts,
-        expected_to_fail=True,
     ),
     Step(
         name="approve_as_the_designated_releaser",
         sentence="The designated releaser, and only they, approve it for sharing",
         owner="#821 and #839",
         run=step_approve_as_the_designated_releaser,
-        expected_to_fail=True,
     ),
     Step(
         name="download_the_approved_package",
         sentence="They download exactly the approved package",
         owner="#830",
         run=step_download_the_approved_package,
-        expected_to_fail=True,
     ),
     Step(
         name="submit_a_second_revision",
         sentence="They come back next cycle and submit a second later revision",
         owner="#823, #824 and #825",
         run=step_submit_a_second_revision,
-        expected_to_fail=True,
     ),
     Step(
         name="retrieve_the_earlier_package_unchanged",
         sentence="They retrieve the earlier approved package, unchanged",
         owner="#830",
         run=step_retrieve_the_earlier_package_unchanged,
-        expected_to_fail=True,
     ),
 )
 
@@ -627,21 +1073,14 @@ def _web_url(database_name: str) -> str:
 def sign_in_as(journey: Journey, email: str) -> None:
     """Sign a different person in, through the same real link flow.
 
-    The journey has two people in it, and swapping them is a sign-in rather
-    than a dependency override: that is the whole reason the releaser's
+    The journey has three people in it -- the coordinator, Technical
+    Operations and the designated releaser -- and swapping them is a sign-in
+    rather than a dependency override: that is the whole reason the releaser's
     refusal of the coordinator means something.
     """
 
     journey.client.cookies.clear()
-    requested = journey.client.post(
-        "/sign-in/request", data={"email": email}, follow_redirects=False
-    )
-    assert requested.status_code == 200, requested.text
-    token = parse_qs(urlsplit(journey.sender.sent[-1][1]).query)["token"][0]
-    consumed = journey.client.get(
-        "/sign-in/consume", params={"token": token}, follow_redirects=False
-    )
-    assert consumed.status_code == 303, consumed.text
+    sign_in(journey.client, journey.sender, email)
 
 
 @pytest.fixture
@@ -655,14 +1094,21 @@ def journey_store(tmp_path, monkeypatch):
 
 @pytest.fixture
 def provisioned_project(runtime_database):
-    """A provisioned, unadopted project and the two people who work on it.
+    """A provisioned, unadopted project, its people, and its authorization.
 
-    This is the whole of the setup the journey is allowed: Corridor operations
-    provisions the project and enrols the people, exactly as it does before a
-    customer's first sign-in. Nothing here adopts a baseline, registers a
-    profile or prepares anything -- those are acts the journey has to perform
-    through the product, and a fixture that performed them would be the
-    "pre-adopting the baseline in a fixture" the audit rules out.
+    This is the whole of the setup the journey is allowed, and every part of it
+    is an act Corridor operations performs before a customer's first sign-in:
+    the project is provisioned, the people are enrolled, and the limited
+    onboarding authorization the control plane issued is recorded here through
+    the operations capability. Nothing adopts a baseline, registers a profile
+    or prepares anything -- those are acts the journey has to perform through
+    the product, and a fixture that performed them would be the "pre-adopting
+    the baseline in a fixture" the audit rules out.
+
+    The grant is not optional scaffolding either. ADR-0099 is that onboarding
+    runs under this limited authorization rather than under relaxed activation
+    checks, so a fixture that omitted it would be proving the journey against
+    a project the product refuses.
     """
 
     with runtime_database.session_factory.begin() as owner:
@@ -676,6 +1122,12 @@ def provisioned_project(runtime_database):
         for principal, email, name, designations in (
             (COORDINATOR, COORDINATOR_EMAIL, "Coordinator", [access.COORDINATION]),
             (RELEASER, RELEASER_EMAIL, "Releaser", [access.EXTERNAL_RELEASE]),
+            (
+                OPERATOR,
+                OPERATOR_EMAIL,
+                "Operations",
+                [access.TECHNICAL_OPERATIONS],
+            ),
         ):
             access.enroll_member(
                 owner,
@@ -684,8 +1136,58 @@ def provisioned_project(runtime_database):
                 principal=principal,
                 display_name=name,
                 designations=designations,
-                operator=OPERATOR,
+                operator=PROVISIONER,
             )
+        record_onboarding_grant(
+            owner,
+            project_id=int(project.id),
+            authorization_id="loa-journey",
+            grant_version=1,
+            customer="lone-star-transit",
+            environment="pilot-1",
+            permitted_operations=ONBOARDING_OPERATIONS,
+            source_scope="ucm workbook revisions",
+            governing_authorization_identity="customer-authorization-7",
+            governing_authorization_version="2026-04-01",
+            evidence_identity="s3://authorizations/7.pdf",
+            evidence_sha256="a" * 64,
+            # Inside ADR-0099's revalidation window, which is what makes the
+            # grant's positive answer a current one rather than a stale one.
+            issued_at=SIGN_IN_AT - timedelta(minutes=1),
+            expires_at=SIGN_IN_AT + timedelta(days=30),
+            issued_by_actor=OPERATIONS_ACTOR,
+            recorded_by_actor=OPERATIONS_ACTOR,
+        )
+        # The four standing schedules a deployed project runs on, configured
+        # through the same `configure_due_work` a deployment configures them
+        # through. Provisioning a project is what turns them on; a journey
+        # that switched one on midway would be arranging its own runtime
+        # rather than walking the deployment's.
+        for declaration in (
+            ProjectProcessingDeclaration.released_hourly(
+                project_id=int(project.id),
+                configuration_version="project-processing-v1",
+                extractor_identity="corridor.extract_project",
+                starts_at=SCHEDULES_FROM,
+            ),
+            DeltaGenerationDeclaration.released_hourly(
+                project_id=int(project.id),
+                configuration_version="delta-generation-v1",
+                comparison_rule_version=COMPARISON_RULE_VERSION,
+                starts_at=SCHEDULES_FROM,
+            ),
+            ReportPreparationDeclaration.released_weekly(
+                project_id=int(project.id),
+                configuration_version="report-preparation-v1",
+                starts_at=SCHEDULES_FROM,
+            ),
+            ReleasePreparationDeclaration.released_on_request(
+                project_id=int(project.id),
+                configuration_version="release-preparation-v1",
+                starts_at=SCHEDULES_FROM,
+            ),
+        ):
+            configure_due_work(owner, declaration, now=SCHEDULES_FROM)
         return project.slug
 
 
@@ -855,4 +1357,42 @@ def test_every_half_built_workflow_names_the_ticket_that_finishes_it():
     assert not unowned, (
         "these claimed workflows are half built and name no ticket: "
         + ", ".join(unowned)
+    )
+
+
+# --- the link ratchet, asked about the journey's own pages ------------------
+
+
+def test_the_link_ratchet_is_empty_for_every_core_journey_page():
+    """#849's third criterion, asked of the pages this journey actually opens.
+
+    ``tests/test_manifest_page_links.py`` keeps two lists that may fall and may
+    never rise: internal links a live-pilot page prints that the deployment
+    does not serve, and links whose whole target is a template expression its
+    reading cannot resolve. Both are down to one template, ``work_list.html``
+    -- ADR-0035's legacy item-per-record Work List, which an enforcing
+    deployment refuses *before* the template rather than rendering badly.
+
+    That is what makes this criterion answerable rather than aspirational: the
+    ratchet is not empty, and it is empty of every page the core journey
+    opens. The other half of the claim -- that no core-journey page is the
+    legacy Work List -- is not asserted here but walked: the scenario above
+    opens an unadopted project and reads the onboarding page, and opens an
+    adopted one and reads the week, and a run that rendered the legacy list
+    instead would fail on the sentences those steps assert.
+    """
+
+    offenders = {
+        entry.split(":", 1)[0]
+        for entry in test_manifest_page_links.UNADMITTED_LINKS
+        | test_manifest_page_links.COMPUTED_LINKS
+    }
+    assert offenders <= {"work_list.html"}, (
+        "a page outside the legacy Work List prints a link the live pilot "
+        "does not serve, or one this reading cannot resolve: "
+        + ", ".join(sorted(offenders - {"work_list.html"}))
+    )
+    assert not test_manifest_page_links.APPROVED_EXTERNAL_LINKS, (
+        "a page in the pilot set now sends a coordinator out of the product "
+        "mid-workflow, which is a decision the core journey has not made"
     )
