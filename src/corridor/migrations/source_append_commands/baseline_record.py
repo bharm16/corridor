@@ -512,22 +512,65 @@ REGISTER_BASELINE_FORMAT_SIGNATURE = (
 # already holds it, which is what every other privileged read in this schema
 # does (#492, ADR-0081).  It returns a count and nothing else, so it discloses
 # strictly less than the adoption command the same capability may already run.
+#
+# **"Only a number" is still that project's number (#937).**  As first written
+# the command took any ``p_project_id``, ran as an unpartitioned owner, and
+# answered.  A ``SECURITY DEFINER`` command steps outside row-level security by
+# construction, so moving the read behind one did not keep the project
+# isolation the partition gives every ordinary read: the web capability could
+# ask how many accepted record decisions *any* project in the customer database
+# holds, including one it holds no membership of.  The remedy is the one every
+# other privileged reading of a named project already applies -- the requested
+# project is checked against the partition **the database sealed on this
+# transaction** before anything is read.  A partition that is merely set is not
+# one: ``current_project_partition`` recomputes the seal over the secret, the
+# database, the session login and PostgreSQL's own top-level transaction id
+# (#531, #676), and answers ``null`` for a scope that was never declared and
+# for one a caller forged alike.  Both land in the refusal below.
+#
+# **It refuses; it does not answer zero.**  Zero conceals the caller's lack of
+# authority just as well, and both are equally silent about what the project
+# really holds -- the check consults only the caller's own partition, so an
+# unauthorized project that holds ten thousand records, one that holds none,
+# and one that does not exist are indistinguishable either way.  What separates
+# them is the reader.  This number's only consumer is a guard that reads zero
+# as "the accepted record is empty, adoption may proceed", so answering zero
+# without looking makes that guard fail open in its own terms and turns an
+# authorization failure into a false statement about the customer's record.  A
+# raise cannot be mistaken for an empty record.
+#
+# **The worker is unpartitioned on purpose, and stays that way.**  A background
+# run and a command-line adoption carry no person's authorization to enforce
+# and their isolation boundary is the customer database (ADR-0079), which is
+# why ``project_partition`` declares no partition for them at all.  The check
+# is therefore asked of exactly the capability that has one.
 PROJECT_ACCEPTED_RECORD_DECISION_COUNT = """
 create function public.project_accepted_record_decision_count(p_project_id bigint)
     returns bigint
-    language sql
+    language plpgsql
     stable
     security definer
     set search_path to 'public'
     as $$
-        select (
-            select count(*) from public.fact_decisions
-             where project_id = p_project_id
-               and superseded_by is null
-        ) + (
-            select count(*) from public.dependencies
-             where project_id = p_project_id
-        );
+        begin
+            if session_user = 'corridor_web'
+               and not coalesce(
+                   p_project_id = any(public.current_project_partition()), false
+               ) then
+                raise exception
+                    'the accepted record of project % is outside this '
+                    'capability''s project partition', p_project_id
+                    using errcode = '42501';
+            end if;
+            return (
+                select count(*) from public.fact_decisions
+                 where project_id = p_project_id
+                   and superseded_by is null
+            ) + (
+                select count(*) from public.dependencies
+                 where project_id = p_project_id
+            );
+        end;
     $$;
 """
 
@@ -580,7 +623,11 @@ def upgrade(op) -> None:
         # alone (#509, ADR-0076). The accepted-record count is the reading that
         # refuses one of them before it is attempted, so both capabilities hold
         # it: a coordinator meets the refusal in the product, and the
-        # command-line adoption path meets the same one.
+        # command-line adoption path meets the same one. Holding it is not
+        # holding it over every project -- the web half of that grant is
+        # bounded by the sealed partition inside the command itself (#937),
+        # and the worker half is the separately justified operations reading
+        # that carries no person's authorization to bound.
         op.execute(
             f"grant execute on function public.{name}{signature} to "
             + (

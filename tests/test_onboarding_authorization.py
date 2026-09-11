@@ -25,14 +25,18 @@ from sqlalchemy import func, select, text
 from sqlalchemy.exc import DBAPIError
 
 from corridor import processing_holds
-from corridor import access, audit, intake_hardening
+from corridor import access, audit, intake_hardening, refusals
 from corridor.baseline_adoption import (
     ANSWER_EFFECTS,
     BLOCKING_QUESTION_KINDS,
     PERMITTED_ANSWERS,
+    BaselineAdoptionRefused,
     BaselineAnswerRefused,
+    BaselineReadingNotPermitted,
     QuestionAnswer,
     RetainedPreview,
+    StaleBaselinePreview,
+    _refuse_nonempty_project_record,
     adopt_retained_baseline,
     adoption_material_payload,
     latest_baseline_reading,
@@ -45,10 +49,13 @@ from corridor.field_mapping_manifest import DEMO_EXTERNAL_REFERENCES, MappingDec
 from corridor.migrations.source_append_commands import onboarding_authorization as frozen
 from corridor.models import (
     AuditLog,
+    Document,
     OnboardingAct,
     OnboardingGrant,
     OnboardingPreview,
     Project,
+    SourceDelivery,
+    SourceDeliveryConfirmation,
 )
 from corridor.onboarding_authorization import (
     ADOPT_BASELINE,
@@ -74,6 +81,17 @@ from corridor.onboarding_authorization import (
 )
 from corridor.operating_mode import ADOPTED_BASELINE, project_operating_mode
 from corridor.principals import HumanPrincipal
+from corridor.source_authorization import (
+    CONNECTOR_CONFIGURATION,
+    AuthorizedSourceBinding,
+    record_source_authorization,
+)
+from corridor.source_register import read_source_register
+from corridor.source_delivery import (
+    DeliveryBinding,
+    DeliveryObservation,
+    take_delivery,
+)
 from corridor.source_intake import validate_and_stage
 
 from access_support import seed_membership
@@ -176,6 +194,40 @@ def onboarding(session, tmp_path, store):
     return project, grant_id
 
 
+def delivered(session, project, staged, *, name="ucm.xlsx"):
+    """Take delivery of the staged bytes as the person who handed them over.
+
+    A reading is prepared on a delivery, not on a digest (#937), so every
+    scenario here hands the workbook over before it is read -- which is what
+    the product does: the upload takes delivery, and the page then offers the
+    reading on the row that produced.
+    """
+
+    recorded = take_delivery(
+        session,
+        DeliveryBinding(
+            customer="lone-star-transit",
+            project_id=int(project.id),
+            project_slug=project.slug,
+            transport="push",
+            channel="product_upload",
+            configuration_identity="product-upload-v1",
+            configuration_version="1",
+            delivered_by_principal=COORDINATOR.subject,
+        ),
+        DeliveryObservation(
+            external_identity=name,
+            external_version=uuid4().hex[:8],
+            content_digest=staged.sha256,
+            bytes_reference=f"objects/{staged.sha256}",
+        ),
+        service_identity="tests.test_onboarding_authorization",
+        run_identity=uuid4().hex,
+    )
+    session.flush()
+    return recorded.delivery_id
+
+
 def prepared(session, project, tmp_path, *, at=AT, name="ucm.xlsx", rows=None):
     staged = validate_and_stage(workbook(tmp_path, name=name, rows=rows), name)
     return prepare_baseline_reading(
@@ -186,6 +238,7 @@ def prepared(session, project, tmp_path, *, at=AT, name="ucm.xlsx", rows=None):
         source_identity="UCM workbook revision C",
         principal=COORDINATOR,
         at=at,
+        source_delivery_id=delivered(session, project, staged, name=name),
         field_mapping=DEMO,
         images_dir=tmp_path / "images",
     )
@@ -995,14 +1048,17 @@ def test_a_held_source_is_refused_a_rich_onboarding_read(
     # landed in the same second and failed under load, which is what it did
     # once on CI before this.
     bytes_ = workbook(tmp_path)
+    staged_once = validate_and_stage(bytes_, "ucm.xlsx")
+    delivery_id = delivered(session, project, staged_once)
     first = prepare_baseline_reading(
         session,
         project=project,
-        staged=validate_and_stage(bytes_, "ucm.xlsx"),
+        staged=staged_once,
         customer="Lone Star Transit Authority",
         source_identity="UCM workbook revision C",
         principal=COORDINATOR,
         at=AT,
+        source_delivery_id=delivery_id,
         field_mapping=DEMO,
         images_dir=tmp_path / "images",
     )
@@ -1022,6 +1078,7 @@ def test_a_held_source_is_refused_a_rich_onboarding_read(
             source_identity="UCM workbook revision C",
             principal=COORDINATOR,
             at=AT,
+            source_delivery_id=delivery_id,
             field_mapping=DEMO,
             images_dir=tmp_path / "images",
         )
@@ -1057,6 +1114,242 @@ def _hold_reading(session, document_id):
         imposed_by="tests.test_onboarding_authorization",
         evidence=f"documents.id={document_id}",
     )
+
+
+# --- #937 The delivery a reading was prepared from --------------------------
+#
+# Preparation used to register a Document and confirm nothing, so an upload
+# left an awaiting-confirmation delivery in `source_deliveries` beside a
+# separately registered document, and nothing joined the two. The source
+# register is built around the delivery, so it showed the receipt and the
+# document as unrelated rows and a coordinator could not read one story from
+# them.
+#
+# Matching bytes cannot stand in for the relationship: two deliveries of one
+# workbook -- a connector pull and a person's upload an hour later -- carry the
+# same digest and are different acts by different parties under different
+# authority. So the delivery is *named* by the control that asks for the
+# reading and re-proved at every stage that acts on it.
+
+
+def test_a_prepared_reading_names_the_delivery_it_was_read_from(
+    session, onboarding, tmp_path
+):
+    """One coherent receipt-to-document story, not two unrelated rows."""
+
+    project, _ = onboarding
+    retained = prepared(session, project, tmp_path)
+    session.flush()
+
+    document = session.get(Document, retained.document_id)
+    delivery = session.get(SourceDelivery, retained.source_delivery_id)
+    confirmation = session.scalars(
+        select(SourceDeliveryConfirmation).where(
+            SourceDeliveryConfirmation.delivery_id == retained.source_delivery_id
+        )
+    ).one()
+
+    assert document.source_delivery_id == retained.source_delivery_id, (
+        "the registered document names no delivery, so the source register "
+        "shows a receipt and a document with nothing joining them"
+    )
+    assert delivery.content_sha256 == retained.content_sha256
+    assert delivery.project_id == project.id
+    assert confirmation.confirmed_by_principal == COORDINATOR.subject, (
+        "the delivery was read for adoption without anybody being recorded as "
+        "having admitted it"
+    )
+
+    # And the register reads as one story rather than two rows. Before this it
+    # showed the delivery awaiting a confirmation nobody had given, and the
+    # Document the preparation registered, as unrelated entries.
+    register = read_source_register(session, project_id=int(project.id))
+    assert [
+        (row.delivery_id, row.document_id) for row in register.rows
+    ] == [(retained.source_delivery_id, retained.document_id)], (
+        "the source register shows the receipt and the document it produced as "
+        "separate rows"
+    )
+    assert register.rows[0].confirmed_by == COORDINATOR.subject
+
+
+def test_a_delivery_of_another_project_is_not_a_delivery_of_this_one(
+    session, onboarding, tmp_path
+):
+    """The id arrives on a form, so it is checked rather than believed."""
+
+    project, _ = onboarding
+    elsewhere = Project(
+        slug=f"elsewhere-{uuid4().hex[:8]}", name="Elsewhere", is_synthetic=True
+    )
+    session.add(elsewhere)
+    session.flush()
+    staged = validate_and_stage(workbook(tmp_path), "ucm.xlsx")
+    theirs = delivered(session, elsewhere, staged)
+
+    with refusal(session, BaselineAdoptionRefused) as refused:
+        prepare_baseline_reading(
+            session,
+            project=project,
+            staged=staged,
+            customer="Lone Star Transit Authority",
+            source_identity="UCM workbook revision C",
+            principal=COORDINATOR,
+            at=AT,
+            source_delivery_id=theirs,
+            field_mapping=DEMO,
+            images_dir=tmp_path / "images",
+        )
+    assert "not a stored delivery of these bytes on this project" in str(
+        refused.value
+    )
+
+
+def test_a_delivery_that_carries_other_bytes_is_refused(
+    session, onboarding, tmp_path
+):
+    """Named *and* checked: the delivery has to hold the bytes being read."""
+
+    project, _ = onboarding
+    # Genuinely different content, not a second save of the same rows:
+    # `openpyxl` writes the same bytes twice within one second, and a probe
+    # whose two files share a digest proves nothing about the digest check.
+    other = validate_and_stage(
+        workbook(tmp_path, name="other.xlsx", rows=ROWS[:1]), "other.xlsx"
+    )
+    other_delivery = delivered(session, project, other, name="other.xlsx")
+    staged = validate_and_stage(workbook(tmp_path), "ucm.xlsx")
+    assert other.sha256 != staged.sha256
+
+    with refusal(session, BaselineAdoptionRefused) as refused:
+        prepare_baseline_reading(
+            session,
+            project=project,
+            staged=staged,
+            customer="Lone Star Transit Authority",
+            source_identity="UCM workbook revision C",
+            principal=COORDINATOR,
+            at=AT,
+            source_delivery_id=other_delivery,
+            field_mapping=DEMO,
+            images_dir=tmp_path / "images",
+        )
+    assert "not a stored delivery of these bytes on this project" in str(
+        refused.value
+    )
+
+
+def test_a_source_authorization_that_no_longer_permits_this_binding_refuses(
+    session, onboarding, tmp_path
+):
+    """A withdrawal stops new processing, and reading a workbook is new processing.
+
+    The binding was authorized when the bytes arrived -- `require_source_delivery`
+    proved it then -- and the recorded set has since been narrowed to a
+    connector this delivery did not come in on. The reading asks again rather
+    than remembering the answer.
+    """
+
+    project, _ = onboarding
+    staged = validate_and_stage(workbook(tmp_path), "ucm.xlsx")
+    delivery_id = delivered(session, project, staged)
+    record_source_authorization(
+        session,
+        project_id=int(project.id),
+        authorization_identity="source-set-2026-05",
+        authorization_version=1,
+        customer="lone-star-transit",
+        environment="pilot-1",
+        governing_authorization_identity="customer-authorization-7",
+        governing_authorization_version="2026-04-01",
+        bindings=[
+            AuthorizedSourceBinding(
+                channel="shared-files",
+                configuration_identity="shared-files-v1",
+                configuration_version="1",
+                permitted_source_classes=("matrix",),
+                authentication_mode=CONNECTOR_CONFIGURATION,
+            )
+        ],
+        issued_at=AT - timedelta(minutes=5),
+        issued_by_actor=OPERATIONS_ACTOR,
+        recorded_by_actor=OPERATIONS_ACTOR,
+    )
+    session.flush()
+
+    with refusal(session, BaselineAdoptionRefused) as refused:
+        prepare_baseline_reading(
+            session,
+            project=project,
+            staged=staged,
+            customer="Lone Star Transit Authority",
+            source_identity="UCM workbook revision C",
+            principal=COORDINATOR,
+            at=AT,
+            source_delivery_id=delivery_id,
+            field_mapping=DEMO,
+            images_dir=tmp_path / "images",
+        )
+    assert "no longer permits the way this workbook was delivered" in str(
+        refused.value
+    )
+
+
+def test_adopting_a_reading_whose_document_lost_its_delivery_is_refused(
+    session, onboarding, tmp_path
+):
+    """The relationship is re-proved at the act, not only at the preparation.
+
+    Bytes and project still agree; the delivery the reading was prepared from
+    is no longer the one the Document carries, and an adoption whose retained
+    source names one receipt while the record names another is exactly the
+    incoherence this change exists to remove.
+    """
+
+    project, _ = onboarding
+    retained = prepared(session, project, tmp_path)
+    document = session.get(Document, retained.document_id)
+    document.source_delivery_id = None
+    session.flush()
+
+    with refusal(session, StaleBaselinePreview):
+        adopt(session, retained)
+
+
+def test_an_unsupported_development_login_is_refused_in_words(session, onboarding):
+    """A raw `permission denied for function` is a 500, not an answer (#937).
+
+    Leaving this path out of `corridor_legacy_dev`'s grants is deliberate: it
+    is the opt-in unpartitioned login, and an unpartitioned reading of every
+    project's accepted record is what the partition check exists to stop. What
+    a development deployment is owed is a sentence saying so.
+    """
+
+    project, _ = onboarding
+    if not session.scalar(
+        text("select 1 from pg_roles where rolname = 'corridor_legacy_dev'")
+    ):
+        pytest.skip("this deployment created no legacy-development login")
+    assert (
+        session.scalar(
+            text(
+                "select has_function_privilege('corridor_legacy_dev', "
+                ":command, 'execute')"
+            ),
+            {"command": "public.project_accepted_record_decision_count(bigint)"},
+        )
+        is False
+    ), (
+        "the legacy-development login holds the accepted-record reading, which "
+        "is an unpartitioned count of every project in the customer database"
+    )
+
+    with as_role(session, "corridor_legacy_dev"):
+        with pytest.raises(BaselineReadingNotPermitted) as refused:
+            _refuse_nonempty_project_record(session, project)
+
+    assert refused.value.refusal_kind == refusals.NOT_AUTHORIZED
+    assert "not one Corridor prepares baseline readings under" in str(refused.value)
 
 
 # --- the adoption itself ----------------------------------------------------

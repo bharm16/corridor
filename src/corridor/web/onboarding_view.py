@@ -124,11 +124,19 @@ class SuppliedSource:
 
     The page needs it because supplying the workbook and reading it are two
     acts: a coordinator who has just uploaded one lands back here, and until
-    #934 the page still asked them to supply it. The digest and the name are
-    what ``/projects/{slug}/baseline/prepare`` takes, so the control the page
-    prints carries exactly what the route reads and nothing composed for it.
+    #934 the page still asked them to supply it. The delivery id, the digest
+    and the name are what ``/projects/{slug}/baseline/prepare`` takes, so the
+    control the page prints carries exactly what the route reads and nothing
+    composed for it.
+
+    The delivery id is on the control because the reading is an act on *this
+    delivery*, not on whichever row happens to share its digest (#937). Two
+    deliveries of one workbook -- a connector pull and a person's upload an
+    hour later -- carry the same bytes and are different acts under different
+    authority, so a route given only a digest cannot say which one it read.
     """
 
+    delivery_id: int
     content_sha256: str
     filename: str
     delivered_at: datetime
@@ -256,6 +264,22 @@ def onboarding_view(
         findings.append(
             ValidationFinding(code=standing.reason, sentence=_standing_sentence(standing))
         )
+    if (
+        not preparing.permitted
+        and adopted is None
+        and paused is None
+        and preparing.reason != standing.reason
+    ):
+        # A project whose compatibility permission has lapsed while its
+        # adoption permission still stands is exactly the case that produced a
+        # button and then a refusal, so the page says why instead (#937). The
+        # two standings usually fail for the same recorded reason, and saying
+        # it twice would read as two problems.
+        findings.append(
+            ValidationFinding(
+                code=preparing.reason, sentence=_standing_sentence(preparing)
+            )
+        )
 
     supplied = (
         ()
@@ -273,10 +297,31 @@ def onboarding_view(
         paused=paused,
         supplied=supplied,
         may_adopt=membership.has(COORDINATION),
-        may_prepare=membership.has(TECHNICAL_OPERATIONS) or membership.has(COORDINATION),
+        may_prepare=_may_prepare(membership, preparing),
         standing=standing if adopted is None else preparing,
-        next_action=_next_action(adopted, retained, standing, paused, supplied),
+        next_action=_next_action(
+            adopted, retained, standing, paused, supplied, preparing
+        ),
     )
+
+
+def _may_prepare(membership: MembershipAccess, preparing: OnboardingStanding) -> bool:
+    """Whether this person may ask for the reading, right now (#934, #937).
+
+    Two conditions, and until #937 only the first was read. **Who**: requesting
+    an existing, supported preview is Project Coordination's or Technical
+    Operations', and neither is implied by membership. **Whether Corridor may**:
+    the compatibility permission ADR-0099 grants is per-project, versioned and
+    expiring, and ``prepare_baseline_reading`` proves it in the database before
+    it opens anything -- so a designated person whose project's permission has
+    lapsed or been withdrawn was offered an inviting button and then met a
+    refusal this page already had the answer to. A control nobody can use is
+    worse than no control: it puts the refusal after the click instead of
+    before it.
+    """
+
+    designated = membership.has(TECHNICAL_OPERATIONS) or membership.has(COORDINATION)
+    return designated and preparing.permitted
 
 
 def _supplied(session: Session, project_id: int) -> tuple[SuppliedSource, ...]:
@@ -305,6 +350,7 @@ def _supplied(session: Session, project_id: int) -> tuple[SuppliedSource, ...]:
         seen.add(row.content_sha256)
         supplied.append(
             SuppliedSource(
+                delivery_id=int(row.id),
                 content_sha256=row.content_sha256,
                 filename=str(row.metadata_json.get("filename") or row.external_identity),
                 delivered_at=row.received_at,
@@ -358,6 +404,7 @@ def _next_action(
     standing: OnboardingStanding,
     paused: PausedPanel | None,
     supplied: tuple[SuppliedSource, ...] = (),
+    preparing: OnboardingStanding | None = None,
 ) -> str:
     """One sentence naming what happens next, never a list of possibilities."""
 
@@ -369,9 +416,14 @@ def _next_action(
         return _standing_sentence(standing)
     if retained is None:
         if supplied:
+            if preparing is not None and not preparing.permitted:
+                # The act this page would otherwise name is one Corridor may
+                # not perform on this project right now, so the sentence is
+                # why, not an invitation (#937).
+                return _standing_sentence(preparing)
             return (
-                "Read the workbook that was supplied, so this project can see "
-                "what adopting it would accept."
+                "Prepare a preview of the values this workbook would "
+                "establish. Nothing is adopted until you approve it."
             )
         return "Supply the customer's UCM workbook as this project's baseline."
     if not retained.operations_resolved:

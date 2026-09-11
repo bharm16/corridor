@@ -47,7 +47,7 @@ from sqlalchemy.orm import Session as OrmSession
 from sqlalchemy.orm.exc import ObjectDeletedError
 from sqlalchemy.pool import NullPool, QueuePool
 
-from corridor import access, audit, identity_audit, web_boundary
+from corridor import access, audit, identity_audit, refusals, web_boundary
 from corridor.config import settings
 from corridor.migrations.source_append_commands import partition_declaration
 from corridor.models import (
@@ -2726,6 +2726,345 @@ def test_the_classification_and_the_grants_agree_about_every_relation(
     assert sorted(readable & web_boundary.DENIED_RELATIONS) == []
     assert sorted(web_boundary.GRANTED_RELATIONS - readable) == []
     assert sorted(readable & web_boundary.PARTITIONED_UNGRANTED_RELATIONS) == []
+
+
+# --- #937 A privileged reading of a named project is still that project's ---
+#
+# `project_accepted_record_decision_count` is the guard Adopt Baseline asks
+# before it opens a workbook: how many accepted record decisions would adopting
+# a baseline overwrite, counted on both halves -- the spine's effective
+# `fact_decisions` and the legacy `dependencies` rows the live-pilot boundary
+# revokes from `corridor_web`. #933 moved that read behind a `SECURITY DEFINER`
+# command owned by the role that holds both, which is how every other
+# privileged read in this schema is done and which fixed the 500.
+#
+# It also stepped outside the partition, because that is what `SECURITY
+# DEFINER` does. The command took any `p_project_id`, ran as an unpartitioned
+# owner, and answered -- so the web capability could ask how many accepted
+# record decisions any project in the customer database held, membership or
+# no membership. "It only returns a number" is not an answer: the number is
+# that project's.
+#
+# So these read as the deployed `corridor_web` login against committed rows,
+# exactly as the partition tests above do, and they ask the command directly
+# rather than through the Python that calls it. Two of them are the cases the
+# product depends on continuing to work, and three are the ways a caller can
+# fail to hold a partition: none declared, one forged, and one declared for a
+# different project.
+
+
+def _legacy_constraint_row(owner, project_id: int, slug: str) -> int:
+    """One legacy Constraint Record, the half `corridor_web` may not read."""
+
+    return int(
+        owner.execute(
+            text(
+                "insert into dependencies (project_id, ref_code, dep_type, "
+                "title) values (:project_id, :ref_code, 'utility_relocation', "
+                ":title) returning id"
+            ),
+            {
+                "project_id": project_id,
+                "ref_code": f"{slug}-UC-1",
+                "title": f"{slug} relocation",
+            },
+        ).scalar_one()
+    )
+
+
+@pytest.fixture
+def accepted_record_projects(runtime_database):
+    """Three committed projects, and one person who is on only two of them.
+
+    The two halves of the accepted record are deliberately separated: one
+    project holds only legacy Constraint Records and the other only effective
+    spine decisions, because a guard that checked one half would pass whichever
+    test carried the other. The third holds both and has no roster entry at
+    all, so "unauthorized" here means a project that really does hold records
+    rather than an empty one that would answer zero anyway. The fourth is that
+    empty one, kept so the refusals can be compared: a refusal that differed
+    between a full project and an empty one would disclose which it was.
+    """
+
+    with runtime_database.session_factory.begin() as owner:
+        projects = {}
+        for slug in ("legacy-half", "spine-half", "not-ours", "not-ours-empty"):
+            row = Project(slug=slug, name=slug, is_synthetic=True)
+            owner.add(row)
+            owner.flush()
+            projects[slug] = int(row.id)
+        _legacy_constraint_row(owner, projects["legacy-half"], "legacy-half")
+        _seed_record_rows(owner, projects["spine-half"], "spine-half")
+        _legacy_constraint_row(owner, projects["not-ours"], "not-ours")
+        _seed_record_rows(owner, projects["not-ours"], "not-ours")
+        for slug in ("legacy-half", "spine-half"):
+            owner.add(
+                ProjectRosterEntry(
+                    project_id=projects[slug],
+                    principal_subject=LEAVER.subject,
+                    display_name="Leaver",
+                    active=True,
+                    can_coordinate=True,
+                )
+            )
+    return projects
+
+
+def _decision_count(web, project_id: int):
+    return web.scalar(
+        select(func.project_accepted_record_decision_count(project_id))
+    )
+
+
+def test_the_legacy_half_of_the_guard_still_answers_inside_the_partition(
+    accepted_record_projects, web_connection
+):
+    """The case #933 exists for: legacy rows the web capability cannot select.
+
+    `corridor_web` holds no privilege on `dependencies`, so the count has to
+    come from the command's owner. What #937 adds is that the owner answers
+    only about the project this transaction declared.
+    """
+
+    project_id = accepted_record_projects["legacy-half"]
+    with OrmSession(bind=web_connection) as web:
+        access.open_project_partition(
+            web, principal_subject=LEAVER.subject, project_id=project_id
+        )
+        counted = _decision_count(web, project_id)
+        refused = _refusal_from_the_guard(web, project_id, "legacy-half")
+
+    assert counted == 1, (
+        "the legacy half of the accepted record was not counted, so a baseline "
+        "could be adopted over Constraint Records this project already holds"
+    )
+    assert "already holds 1 accepted record decisions" in str(refused)
+
+
+def test_the_spine_half_of_the_guard_still_answers_inside_the_partition(
+    accepted_record_projects, web_connection
+):
+    """A project with no legacy rows at all still refuses adoption."""
+
+    project_id = accepted_record_projects["spine-half"]
+    with OrmSession(bind=web_connection) as web:
+        access.open_project_partition(
+            web, principal_subject=LEAVER.subject, project_id=project_id
+        )
+        counted = _decision_count(web, project_id)
+        refused = _refusal_from_the_guard(web, project_id, "spine-half")
+
+    assert counted == 1, (
+        "the effective spine decision was not counted, so a baseline could be "
+        "adopted over the accepted record this project already holds"
+    )
+    assert "already holds 1 accepted record decisions" in str(refused)
+
+
+def test_asking_about_a_project_you_are_not_on_reveals_no_count(
+    accepted_record_projects, web_connection
+):
+    """The defect: a legitimate partition, a question about somebody else.
+
+    The declaration is real -- this connection is genuinely entitled to read
+    `legacy-half` -- and the question is about a project the person holds no
+    membership of. It is refused, and the refusal is raised before anything
+    about the other project is read, so it says the same thing whether that
+    project holds ten thousand records, none, or does not exist.
+    """
+
+    ours = accepted_record_projects["legacy-half"]
+    theirs = accepted_record_projects["not-ours"]
+    empty = accepted_record_projects["not-ours-empty"]
+    absent = max(accepted_record_projects.values()) + 1_000
+    said = {}
+    for asked in (theirs, empty, absent):
+        with OrmSession(bind=web_connection) as web:
+            access.open_project_partition(
+                web, principal_subject=LEAVER.subject, project_id=ours
+            )
+            with pytest.raises(DBAPIError) as refused:
+                _decision_count(web, asked)
+            said[asked] = (
+                _sqlstate_of(refused.value),
+                str(refused.value.orig).replace(str(asked), "<asked>"),
+            )
+        web_connection.rollback()
+
+    state, sentence = said[theirs]
+    assert state == access.INSUFFICIENT_PRIVILEGE
+    assert sentence.startswith(
+        "the accepted record of project <asked> is outside this capability's "
+        "project partition"
+    ), sentence
+    # The acceptance bar. A project holding both halves of a real accepted
+    # record, an empty project, and a project id that names nothing are told
+    # apart by nothing the caller receives -- because the refusal is raised
+    # from the caller's own declared partition, before a single row of the
+    # asked-about project is read.
+    assert said[empty] == said[theirs]
+    assert said[absent] == said[theirs]
+
+
+def test_the_guard_answers_the_refusal_in_words_and_leaves_the_session_usable(
+    accepted_record_projects, web_connection
+):
+    """What the route renders instead of a 500 (#937).
+
+    The command raises, which aborts the transaction the caller is sitting in,
+    so the Python guard runs it in a savepoint exactly as
+    `access.open_project_partition` does (#654): the refusal reaches the
+    handler as a bounded sentence with an authorization kind behind it, and
+    the session is still usable afterwards, which is what lets the page
+    re-render itself rather than answering a stack trace.
+    """
+
+    from corridor.baseline_adoption import (
+        BaselineReadingNotPermitted,
+        _refuse_nonempty_project_record,
+    )
+
+    ours = accepted_record_projects["legacy-half"]
+    theirs = accepted_record_projects["not-ours"]
+    with OrmSession(bind=web_connection) as web:
+        access.open_project_partition(
+            web, principal_subject=LEAVER.subject, project_id=ours
+        )
+        with pytest.raises(BaselineReadingNotPermitted) as refused:
+            _refuse_nonempty_project_record(
+                web, Project(id=theirs, slug="not-ours", name="not-ours")
+            )
+        # The transaction the refusal aborted is the savepoint's, not the
+        # caller's: this is the statement that used to meet
+        # `InFailedSqlTransaction`.
+        still_usable = _decision_count(web, ours)
+    web_connection.rollback()
+
+    assert refused.value.refusal_kind == refusals.NOT_AUTHORIZED, (
+        "the refusal is reported as a conflict over the record, which answers "
+        "409 and reads as though the project were in an odd state"
+    )
+    assert "not a project this session may read" in str(refused.value)
+    assert still_usable == 1
+
+
+def test_a_connection_that_declared_no_partition_is_refused(
+    accepted_record_projects, web_connection
+):
+    """Fail closed: no declaration is not a licence to read every project.
+
+    This is the state every pooled connection starts every transaction in, so
+    a command that treated an undeclared partition as "no restriction" would
+    be open by default rather than closed.
+    """
+
+    project_id = accepted_record_projects["legacy-half"]
+    with OrmSession(bind=web_connection) as web:
+        assert access.current_project_partition(web) is None
+        with pytest.raises(DBAPIError) as refused:
+            _decision_count(web, project_id)
+    web_connection.rollback()
+
+    assert _sqlstate_of(refused.value) == access.INSUFFICIENT_PRIVILEGE
+
+
+def test_a_partition_the_database_did_not_seal_buys_no_count(
+    accepted_record_projects, web_connection
+):
+    """A partition that is merely *set* is not one the database sealed (#531, #676).
+
+    The web login may set the session setting and may read the seal beside it;
+    what it cannot do is compute one. So the forged pair verifies as no
+    partition at all, and the command refuses it exactly as it refuses a
+    connection that declared nothing -- which is what keeps the two
+    indistinguishable to whoever forged it.
+    """
+
+    theirs = accepted_record_projects["not-ours"]
+    with OrmSession(bind=web_connection) as web:
+        web.execute(
+            text("select set_config('corridor.project_partition', :scope, true)"),
+            {"scope": str(theirs)},
+        )
+        web.execute(
+            text("select set_config('corridor.project_partition_seal', :seal, true)"),
+            {"seal": sha256(b"guess").hexdigest()},
+        )
+        assert access.current_project_partition(web) is None
+        with pytest.raises(DBAPIError) as refused:
+            _decision_count(web, theirs)
+    web_connection.rollback()
+
+    assert _sqlstate_of(refused.value) == access.INSUFFICIENT_PRIVILEGE
+
+
+def test_the_operations_capability_reads_without_a_partition(
+    accepted_record_projects, runtime_database
+):
+    """The worker keeps the reading the command-line adoption path needs.
+
+    `project_partition` declares no partition for `corridor_worker` on purpose:
+    a background run carries no person's authorization to enforce and its
+    isolation boundary is the customer database (ADR-0079). So the check is
+    asked of exactly the capability that has a partition, and the supported
+    internal path is unaffected by #937.
+    """
+
+    worker_engine = create_engine(
+        make_url(settings.database_url)
+        .set(
+            database=runtime_database.name,
+            username="corridor_worker",
+            password=os.environ.get("CORRIDOR_WORKER_DB_PASSWORD")
+            or "corridor_worker",
+        )
+        .render_as_string(hide_password=False),
+        poolclass=NullPool,
+        future=True,
+    )
+    try:
+        with worker_engine.connect() as connection, OrmSession(bind=connection) as worker:
+            assert access.current_project_partition(worker) is None
+            counted = {
+                slug: _decision_count(worker, project_id)
+                for slug, project_id in sorted(accepted_record_projects.items())
+            }
+    finally:
+        worker_engine.dispose()
+
+    assert counted == {
+        "legacy-half": 1,
+        "not-ours": 2,
+        "not-ours-empty": 0,
+        "spine-half": 1,
+    }
+
+
+def _refusal_from_the_guard(web, project_id: int, slug: str):
+    """What the Python guard in front of the command says about this project.
+
+    "The count is right" and "adoption is still refused" are two claims, and
+    the second is the one the product depends on, so the guard itself is asked
+    rather than the number it reads.
+    """
+
+    from corridor.baseline_adoption import (
+        BaselineAdoptionRefused,
+        _refuse_nonempty_project_record,
+    )
+
+    # Transient and never added to the session: the guard reads the project's
+    # id and its slug and nothing else, and a row written here would be a
+    # second accepted-record decision of its own.
+    with pytest.raises(BaselineAdoptionRefused) as refused:
+        _refuse_nonempty_project_record(
+            web, Project(id=project_id, slug=slug, name=slug)
+        )
+    return refused.value
+
+
+def _sqlstate_of(error: BaseException) -> str:
+    return getattr(getattr(error, "orig", None), "sqlstate", "") or ""
 
 
 # --- #693 A grant to PUBLIC is a grant to every role, decided by nobody ----
