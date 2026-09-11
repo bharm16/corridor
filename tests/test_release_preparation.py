@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 import html
+import re
 from uuid import uuid4
 
 import pytest
@@ -36,7 +37,11 @@ from corridor.models import (
 from corridor.object_storage import content_store
 from corridor.principals import HumanPrincipal
 from corridor.project_portfolio import STATE_PRECEDENCE, read_portfolio
-from corridor.project_workflow import PREPARATION_FAILED, issue_readiness
+from corridor.project_workflow import (
+    COORDINATOR_OWNER,
+    PREPARATION_FAILED,
+    issue_readiness,
+)
 from corridor.release_preparation import (
     FAILED,
     NOT_REQUESTED,
@@ -59,9 +64,16 @@ from corridor.web.app import (
     get_review_clock,
     get_session,
 )
-from corridor.web.issue_section import PREPARE_ACTION, PREPARING as SECTION_PREPARING
+from corridor.web.issue_section import (
+    CHECK_AGAIN_ACTION,
+    PREPARE_ACTION,
+    PREPARING as SECTION_PREPARING,
+    REFRESH_ACTION,
+    cutoff_words,
+)
 from corridor.web.issue_section import issue_view
 
+from browser_session_support import form_fields
 from coverage_support import declare_coverage
 from later_revision_support import BASELINE_ROWS, adopt, workbook_bytes
 from packet_review_support import configure_issue
@@ -557,6 +569,200 @@ def test_the_section_says_it_is_preparing_even_with_a_candidate_on_the_page(
     assert view.may_authorize is False
     assert view.may_prepare is False
     assert "/issue/prepare" not in week(client, adopted)
+
+
+def test_the_cutoff_shown_is_the_instant_the_form_submits(
+    session, adopted, client, store
+):
+    """The cutoff a coordinator reads is the cutoff their confirmation carries.
+
+    It used to be a hidden render-time value with nothing displaying it: the
+    facts printed ``cutoff.date()`` while the form carried the instant, so the
+    screen said "2026-03-02" and the submission attested to 06:00 UTC on it
+    (#840). The point is not that a date is imprecise -- it is that a
+    confirmation of a reading *at a cutoff* has to be a confirmation of the
+    cutoff the person was shown, and two spellings of it on one page is how
+    that stops being checkable.
+
+    The zone travels with it, because an instant without one is not an instant,
+    and every seam from #640 onward refuses a naive one.
+    """
+
+    configure(session, adopted)
+
+    body = week(client, adopted)
+    submitted = form_fields(body, "/issue/prepare")
+
+    assert submitted is not None
+    assert cutoff_words(CUTOFF) in prose(body)
+    assert "(UTC)" in prose(body), "the instant is stated with its time zone"
+    assert submitted["cutoff"] == CUTOFF.isoformat()
+    assert datetime.fromisoformat(submitted["cutoff"]) == CUTOFF
+    # The reading the screen printed is the reading the form attests to, so a
+    # fingerprint that has moved is refused rather than quietly accepted.
+    view = issue_view(session, project_id=adopted.project.id, as_of=CUTOFF)
+    assert submitted["derived_reading_digest"] == view.coverage.reading_digest
+    assert view.coverage.reading_digest in prose(body)
+
+
+def test_a_confirmation_is_recorded_at_the_cutoff_it_was_composed_at(
+    session, adopted, client, store
+):
+    """The cutoff is never silently moved forward at submission (#840).
+
+    A page composed at one instant and submitted at a later one -- a
+    coordinator who read the section, went away, and came back to press the
+    button -- must confirm the coverage they were shown, not whatever the
+    records say when the POST lands. The route re-derives at the *submitted*
+    cutoff for exactly that reason, and the declaration and the request both
+    freeze it.
+    """
+
+    configure(session, adopted)
+    submitted = form_fields(week(client, adopted), "/issue/prepare")
+
+    later = CUTOFF + timedelta(hours=5)
+    app.dependency_overrides[get_review_clock] = lambda: (lambda: later)
+    response = client.post(
+        f"/work/{adopted.project.slug}/issue/prepare", data=submitted
+    )
+
+    assert response.status_code == 202, response.text
+    declaration = session.scalars(select(IssueCoverageDeclaration)).one()
+    requested = session.scalars(select(ReleasePreparationRequest)).one()
+    assert declaration.cutoff_at == CUTOFF
+    assert requested.source_cutoff == CUTOFF
+    assert declaration.confirmed_at == later, (
+        "the instant the person acted is recorded, and it is not the cutoff"
+    )
+
+
+def test_the_section_offers_no_way_to_choose_an_earlier_cutoff(
+    session, adopted, client, store
+):
+    """The deferral, pinned as a property rather than left to memory (#840).
+
+    The backend keeps three instants apart -- when a source said something,
+    when the accepted record took it, and when an issue was prepared -- and a
+    date box on this section would read as "the record as at this date", which
+    is none of them. So the only cutoff control is the hidden field carrying
+    back what was displayed, and the only thing that moves it is reading the
+    sources again at the current instant.
+    """
+
+    configure(session, adopted)
+
+    body = week(client, adopted)
+
+    cutoff_inputs = [
+        one for one in re.findall(r"<input[^>]*>", body) if 'name="cutoff"' in one
+    ]
+    assert len(cutoff_inputs) == 1, cutoff_inputs
+    assert 'type="hidden"' in cutoff_inputs[0], (
+        "the only cutoff control carries back what was displayed"
+    )
+    assert 'type="date"' not in body
+    assert 'type="datetime-local"' not in body
+    assert "<select" not in body
+
+
+def test_refresh_coverage_reads_again_at_the_current_instant_and_records_nothing(
+    session, adopted, client, store
+):
+    """#840's one new control, and the two things it is not.
+
+    It is not an act: it appends no declaration and no request, and it changes
+    nothing about what has already been prepared. And it is not a second
+    authority over the reading -- it produces exactly what a fresh visit to the
+    section produces, because it *is* one.
+    """
+
+    configure(session, adopted)
+
+    body = week(client, adopted)
+    assert REFRESH_ACTION in prose(body)
+    assert f'<a href="/work/{adopted.project.slug}">{REFRESH_ACTION}</a>' in body
+    first = form_fields(body, "/issue/prepare")
+
+    later = CUTOFF + timedelta(hours=3)
+    app.dependency_overrides[get_review_clock] = lambda: (lambda: later)
+    refreshed = week(client, adopted)
+    second = form_fields(refreshed, "/issue/prepare")
+
+    assert second["cutoff"] == later.isoformat()
+    assert cutoff_words(later) in prose(refreshed)
+    assert second["derived_reading_digest"] != first["derived_reading_digest"], (
+        "a refreshed reading is a new reading, with its own fingerprint"
+    )
+    assert _declarations(session, adopted) == 0
+    assert _requests(session, adopted) == 0
+
+
+def test_a_preparation_in_flight_can_be_looked_at_again(session, adopted, client):
+    """The status action the no-script page can honestly offer (#840).
+
+    An attempt is recorded when it finishes, so nothing here can announce a
+    completion, and a request whose worker died reads exactly like one still
+    running. What the section can say is when the request was made and by
+    whom -- which is what makes elapsed time readable -- and what it can offer
+    is to read the records again. It still offers no act: a second preparation
+    of the same issue on every refresh is exactly what that would queue.
+    """
+
+    configure(session, adopted)
+    ask(session, adopted, declared(session, adopted))
+
+    body = week(client, adopted)
+    readable = prose(body)
+
+    assert CHECK_AGAIN_ACTION in readable
+    assert f'<a href="/work/{adopted.project.slug}">{CHECK_AGAIN_ACTION}</a>' in body
+    assert "Asked for at" in readable
+    assert REQUESTED_AT.isoformat() in readable
+    assert COORDINATOR.subject in readable
+    assert "/issue/prepare" not in body
+    assert "<button" not in body
+
+
+def test_a_failed_preparation_says_who_retries_it_and_that_a_retry_is_new(
+    session, adopted, client
+):
+    """The recovery guidance, and the rule it has to agree with (#840).
+
+    ``preparation_idempotency_key`` binds the newest finished attempt as well
+    as the confirmed reading, precisely so that asking again after a failure
+    appends a request a worker can run rather than converging on the one that
+    already failed. The screen now says that, and this proves the sentence and
+    the key still describe the same behaviour.
+    """
+
+    configure(session, adopted)
+    declaration = declared(session, adopted)
+    before = preparation_idempotency_key(
+        session, project_id=adopted.project.id, declaration=declaration
+    )
+    row = ask(session, adopted, declaration, idempotency_key=before)
+    record_failed_attempt(
+        session,
+        request_id=row.id,
+        project_id=adopted.project.id,
+        reason="the renderer could not produce the workbook",
+        started_at=STARTED_AT,
+        finished_at=FINISHED_AT,
+    )
+    session.flush()
+
+    readable = prose(week(client, adopted))
+
+    assert "The last attempt to prepare this issue produced nothing" in readable
+    assert COORDINATOR_OWNER in readable
+    assert "appends a new request rather than reusing the one that failed" in readable
+    # The rule the sentence describes: nothing the coordinator confirmed moved,
+    # and the key moved anyway, because an attempt finished.
+    after = preparation_idempotency_key(
+        session, project_id=adopted.project.id, declaration=declaration
+    )
+    assert after != before
 
 
 def test_the_action_appends_two_separately_identified_records(

@@ -37,7 +37,9 @@ honestly. Neither is a difference between a source and the accepted record, so
 neither is a Proposed Delta and neither can reach a record decision. Putting
 them in front of a coordinator as record-decision items would ask a person to
 "decide" an operations failure; ADR-0086 keeps them where they belong, as what
-blocks or qualifies the issue.
+blocks or qualifies the issue. Each one also names **who puts it right and
+what they do next**, because a blocker that says only what is wrong leaves
+the person reading it nowhere to go (#840).
 
 **ADR-0085's three visible consequence levels are derived, and derived once
 (#641).** "Must handle before this issue", "Affects this issue", and "Can wait"
@@ -114,6 +116,19 @@ UNREAD_SOURCE = "unread_source"
 # portfolio's five primary states stay five.
 PREPARATION_FAILED = "preparation_failed"
 
+# Who puts each kind of readiness problem right. Neither name is coined here.
+# ``Corridor Operations`` is the bounded context `CONTEXT-MAP.md` already names
+# and `internal_report.html` already prints on a screen; the other is the person
+# reading the page, addressed the way the Issue section already addresses them
+# ("nothing is needed from you", "the coverage you confirmed").
+#
+# Neither is a designation claim. Nothing in the write path requires a
+# designation to confirm coverage and ask for a preparation today, and naming a
+# rule the database does not enforce is exactly what the Issue section refuses
+# to do beside the approval it *does* enforce.
+OPERATIONS_OWNER = "Corridor Operations"
+COORDINATOR_OWNER = "You, on this page"
+
 
 @dataclass(frozen=True, slots=True)
 class FollowUpNeed:
@@ -141,10 +156,20 @@ class FollowUpNeed:
 
 @dataclass(frozen=True, slots=True)
 class ReadinessProblem:
-    """One reason this project's next issue cannot yet be produced honestly."""
+    """One reason this project's next issue cannot yet be produced honestly.
+
+    ``owner`` and ``next_action`` say who puts it right and what they do about
+    it. They are part of the derivation rather than a lookup some screen
+    performs, because the code is what knows them: the customer-journey audit
+    found blockers that explained why an issue could not proceed and left the
+    person reading them nowhere to go, and a second table keyed by code, kept
+    somewhere else, is how that drifts back apart (#840).
+    """
 
     code: str
     sentence: str
+    owner: str
+    next_action: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -443,6 +468,9 @@ def issue_readiness_by_project(
                     NO_OUTPUT_TEMPLATE,
                     "No output template is registered, so the customer's own "
                     "workbook cannot be produced for this issue.",
+                    OPERATIONS_OWNER,
+                    "Corridor Operations registers this customer's own workbook "
+                    "template for this project. Nothing on this page does that.",
                 )
             )
     # What the project is configured to issue at this cutoff, and whether this
@@ -458,7 +486,15 @@ def issue_readiness_by_project(
             continue
         for problem in content.problems:
             problems[project_id].append(
-                ReadinessProblem(problem.code, problem.sentence)
+                ReadinessProblem(
+                    problem.code,
+                    problem.sentence,
+                    OPERATIONS_OWNER,
+                    "Corridor Operations corrects what this project is "
+                    "configured to issue. It is configuration rather than a "
+                    "decision about the record, so nothing on this page "
+                    "changes it.",
+                )
             )
     unread = session.scalars(
         select(Document)
@@ -475,6 +511,11 @@ def issue_readiness_by_project(
                 f"{document.filename} was delivered but could not be read "
                 f"({document.parse_status}), so this issue's coverage is "
                 "incomplete.",
+                OPERATIONS_OWNER,
+                "Corridor Operations reads this source again, or asks for a "
+                "copy it can read. Nothing on this page retries it, and the "
+                "coverage for this issue keeps saying this source was not "
+                "read until one of those succeeds.",
             )
         )
     # A preparation that ran and produced nothing (#675). A request still in
@@ -494,6 +535,11 @@ def issue_readiness_by_project(
                 "The last attempt to prepare this issue produced nothing: "
                 f"{standing.reason} Nothing partial was written, and asking "
                 "for it again is what puts it right.",
+                COORDINATOR_OWNER,
+                "Confirm the coverage this issue is read under and ask for it "
+                "again. That appends a new request rather than reusing the one "
+                "that failed, so a worker picks it up even when nothing else "
+                "about this issue has moved.",
             )
         )
     return {project_id: tuple(rows) for project_id, rows in problems.items()}

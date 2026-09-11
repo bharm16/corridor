@@ -72,6 +72,7 @@ from corridor.web.app import (
     get_review_clock,
     get_session,
 )
+from corridor.project_workflow import COORDINATOR_OWNER
 from corridor.web.issue_section import (
     ALREADY_AUTHORIZED,
     AUTHORIZABLE,
@@ -745,6 +746,42 @@ def test_a_stale_candidate_asks_for_a_fresh_preparation_and_stays_visible(
     assert response.status_code == 409
     session.expire_all()
     assert _packages(session, adopted) == 1
+
+
+def test_every_reason_a_candidate_cannot_be_approved_names_who_puts_it_right(
+    session, adopted, client, store
+):
+    """The other half of a blocker: not only why, but who and what next (#840).
+
+    ADR-0086 binds the blocking coverage and decision state into the
+    candidate's own identity, so every reason ``authorization_blockers`` gives
+    has the same way out — a freshly prepared candidate — and that is a control
+    this section carries. The sentences are still #529's: pairing each with who
+    resolves it is not a second opinion about whether it blocks, which is why
+    the reasons and the sentences have to stay in step here.
+    """
+
+    configure(session, adopted, policies=(RESOLVE_COMMITTED_DATE,))
+    open_delta(session, adopted)
+    prepare(session, adopted, store)
+
+    view = issue_view(session, project_id=adopted.project.id, as_of=NOW)
+
+    assert view.blockers
+    assert [one.sentence for one in view.blocking_reasons] == list(view.blockers)
+    for reason in view.blocking_reasons:
+        assert reason.owner == COORDINATOR_OWNER
+        assert reason.next_action
+
+    body = prose(week(client, adopted))
+    assert "Who puts it right" in body
+    assert "What happens next" in body
+    for reason in view.blocking_reasons:
+        assert reason.owner in body
+        assert reason.next_action in body
+    # And the next action names the control the section is actually offering,
+    # rather than a second spelling of the act beside it.
+    assert view.prepare_action in body
 
 
 def test_the_section_refuses_to_offer_an_approval_the_blockers_forbid(
