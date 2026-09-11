@@ -18,9 +18,13 @@ and need `OPENAI_API_KEY` in `.env`.
 ## Testing
 
 Run test targets directly and wait for their process/session exit status.
-`make test-focused`, `make test`, `make test-slow`, and `make test-full` stream
-pytest output and record running/completed state plus the actual exit code in
-`out/test-results/<suite>.json`. Use that receipt for background monitoring.
+Every local pytest target runs through `scripts/run_local_tests.py`, which
+streams pytest output and records running/completed state plus the actual exit
+code in `out/test-results/<suite>.json`: `make test-focused`, `make test`,
+`make test-slow`, `make test-full`, `make test-serial` (the `full` receipt) and
+`make test-timing`/`make test-slow-timing` (the `test` and `slow` receipts,
+because each measures that suite's selection). Use that receipt for background
+monitoring.
 Pytest summaries may contain skip and warning counts; never wait for a text
 pattern such as `passed in`, or pipe live test output through `grep`/`head`.
 Focused commands stop after 30 seconds by default; choose a smaller seam, or

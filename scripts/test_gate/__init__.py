@@ -13,7 +13,8 @@ Each module here owns one of those definitions: `receipt` the shard receipt
 that writes and validates itself, `junit` the one JUnit-to-per-file-seconds
 rule, `partition` the test-file enumeration and the bootstrap weights it is
 balanced by, `evidence` the strict JSON reader and value checks, `contract`
-the workflow's job names, output slots and marker lines, and `feedback` the
-aggregation and assessment built on them. Standard library only: the summary
-job imports this package on a bare `python3`.
+the workflow's job names, output slots and marker lines, `broad_run` the
+local full-suite authorization the wrapper and the collector share, and
+`feedback` the aggregation and assessment built on them. Standard library
+only: the summary job imports this package on a bare `python3`.
 """

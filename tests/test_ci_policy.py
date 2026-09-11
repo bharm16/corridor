@@ -19,7 +19,9 @@ from sqlalchemy import create_engine, text
 import yaml
 
 from corridor.render_profiles import DEFAULT_WORKER_PROJECT
+from makefile_support import recipe as make_recipe, targets as make_targets
 from scripts import run_test_gate
+from scripts.test_gate.broad_run import DIAGNOSTIC_ENV
 from scripts.test_gate.partition import CHECK_OWNED_FILES
 
 
@@ -193,7 +195,7 @@ def test_cdk_runs_only_for_infrastructure_inputs_inside_the_independent_check_jo
     )
     # The runbook and workflow assertions stay in the unconditional source
     # check, and are excluded from the optional CDK project to run once.
-    assert "infra/tests/test_workflow_ordering.py" in _make_recipe("check")
+    assert "infra/tests/test_workflow_ordering.py" in make_recipe("check")
     for step in steps:
         if step.get("working-directory") == "infra" or "setup-node" in step.get("uses", ""):
             assert step.get("id") in infra_ids
@@ -472,27 +474,44 @@ def test_each_gate_asks_for_the_shard_count_its_matrix_runs():
         )
 
 
-def _make_recipe(target: str) -> str:
-    return (ROOT / "Makefile").read_text().split(f"\n{target}:\n", 1)[1].split(
-        "\n\n", 1
-    )[0]
-
-
 def test_each_gate_uses_the_scheduler_appropriate_to_its_fixture_cost():
     """Ordinary tests rebalance; slow module fixtures are built only once."""
     for target in ("test", "test-full", "test-timing"):
-        assert "--dist worksteal" in _make_recipe(target)
+        assert "--dist worksteal" in make_recipe(target)
     for target in ("test-slow", "test-slow-timing"):
-        assert "--dist loadfile" in _make_recipe(target)
+        assert "--dist loadfile" in make_recipe(target)
     for target, suite in (("test-shard", "pytest"), ("test-slow-shard", "slow")):
-        recipe = _make_recipe(target)
+        recipe = make_recipe(target)
         assert "scripts/run_test_gate.py" in recipe
         assert f"--suite {suite}" in recipe
         assert "--shards $(SHARDS) --shard $(SHARD) --workers $(TEST_WORKERS)" in recipe
     assert (
         "scripts/run_test_gate.py --suite migration --shards 1 --shard 1 --workers 2"
-        in _make_recipe("test-migrations")
+        in make_recipe("test-migrations")
     )
+
+
+def test_no_make_target_writes_its_own_broad_local_authorization():
+    """A target that exports the reason runs the suite outside every control.
+
+    `make test-timing` used to set the diagnostic environment variable itself
+    and call pytest directly over the whole non-slow suite, so the collector's
+    guard was pre-satisfied and the run had no timeout, no process-group
+    cleanup and no `out/test-results` receipt. The authorization is the
+    wrapper's `--diagnostic-reason`, which is also what writes that receipt.
+    """
+    for target in make_targets().values():
+        assert DIAGNOSTIC_ENV not in target.recipe_text, (
+            f"make {target.name} authorizes its own broad local run"
+        )
+    for target in ("test-timing", "test-slow-timing"):
+        recipe = make_recipe(target)
+        assert "scripts/run_local_tests.py" in recipe, f"make {target} skips the wrapper"
+        assert "--diagnostic-reason performance-investigation" in recipe
+        # The wrapper prepends -x unless a failure limit is stated, and a
+        # timing pass that stops at the first failure measures a fraction of
+        # the suite it was asked to measure.
+        assert "--maxfail=0" in recipe
 
 
 def test_ci_worker_count_matches_the_private_runner_capacity():
@@ -507,7 +526,7 @@ def test_check_owns_its_source_checks_once_in_the_required_gate():
     """The same checks must not execute in check and a behavior shard."""
     expected = {"tests/test_architecture.py", "tests/test_source_scan_support.py"}
     assert set(CHECK_OWNED_FILES) == expected
-    recipe = _make_recipe("check")
+    recipe = make_recipe("check")
     commands = [line.strip() for line in recipe.splitlines() if "pytest " in line]
     assert len(commands) == 1
     assert set(commands[0].split()[3:-1]) == expected | {

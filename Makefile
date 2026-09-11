@@ -158,16 +158,19 @@ test-slow-shard:
 #   make test-timing
 #   uv run python scripts/test_timing.py out/timing/non-slow.xml
 # Bootstrap weights can still be refreshed explicitly with --write.
+# This is a broad local run and goes through the wrapper for its timeout,
+# process-group cleanup and receipt; `--maxfail=0` keeps measuring past a
+# failure, because partial durations and a partial JUnit file measure nothing.
 test-timing:
 	@mkdir -p out/timing
-	CORRIDOR_LOCAL_BROAD_REASON=performance-investigation uv run pytest -n $(TEST_WORKERS) --dist worksteal -m "not slow" \
-	  --durations=50 --durations-min=0.5 --junitxml=out/timing/non-slow.xml
+	uv run python scripts/run_local_tests.py --suite test --timeout-seconds $(TEST_TIMEOUT_SECONDS) --diagnostic-reason performance-investigation -- -n $(TEST_WORKERS) --dist worksteal -m "not slow" \
+	  --maxfail=0 --durations=50 --durations-min=0.5 --junitxml=out/timing/non-slow.xml
 
 # Optional measurement of the slow complement, with its actual scheduler.
 test-slow-timing:
 	@mkdir -p out/timing
-	CORRIDOR_LOCAL_BROAD_REASON=performance-investigation uv run pytest -n $(TEST_WORKERS) --dist loadfile -m "slow and not migration" \
-	  --durations=50 --durations-min=0.5 --junitxml=out/timing/slow.xml
+	uv run python scripts/run_local_tests.py --suite slow --timeout-seconds $(TEST_TIMEOUT_SECONDS) --diagnostic-reason performance-investigation -- -n $(TEST_WORKERS) --dist loadfile -m "slow and not migration" \
+	  --maxfail=0 --durations=50 --durations-min=0.5 --junitxml=out/timing/slow.xml
 
 # Prove the retirement, not merely describe it: build a second environment
 # that never receives PyMuPDF (and therefore neither the `pymupdf` nor the
