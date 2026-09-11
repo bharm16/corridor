@@ -25,6 +25,61 @@
   aligned with a hidden child identity, so every control has a static name and
   a child is never silently dropped by a browser that omits an empty input.
 #}
+{#
+  The pilot's contemporaneous triage observation, on both Save forms (#846).
+
+  It is offered only on an item Corridor placed at "Must handle before this
+  issue", and only where the pinned pilot configuration says this deployment is
+  the measured one; every other deployment renders a review screen with no
+  measurement on it.
+
+  Nothing here is preselected and nothing here is required. The first option is
+  the one nobody answered, so a packet decided without an answer stays visible
+  as unjudged rather than acquiring a default. The minutes box left empty
+  records no observation at all, which is not the same as an observed zero.
+
+  The three hidden fields are the occurrence the coordinator is looking at: the
+  cutoff of this reading, the level it displayed, and the rule that derived the
+  level. They come back with the answer so the observation is bound to what was
+  shown rather than to whatever the packet has become by the time it is saved.
+#}
+{% macro pilot_measurement_fieldset(view, reading, choices, answered) %}
+<fieldset class="answer">
+  <legend>Pilot measurement</legend>
+  <p class="quiet" id="{{ view.id }}-measurement">
+    These two answers are recorded as pilot measurement only. They change
+    nothing about the project record and nothing about the decision below, and
+    leaving them alone records nothing at all.
+  </p>
+  <input type="hidden" name="judgment_cutoff" value="{{ reading.as_of.isoformat() }}">
+  <input type="hidden" name="judgment_consequence" value="{{ view.item.consequence }}">
+  <input type="hidden" name="judgment_rule_version" value="{{ view.item.consequence_rule_version }}">
+
+  {% call ui.field(
+       view.id ~ "-judgment",
+       "Did this need handling before this issue?",
+       "Answered now, while you are deciding it. An answer given later is a different measurement, so this one is never changed afterwards.") %}
+  <select id="{{ view.id }}-judgment" name="judgment"
+          aria-describedby="{{ view.id }}-judgment-hint">
+    {%- for token, text in choices %}
+    <option value="{{ token }}"
+      {%- if answered.get("judgment") == token %} selected
+      {%- elif not answered.get("judgment") and not token %} selected{% endif %}>{{ text }}</option>
+    {%- endfor %}
+  </select>
+  {% endcall %}
+
+  {% call ui.field(
+       view.id ~ "-judgment-minutes",
+       "Minutes spent rebuilding context outside Corridor to answer this",
+       "Spreadsheet, email search, file browsing. Left empty nothing is recorded; it is never recorded as zero.") %}
+  <input type="number" min="0" step="1" inputmode="numeric"
+         id="{{ view.id }}-judgment-minutes" name="judgment_minutes"
+         value="{{ answered.get('minutes', '') }}"
+         aria-describedby="{{ view.id }}-judgment-minutes-hint">
+  {% endcall %}
+</fieldset>
+{% endmacro %}
 <!doctype html>
 <meta charset="utf-8">
 <title>Source changes — {{ project.name }}</title>
@@ -48,8 +103,8 @@
   .quiet { color:var(--muted); font-size:.9rem; }
   button { font:inherit; padding:.4rem .7rem; border:1px solid var(--line);
            border-radius:4px; background:#fafafa; cursor:pointer; }
-  input[type=date] { font:inherit; padding:.3rem .4rem; border:1px solid var(--line);
-                     border-radius:4px; }
+  input[type=date], input[type=number] { font:inherit; padding:.3rem .4rem;
+                     border:1px solid var(--line); border-radius:4px; }
   kbd { font:11px ui-monospace, monospace; background:#f0f0f0;
         border:1px solid var(--line); border-radius:3px; padding:0 .25rem; }
 </style>
@@ -396,6 +451,10 @@
       </fieldset>
       {%- endfor %}
 
+      {%- if judgment_offered and view.interrupting %}
+      {{ pilot_measurement_fieldset(view, reading, judgment_choices, judgment_answer) }}
+      {%- endif %}
+
       {% call ui.sticky_actions("Answers for " ~ view.item.headline) %}
         <button type="submit" accesskey="s">
           {{ ui.shortcut("s", "Save the answers for these " ~ view.item.child_count ~ " sources") }}
@@ -430,6 +489,10 @@
              value="{{ defer_until }}"
              aria-describedby="{{ view.id }}-defer-until-hint">
       {% endcall %}
+
+      {%- if judgment_offered and view.interrupting %}
+      {{ pilot_measurement_fieldset(view, reading, judgment_choices, judgment_answer) }}
+      {%- endif %}
 
       {#- No count on an action. The number was rendered once, by the server,
           from the selection the reading arrived with, and a checkbox the
