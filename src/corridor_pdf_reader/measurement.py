@@ -491,8 +491,28 @@ def retain(output: Path, receipt: dict[str, Any], role: str, registry_root: Path
     return target
 
 
+_CONTRACT = """\
+The paired-rendition Extraction Measurement (#731): score a named
+configuration (`frozen-reader`, `native-segments-v1`, `drawn-grid`) against the registered
+Reference Dataset in gold/pdf-pairs/v1 and write a receipt that keeps pair,
+page and cell measures apart and development and holdout apart. The holdout
+is spent (ADR-0008): it is read only with --include-holdout, an actor and a
+reason, and every access is appended to gold/pdf-pairs/v1/holdout-access.jsonl.
+An explicit experiment outside CI; needs the corpus at TRUE_PAIRS_ROOT and
+`make pdf-reader-node`:
+  make pdf-pairs-measure ARGS="--configuration frozen-reader --output out/pdf-pairs/<run>"
+  make pdf-pairs-measure ARGS="--configuration drawn-grid --output out/pdf-pairs/<run> --keys <key> ..."
+`--retain baseline|failure-proof|measurement` copies the receipt set into
+gold/pdf-pairs/v1/receipts/<run>/ and indexes it in gold/pdf-pairs/v1/receipts.json.
+"""
+
+
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser = argparse.ArgumentParser(
+        description=__doc__.split("\n\n")[0],
+        epilog=_CONTRACT,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument("--configuration", required=True, choices=sorted(CONFIGURATIONS), help="the named configuration to score")
     parser.add_argument("--output", type=Path, required=True, help="a new directory outside git; its name names the run")
     parser.add_argument("--keys", nargs="*", help="restrict the measurement to these pair keys")

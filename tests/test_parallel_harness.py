@@ -240,7 +240,7 @@ def broad_guard(monkeypatch, tmp_path):
     monkeypatch.setattr(harness, "ROOT", tmp_path)
     monkeypatch.delenv("PYTEST_XDIST_WORKER", raising=False)
     monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
-    monkeypatch.delenv(harness.LOCAL_BROAD_REASON_ENV, raising=False)
+    monkeypatch.delenv(harness.DIAGNOSTIC_ENV, raising=False)
     directory = tmp_path / "tests"
     directory.mkdir()
     for name in ("test_one.py", "test_two.py"):
@@ -309,15 +309,15 @@ def test_keyword_focus_requires_a_specific_positive_constraint(broad_guard, keyw
             harness._require_local_broad_reason(config)
 
 
-@pytest.mark.parametrize("reason", ["failure-reproduction", "performance-investigation"])
+@pytest.mark.parametrize("reason", harness.DIAGNOSTIC_REASONS)
 def test_explicit_diagnostic_reasons_allow_broad_local_execution(broad_guard, monkeypatch, reason):
-    monkeypatch.setenv(harness.LOCAL_BROAD_REASON_ENV, reason)
+    monkeypatch.setenv(harness.DIAGNOSTIC_ENV, reason)
     harness._require_local_broad_reason(broad_guard())
 
 
 @pytest.mark.parametrize("reason", ["", "true", "validation", "performance"])
 def test_other_reason_values_do_not_disable_the_broad_guard(broad_guard, monkeypatch, reason):
-    monkeypatch.setenv(harness.LOCAL_BROAD_REASON_ENV, reason)
+    monkeypatch.setenv(harness.DIAGNOSTIC_ENV, reason)
     with pytest.raises(pytest.UsageError):
         harness._require_local_broad_reason(broad_guard())
 

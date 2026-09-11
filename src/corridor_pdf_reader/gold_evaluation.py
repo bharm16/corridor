@@ -416,8 +416,21 @@ def retain(output: Path, registry_root: Path) -> Path:
     return target
 
 
+_CONTRACT = """\
+The frozen reader through the existing PDF evaluation contract (#731): read
+the gold/pdf/v1 documents from the content store, write an engine run in the
+contract's shape, and evaluate it with `corridor.pdf_evaluation_cli`. The
+holdout family is refused without the ledger flags, as for `make pdf-eval`:
+  make pdf-reader-gold-eval ARGS="--output out/pdf-reader/gold-v1 --include-holdout --holdout-actor <actor> --holdout-reason <reason>"
+"""
+
+
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser = argparse.ArgumentParser(
+        description=__doc__.split("\n\n")[0],
+        epilog=_CONTRACT,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument("--gold", type=Path, default=DEFAULT_GOLD)
     parser.add_argument("--output", type=Path, required=True, help="a new directory outside git")
     parser.add_argument("--engine", default=MEASURED_ENGINE, choices=["tagged", "pdfium"])

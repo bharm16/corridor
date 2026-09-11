@@ -23,8 +23,21 @@ class _NoRedirect(HTTPRedirectHandler):
         return None
 
 
+_CONTRACT = """\
+Retained contact imports/resolution; corrections use an authenticated web session.
+  make contacts ARGS="import-csv <delivery-id> --identity <import-id> --source-family <directory>"
+  make contacts ARGS="import-ucm <project-id> --identity <import-id>"
+  make contacts ARGS="read <project-id>"
+  make contacts ARGS="correct <slug> <contact-id> --record contact.json --reason 'Onboarding correction' --identity <key>"
+"""
+
+
 def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        epilog=_CONTRACT,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     commands = parser.add_subparsers(dest="command", required=True)
     for name in ("import-csv", "import-ucm"):
         command = commands.add_parser(name)

@@ -27,6 +27,20 @@ from corridor.event_admission_acceptance import (
 from corridor.models import Project
 
 
+_CONTRACT = """\
+Compare predecessor and statement Record Inclusion where Applies To is not yet
+known, on two disposable clones.
+A failed receipt never activates; a passing receipt activates normal processing.
+  make event-admission-acceptance ARGS="replay --project-slug=sh99-grand-parkway --source-database-url=<url> --postgres-admin-url=<url> --expected-clean-git-revision=<sha>"
+Read the effective proof, policy, authority, and permitted operations:
+  make event-admission-acceptance ARGS="status --project-slug=sh99-grand-parkway --database-url=<url>"
+Suspension is append-only and restores the predecessor policy:
+  make event-admission-acceptance ARGS="suspend --project-slug=sh99-grand-parkway --database-url=<url> --reason=<reason> --recorded-by=local:<subject>"
+A lift is a separate attributable human act and still requires current proof:
+  make event-admission-acceptance ARGS="lift --project-slug=sh99-grand-parkway --database-url=<url> --recorded-by=local:<subject>"
+"""
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="event-admission-acceptance",
@@ -34,6 +48,8 @@ def _parser() -> argparse.ArgumentParser:
             "Test and control statement Record Inclusion rules where Applies To "
             "is not yet known. Command and policy identifiers remain unchanged."
         ),
+        epilog=_CONTRACT,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     commands = parser.add_subparsers(dest="command", required=True)
     replay = commands.add_parser(

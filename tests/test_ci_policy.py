@@ -19,7 +19,9 @@ from sqlalchemy import create_engine, text
 import yaml
 
 from corridor.render_profiles import DEFAULT_WORKER_PROJECT
-from scripts import run_test_gate
+from makefile_support import recipe as make_recipe, targets as make_targets
+from scripts import gate_results, run_test_gate
+from scripts.test_gate.broad_run import DIAGNOSTIC_ENV
 from scripts.test_gate.partition import CHECK_OWNED_FILES
 
 
@@ -67,6 +69,27 @@ def _job(name: str, workflow: str = GATE) -> dict:
 
 def _shard_count(job: str = "pytest") -> int:
     return len(_job(job)["strategy"]["matrix"]["shard"])
+
+
+# The two steps that apply the fail-closed rule, the job each lives in, and
+# the environment `scripts/gate_results.py` reads for it.
+MATCHERS = {
+    "summary": (
+        "release-gate",
+        "Match every job result against the classifier",
+        gate_results.SUMMARY_ENVIRONMENT,
+    ),
+    "infrastructure": (
+        "check",
+        "Match infrastructure results against the classifier",
+        gate_results.INFRASTRUCTURE_ENVIRONMENT,
+    ),
+}
+
+
+def _matcher_step(surface: str) -> dict:
+    job, name, _ = MATCHERS[surface]
+    return next(step for step in _job(job)["steps"] if step.get("name") == name)
 
 
 def test_only_the_gate_reports_on_a_pull_request():
@@ -193,22 +216,20 @@ def test_cdk_runs_only_for_infrastructure_inputs_inside_the_independent_check_jo
     )
     # The runbook and workflow assertions stay in the unconditional source
     # check, and are excluded from the optional CDK project to run once.
-    assert "infra/tests/test_workflow_ordering.py" in _make_recipe("check")
+    assert "infra/tests/test_workflow_ordering.py" in make_recipe("check")
     for step in steps:
         if step.get("working-directory") == "infra" or "setup-node" in step.get("uses", ""):
             assert step.get("id") in infra_ids
 
 
-def _infrastructure_summary_step() -> dict:
-    return next(
-        step for step in _job("check")["steps"]
-        if step.get("name") == "Match infrastructure results against the classifier"
-    )
+def test_the_infrastructure_matcher_judges_every_outcome_the_cdk_steps_produce():
+    """`always()` is what lets a failed or skipped CDK step reach the matcher.
 
+    The rule it then applies is proven once, for both matcher surfaces, in
+    the fail-closed section at the end of this file.
+    """
 
-@pytest.mark.parametrize("required, result", [("true", "success"), ("false", "skipped")])
-def test_infrastructure_result_matching_accepts_only_the_classified_shape(required, result):
-    step = _infrastructure_summary_step()
+    step = _matcher_step("infrastructure")
     assert step["if"] == "${{ always() }}"
     assert step["env"] == {
         "INFRASTRUCTURE_REQUIRED": "${{ steps.infrastructure.outputs.infrastructure_required }}",
@@ -217,27 +238,16 @@ def test_infrastructure_result_matching_accepts_only_the_classified_shape(requir
         "ASSERTIONS_RESULT": "${{ steps.infra_assertions.outcome }}",
         "SYNTH_RESULT": "${{ steps.infra_synth.outcome }}",
     }
-    assert "${{" not in step["run"]
-    completed = subprocess.run(
-        ["bash", "-c", step["run"]], capture_output=True, text=True,
-        env={"PATH": os.environ["PATH"], "INFRASTRUCTURE_REQUIRED": required,
-             **{name: result for name in ("NODE_RESULT", "INSTALL_RESULT", "ASSERTIONS_RESULT", "SYNTH_RESULT")}},
-    )
-    assert completed.returncode == 0, completed.stdout + completed.stderr
-
-
-@pytest.mark.parametrize("required, result", [
-    ("true", "skipped"), ("true", "failure"), ("true", "cancelled"),
-    ("false", "success"), ("", "skipped"), ("maybe", "skipped"),
-])
-def test_infrastructure_result_matching_fails_closed(required, result):
-    completed = subprocess.run(
-        ["bash", "-c", _infrastructure_summary_step()["run"]],
-        capture_output=True, text=True,
-        env={"PATH": os.environ["PATH"], "INFRASTRUCTURE_REQUIRED": required,
-             **{name: result for name in ("NODE_RESULT", "INSTALL_RESULT", "ASSERTIONS_RESULT", "SYNTH_RESULT")}},
-    )
-    assert completed.returncode != 0
+    # Every conditional step the job runs is one the matcher reads a result
+    # for, so a CDK step added to the job cannot land outside its judgement.
+    conditional = {
+        step["id"]
+        for step in _job("check")["steps"]
+        if step.get("if") == (
+            "${{ steps.infrastructure.outputs.infrastructure_required == 'true' }}"
+        )
+    }
+    assert {label for label, _ in gate_results.INFRASTRUCTURE_STEPS} == conditional
 
 
 def test_the_expensive_jobs_are_skipped_by_a_condition_not_by_a_path_filter():
@@ -472,27 +482,44 @@ def test_each_gate_asks_for_the_shard_count_its_matrix_runs():
         )
 
 
-def _make_recipe(target: str) -> str:
-    return (ROOT / "Makefile").read_text().split(f"\n{target}:\n", 1)[1].split(
-        "\n\n", 1
-    )[0]
-
-
 def test_each_gate_uses_the_scheduler_appropriate_to_its_fixture_cost():
     """Ordinary tests rebalance; slow module fixtures are built only once."""
     for target in ("test", "test-full", "test-timing"):
-        assert "--dist worksteal" in _make_recipe(target)
+        assert "--dist worksteal" in make_recipe(target)
     for target in ("test-slow", "test-slow-timing"):
-        assert "--dist loadfile" in _make_recipe(target)
+        assert "--dist loadfile" in make_recipe(target)
     for target, suite in (("test-shard", "pytest"), ("test-slow-shard", "slow")):
-        recipe = _make_recipe(target)
+        recipe = make_recipe(target)
         assert "scripts/run_test_gate.py" in recipe
         assert f"--suite {suite}" in recipe
         assert "--shards $(SHARDS) --shard $(SHARD) --workers $(TEST_WORKERS)" in recipe
     assert (
         "scripts/run_test_gate.py --suite migration --shards 1 --shard 1 --workers 2"
-        in _make_recipe("test-migrations")
+        in make_recipe("test-migrations")
     )
+
+
+def test_no_make_target_writes_its_own_broad_local_authorization():
+    """A target that exports the reason runs the suite outside every control.
+
+    `make test-timing` used to set the diagnostic environment variable itself
+    and call pytest directly over the whole non-slow suite, so the collector's
+    guard was pre-satisfied and the run had no timeout, no process-group
+    cleanup and no `out/test-results` receipt. The authorization is the
+    wrapper's `--diagnostic-reason`, which is also what writes that receipt.
+    """
+    for target in make_targets().values():
+        assert DIAGNOSTIC_ENV not in target.recipe_text, (
+            f"make {target.name} authorizes its own broad local run"
+        )
+    for target in ("test-timing", "test-slow-timing"):
+        recipe = make_recipe(target)
+        assert "scripts/run_local_tests.py" in recipe, f"make {target} skips the wrapper"
+        assert "--diagnostic-reason performance-investigation" in recipe
+        # The wrapper prepends -x unless a failure limit is stated, and a
+        # timing pass that stops at the first failure measures a fraction of
+        # the suite it was asked to measure.
+        assert "--maxfail=0" in recipe
 
 
 def test_ci_worker_count_matches_the_private_runner_capacity():
@@ -507,7 +534,7 @@ def test_check_owns_its_source_checks_once_in_the_required_gate():
     """The same checks must not execute in check and a behavior shard."""
     expected = {"tests/test_architecture.py", "tests/test_source_scan_support.py"}
     assert set(CHECK_OWNED_FILES) == expected
-    recipe = _make_recipe("check")
+    recipe = make_recipe("check")
     commands = [line.strip() for line in recipe.splitlines() if "pytest " in line]
     assert len(commands) == 1
     assert set(commands[0].split()[3:-1]) == expected | {
@@ -570,12 +597,21 @@ def test_the_classifier_shares_one_validated_timing_output():
 
 
 def test_current_evidence_validation_extends_the_fail_closed_summary():
+    """The summary's own step order, which the matcher's move constrains.
+
+    The matcher is an in-repository module now, so the checkout runs first
+    and unconditionally -- the repository has to be on disk before the
+    required rule executes. Evidence validation still runs last, and only
+    when the matcher has already passed on a behavior pull request.
+    """
+
     steps = _job("release-gate")["steps"]
-    assert steps[0] == _summary_step()
     assert len(steps) == 3
-    checkout, finish = steps[1:]
-    assert checkout["uses"].startswith("actions/checkout")
-    assert checkout["if"] == finish["if"] == (
+    checkout, matcher, finish = steps
+    assert checkout == {"uses": "actions/checkout@v4"}
+    assert matcher == _summary_step()
+    assert "if" not in matcher, "the required matcher became conditional"
+    assert finish["if"] == (
         "${{ success() && needs.classify.outputs.behavior_required == 'true' }}"
     )
     assert finish["env"] == {
@@ -599,10 +635,15 @@ def test_pr_workflows_cancel_obsolete_revisions():
     assert "github.event.pull_request.number" in concurrency["group"]
 
 
-# --- the summary job, executed ------------------------------------------------
+# --- the fail-closed matcher --------------------------------------------------
 #
-# The summary is the required context, so its decision is proven by running
-# the exact bytes the workflow ships rather than by reading them.
+# One rule decides the required status: a job the classifier said was required
+# must report `success`, a job it said was not required must report `skipped`,
+# and an answer that is neither `true` nor `false` fails the gate rather than
+# picking a default. It used to be two hand-written bash blocks in the
+# workflow, each re-executed here under `bash -c`; `scripts/gate_results.py`
+# now holds it once and both matcher steps call it, so these cases exercise
+# the function CI decides with.
 
 
 def _summary_step() -> dict:
@@ -638,24 +679,132 @@ def test_the_summary_reads_every_result_through_needs():
     }
 
 
-def _summary_script() -> str:
-    body = _summary_step()["run"]
-    assert "${{" not in body, (
-        "the summary body interpolates a workflow expression, so what runs "
-        "in CI is not what this test executes"
-    )
-    return body
+@pytest.mark.parametrize("surface", sorted(MATCHERS))
+def test_each_matcher_step_runs_the_module_these_tests_call(surface):
+    """What replaced `"${{" not in run`, and proves strictly more.
+
+    While the rule was a bash string, the only way to know the executed text
+    was the shipped text was to assert the body carried no workflow-expression
+    interpolation. Both harnesses had separately invented that guard. The
+    rule is a module now, so the same property is asserted about the module:
+    the step runs this file, at this path, and reads exactly the names the
+    step sets. Interpolation is still refused, because a `${{` in the command
+    would mean CI ran something this test did not.
+    """
+
+    step = _matcher_step(surface)
+    _, _, environment = MATCHERS[surface]
+
+    assert step["run"] == f"python3 scripts/gate_results.py {surface}"
+    assert "${{" not in step["run"]
+    assert (ROOT / "scripts" / "gate_results.py") == Path(
+        gate_results.__file__
+    ).resolve()
+    # Both directions: a name the step stops setting, or one the adapter
+    # stops reading, fails here rather than in the gate.
+    assert set(step["env"]) == set(environment)
+    assert surface in gate_results.SURFACES
 
 
-def _summarize(**overrides: str) -> subprocess.CompletedProcess:
-    environment = {"PATH": os.environ["PATH"]}
-    environment.update(overrides)
-    return subprocess.run(
-        ["bash", "-c", _summary_script()],
-        env=environment,
-        capture_output=True,
-        text=True,
+def _expectations(surface: str, required: str, result: str) -> list:
+    """Every result the surface judges set to `result`, under answer `required`."""
+
+    if surface == "summary":
+        return gate_results.summary_expectations({
+            "BEHAVIOR_REQUIRED": required,
+            "MIGRATION_REQUIRED": required,
+            # The two unconditional jobs are held green so the parametrized
+            # case is about the classified ones.
+            "CLASSIFY_RESULT": "success",
+            "CHECK_RESULT": "success",
+            "PYTEST_RESULT": result,
+            "SLOW_RESULT": result,
+            "MIGRATION_RESULT": result,
+        })
+    return gate_results.infrastructure_expectations({
+        "INFRASTRUCTURE_REQUIRED": required,
+        **{name: result for _, name in gate_results.INFRASTRUCTURE_STEPS},
+    })
+
+
+@pytest.mark.parametrize("surface", sorted(MATCHERS))
+@pytest.mark.parametrize("required, result", [("true", "success"), ("false", "skipped")])
+def test_every_matcher_accepts_only_the_result_the_classifier_asked_for(
+    surface, required, result
+):
+    assert gate_results.match(_expectations(surface, required, result)) == []
+
+
+@pytest.mark.parametrize("surface", sorted(MATCHERS))
+@pytest.mark.parametrize(
+    "required, result",
+    [
+        # The failure the whole design exists to prevent: work the
+        # classifier required that a broken condition skipped.
+        ("true", "skipped"),
+        ("true", "failure"),
+        ("true", "cancelled"),
+        ("true", ""),
+        ("true", "neutral"),
+        # The inconsistent pair: it ran although the classifier said it was
+        # not needed, so one of the two is wrong and neither may be trusted.
+        ("false", "success"),
+        ("false", "failure"),
+        ("false", "cancelled"),
+        ("false", ""),
+        # An answer the matcher cannot read is a classifier it cannot trust.
+        ("", "skipped"),
+        ("", "success"),
+        ("maybe", "skipped"),
+        ("maybe", "success"),
+        ("True", "success"),
+        ("TRUE", "success"),
+        ("1", "success"),
+        ("yes", "success"),
+    ],
+)
+def test_every_matcher_fails_closed(surface, required, result):
+    """Both surfaces inherit every case, because both call the same rule."""
+
+    assert gate_results.match(_expectations(surface, required, result)), (
+        f"{surface}: answer {required!r} with result {result!r} reported green"
     )
+
+
+def test_the_summary_judges_exactly_the_jobs_the_gate_runs():
+    """A job the adapter stops listing is a job nothing judges.
+
+    The summary `needs` every other job in the gate, so the set of labels it
+    matches has to be that same set. A job added to the workflow and not to
+    the adapter would otherwise contribute no result at all, which is the
+    silent green this whole design exists to prevent.
+    """
+
+    judged = {pair.label for pair in gate_results.summary_expectations({})}
+
+    assert judged == set(_job("release-gate")["needs"])
+    assert judged == set(_workflow(GATE)["jobs"]) - {"release-gate"}
+
+
+@pytest.mark.parametrize("surface", sorted(MATCHERS))
+@pytest.mark.parametrize("required", ["true", "false", "maybe"])
+def test_every_result_reaches_the_matchers_judgement(surface, required):
+    """A row the rule skips is work nothing judged -- a gate going quiet.
+
+    `report` is the whole log the step prints, so every result the surface
+    was handed has to appear in it exactly once, whatever the classifier
+    answered.
+    """
+
+    pairs = _expectations(surface, required, "success")
+    lines = gate_results.report(pairs)
+
+    for pair in pairs:
+        judged = sum(
+            f"{pair.label} is " in line or f"{pair.label} = " in line
+            for line in lines
+        )
+        assert judged == 1, f"{surface}/{required}: {pair.label} in {lines}"
 
 
 BEHAVIOR_PULL_REQUEST = {
@@ -680,6 +829,10 @@ MIGRATION_PULL_REQUEST = {
 }
 
 
+def _summarize(results: dict) -> list[str]:
+    return gate_results.match(gate_results.summary_expectations(results))
+
+
 @pytest.mark.parametrize(
     "shape, results",
     [
@@ -689,10 +842,7 @@ MIGRATION_PULL_REQUEST = {
     ],
 )
 def test_the_summary_passes_when_every_job_matches_the_classifier(shape, results):
-    completed = _summarize(**results)
-
-    assert completed.returncode == 0, f"{shape}: {completed.stdout}{completed.stderr}"
-    assert "release gate satisfied" in completed.stdout
+    assert _summarize(results) == [], shape
 
 
 @pytest.mark.parametrize(
@@ -766,13 +916,84 @@ def test_the_summary_passes_when_every_job_matches_the_classifier(shape, results
     ],
 )
 def test_the_summary_fails_closed(reason, results, expected_error):
-    completed = _summarize(**results)
+    failures = _summarize(results)
 
-    assert completed.returncode != 0, f"{reason}: the gate reported green"
-    assert expected_error in completed.stdout, (
-        f"{reason}: {completed.stdout}{completed.stderr}"
+    assert failures, f"{reason}: the gate reported green"
+    assert any(expected_error in line for line in failures), f"{reason}: {failures}"
+
+
+def _run_matcher(surface: str, results: dict) -> subprocess.CompletedProcess:
+    """Run the command the workflow ships, from the repository root."""
+
+    return subprocess.run(
+        ["bash", "-c", _matcher_step(surface)["run"]],
+        cwd=ROOT,
+        env={"PATH": os.environ["PATH"], **results},
+        capture_output=True,
+        text=True,
     )
+
+
+@pytest.mark.parametrize(
+    "shape, results",
+    [
+        ("behavior", BEHAVIOR_PULL_REQUEST),
+        ("documentation", DOCUMENTATION_PULL_REQUEST),
+        ("migration", MIGRATION_PULL_REQUEST),
+    ],
+)
+def test_the_shipped_summary_command_exits_zero_on_a_matching_run(shape, results):
+    completed = _run_matcher("summary", results)
+
+    assert completed.returncode == 0, f"{shape}: {completed.stdout}{completed.stderr}"
+    assert "release gate satisfied" in completed.stdout
+
+
+@pytest.mark.parametrize(
+    "reason, results",
+    [
+        (
+            "pytest skipped when the classifier required it",
+            {**BEHAVIOR_PULL_REQUEST, "PYTEST_RESULT": "skipped"},
+        ),
+        (
+            "the classifier answered something that is not a boolean",
+            {**BEHAVIOR_PULL_REQUEST, "BEHAVIOR_REQUIRED": "maybe"},
+        ),
+    ],
+)
+def test_the_shipped_summary_command_exits_non_zero_and_says_so(reason, results):
+    """The exit status is what GitHub reads, so it is proven by running it."""
+
+    completed = _run_matcher("summary", results)
+
+    assert completed.returncode != 0, f"{reason}: {completed.stdout}"
     assert "release gate failed closed" in completed.stdout
+
+
+@pytest.mark.parametrize(
+    "required, result, exits_zero",
+    [("true", "success", True), ("false", "skipped", True),
+     ("true", "skipped", False), ("false", "success", False), ("maybe", "success", False)],
+)
+def test_the_shipped_infrastructure_command_matches_the_rule(required, result, exits_zero):
+    completed = _run_matcher("infrastructure", {
+        "INFRASTRUCTURE_REQUIRED": required,
+        **{name: result for _, name in gate_results.INFRASTRUCTURE_STEPS},
+    })
+
+    assert (completed.returncode == 0) is exits_zero, (
+        f"{required}/{result}: {completed.stdout}{completed.stderr}"
+    )
+
+
+def test_a_matcher_run_without_its_environment_fails_closed():
+    """An `env:` line deleted from the workflow may not read as agreement."""
+
+    for surface in sorted(MATCHERS):
+        completed = _run_matcher(surface, {})
+        assert completed.returncode != 0, surface
+        assert "release gate failed closed" in completed.stdout, surface
 
 
 def test_uv_caches_retain_wheels_and_separate_the_complete_dependency_populations():
@@ -804,7 +1025,11 @@ def test_uv_caches_retain_wheels_and_separate_the_complete_dependency_population
                 assert step["with"]["cache-suffix"] == "root-render-wheels-v1"
 
 
-BARE_PYTHON_SCRIPTS = ("scripts/classify_ci_change.py", "scripts/ci_feedback.py")
+BARE_PYTHON_SCRIPTS = (
+    "scripts/classify_ci_change.py",
+    "scripts/ci_feedback.py",
+    "scripts/gate_results.py",
+)
 
 
 def _imported_top_level_names(path: Path) -> set[str]:

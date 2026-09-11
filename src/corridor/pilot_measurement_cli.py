@@ -43,8 +43,18 @@ def write_private_json(path: Path, value: object) -> None:
     )
 
 
+_CONTRACT = """\
+Read #558 product events and immutable receipts into a governed #532 report.
+Fixture: make pilot-measurement ARGS="--input tests/fixtures/pilot-measurement.json --output out/pilot-measurement.json"
+"""
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        epilog=_CONTRACT,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument("--input", type=Path, required=True, help="declared periods and optional retained events")
     parser.add_argument("--events", type=Path, help="existing governed product event JSONL/log export")
     parser.add_argument("--database-receipts", action="store_true", help="read the scoped customer DB; no writes")

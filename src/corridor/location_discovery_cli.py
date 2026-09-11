@@ -28,8 +28,22 @@ from corridor.models import Document, Project
 from corridor.principals import HumanPrincipal, require_human_principal
 
 
+_CONTRACT = """\
+The two managed connected-location acts that need a person, plus a read-only
+operations view (#350). Attribution comes from CORRIDOR_HUMAN_PRINCIPAL:
+  make location-discovery ARGS="authorize <project-slug> --reference-key=<key> --doc-type=matrix --registry-id=<id>"
+  make location-discovery ARGS="recover-parse <project-slug> --document-id=<id>"
+  make location-discovery ARGS="view <project-slug>"
+"""
+
+
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="location-discovery")
+    parser = argparse.ArgumentParser(
+        prog="location-discovery",
+        description=__doc__,
+        epilog=_CONTRACT,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     commands = parser.add_subparsers(dest="command", required=True)
 
     authorize = commands.add_parser("authorize")

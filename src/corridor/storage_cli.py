@@ -18,10 +18,23 @@ from corridor.object_storage import content_store, default_storage_root
 from corridor.storage_operations import migrate_local_content, reconcile
 
 
+_CONTRACT = """\
+Operate the content-addressed store (ADR-0079). `migrate` puts every local
+file under its own digest into the configured backend, idempotently and
+digest-verified; `reconcile` compares the PostgreSQL manifests with the store
+and reports orphans in both directions. Repairs are opt-in:
+  make storage ARGS="migrate"
+  make storage ARGS="reconcile --repair"
+  make storage ARGS="reconcile --remove-unreferenced"
+"""
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="storage",
         description="Migrate local content into the configured store or reconcile it.",
+        epilog=_CONTRACT,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     commands = parser.add_subparsers(dest="command", required=True)
     migrate = commands.add_parser(

@@ -43,8 +43,23 @@ def _migration_revision(value: str) -> str:
     return value
 
 
+_CONTRACT = """\
+Run the bounded coordinator exercise only on a disposable clone. It verifies the
+prior Record Inclusion bundle first, separates shared operations/backfill time from the
+timed coordinator flow, upgrades only the clone between explicit migration pins,
+and records assistance or failure honestly:
+  make sh99-coordinator-rehearsal ARGS="replay --project-slug=sh99-grand-parkway --source-database-url=<url> --postgres-admin-url=<url> --expected-clean-git-revision=<sha> --expected-source-migration-head=<released-head> --expected-target-migration-head=<direct-successor-head> --shared-admission-receipt-path=<validation-passed.json> --expected-shared-admission-receipt-sha256=<sha> --approved-shared-state-receipt=<immutable-url> --shared-backfill-elapsed-seconds=291 --output-dir=<new-dir>"
+  make sh99-coordinator-rehearsal ARGS="verify <bundle-dir> --expected-manifest-sha256=<sha>"
+"""
+
+
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="sh99-coordinator-rehearsal")
+    parser = argparse.ArgumentParser(
+        prog="sh99-coordinator-rehearsal",
+        description=__doc__,
+        epilog=_CONTRACT,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     commands = parser.add_subparsers(dest="command", required=True)
     replay = commands.add_parser(
         "replay",

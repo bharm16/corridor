@@ -177,8 +177,25 @@ def replay_cache(cache: Path, frames: dict[str, list[Frame]], passes: int = DEFA
     return entries
 
 
+_CONTRACT = """\
+Replay retained Textract responses through the adapter's normalizer, twice
+each, and write a receipt of raw-response and normalized-reading digests
+(ADR-0094: exact replay is the retained response, never a fresh call). An
+explicit experiment outside pytest and CI over the 116-entry experiment
+cache, which stays in the standalone worktree and is only read; the retained
+lane reads under the same results root supply each raster's page frame. CI
+replays only the four committed fixtures (tests/test_textract_adapter_replay.py).
+No AWS call is made by this target or by anything under textract_adapter.
+  make textract-replay ARGS="--output out/textract/experiment-cache-replay-2026-09-06.json --retain"
+"""
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        epilog=_CONTRACT,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument("--cache", type=Path, help="directory of retained entries in the imported client's shape (read only)")
     parser.add_argument("--reads", type=Path, action="append", default=[], help="a results root whose reads/*.json and document.json supply each raster's page frame; repeatable")
     parser.add_argument("--fixtures", action="store_true", help="replay the four committed fixture responses instead of a cache")

@@ -30,6 +30,14 @@ def _positive_int(value: str) -> int:
     return parsed
 
 
+_CONTRACT = """\
+Run one exact predecessor-successor pair through comparison readback and
+released Automatic Support Update Rules only. Never infers runs or accepts policy
+identity flags:
+  make revision-process ARGS="<predecessor-extraction-run-id> <successor-extraction-run-id>"
+"""
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="revision-process",
@@ -38,6 +46,8 @@ def _parser() -> argparse.ArgumentParser:
             "predecessor-successor run pair, then apply the released Automatic "
             "Support Update Rules without changing policy authority."
         ),
+        epilog=_CONTRACT,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
         "predecessor_extraction_run_id",

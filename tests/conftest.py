@@ -32,6 +32,10 @@ from sqlalchemy.engine import Engine, URL, make_url
 from sqlalchemy.orm import Session as SessionType
 from sqlalchemy.pool import NullPool
 
+from scripts.test_gate.broad_run import (
+    DIAGNOSTIC_ENV, DIAGNOSTIC_REASONS, authorized, selects_whole_suite,
+)
+
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DATABASE_URL = (
@@ -48,8 +52,6 @@ _DATABASE_NAME = re.compile(
 TEMPLATE_ENV = "CORRIDOR_PYTEST_TEMPLATE"
 COORDINATION_ENV = "CORRIDOR_PYTEST_COORDINATION"
 EMPTY_CI_SOURCE_ENV = "CORRIDOR_CI_EMPTY_SHARED_SOURCE"
-LOCAL_BROAD_REASON_ENV = "CORRIDOR_LOCAL_BROAD_REASON"
-LOCAL_BROAD_REASONS = frozenset({"failure-reproduction", "performance-investigation"})
 
 
 def _focused_keyword(keyword: str) -> bool:
@@ -99,7 +101,7 @@ def _require_local_broad_reason(config) -> None:
         return
     if getattr(options, "collectonly", False) or os.environ.get("GITHUB_ACTIONS") == "true":
         return
-    if os.environ.get(LOCAL_BROAD_REASON_ENV) in LOCAL_BROAD_REASONS:
+    if authorized(os.environ):
         return
     if _focused_keyword(getattr(options, "keyword", "") or ""):
         return
@@ -110,19 +112,16 @@ def _require_local_broad_reason(config) -> None:
     # name their focused files just as an actual bounded invocation does.
     arguments = getattr(config, "args", None) or [str(test_root)]
     paths = {
-        (invocation_dir / str(argument)).resolve()
+        invocation_dir / str(argument)
         for argument in arguments if "::" not in str(argument)
     }
-    selects_directory = any(path == test_root or path in test_root.parents for path in paths)
-    all_files = {path.resolve() for path in test_root.glob("test_*.py")}
-    selects_all_files = bool(all_files) and all_files <= paths
-    if selects_directory or selects_all_files:
+    if selects_whole_suite(paths, test_root):
         raise pytest.UsageError(
             "Broad local tests require a concrete diagnostic reason. "
             "Use make test-focused ARGS='tests/test_file.py::test_name'; "
             "required CI owns the complete release proof. For an actual diagnostic, "
-            "set CORRIDOR_LOCAL_BROAD_REASON=failure-reproduction or "
-            "CORRIDOR_LOCAL_BROAD_REASON=performance-investigation."
+            f"set {DIAGNOSTIC_ENV}={DIAGNOSTIC_REASONS[0]} or "
+            f"{DIAGNOSTIC_ENV}={DIAGNOSTIC_REASONS[1]}."
         )
 
 

@@ -11,9 +11,32 @@ import time
 import pytest
 
 from scripts import run_local_tests as runner
+from scripts.test_gate import broad_run
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_the_wrapper_and_the_collector_read_one_broad_run_authorization():
+    """The policy is one module's, so a caller cannot restate it permissively.
+
+    The environment variable and both reasons were spelled once in the wrapper
+    and again in `tests/conftest.py`, with no import between them, while
+    `CLAUDE.md` names the two reasons as the only local exceptions. Identity
+    rather than equality is the assertion: a copy that happens to agree today
+    is the shape this replaces.
+    """
+    import conftest as collector
+
+    assert runner.DIAGNOSTIC_ENV is broad_run.DIAGNOSTIC_ENV
+    assert collector.DIAGNOSTIC_ENV is broad_run.DIAGNOSTIC_ENV
+    assert runner.DIAGNOSTIC_REASONS is broad_run.DIAGNOSTIC_REASONS
+    assert collector.DIAGNOSTIC_REASONS is broad_run.DIAGNOSTIC_REASONS
+    for path in (ROOT / "scripts" / "run_local_tests.py", ROOT / "tests" / "conftest.py"):
+        source = path.read_text(encoding="utf-8")
+        assert broad_run.DIAGNOSTIC_ENV not in source, f"{path.name} respells the variable"
+        for reason in broad_run.DIAGNOSTIC_REASONS:
+            assert reason not in source, f"{path.name} respells {reason}"
 
 
 def _run(tmp_path, source, timeout=2):

@@ -5,9 +5,27 @@ TEST_TIMEOUT_SECONDS ?= 600
 FOCUSED_TEST_TIMEOUT_SECONDS ?= 30
 LOCAL_BROAD_REASON ?=
 
-# Read #558 product events and immutable receipts into a governed #532 report.
-# Fixture: make pilot-measurement ARGS="--input tests/fixtures/pilot-measurement.json --output out/pilot-measurement.json"
+.DEFAULT_GOAL := help
+
+# Every target with the summary written above it; bare `make` ran whichever
+# target happened to be written first. The summary says which command this
+# is, and `make <target> ARGS=--help` prints that command's own contract,
+# which is why the Makefile no longer carries it.
+.PHONY: help
+help:
+	@echo 'make <target> ARGS=--help prints a command'"'"'s own arguments and examples.'
+	@awk '/^# ?-{3,}/ { next } \
+	  /^#/ { summary = summary (summary ? " " : "") substr($$0, 3); next } \
+	  /^\./ { next } \
+	  /^[A-Za-z_][A-Za-z0-9_]* *[?:+]?=/ { next } \
+	  /^[A-Za-z0-9][A-Za-z0-9._-]*:/ { \
+	    sub(":.*", "", $$0); \
+	    if (match(summary, /\. /)) summary = substr(summary, 1, RSTART); \
+	    printf "  %-30s %s\n", $$0, summary; summary = ""; next } \
+	  { summary = "" }' $(MAKEFILE_LIST)
+
 .PHONY: pilot-measurement
+# Read #558 product events and immutable receipts into a governed #532 report.
 pilot-measurement:
 	uv run python -m corridor.pilot_measurement_cli $(ARGS)
 
@@ -31,12 +49,15 @@ boot:
 	docker compose up -d --wait
 	CORRIDOR_LEGACY_DEV_LOGIN=1 uv run alembic upgrade head
 
+# Start the stack the tests and the coordination UI connect to.
 up:
 	docker compose up -d --wait
 
+# Stop the stack.
 down:
 	docker compose down
 
+# A psql prompt on the configured development database.
 psql:
 	docker compose exec postgres psql -U corridor -d corridor
 
@@ -55,10 +76,8 @@ check:
 test-infra:
 	cd infra && uv run --frozen python -m pytest $(if $(strip $(ARGS)),$(ARGS),tests) -q
 
-# Configure synthetic deployment databases with the migration credential.
-# Runtime roles never receive owner/operations credentials; new routes stay disabled.
-# Example: make deployment-bootstrap ARGS=configure
 .PHONY: deployment-bootstrap
+# Configure synthetic deployment databases with the migration credential.
 deployment-bootstrap:
 	uv run python -m corridor.deployment_bootstrap $(ARGS)
 
@@ -88,38 +107,28 @@ activation:
 	uv run python -m corridor.activation_cli $(ARGS)
 
 # Freeze predicted changes before loading the successor working reference.
-# make shadow-comparison ARGS="freeze prediction-input.json"
-# make shadow-comparison ARGS="compare --freeze-sha256 <digest> --successor successor.json --reference-dataset <identity>"
 shadow-comparison:
 	uv run python -m corridor.shadow_comparison_cli $(ARGS)
 
 .PHONY: m365-replay
-# Replay recorded Graph pages into an existing synthetic project; never connects a tenant.
-# make m365-replay ARGS="recording.json --project-id 1 --customer fixture --run-identity replay-1"
+# Replay recorded Graph pages into an existing synthetic project; never
+# connects a tenant.
 m365-replay:
 	uv run python -m corridor.m365_replay $(ARGS)
 
 .PHONY: email-source
 .PHONY: contacts
-# Retained contact imports/resolution; corrections use an authenticated web session.
-#   make contacts ARGS="import-csv <delivery-id> --identity <import-id> --source-family <directory>"
-#   make contacts ARGS="import-ucm <project-id> --identity <import-id>"
-#   make contacts ARGS="read <project-id>"
-#   make contacts ARGS="correct <slug> <contact-id> --record contact.json --reason 'Onboarding correction' --identity <key>"
+# Retained contact imports/resolution; corrections use an authenticated web
+# session.
 contacts:
 	uv run python -m corridor.project_contacts_cli $(ARGS)
 
-# Inspect retained project-bound MIME or replay a strict response without a model call.
-#   make email-source ARGS="inspect <delivery-id>"
-#   make email-source ARGS="capture <delivery-id> --response response.json"
+# Inspect retained project-bound MIME or replay a strict response without a
+# model call.
 email-source:
 	uv run python -m corridor.email_source_cli $(ARGS)
 
 # Separate PostgreSQL operations registry and external receipts (#656).
-# Requires explicit role-specific URLs; never uses a default customer URL.
-#   make control-plane ARGS="initialize"
-#   make control-plane ARGS="register --file environment-registration.json"
-# Full input/custody contract: docs/operations/customer-environments.md.
 control-plane:
 	uv run python -m corridor.control_plane_cli $(ARGS)
 
@@ -158,16 +167,19 @@ test-slow-shard:
 #   make test-timing
 #   uv run python scripts/test_timing.py out/timing/non-slow.xml
 # Bootstrap weights can still be refreshed explicitly with --write.
+# This is a broad local run and goes through the wrapper for its timeout,
+# process-group cleanup and receipt; `--maxfail=0` keeps measuring past a
+# failure, because partial durations and a partial JUnit file measure nothing.
 test-timing:
 	@mkdir -p out/timing
-	CORRIDOR_LOCAL_BROAD_REASON=performance-investigation uv run pytest -n $(TEST_WORKERS) --dist worksteal -m "not slow" \
-	  --durations=50 --durations-min=0.5 --junitxml=out/timing/non-slow.xml
+	uv run python scripts/run_local_tests.py --suite test --timeout-seconds $(TEST_TIMEOUT_SECONDS) --diagnostic-reason performance-investigation -- -n $(TEST_WORKERS) --dist worksteal -m "not slow" \
+	  --maxfail=0 --durations=50 --durations-min=0.5 --junitxml=out/timing/non-slow.xml
 
 # Optional measurement of the slow complement, with its actual scheduler.
 test-slow-timing:
 	@mkdir -p out/timing
-	CORRIDOR_LOCAL_BROAD_REASON=performance-investigation uv run pytest -n $(TEST_WORKERS) --dist loadfile -m "slow and not migration" \
-	  --durations=50 --durations-min=0.5 --junitxml=out/timing/slow.xml
+	uv run python scripts/run_local_tests.py --suite slow --timeout-seconds $(TEST_TIMEOUT_SECONDS) --diagnostic-reason performance-investigation -- -n $(TEST_WORKERS) --dist loadfile -m "slow and not migration" \
+	  --maxfail=0 --durations=50 --durations-min=0.5 --junitxml=out/timing/slow.xml
 
 # Prove the retirement, not merely describe it: build a second environment
 # that never receives PyMuPDF (and therefore neither the `pymupdf` nor the
@@ -182,6 +194,9 @@ test-engine-absent:
 # Build the deployable image and prove neither retired engine is in it: no
 # pymupdf/fitz/pytesseract in either environment, no `tesseract` on PATH, no
 # tesseract-ocr apt package. Writes the audit receipt #461 closes against.
+# This contract stays here rather than in the module's `--help`: the auditor
+# deliberately spells neither engine's name in its own source, and
+# `test_only_allowlisted_modules_still_use_pymupdf_or_tesseract` reads it.
 image-engine-audit:
 	uv run python scripts/audit_image_engines.py
 
@@ -200,8 +215,7 @@ test-migrations:
 test-serial:
 	uv run python scripts/run_local_tests.py --suite full --timeout-seconds $(TEST_TIMEOUT_SECONDS) $(if $(LOCAL_BROAD_REASON),--diagnostic-reason $(LOCAL_BROAD_REASON),) -- $(ARGS)
 
-# Resolve corpus/manifest.yaml to files on disk. Re-running is a no-op for
-# unchanged sources; a source whose bytes changed keeps both revisions.
+# Resolve corpus/manifest.yaml to files on disk.
 corpus:
 	uv run python -m corridor.corpus
 
@@ -276,9 +290,7 @@ active-run:
 	uv run python -m corridor.extraction_runs $(ARGS)
 
 # Run one exact predecessor-successor pair through comparison readback and
-# released Automatic Support Update Rules only. Never infers runs or accepts policy
-# identity flags:
-#   make revision-process ARGS="<predecessor-extraction-run-id> <successor-extraction-run-id>"
+# released Automatic Support Update Rules only.
 revision-process:
 	uv run python -m corridor.revision_processing_cli $(ARGS)
 
@@ -311,146 +323,71 @@ exceptions:
 	uv run python -m corridor.exceptions $(ARGS)
 
 # Prepare a diagnostic disagreement report, or author the explicitly
-# semi-independent machine reference plus its required scope manifest:
-#   make gold ARGS="<new-unspent-project> --author"
-# Existing first-write references refuse re-authoring. For a justified new
-# unspent PDF scope, select the independent native-cell recipe explicitly:
-#   make gold ARGS="<project> --author --method=native-pdf-cell-grid --directory=out/references"
-# Read-only regeneration verifies its recorded native source/configuration:
-#   make gold ARGS="<project> --replay <native-reference.csv>"
-# Archived CSV evaluation does not regenerate it; see docs/operations/machine-reference-methods.md.
+# semi-independent machine reference plus its required scope manifest.
 gold:
 	uv run python -m corridor.gold $(ARGS)
 
-# Measure the known permanent copy chains on the current development corpus and
-# freeze representative Report, release, and Extraction Run semantics. Optional
-# exact row identities keep a rerun pinned as the database grows:
-#   make storage-baseline ARGS="--report-run-id=1 --release-id=1 --extraction-run-id=1"
-# Already-sealed representative outputs may be pinned by file when the current
-# development database has no retained Report Run or Report Approved for Release.
+# Measure the known permanent copy chains on the current development corpus
+# and freeze representative Report, release, and Extraction Run semantics.
 storage-baseline:
 	uv run python -m corridor.storage_baseline_cli $(ARGS)
 
-# Operate the content-addressed store (ADR-0079). `migrate` puts every local
-# file under its own digest into the configured backend, idempotently and
-# digest-verified; `reconcile` compares the PostgreSQL manifests with the store
-# and reports orphans in both directions. Repairs are opt-in:
-#   make storage ARGS="migrate"
-#   make storage ARGS="reconcile --repair"
-#   make storage ARGS="reconcile --remove-unreferenced"
-# Dry run by default; --apply drops. Never touches the configured development
-# database, a database with an open connection, or a name it does not recognise.
+# Drop the scratch PostgreSQL databases a development machine accumulates.
 clean-test-databases:
 	uv run python scripts/clean_test_databases.py $(ARGS)
 
+# Operate the content-addressed store (ADR-0079).
 storage:
 	uv run python -m corridor.storage_cli $(ARGS)
 
-# The identity and authorization export (#531): every enrollment, sign-in,
-# sign-out, designation change, and deprovisioning act, oldest first. Resume a
-# previous export with the id it ended on; nothing else narrows it.
-#   make identity-audit ARGS="--format=csv --after-id=9100"
+# The identity and authorization export (#531).
 identity-audit:
 	uv run python -m corridor.identity_audit_cli $(ARGS)
 
-# Plan first; execute requires the exact manifest digest. Holds and lifts are
-# separate attributable commands through CORRIDOR_HUMAN_PRINCIPAL.
+# Plan first; execute requires the exact manifest digest.
 retention:
 	uv run python -m corridor.retention_cli $(ARGS)
 
-# One-time retirement of legacy development constraint records. Always run `plan`
-# first; `retire` requires the exact digest and constraint count (counts.dependencies):
-#   make ledger-archive ARGS="plan nhhip-3c2"
-#   make ledger-archive ARGS="retire nhhip-3c2 --expected-sha256=<sha> --expected-dependency-count=141"
+# One-time retirement of legacy development constraint records.
 ledger-archive:
 	uv run python -m corridor.legacy_ledger_archive_cli $(ARGS)
 
-# Inspect or run project-level Automatic Support Update under the released rules:
-#   make carry-forward ARGS="status nhhip-3c2"
-#   make carry-forward ARGS="run nhhip-3c2"
+# Inspect or run project-level Automatic Support Update under the released
+# rules.
 carry-forward:
 	uv run python -m corridor.automatic_carry_forward_cli $(ARGS)
 
-# One supervised runtime owns production schedules and recovery. Configure every
-# gate-7 field explicitly, then run the supervisor separately from the web app:
-#   make due-work ARGS="configure-health <project-slug> --configuration-version=processing-health-v1 --starts-at=2026-08-29T07:00:00+00:00 --cadence=hourly --timezone=UTC --missed-run-policy=latest_only --retention-days=3650 --max-attempts=3 --backoff-seconds=60 --claim-ttl-seconds=300 --deadline-seconds=120 --concurrency-limit=1 --model-token-budget=0 --notification-budget=0"
-# New-assignment notification delivery is gate-7 too: nothing is delivered until an
-# authorized operator records this, and completing the code enables no real sends.
-#   make due-work ARGS="configure-notifications <project-slug> --configuration-version=assignment-notification-v1 --channel=email --starts-at=2026-08-29T07:00:00+00:00 --cadence=hourly --timezone=UTC --missed-run-policy=latest_only --retention-days=3650 --max-attempts=3 --backoff-seconds=60 --claim-ttl-seconds=300 --deadline-seconds=120 --concurrency-limit=1 --model-token-budget=0 --notification-budget=500"
-#   make due-work ARGS="configure-publication <project-slug> --configuration-version=report-publication-v1 --provenance-mode=all-supported-sources --prepare-external-pdf --starts-at=2026-08-31T07:00:00+00:00 --cadence=weekly --timezone=UTC --missed-run-policy=latest_only --comparison-window-policy=since_last_released --retention-days=3650 --max-attempts=3 --backoff-seconds=120 --claim-ttl-seconds=1800 --deadline-seconds=1800 --concurrency-limit=1 --model-token-budget=0 --notification-budget=0"
-#   make due-work ARGS="supervise --owner=runtime:<worker-id> --poll-seconds=5"
-# Bounded operational commands use the same durable interfaces:
-#   make due-work ARGS="run-once --owner=runtime:<worker-id>"
-#   make due-work ARGS="recover --owner=runtime:<worker-id>"
-#   make due-work ARGS="status --project-slug=<project-slug>"
-# Enable one connected TxDOT RID/Box source (#350). Every gate-7 field is
-# explicit; a sealed rehearsal location is refused before any fetch:
-#   make due-work ARGS="configure-discovery <project-slug> --configuration-version=txdot-rid-box-v1 --location-id=txdot-nhhip-3c2-utilities --adapter-identity=txdot-rid-box-v1 --source-manifest-id=nhhip-3c2 --index-url=https://www.txdot.gov/business/road-bridge-maintenance/alternative-delivery/nhhip-3c2/rid.html --rid-link-text=Utilities --authorized-host=www.txdot.gov --authorized-host=txdot.box.com --authorized-host=txdot.app.box.com --authorized-host=app.box.com --authorized-host=public.boxcloud.com --starts-at=2026-08-29T07:00:00+00:00 --cadence=hourly --timezone=UTC --missed-run-policy=latest_only --retention-days=3650 --max-attempts=3 --backoff-seconds=120 --claim-ttl-seconds=600 --deadline-seconds=300 --concurrency-limit=1 --model-token-budget=0 --notification-budget=0"
+# One supervised runtime owns production schedules and recovery.
 due-work:
 	uv run python -m corridor.due_work_cli $(ARGS)
 
 # The two managed connected-location acts that need a person, plus a read-only
-# operations view (#350). Attribution comes from CORRIDOR_HUMAN_PRINCIPAL:
-#   make location-discovery ARGS="authorize <project-slug> --reference-key=<key> --doc-type=matrix --registry-id=<id>"
-#   make location-discovery ARGS="recover-parse <project-slug> --document-id=<id>"
-#   make location-discovery ARGS="view <project-slug>"
+# operations view (#350).
 location-discovery:
 	uv run python -m corridor.location_discovery_cli $(ARGS)
 
-# Capture, replay, or verify the isolated mechanical M8 acceptance-test bundle.
-# This tests software behavior; it is not Contract Acceptance of construction.
-# Ordinary replay is model-free and requires exact fixture/transformation pins:
-#   make m8-acceptance ARGS="replay --fixture=<path> --transformations=<path> --output-dir=<path> --postgres-admin-url=<url> --expected-fixture-sha256=<sha> --expected-transformations-sha256=<sha>"
-#   make m8-acceptance ARGS="verify <bundle-dir> --expected-manifest-sha256=<sha>"
+# Capture, replay, or verify the isolated mechanical M8 acceptance-test
+# bundle.
 m8-acceptance:
 	uv run python -m corridor.m8_acceptance_cli $(ARGS)
 
-# Capture the real, pinned SH 99 state read-only, clone it into a newly created,
-# disposable PostgreSQL database, then run the exact Record Inclusion command twice.
-# Verify checks the emitted receipt without opening a database. This never authorizes
-# or performs shared SH 99 mutation:
-#   make sh99-admission-acceptance ARGS="replay --project-slug=sh99-grand-parkway --source-database-url=<url> --expected-clean-git-revision=<sha> --output-dir=<new-dir> --postgres-admin-url=<url>"
-#   make sh99-admission-acceptance ARGS="verify <bundle-dir> --expected-manifest-sha256=<sha>"
-# Seal the current post-activation shared-operation plan on a disposable clone;
-# repeat --expected-active-run once per approved Document/Extraction Run pair:
-#   make sh99-admission-acceptance ARGS="seal --project-slug=sh99-grand-parkway --source-database-url=<url> --expected-clean-git-revision=<sha> --output-dir=<new-dir> --postgres-admin-url=<url> --expected-acceptance-receipt-id=<id> --expected-acceptance-receipt-sha256=<sha> --expected-activation-id=<id> --expected-active-run=1435:193811 --expected-active-run=1438:193812 --expected-candidate-id=405519"
-#   make sh99-admission-acceptance ARGS="verify-seal <bundle-dir> --expected-manifest-sha256=<sha>"
+# Capture the real, pinned SH 99 state read-only, clone it into a newly
+# created, disposable PostgreSQL database, then run the exact Record Inclusion
+# command twice.
 sh99-admission-acceptance:
 	uv run python -m corridor.sh99_admission_acceptance_cli $(ARGS)
 
-# Compare predecessor and statement Record Inclusion where Applies To is not yet
-# known, on two disposable clones.
-# A failed receipt never activates; a passing receipt activates normal processing.
-#   make event-admission-acceptance ARGS="replay --project-slug=sh99-grand-parkway --source-database-url=<url> --postgres-admin-url=<url> --expected-clean-git-revision=<sha>"
-# Read the effective proof, policy, authority, and permitted operations:
-#   make event-admission-acceptance ARGS="status --project-slug=sh99-grand-parkway --database-url=<url>"
-# Suspension is append-only and restores the predecessor policy:
-#   make event-admission-acceptance ARGS="suspend --project-slug=sh99-grand-parkway --database-url=<url> --reason=<reason> --recorded-by=local:<subject>"
-# A lift is a separate attributable human act and still requires current proof:
-#   make event-admission-acceptance ARGS="lift --project-slug=sh99-grand-parkway --database-url=<url> --recorded-by=local:<subject>"
+# Compare predecessor and statement Record Inclusion where Applies To is not
+# yet known, on two disposable clones.
 event-admission-acceptance:
 	uv run python -m corridor.event_admission_acceptance_cli $(ARGS)
 
-# Run the bounded coordinator exercise only on a disposable clone. It verifies the
-# prior Record Inclusion bundle first, separates shared operations/backfill time from the
-# timed coordinator flow, upgrades only the clone between explicit migration pins,
-# and records assistance or failure honestly:
-#   make sh99-coordinator-rehearsal ARGS="replay --project-slug=sh99-grand-parkway --source-database-url=<url> --postgres-admin-url=<url> --expected-clean-git-revision=<sha> --expected-source-migration-head=<released-head> --expected-target-migration-head=<direct-successor-head> --shared-admission-receipt-path=<validation-passed.json> --expected-shared-admission-receipt-sha256=<sha> --approved-shared-state-receipt=<immutable-url> --shared-backfill-elapsed-seconds=291 --output-dir=<new-dir>"
-#   make sh99-coordinator-rehearsal ARGS="verify <bundle-dir> --expected-manifest-sha256=<sha>"
+# Run the bounded coordinator exercise only on a disposable clone.
 sh99-coordinator-rehearsal:
 	uv run python -m corridor.sh99_coordinator_rehearsal_cli $(ARGS)
 
-# Publish a Product Test Run only from two independently sealed live-frontend pass bundles and the
-# exact restored database baseline; arbitrary success capture JSON is not accepted:
-#   make product-proving ARGS="publish-observed --database-baseline-dir=<dir> --database-baseline-manifest-sha256=<sha> --pass-1-dir=<dir> --pass-1-manifest-sha256=<sha> --restore-1-dir=<dir> --restore-1-manifest-sha256=<sha> --pass-2-dir=<dir> --pass-2-manifest-sha256=<sha> --restore-2-dir=<dir> --restore-2-manifest-sha256=<sha> --source-database-url=<url> --output-dir=<new-dir>"
-#   make product-proving ARGS="verify <bundle-dir> --expected-manifest-sha256=<sha>"
-# Capture and clone-verify the exact local development database before a pass;
-# restore requires an explicit exact-target opt-in and re-verifies every public
-# schema object, table, and sequence after replacing the database:
-#   make product-proving ARGS="database-capture --source-database-url=<url> --postgres-admin-url=<url> --expected-clean-git-revision=<sha> --expected-migration-head=<head> --output-dir=<new-dir>"
-#   make product-proving ARGS="database-restore <bundle-dir> --source-database-url=<url> --postgres-admin-url=<url> --expected-source-database-name=corridor --expected-clean-git-revision=<sha> --expected-migration-head=<head> --expected-manifest-sha256=<sha> --pass-bundle-dir=<dir> --pass-bundle-manifest-sha256=<sha> --restore-receipt-output-dir=<new-dir> --allow-shared-development-restore"
-# A terminal failure uses `publish-failure` and `verify-failure`; it can never
-# be read through the successful two-pass verifier.
+# Publish a Product Test Run only from two independently sealed live-frontend
+# pass bundles and the exact restored database baseline.
 product-proving:
 	uv run python -m corridor.product_proving_run_cli $(ARGS)
 
@@ -475,44 +412,31 @@ evidence-shadow-eval:
 	uv run python -m corridor.evidence_investigator_evaluation_cli $(ARGS)
 
 # Compare a PDF engine JSON artifact with the frozen page/cell gold contract.
-# Holdout runs also require an explicit access log, actor, and reason; see
-# gold/pdf/v1/README.md. This is the experiment runner, not a pytest alias:
-#   make pdf-eval ARGS="evaluate --gold gold/pdf/v1/dataset.json --predictions=<run.json> --output-json=<metrics.json> --output-report=<metrics.md>"
 pdf-eval:
 	uv run python -m corridor.pdf_evaluation_cli $(ARGS)
 
 # Record Stage 1 page-routing confusion and OCR error rates against the frozen
-# gold membership, alongside the retired character-count comparator:
-#   make page-inventory-eval ARGS="--gold=<stage1-gold.json> --run=<routing-run.json> --output=<receipt.json>"
+# gold membership.
 page-inventory-eval:
 	uv run python -m corridor.page_inventory_evaluation $(ARGS)
 
 # Render corpus pages under both rasterizers and record the comparison with
-# its declared tolerances (#735). An explicit experiment outside pytest and
-# CI; it reads the corpus content store and takes minutes:
-#   make render-rasterizer-compare ARGS="--output artifacts/render-rasterizer-comparison/735-corpus-render-comparison.json"
+# its declared tolerances (#735).
 render-rasterizer-compare:
 	uv run python -m corridor.render_rasterizer_comparison $(ARGS)
 
 # Decide the frozen Stage 1 routing pages again from the reader-backed Page
 # Inventory and record every difference from the incumbent run and the gold
-# labels (#734). An experiment runner, not a pytest alias; the holdout family
-# needs an actor and a reason, appended to gold/pdf/v1/holdout-access.jsonl:
-#   make page-inventory-routing-replay ARGS="--output-dir artifacts/pdf-reader-page-inventory --holdout-actor <actor> --holdout-reason <reason>"
+# labels (#734).
 page-inventory-routing-replay:
 	uv run python scripts/page_inventory_routing_replay.py $(ARGS)
 
 # LLM extraction over coordination meeting notes. Needs OPENAI_API_KEY.
-# Bound a run to exact registered notes by repeating --document-id; --redo
-# appends a fresh attempt without changing the declared Current Production Run:
-#   make minutes ARGS="sh99-grand-parkway --document-id 1435 --document-id 1438 --redo"
 minutes:
 	uv run python -m corridor.minutes_source_cli project $(ARGS)
 
 .PHONY: minutes-source
 # Inspect exact minutes references or replay a fixture/provider response.
-#   make minutes-source ARGS="inspect <document-id>"
-#   make minutes-source ARGS="capture <document-id> --response response.json --source-family <meeting>"
 minutes-source:
 	uv run python -m corridor.minutes_source_cli $(ARGS)
 
@@ -524,10 +448,6 @@ report:
 # ---- The imported paired-rendition reader (#729) -----------------------------
 # Print a stored Document Rendition as the reader sees it: pages, tables,
 # cells with their semantics-tier IDs, text outside every table, clipped runs.
-# The read runs in a PDFium-isolated child process (corridor_pdf_reader.execution).
-# Address the rendition by content digest through the storage interface, or by path:
-#   make pdf-reader-inspect ARGS="--sha256 <sha256> --pages 1 2"
-#   make pdf-reader-inspect ARGS="--file corpus/files/<sha256>.pdf --json"
 pdf-reader-inspect:
 	uv run python -m corridor_pdf_reader.rendition_cli $(ARGS)
 
@@ -536,57 +456,22 @@ pdf-reader-inspect:
 pdf-reader-node:
 	cd src/corridor_pdf_reader/paired_trial && npm ci --ignore-scripts --no-audit --no-fund
 
-# The 333-pair reproduction of loop-020: verify the corpus digests, build the
-# answer keys and compare them with the retained key digests, read every pair
-# with the measured engine, score the development set and the spent holdout,
-# tally, and write a receipt carrying the configuration identity. An explicit
-# experiment outside pytest and CI (ADR-0008); needs the reference corpus at
-# TRUE_PAIRS_ROOT, `make pdf-reader-node`, and tens of minutes:
-#   make pdf-reader-reproduce ARGS="--output out/pdf-reader/reproduction-2026-09-06 --retain --holdout-actor local:<human>"
-# `--retain` copies the receipt set into src/corridor_pdf_reader/receipts/,
-# appends the holdout access to bootstrap/LOOP-LOG.md as prose and records the
-# same access in gold/pdf-pairs/v1/holdout-access.jsonl (ADR-0008); it needs
-# --holdout-actor.
 TRUE_PAIRS_ROOT ?= /Users/bryceharmon/Desktop/utility-conflict-matrices/PDF-Spreadsheet-Pairs/true-pairs/exact
+# The 333-pair reproduction of loop-020.
 pdf-reader-reproduce:
 	mkdir -p src/corridor_pdf_reader/tmp
 	TRUE_PAIRS_ROOT=$(TRUE_PAIRS_ROOT) uv run --group pdf-reader-experiment python -m corridor_pdf_reader.reproduction $(ARGS)
 
-# The paired-rendition Extraction Measurement (#731): score a named
-# configuration (`frozen-reader`, `native-segments-v1`, `drawn-grid`) against the registered
-# Reference Dataset in gold/pdf-pairs/v1 and write a receipt that keeps pair,
-# page and cell measures apart and development and holdout apart. The holdout
-# is spent (ADR-0008): it is read only with --include-holdout, an actor and a
-# reason, and every access is appended to gold/pdf-pairs/v1/holdout-access.jsonl.
-# An explicit experiment outside CI; needs the corpus at TRUE_PAIRS_ROOT and
-# `make pdf-reader-node`:
-#   make pdf-pairs-measure ARGS="--configuration frozen-reader --output out/pdf-pairs/<run>"
-#   make pdf-pairs-measure ARGS="--configuration drawn-grid --output out/pdf-pairs/<run> --keys <key> ..."
-# `--retain baseline|failure-proof|measurement` copies the receipt set into
-# gold/pdf-pairs/v1/receipts/<run>/ and indexes it in gold/pdf-pairs/v1/receipts.json.
+# The paired-rendition Extraction Measurement (#731).
 pdf-pairs-measure:
 	mkdir -p src/corridor_pdf_reader/tmp
 	TRUE_PAIRS_ROOT=$(TRUE_PAIRS_ROOT) uv run --group pdf-reader-experiment python -m corridor_pdf_reader.measurement $(ARGS)
 
-# The frozen reader through the existing PDF evaluation contract (#731): read
-# the gold/pdf/v1 documents from the content store, write an engine run in the
-# contract's shape, and evaluate it with `corridor.pdf_evaluation_cli`. The
-# holdout family is refused without the ledger flags, as for `make pdf-eval`:
-#   make pdf-reader-gold-eval ARGS="--output out/pdf-reader/gold-v1 --include-holdout --holdout-actor <actor> --holdout-reason <reason>"
+# The frozen reader through the existing PDF evaluation contract (#731).
 pdf-reader-gold-eval:
 	uv run python -m corridor_pdf_reader.gold_evaluation $(ARGS)
 
-# Offline native matrix mapping regression (#737). Verifies the seven retained
-# answer manifests, all 20 measured 110-dpi images, source PDFs and machine CSVs;
-# replays their raw structures through the actual adapter, commits only in a
-# guarded disposable database, and compares every retained field/row decision
-# separately from historical source_ref multiplicity matching. WSDOT 9540 is
-# spent; this is not a new generalization score. No model/AWS calls or production
-# selection. The local PostgreSQL 16 admin URL provisions and drops a new DB;
-# the configured shared database is never migrated. Explicit experiment, not CI:
-#   make native-matrix-replay ARGS="--output <new-dir> --postgres-admin-url <local-admin-url>"
-# Or pass --postgres-admin-url-env CORRIDOR_MEASUREMENT_POSTGRES_URL.
-# Optional --results-root relocates the same digest-pinned retained answer sets.
+# Offline native matrix mapping regression (#737).
 native-matrix-replay:
 	uv run python -m corridor.native_matrix_measurement $(ARGS)
 
@@ -605,15 +490,8 @@ pipeline-qualification:
 
 
 # ---- The Textract adapter (#732) ---------------------------------------------
-# Replay retained Textract responses through the adapter's normalizer, twice
-# each, and write a receipt of raw-response and normalized-reading digests
-# (ADR-0094: exact replay is the retained response, never a fresh call). An
-# explicit experiment outside pytest and CI over the 116-entry experiment
-# cache, which stays in the standalone worktree and is only read; the retained
-# lane reads under the same results root supply each raster's page frame. CI
-# replays only the four committed fixtures (tests/test_textract_adapter_replay.py).
-# No AWS call is made by this target or by anything under textract_adapter.
-#   make textract-replay ARGS="--output out/textract/experiment-cache-replay-2026-09-06.json --retain"
 TEXTRACT_RESULTS ?= /Users/bryceharmon/Desktop/pdf-reader-comparison-textract/results
+# Replay retained Textract responses through the adapter's normalizer, twice
+# each, and write a receipt of raw-response and normalized-reading digests.
 textract-replay:
 	uv run python -m corridor_pdf_reader.textract_adapter.replay --cache $(TEXTRACT_RESULTS)/textract-cache --reads $(TEXTRACT_RESULTS) $(ARGS)

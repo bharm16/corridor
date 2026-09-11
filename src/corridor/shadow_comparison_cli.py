@@ -73,8 +73,19 @@ def native_comparison(args):
             "native_freeze_receipts": frozen_receipts, "policy": retain_private_artifact(args.output_dir, policy_payload)}
 
 
+_CONTRACT = """\
+Freeze predicted changes before loading the successor working reference.
+make shadow-comparison ARGS="freeze prediction-input.json"
+make shadow-comparison ARGS="compare --freeze-sha256 <digest> --successor successor.json --reference-dataset <identity>"
+"""
+
+
 def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        epilog=_CONTRACT,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     sub = parser.add_subparsers(dest="command", required=True)
     freeze = sub.add_parser("freeze")
     freeze.add_argument("input", type=Path)

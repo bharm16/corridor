@@ -49,10 +49,20 @@ def _sha256(value: str) -> str:
     return value
 
 
+_CONTRACT = """\
+One-time retirement of legacy development constraint records. Always run `plan`
+first; `retire` requires the exact digest and constraint count (counts.dependencies):
+  make ledger-archive ARGS="plan nhhip-3c2"
+  make ledger-archive ARGS="retire nhhip-3c2 --expected-sha256=<sha> --expected-dependency-count=141"
+"""
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="legacy-ledger-archive",
         description="Archive and retire legacy development constraint records.",
+        epilog=_CONTRACT,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     commands = parser.add_subparsers(dest="command", required=True)
 

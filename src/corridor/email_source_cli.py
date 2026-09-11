@@ -39,8 +39,19 @@ class RetainedEmailResponse:
         return self.response
 
 
+_CONTRACT = """\
+Inspect retained project-bound MIME or replay a strict response without a model call.
+  make email-source ARGS="inspect <delivery-id>"
+  make email-source ARGS="capture <delivery-id> --response response.json"
+"""
+
+
 def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        epilog=_CONTRACT,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument("command", choices=("inspect", "capture"))
     parser.add_argument("delivery_id", type=int)
     parser.add_argument("--response", type=Path, help="strict response JSON from inspect's segment IDs")

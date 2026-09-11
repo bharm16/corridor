@@ -147,8 +147,21 @@ def configuration_identity(executor: PdfiumExecutor) -> dict:
     }
 
 
+_CONTRACT = """\
+Decide the frozen Stage 1 routing pages again from the reader-backed Page
+Inventory and record every difference from the incumbent run and the gold
+labels (#734). An experiment runner, not a pytest alias; the holdout family
+needs an actor and a reason, appended to gold/pdf/v1/holdout-access.jsonl:
+  make page-inventory-routing-replay ARGS="--output-dir artifacts/pdf-reader-page-inventory --holdout-actor <actor> --holdout-reason <reason>"
+"""
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        epilog=_CONTRACT,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument("--gold", type=Path, default=DEFAULT_GOLD)
     parser.add_argument("--dataset", type=Path, default=DEFAULT_DATASET)
     parser.add_argument("--incumbent-run", type=Path, default=DEFAULT_INCUMBENT_RUN)

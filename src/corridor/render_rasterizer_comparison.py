@@ -391,8 +391,20 @@ def summarize(documents: list[dict]) -> dict:
     }
 
 
+_CONTRACT = """\
+Render corpus pages under both rasterizers and record the comparison with
+its declared tolerances (#735). An explicit experiment outside pytest and
+CI; it reads the corpus content store and takes minutes:
+  make render-rasterizer-compare ARGS="--output artifacts/render-rasterizer-comparison/735-corpus-render-comparison.json"
+"""
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        epilog=_CONTRACT,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--corpus-root", type=Path, default=Path("corpus"))
     parser.add_argument("--page", type=int, default=1)
