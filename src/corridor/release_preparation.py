@@ -34,6 +34,18 @@ blocked candidate is complete. This module records which of the three happened
 and nothing else, and the database refuses a row that names a candidate and a
 failure reason together.
 
+**Asking is a Project Coordination act, and PostgreSQL is what proves it**
+(#839). The maintainer settled the division on 2026-09-10: Project Coordination
+may confirm coverage and request preparation, External Release may authorize,
+and read-only membership confers neither. Until then this route checked project
+access and nothing else, so any member could ask a worker to build what a
+customer receives. ``enforce_coordination_designation`` re-reads the active
+roster entry and its ``can_coordinate`` flag as the schema's own owner when the
+request row is appended — the same place, and for the same reason, that #533
+proves external release inside ``authorize_release_package``. This module adds
+no second check of its own; it names the act that was refused, because a
+refused preparation leads somewhere different from a refused release.
+
 **No clock.** Every instant — the request time, the attempt's start and finish,
 the source cutoff — is supplied by the caller. Nothing here reads the wall
 clock.
@@ -50,9 +62,10 @@ from datetime import datetime
 from typing import Sequence
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
-from corridor import refusals
+from corridor import access, refusals
 from corridor.models import (
     IssueCoverageDeclaration,
     ProjectRecordRevision,
@@ -78,9 +91,16 @@ FAILED_OUTCOME = "failed"
 
 
 class PreparationRequestRefused(refusals.Refusal, ValueError):
-    """This request would ask for an issue nobody confirmed the coverage of."""
+    """This request would ask for an issue nobody confirmed the coverage of.
 
-    refusal_kind = refusals.CONFLICT
+    The kind is per-instance for ``CoverageRefused``'s reason: a revision that
+    moved and a declaration of another project are conflicts over what is being
+    asked for, and holding no project-coordination designation is not (#839).
+    """
+
+    def __init__(self, sentence: str, *, kind: str = refusals.CONFLICT) -> None:
+        super().__init__(sentence)
+        self.refusal_kind = kind
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,6 +159,12 @@ def request_preparation(
 
     Idempotent by ``idempotency_key``: a resubmitted form, a retried POST, or a
     second click converges on the request already recorded.
+
+    Whether this person may ask at all is PostgreSQL's answer: the row is
+    appended and the relation's own guard refuses it where the roster does not
+    designate the requester to coordinate this project (#839). The append runs
+    in a savepoint because that refusal aborts the transaction it is in, and
+    the caller is usually part-way through rendering the week it belongs on.
     """
 
     actor = require_human_principal(requested_by)
@@ -196,8 +222,21 @@ def request_preparation(
         requested_at=requested_at,
         idempotency_key=key[:160],
     )
-    session.add(row)
-    session.flush()
+    try:
+        with session.begin_nested():
+            session.add(row)
+            session.flush()
+    except DBAPIError as error:
+        if not access.designation_refused(error):
+            raise
+        raise PreparationRequestRefused(
+            f"{actor.subject} holds no project-coordination designation for "
+            f"project {int(project_id)}. Asking for this project's issue to be "
+            "prepared is a project-coordination decision; reading this project "
+            "and being designated to release it externally confer none of it. "
+            "Nothing was asked for.",
+            kind=refusals.NOT_AUTHORIZED,
+        ) from error
     emit_preparation_interaction(session, EventFamily.PREPARATION_REQUEST, row,
                                  at=requested_at, principal_subject=actor.subject,
                                  request_id=row.id, coverage_declaration_id=declaration.id,

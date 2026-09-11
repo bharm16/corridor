@@ -51,6 +51,19 @@ Record revision, so resolving a Proposed Delta does not force a coordinator to
 confirm the same coverage again, while a newly received or newly failed source
 changes the digest and does.
 
+**Who may confirm is PostgreSQL's answer, not this module's** (#839). The
+maintainer settled it on 2026-09-10: Project Coordination may confirm coverage
+and request preparation, External Release may authorize, and read-only
+membership confers neither. Until then any project member could confirm the
+coverage an issue was prepared under, because nothing in the write path asked.
+The rule now lives on the relation, as ``enforce_coordination_designation``:
+the roster entry and its ``can_coordinate`` flag are re-read as the schema's
+own owner when the row is appended, so a second caller cannot forget the check
+and the principal string a caller passed proves nothing. What this module does
+is name the act that was refused — a coverage confirmation, which leads
+somewhere different from a refused release — so a screen can say what happened
+instead of printing a database error.
+
 **No clock.** ``cutoff`` and ``confirmed_at`` are supplied by the caller.
 Nothing here reads the wall clock, so a reading of a past cutoff is the same
 reading tomorrow.
@@ -73,8 +86,10 @@ import json
 from typing import Any, Iterable, Mapping, Sequence
 
 from sqlalchemy import select
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
+from corridor import access
 from corridor.issue_content import COVERAGE_ALL_REQUIRED_SOURCES_READ
 from corridor.issue_profile import IssueInventory
 from corridor.issue_rendering import (
@@ -119,9 +134,20 @@ DETAIL_LIMIT = 240
 
 
 class CoverageRefused(refusals.Refusal, ValueError):
-    """A coordinator may not declare this coverage."""
+    """A coordinator may not declare this coverage.
 
-    refusal_kind = refusals.CONFLICT
+    The kind is per-instance, because two different rules refuse here and an
+    adapter acts on the difference: a reading that moved, a line that may not
+    be relabelled, and a cutoff in the future are all conflicts over the same
+    reading, while "you hold no project-coordination designation" is not a
+    conflict at all (#839). The route picks its status from the kind rather
+    than from reading the sentence, which is the second gate #794 card 22
+    removed from every catch site.
+    """
+
+    def __init__(self, sentence: str, *, kind: str = refusals.CONFLICT) -> None:
+        super().__init__(sentence)
+        self.refusal_kind = kind
 
 
 @dataclass(frozen=True, slots=True)
@@ -511,6 +537,15 @@ def confirm_coverage(
     finished processing, the profile moved — is refused rather than recorded
     as a confirmation of something else. That is the whole reason the digest
     travels through the form at all.
+
+    **Whether this person may confirm at all is asked of PostgreSQL** (#839),
+    by appending the row and letting the relation's own guard answer. There is
+    no roster read here that could disagree with it: a check composed in Python
+    would be a second rule to keep in step, and the page a coordinator reads
+    already prints the same roster's answer as a reading rather than as a gate.
+    The append runs in a savepoint because a refusal aborts the transaction it
+    is in, and the caller is usually mid-way through rendering the week the
+    refusal belongs on.
     """
 
     actor = require_human_principal(principal)
@@ -588,8 +623,21 @@ def confirm_coverage(
         confirmed_at=confirmed_at,
         idempotency_key=idempotency_key.strip()[:160],
     )
-    session.add(row)
-    session.flush()
+    try:
+        with session.begin_nested():
+            session.add(row)
+            session.flush()
+    except DBAPIError as error:
+        if not access.designation_refused(error):
+            raise
+        raise CoverageRefused(
+            f"{actor.subject} holds no project-coordination designation for "
+            f"project {int(project_id)}. Confirming the coverage an issue is "
+            "prepared under is a project-coordination decision; reading this "
+            "project and being designated to release it externally confer "
+            "none of it. Nothing was confirmed.",
+            kind=refusals.NOT_AUTHORIZED,
+        ) from error
     emit_preparation_interaction(session, EventFamily.COVERAGE_CONFIRMATION, row,
                                  at=confirmed_at, principal_subject=actor.subject,
                                  coverage_declaration_id=row.id, reading_sha256=reading.reading_digest,

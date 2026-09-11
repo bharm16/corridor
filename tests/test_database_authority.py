@@ -966,3 +966,120 @@ def test_only_the_web_capability_may_revoke_a_push_intake_credential(admin):
             {"role": role},
         ).scalar_one()
         assert granted is False, f"{role} can re-point a bound alias"
+
+
+# --- The coordination designation, proved on the relation (#839) -----------
+
+
+COVERAGE_CONFIRMATION = text(
+    """
+    insert into issue_coverage_declarations (
+        project_id, issue_profile_id, issue_profile_identity,
+        issue_profile_version, cutoff_at, derived_reading,
+        derived_reading_digest, declaration, declaration_digest,
+        coverage_identity, confirmed_by_principal, confirmed_at,
+        idempotency_key)
+    values (
+        :project_id, 1, 'customer-issue', 1, now(), 'reading',
+        encode(sha256(convert_to('reading', 'utf8')), 'hex'), 'declaration',
+        encode(sha256(convert_to('declaration', 'utf8')), 'hex'),
+        'issue-coverage:probe', :principal, now(), 'probe')
+    """
+)
+
+PREPARATION_REQUEST = text(
+    """
+    insert into release_preparation_requests (
+        project_id, accepted_revision_id, issue_profile_id,
+        issue_profile_identity, issue_profile_version,
+        coverage_declaration_id, source_cutoff, requested_by_principal,
+        requested_at, idempotency_key)
+    values (:project_id, 1, 1, 'customer-issue', 1, 1, now(), :principal,
+            now(), 'probe')
+    """
+)
+
+
+def _sqlstate(error) -> str:
+    original = getattr(error, "orig", None)
+    return str(getattr(original, "sqlstate", "") or "")
+
+
+@pytest.mark.parametrize(
+    "statement", (COVERAGE_CONFIRMATION, PREPARATION_REQUEST)
+)
+def test_the_web_capability_appends_these_only_where_the_roster_designates(
+    runtime_database, statement
+):
+    """#839's rule, proved as the login that actually holds INSERT on them.
+
+    These two relations are appended directly by the runtime capability rather
+    than through a command (#675 decided that: they write no accepted authority
+    and make nothing effective), so the designation cannot be proved by taking
+    the grant away. It is proved by a trigger, and this is the proof that the
+    trigger is what a capability holding the grant runs into.
+
+    The designated principal's row is refused too, by a *foreign key*: this
+    test builds no issue profile, and it does not need one. The two SQLSTATEs
+    are the whole assertion — ``42501`` is the guard refusing the person, and
+    ``23503`` is the guard having let the person through.
+    """
+
+    with runtime_database.session_factory.begin() as owner:
+        project = Project(
+            slug="designation-boundary",
+            name="Designation Boundary",
+            is_synthetic=True,
+        )
+        owner.add(project)
+        owner.flush()
+        for subject, coordinates in (
+            ("local:coordinator", True),
+            ("local:reader", False),
+        ):
+            owner.add(
+                ProjectRosterEntry(
+                    project_id=project.id,
+                    principal_subject=subject,
+                    display_name=subject,
+                    active=True,
+                    can_coordinate=coordinates,
+                )
+            )
+        project_id = project.id
+
+    web_url = (
+        make_url(ADMIN_URL)
+        .set(
+            database=runtime_database.name,
+            username="corridor_web",
+            password=LOGIN_PASSWORDS["corridor_web"],
+        )
+        .render_as_string(hide_password=False)
+    )
+    engine = create_engine(web_url, poolclass=NullPool, future=True)
+    try:
+        for principal, expected in (
+            ("local:reader", "42501"),
+            ("local:coordinator", "23503"),
+        ):
+            with engine.connect() as web:
+                web.execute(
+                    text("select open_project_partition(:who, :project_id)"),
+                    {"who": principal, "project_id": project_id},
+                )
+                with pytest.raises(Exception) as refused:
+                    web.execute(
+                        statement,
+                        {"project_id": project_id, "principal": principal},
+                    )
+                web.rollback()
+            assert _sqlstate(refused.value) == expected, (
+                f"{principal}: {refused.value}"
+            )
+            if expected == "42501":
+                assert "holds no project-coordination designation" in str(
+                    refused.value
+                )
+    finally:
+        engine.dispose()

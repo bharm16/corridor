@@ -78,6 +78,10 @@ from corridor.project_workflow import COORDINATOR_OWNER
 from corridor.web.issue_section import (
     ALREADY_AUTHORIZED,
     AUTHORIZABLE,
+    MAY_APPROVE,
+    MAY_NOT_APPROVE,
+    MAY_NOT_PREPARE,
+    MAY_PREPARE,
     NOTHING_PREPARED,
     NOT_AUTHORIZABLE,
     IssueViewRefused,
@@ -360,7 +364,12 @@ def test_before_anything_is_prepared_the_section_says_so_and_offers_nothing(
 
     configure(session, adopted)
 
-    view = issue_view(session, project_id=adopted.project.id, as_of=NOW)
+    view = issue_view(
+        session,
+        project_id=adopted.project.id,
+        as_of=NOW,
+        principal_subject=COORDINATOR.subject,
+    )
     assert view.state == NOTHING_PREPARED
     assert view.may_authorize is False
     assert view.candidate is None
@@ -377,7 +386,12 @@ def test_the_section_presents_the_candidate_it_would_send(session, adopted, clie
     configure(session, adopted)
     candidate = prepare(session, adopted, store)
 
-    view = issue_view(session, project_id=adopted.project.id, as_of=NOW)
+    view = issue_view(
+        session,
+        project_id=adopted.project.id,
+        as_of=NOW,
+        principal_subject=COORDINATOR.subject,
+    )
     assert view.state == AUTHORIZABLE
     assert view.candidate.id == candidate.id
     assert [row.words for row in view.artifact_rows] == [
@@ -415,7 +429,12 @@ def test_before_the_first_issue_the_section_states_that_there_is_no_predecessor(
     configure(session, adopted)
     prepare(session, adopted, store)
 
-    view = issue_view(session, project_id=adopted.project.id, as_of=NOW)
+    view = issue_view(
+        session,
+        project_id=adopted.project.id,
+        as_of=NOW,
+        principal_subject=COORDINATOR.subject,
+    )
     assert view.predecessor is None
 
     assert (
@@ -447,7 +466,12 @@ def test_a_replaced_candidate_stays_on_the_page_as_history_and_carries_no_act(
         coverage_declaration_id=coverage_named(session, adopted, "second-week").id,
     )
 
-    view = issue_view(session, project_id=adopted.project.id, as_of=NOW)
+    view = issue_view(
+        session,
+        project_id=adopted.project.id,
+        as_of=NOW,
+        principal_subject=COORDINATOR.subject,
+    )
     assert [one.candidate_id for one in view.superseded] == [first.id]
     assert view.superseded[0].outcome == "approved for sharing as issue 1"
     assert view.superseded[0].coverage_identity == first.coverage_identity
@@ -480,7 +504,12 @@ def test_the_second_candidate_names_the_first_issue_as_its_predecessor(
         store,
         coverage_declaration_id=coverage_named(session, adopted, "second-week").id,
     )
-    view = issue_view(session, project_id=adopted.project.id, as_of=NOW)
+    view = issue_view(
+        session,
+        project_id=adopted.project.id,
+        as_of=NOW,
+        principal_subject=COORDINATOR.subject,
+    )
 
     assert view.candidate.id == second.id
     assert view.predecessor is not None
@@ -498,7 +527,12 @@ def test_an_approved_candidate_reads_as_approved_and_is_not_offered_again(
     assert approve(client, adopted, candidate.id).status_code == 201
     session.expire_all()
 
-    view = issue_view(session, project_id=adopted.project.id, as_of=NOW)
+    view = issue_view(
+        session,
+        project_id=adopted.project.id,
+        as_of=NOW,
+        principal_subject=COORDINATOR.subject,
+    )
     assert view.state == ALREADY_AUTHORIZED
     assert view.may_authorize is False
     assert view.authorized is not None and view.authorized.issue_number == 1
@@ -568,6 +602,90 @@ def test_an_undesignated_principal_is_refused_by_postgresql_not_by_the_route(
     assert "This issue was not approved, and nothing was sent" in response.text
     session.expire_all()
     assert _packages(session, adopted) == 0
+
+
+def test_the_section_says_who_may_prepare_and_who_may_approve(
+    session, adopted, client, store
+):
+    """Both capabilities, read from the roster the two commands prove against.
+
+    The audit's finding is that the Issue view explained database mechanics
+    beside the Approve button and never said whether *this* person could press
+    it. Four readers, four sentences, all from ``project_roster_entries``:
+    neither is a gate, and both controls are still offered to every member.
+    """
+
+    configure(session, adopted)
+    candidate = prepare(session, adopted, store)
+
+    coordinator = issue_view(
+        session,
+        project_id=adopted.project.id,
+        as_of=NOW,
+        principal_subject=COORDINATOR.subject,
+    )
+    assert coordinator.holds_coordination and not coordinator.holds_external_release
+    assert coordinator.preparation_capability == MAY_PREPARE
+    assert coordinator.approval_capability == MAY_NOT_APPROVE
+
+    releaser = issue_view(
+        session,
+        project_id=adopted.project.id,
+        as_of=NOW,
+        principal_subject=RELEASER.subject,
+    )
+    assert releaser.holds_external_release and not releaser.holds_coordination
+    assert releaser.preparation_capability == MAY_NOT_PREPARE
+    assert releaser.approval_capability == MAY_APPROVE
+
+    reader = issue_view(
+        session,
+        project_id=adopted.project.id,
+        as_of=NOW,
+        principal_subject=UNDESIGNATED.subject,
+    )
+    assert not reader.holds_coordination and not reader.holds_external_release
+    assert reader.preparation_capability == MAY_NOT_PREPARE
+    assert reader.approval_capability == MAY_NOT_APPROVE
+
+    # A candidate with nothing outstanding is ready for *somebody's* approval,
+    # and the label says whose. "Ready for your approval" to the coordinator
+    # who prepared it is the sentence #839 retires.
+    assert releaser.state == AUTHORIZABLE and coordinator.state == AUTHORIZABLE
+    assert releaser.state_label.text == "Ready for your approval"
+    assert coordinator.state_label.text == (
+        "Ready for approval by the designated releaser"
+    )
+
+    # Nothing above changed what is offered: the reading is not the gate.
+    assert coordinator.may_authorize and reader.may_authorize
+    body = prose(week(client, adopted))
+    assert MAY_NOT_PREPARE in body and MAY_APPROVE in body
+    assert "Approve this issue for sharing" in body
+
+
+def test_the_page_says_a_coordinator_may_prepare_and_may_not_approve(
+    session, adopted, client, store
+):
+    """The two sentences reach the page a coordinator actually reads."""
+
+    configure(session, adopted)
+    as_principal(COORDINATOR)
+
+    # Both sentences before anything is prepared, where neither act is even
+    # offered: "may I approve this?" is a question a person has before they
+    # find a button, and the answer is what says whose turn is next.
+    empty = prose(week(client, adopted))
+    assert MAY_PREPARE in empty and MAY_NOT_APPROVE in empty
+
+    prepare(session, adopted, store)
+    body = prose(week(client, adopted))
+
+    assert MAY_PREPARE in body
+    assert MAY_NOT_APPROVE in body
+    assert "Ready for approval by the designated releaser" in body
+    # Still offered. The database is what refuses, and it still would.
+    assert "Approve this issue for sharing" in body
 
 
 def test_the_refused_principal_still_reads_the_whole_week(
@@ -652,7 +770,12 @@ def test_a_blocked_candidate_is_not_offered_and_cannot_be_approved(
     candidate = prepare(session, adopted, store)
     assert candidate.readiness == "blocked"
 
-    view = issue_view(session, project_id=adopted.project.id, as_of=NOW)
+    view = issue_view(
+        session,
+        project_id=adopted.project.id,
+        as_of=NOW,
+        principal_subject=COORDINATOR.subject,
+    )
     assert view.state == NOT_AUTHORIZABLE
     assert view.may_authorize is False
     assert view.blocked is True
@@ -724,7 +847,12 @@ def test_a_stale_candidate_asks_for_a_fresh_preparation_and_stays_visible(
     # The stale candidate is the current one: it was prepared last, and an
     # older authorizable candidate never quietly stands in for it.
     assert current_release_candidate(session, adopted.project.id).id == stale.id
-    view = issue_view(session, project_id=adopted.project.id, as_of=NOW)
+    view = issue_view(
+        session,
+        project_id=adopted.project.id,
+        as_of=NOW,
+        principal_subject=COORDINATOR.subject,
+    )
     assert view.state == NOT_AUTHORIZABLE
     assert view.may_authorize is False
     assert view.blocked is False
@@ -768,7 +896,12 @@ def test_every_reason_a_candidate_cannot_be_approved_names_who_puts_it_right(
     open_delta(session, adopted)
     prepare(session, adopted, store)
 
-    view = issue_view(session, project_id=adopted.project.id, as_of=NOW)
+    view = issue_view(
+        session,
+        project_id=adopted.project.id,
+        as_of=NOW,
+        principal_subject=COORDINATOR.subject,
+    )
 
     assert view.blockers
     assert [one.sentence for one in view.blocking_reasons] == list(view.blockers)
@@ -819,7 +952,12 @@ def test_a_replaced_output_template_asks_the_section_for_a_fresh_candidate(
     )
     session.expire_all()
 
-    view = issue_view(session, project_id=adopted.project.id, as_of=NOW)
+    view = issue_view(
+        session,
+        project_id=adopted.project.id,
+        as_of=NOW,
+        principal_subject=COORDINATOR.subject,
+    )
     assert view.state == NOT_AUTHORIZABLE
     assert view.may_authorize is False
     assert "the output template this project renders through was replaced" in (
@@ -944,8 +1082,18 @@ def test_the_reading_is_derived_and_repeats_itself(session, adopted, store):
     configure(session, adopted)
     prepare(session, adopted, store)
 
-    first = issue_view(session, project_id=adopted.project.id, as_of=NOW)
-    second = issue_view(session, project_id=adopted.project.id, as_of=NOW)
+    first = issue_view(
+        session,
+        project_id=adopted.project.id,
+        as_of=NOW,
+        principal_subject=COORDINATOR.subject,
+    )
+    second = issue_view(
+        session,
+        project_id=adopted.project.id,
+        as_of=NOW,
+        principal_subject=COORDINATOR.subject,
+    )
 
     assert (first.state, first.blockers, first.artifact_rows) == (
         second.state,

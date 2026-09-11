@@ -30,6 +30,7 @@ from corridor.models import (
     IssueCoverageDeclaration,
     Project,
     ProjectRecordRevision,
+    ProjectRosterEntry,
     ReleaseCandidate,
     ReleasePreparationAttempt,
     ReleasePreparationRequest,
@@ -92,6 +93,10 @@ from test_release_candidate import (
 
 
 COORDINATOR = HumanPrincipal("local:coordinator")
+# A member of this project holding no designation at all: membership is the
+# read boundary and nothing more (#531), which #839 makes true of asking for a
+# preparation as well.
+READER = HumanPrincipal("local:reader")
 OPERATOR = HumanPrincipal("local:operator")
 
 JANUARY = datetime(2026, 1, 5, tzinfo=timezone.utc)
@@ -291,6 +296,62 @@ def test_a_request_naming_another_projects_declaration_is_refused(session, adopt
             requested_at=REQUESTED_AT,
             idempotency_key="prepare:elsewhere",
         )
+
+
+def test_a_member_without_the_coordination_designation_asks_for_nothing(
+    session, adopted
+):
+    """Asking for an issue to be prepared is a designated act (#839).
+
+    Refused where it is proved, on the relation, so a second caller cannot
+    forget the rule and a forged principal string buys nothing: the roster is
+    what the guard reads. The declaration this request names was confirmed by
+    the designated coordinator, which is the point -- the two acts are proved
+    separately, and holding a confirmed reading is not authority to ask.
+    """
+
+    configure(session, adopted)
+    declaration = declared(session, adopted)
+    enroll_member(
+        session,
+        project_id=adopted.project.id,
+        email="reader@example.test",
+        principal=READER,
+        display_name="Reader",
+        designations=[],
+        operator=OPERATOR,
+    )
+
+    with pytest.raises(PreparationRequestRefused) as refused:
+        ask(session, adopted, declaration, requested_by=READER)
+
+    assert "holds no project-coordination designation" in str(refused.value)
+    assert "Nothing was asked for." in str(refused.value)
+    assert _requests(session, adopted) == 0
+    # The same declaration, asked for by the designated coordinator, records
+    # one request: what was refused was who asked.
+    assert ask(session, adopted, declaration).requested_by_principal == (
+        COORDINATOR.subject
+    )
+
+
+def test_a_designation_withdrawn_before_the_request_refuses_it(session, adopted):
+    """The roster is read when the row is appended, not when the page was."""
+
+    configure(session, adopted)
+    declaration = declared(session, adopted)
+    session.execute(
+        ProjectRosterEntry.__table__.update()
+        .where(ProjectRosterEntry.principal_subject == COORDINATOR.subject)
+        .values(can_coordinate=False)
+    )
+    session.expire_all()
+
+    with pytest.raises(
+        PreparationRequestRefused, match="project-coordination designation"
+    ):
+        ask(session, adopted, declaration)
+    assert _requests(session, adopted) == 0
 
 
 def test_a_naive_request_instant_is_refused(session, adopted):
@@ -512,7 +573,12 @@ def test_the_section_shows_the_derived_reading_and_one_action(
 ):
     configure(session, adopted)
 
-    view = issue_view(session, project_id=adopted.project.id, as_of=CUTOFF)
+    view = issue_view(
+        session,
+        project_id=adopted.project.id,
+        as_of=CUTOFF,
+        principal_subject=COORDINATOR.subject,
+    )
     assert view.coverage is not None
     assert view.may_prepare
 
@@ -530,7 +596,12 @@ def test_the_section_says_it_is_preparing_and_offers_nothing(
     configure(session, adopted)
     ask(session, adopted, declared(session, adopted))
 
-    view = issue_view(session, project_id=adopted.project.id, as_of=CUTOFF)
+    view = issue_view(
+        session,
+        project_id=adopted.project.id,
+        as_of=CUTOFF,
+        principal_subject=COORDINATOR.subject,
+    )
     assert view.state == SECTION_PREPARING
     assert view.may_prepare is False
     assert view.may_authorize is False
@@ -562,7 +633,12 @@ def test_the_section_says_it_is_preparing_even_with_a_candidate_on_the_page(
     )
     ask(session, adopted, declared(session, adopted, variant="second"))
 
-    view = issue_view(session, project_id=adopted.project.id, as_of=CUTOFF)
+    view = issue_view(
+        session,
+        project_id=adopted.project.id,
+        as_of=CUTOFF,
+        principal_subject=COORDINATOR.subject,
+    )
 
     assert view.prepared
     assert view.state == SECTION_PREPARING
@@ -600,7 +676,12 @@ def test_the_cutoff_shown_is_the_instant_the_form_submits(
     assert datetime.fromisoformat(submitted["cutoff"]) == CUTOFF
     # The reading the screen printed is the reading the form attests to, so a
     # fingerprint that has moved is refused rather than quietly accepted.
-    view = issue_view(session, project_id=adopted.project.id, as_of=CUTOFF)
+    view = issue_view(
+        session,
+        project_id=adopted.project.id,
+        as_of=CUTOFF,
+        principal_subject=COORDINATOR.subject,
+    )
     assert submitted["derived_reading_digest"] == view.coverage.reading_digest
     assert view.coverage.reading_digest in prose(body)
 
@@ -770,7 +851,12 @@ def test_the_action_appends_two_separately_identified_records(
     session, adopted, client, store
 ):
     configure(session, adopted)
-    view = issue_view(session, project_id=adopted.project.id, as_of=CUTOFF)
+    view = issue_view(
+        session,
+        project_id=adopted.project.id,
+        as_of=CUTOFF,
+        principal_subject=COORDINATOR.subject,
+    )
 
     response = prepare_via_route(client, adopted, view)
 
@@ -797,7 +883,12 @@ def test_the_action_refuses_a_digest_other_than_the_one_displayed(
     session, adopted, client, store
 ):
     configure(session, adopted)
-    view = issue_view(session, project_id=adopted.project.id, as_of=CUTOFF)
+    view = issue_view(
+        session,
+        project_id=adopted.project.id,
+        as_of=CUTOFF,
+        principal_subject=COORDINATOR.subject,
+    )
 
     response = prepare_via_route(
         client, adopted, view, derived_reading_digest="0" * 64
@@ -813,7 +904,12 @@ def test_the_action_refuses_a_profile_version_that_moved(
     session, adopted, client, store
 ):
     configure(session, adopted)
-    view = issue_view(session, project_id=adopted.project.id, as_of=CUTOFF)
+    view = issue_view(
+        session,
+        project_id=adopted.project.id,
+        as_of=CUTOFF,
+        principal_subject=COORDINATOR.subject,
+    )
 
     response = prepare_via_route(client, adopted, view, issue_profile_version=99)
 
@@ -824,7 +920,12 @@ def test_the_action_refuses_a_profile_version_that_moved(
 
 def test_the_action_refuses_a_revision_that_moved(session, adopted, client, store):
     configure(session, adopted)
-    view = issue_view(session, project_id=adopted.project.id, as_of=CUTOFF)
+    view = issue_view(
+        session,
+        project_id=adopted.project.id,
+        as_of=CUTOFF,
+        principal_subject=COORDINATOR.subject,
+    )
 
     response = prepare_via_route(
         client, adopted, view, accepted_revision_id=adopted.revision_id - 1
@@ -842,7 +943,12 @@ def test_the_action_refuses_a_cutoff_that_has_not_arrived(
     session, adopted, client, store
 ):
     configure(session, adopted)
-    view = issue_view(session, project_id=adopted.project.id, as_of=CUTOFF)
+    view = issue_view(
+        session,
+        project_id=adopted.project.id,
+        as_of=CUTOFF,
+        principal_subject=COORDINATOR.subject,
+    )
 
     response = prepare_via_route(
         client,
@@ -860,7 +966,12 @@ def test_a_resubmitted_action_queues_nothing_twice(
     session, adopted, client, store
 ):
     configure(session, adopted)
-    view = issue_view(session, project_id=adopted.project.id, as_of=CUTOFF)
+    view = issue_view(
+        session,
+        project_id=adopted.project.id,
+        as_of=CUTOFF,
+        principal_subject=COORDINATOR.subject,
+    )
 
     assert prepare_via_route(client, adopted, view).status_code == 202
     session.expire_all()

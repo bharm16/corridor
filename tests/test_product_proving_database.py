@@ -258,6 +258,10 @@ def test_public_fingerprint_discovers_all_current_tables_and_sequences_read_only
     # changes neither count.
     # #825 adds what a coordinator declared about one delivery, keyed by its
     # own bigserial: one table, one sequence.
+    # #839 adds the guard that proves the Project Coordination designation when
+    # a coverage confirmation or a preparation request is appended. It is a
+    # function and two triggers over relations that already exist, so it moves
+    # the schema digest and neither count.
     assert fingerprint.table_count == 224
     assert fingerprint.sequence_count == 202
     assert fingerprint.schema_object_count > 0

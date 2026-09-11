@@ -4005,8 +4005,16 @@ def _project_workflow_response(
     )
     # The Issue section (#529, #533). `issue_view` reads #529's own
     # `authorization_blockers` and refuses to offer an approval it named a
-    # reason against; nothing here derives readiness a second time.
-    issue = issue_view(session, project_id=project.id, as_of=now)
+    # reason against; nothing here derives readiness a second time. It is told
+    # who is reading and resolves their standing from the roster itself, so the
+    # sentence the section prints about who may act is that roster's answer and
+    # not a capability this route composed (#839).
+    issue = issue_view(
+        session,
+        project_id=project.id,
+        as_of=now,
+        principal_subject=principal.subject,
+    )
     response = TEMPLATES.TemplateResponse(
         request,
         "project_workflow.html",
@@ -4201,10 +4209,21 @@ def prepare_project_issue(
     while it reads and produces the file. Doing that here would hold a web
     worker for the length of a workbook render and would be ambiguous to retry.
 
-    **No designation check here either.** Preparing a candidate is not
-    releasing one: #533's external-release designation gates the approval and
-    PostgreSQL proves it there. `_project` still runs, because it is the
-    project partition every slug-addressed surface opens.
+    **No designation check here either, and now there is one to skip.** #839
+    settled who may perform this act — Project Coordination confirms coverage
+    and asks for a preparation, External Release authorizes — and put the proof
+    where #533 put its own: in PostgreSQL, as ``enforce_coordination_designation``
+    on the two relations the act appends to. Passing
+    ``designation=access.COORDINATION`` to `_project` would be a second gate
+    over the same roster that a later change could let drift from the one the
+    database reads, and it would answer a member without the designation with a
+    bare 403 rather than the sentence the act gives. `_project` still runs,
+    because it is the project partition every slug-addressed surface opens.
+
+    The section above the form says whether this reader holds the designation,
+    read from that same roster. It hides nothing on the strength of it: a
+    designation withdrawn between the page and the click is refused here, which
+    is the case a reading cannot answer.
     """
 
     project = _project(session, slug, principal)
@@ -4282,10 +4301,13 @@ def prepare_project_issue(
             principal,
             session,
             now=now,
-            prepare_refusal=str(refusal),
+            prepare_refusal=refusal.customer_sentence,
             route_name="prepare_project_issue",
             request_fields=fields,
-            status_code=409,
+            # The kind the refusal declared, never a rule restated here: a
+            # designation refusal answers 403 and a conflict over the reading
+            # answers 409, and this route decides neither (#794 card 22, #839).
+            status_code=refusal_status(refusal),
         )
     return _project_workflow_response(
         request,

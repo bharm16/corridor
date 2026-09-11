@@ -10,13 +10,18 @@
   a Follow-up Plan is printed in the words it recorded, with no control,
   because nothing acts on a spine Follow-up Plan yet (#425).
 
-  The one act this page carries is the Issue section's approval (#533), which
-  is not a decision about the project record and has no other home: #529 and
-  #533 both merged with no route at all. Whether it is offered comes from
-  `corridor.web.issue_section`, which reads #529's own `authorization_blockers`
-  and derives no second opinion; the external-release designation is proved
-  inside PostgreSQL when the approval is submitted, never by a check here that
-  could drift from the roster the command reads.
+  The two acts this page carries are the Issue section's approval (#533) and
+  the confirmation that asks for an issue to be prepared (#675). Neither is a
+  decision about the project record and neither had another home: #529 and
+  #533 both merged with no route at all. Whether the approval is offered comes
+  from `corridor.web.issue_section`, which reads #529's own
+  `authorization_blockers` and derives no second opinion; the external-release
+  designation, and since #839 the project-coordination designation the
+  confirmation needs, are both proved inside PostgreSQL when the form is
+  submitted, never by a check here that could drift from the roster the
+  commands read. What the section does print is which of the two this reader
+  holds, from that same roster, so a person is not left to discover a refusal
+  by pressing something.
 
   The Follow-up section also renders #425's contact-ready follow-up bundles
   (#658). It consumes `read_follow_up_bundles` and restates none of its rules:
@@ -355,13 +360,34 @@
         Python designation check would be a second gate that can drift from the
         roster PostgreSQL reads, and would tell a coordinator a rule the
         database does not enforce. The database refuses, and the refusal is
-        rendered above.
+        rendered above. `issue.approval_capability` above says whether this
+        reader holds the designation, which is a reading of the same roster and
+        changes nothing about what is offered or what decides (#839).
       #}
       <h3>The prepared issue</h3>
       <p>
         {%- if issue.prepared or issue.preparing %}{{ ui.state(issue.state_label) }} {% endif -%}
         {{ issue.summary }}
       </p>
+
+      {#
+        Who may do each of this section's two acts (#839).
+
+        Both sentences are `issue_section`'s, read from the same roster the two
+        commands prove themselves against. They are stated in every state, and
+        before either control, because "may I prepare this?" and "may I approve
+        this?" are questions a person has before they find the button -- and
+        because the answer to the second one is what tells a coordinator whose
+        turn it is next.
+
+        This is a reading and not a gate. Nothing below asks either of these
+        before rendering a control: `issue.may_prepare` and
+        `issue.may_authorize` are unchanged, the database still refuses, and
+        the refusal is still rendered above when it fires.
+      #}
+      {{ ui.fact_list([
+           ("Confirming coverage and preparing", issue.preparation_capability),
+           ("Approving for sharing", issue.approval_capability)]) }}
 
       {#
         While a worker holds the request (#840).
@@ -593,6 +619,13 @@
         section's one act is still the confirmation below it. The cutoff it
         moves to is whatever the next reading is taken at, which is why the
         instant is printed above rather than implied.
+
+        The confirmation is offered to any member who may read this project,
+        for the reason the approval is: since #839 PostgreSQL proves the
+        project-coordination designation when the row is appended, and a
+        control hidden here on a Python reading of that rule would be a second
+        gate. `issue.preparation_capability` above says whether this reader
+        holds it (#839).
       #}
       {%- if issue.may_prepare %}
       <p class="quiet">{{ issue.refresh_rule }}</p>

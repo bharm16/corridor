@@ -88,7 +88,15 @@ EXPECTED_SCHEMA_SHA256 = (
     # immutability guard and partition policy): what a coordinator declared
     # about one delivery, which the processing pass routes on. Recomputed
     # against a fresh disposable database.
-    "c21fb792874dc98aac81e044b52ca5a51ecdf470f423d82191dce86cba2e6a1d"
+    # #839 adds `enforce_coordination_designation` and the two `before insert`
+    # triggers that call it, on `issue_coverage_declarations` and
+    # `release_preparation_requests`: the Project Coordination designation,
+    # proved on the relation the way #533 proves external release inside
+    # `authorize_release_package`. A function and two triggers are schema
+    # objects this fingerprint reads, so the digest moves; no relation or
+    # sequence is added, so both counts are unchanged. Recomputed against a
+    # fresh disposable database.
+    "53a00548e6e1103b6dad8a5fd71fe26f2f89a33d5902125e81d0c76a16db7dac"
 )
 
 pytestmark = [pytest.mark.slow, pytest.mark.migration]

@@ -69,6 +69,7 @@ from corridor.issue_profile import effective_issue_inventory
 from corridor.models import (
     IssueCoverageDeclaration,
     Project,
+    ProjectRosterEntry,
     ReleaseCandidate,
     ReleaseCandidateArtifact,
     ReleasePackage,
@@ -91,7 +92,13 @@ from corridor.web.app import (
     get_review_clock,
     get_session,
 )
-from corridor.web.issue_section import PREPARE_ACTION, issue_view
+from corridor.web.issue_section import (
+    MAY_NOT_APPROVE,
+    MAY_NOT_PREPARE,
+    MAY_PREPARE,
+    PREPARE_ACTION,
+    issue_view,
+)
 
 from browser_session_support import form_fields, sign_in, submit_form
 from later_revision_support import BASELINE_ROWS, adopt, workbook_bytes
@@ -455,7 +462,12 @@ def test_no_candidate_becomes_an_authorized_issue_without_leaving_the_week(
     #    names the candidate the runtime just made.
     body = week(client, adopted)
     readable = prose(body)
-    assert "Ready for your approval" in readable
+    # Read by the coordinator, who holds no external-release designation, so
+    # the state is named for the person whose act it actually is (#839). Step 6
+    # is why: the coordinator who asked for this candidate may not send it, and
+    # "Ready for your approval" told them otherwise.
+    assert "Ready for approval by the designated releaser" in readable
+    assert MAY_NOT_APPROVE in readable
     assert "the customer's updated UCM workbook" in readable
     assert "the weekly Coordination Report" in readable
     approval = form_fields(body, "/issue/authorize")
@@ -549,7 +561,12 @@ def test_a_stale_candidate_stays_visible_and_is_replaced_rather_than_approved(
     body = week(client, adopted)
     readable = prose(body)
     with factory() as reading:
-        view = issue_view(reading, project_id=adopted.project_id, as_of=NOW)
+        view = issue_view(
+            reading,
+            project_id=adopted.project_id,
+            as_of=NOW,
+            principal_subject=COORDINATOR.subject,
+        )
         candidate = reading.get_one(ReleaseCandidate, stale_candidate_id)
         old_coverage_identity = candidate.coverage_identity
     assert view.stale_reasons
@@ -825,3 +842,85 @@ def test_a_signed_in_browser_can_prepare_and_approve_and_a_forgery_cannot(
             )
         ).one()
         assert package.authorized_by_principal == RELEASER.subject
+
+
+def test_a_designation_withdrawn_while_the_page_is_open_refuses_the_submission(
+    factory, adopted, browser, store
+):
+    """The revocation race, walked end to end (#839).
+
+    A coordinator opens their week while the roster designates them, the
+    designation is withdrawn in a committed transaction of its own while that
+    page sits in their browser, and then they submit the form the page gave
+    them -- carrying its own request-forgery token and every hidden field the
+    screen emitted. Nothing about the submission is stale except the authority
+    behind it, which is exactly the case a capability printed on a page cannot
+    answer and the reason the rule lives on the relation.
+
+    The page read is what makes this a race rather than a permission test: the
+    section had already told this person they could prepare, and it was true
+    when it said so.
+    """
+
+    enable_runtime(factory, adopted)
+    take_weekly_reading(factory)
+    prepare_url = f"/work/{adopted.slug}/issue/prepare"
+
+    # 1. The page, read while the roster still designates them, says the act
+    #    is theirs and hands them a submittable form.
+    coordinator = browser("coordinator@example.test")
+    page = prose(week(coordinator, adopted))
+    assert MAY_PREPARE in page
+    confirmation = form_fields(page, "/issue/prepare")
+    assert confirmation is not None and confirmation.get(auth.CSRF_FIELD)
+
+    # 2. The designation is withdrawn, committed, while that page is open.
+    with factory() as roster:
+        roster.execute(
+            ProjectRosterEntry.__table__.update()
+            .where(
+                ProjectRosterEntry.project_id == adopted.project_id,
+                ProjectRosterEntry.principal_subject == COORDINATOR.subject,
+            )
+            .values(can_coordinate=False)
+        )
+        roster.commit()
+
+    # 3. The submission the page itself composed is refused, and it is refused
+    #    for the designation rather than for anything about its contents.
+    refused = submit_form(coordinator, prepare_url, confirmation)
+    # 403 and not 409: the refusal declares its own kind, and a designation
+    # refusal is not a conflict over what was submitted. The route reads the
+    # kind rather than the sentence (#794 card 22).
+    assert refused.status_code == 403, refused.text
+    answer = prose(refused.text)
+    assert "This issue was not prepared, and nothing was recorded" in answer
+    assert "holds no project-coordination designation" in answer
+    assert "Nothing was confirmed." in answer
+
+    # 4. Nothing was written by either half of the act, and the same page now
+    #    says the act is no longer theirs.
+    assert _count(factory, IssueCoverageDeclaration, adopted) == 0
+    assert _count(factory, ReleasePreparationRequest, adopted) == 0
+    with factory() as reading:
+        assert not preparation_standing(
+            reading, project_id=adopted.project_id
+        ).in_flight
+    assert MAY_NOT_PREPARE in prose(week(coordinator, adopted))
+
+    # 5. Restored, the identical payload is accepted: what the database
+    #    refused was the authority and nothing about the submission.
+    with factory() as roster:
+        roster.execute(
+            ProjectRosterEntry.__table__.update()
+            .where(
+                ProjectRosterEntry.project_id == adopted.project_id,
+                ProjectRosterEntry.principal_subject == COORDINATOR.subject,
+            )
+            .values(can_coordinate=True)
+        )
+        roster.commit()
+    accepted = submit_form(coordinator, prepare_url, confirmation)
+    assert accepted.status_code == 202, accepted.text
+    assert _count(factory, IssueCoverageDeclaration, adopted) == 1
+    assert _count(factory, ReleasePreparationRequest, adopted) == 1
