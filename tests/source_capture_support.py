@@ -7,12 +7,15 @@ those modules were outside of -- "an ORM write to any of those tables, from any
 module, is refused by the database" -- but that revocation sits on the
 capability logins, and the harness ``session`` binds the schema owner
 (``tests/conftest.py``), which is not revoked.  So none of those writes reached
-``append_source_segments`` or ``append_fact``, and every argument check the two
-commands perform was absent from the fixture: a fixture could store a digest
-that did not match its own exact text, bind a Fact to a segment in another
-project, rebind one workbook cell to different content, or write a value its
-own declared transformation could not produce.  Nineteen files retyped
-``trim_cell_text_v1`` twenty-eight times to do it.
+``append_source_segments`` or ``append_fact``.  The commands' scope checks on
+typed references are also foreign keys, so those the fixture kept; what it lost
+were the three the tables cannot state.  A fixture could store a cell digest
+that was not the digest of its own exact text, and cite that cell from a Fact;
+it could write a value its own declared transformation could not produce, which
+is the misread class #446 closed; and it could not replay at all, because a
+second write of one cell is a unique-constraint violation rather than the row
+already there.  Nineteen files retyped ``trim_cell_text_v1`` twenty-eight times
+to do it.
 
 This module captures through those two commands instead, as the capability
 login the extractor runs as, so a fixture cannot build a shape the product

@@ -6,10 +6,12 @@ hand-built triple skipped.  Each refusal below is paired, in the same test,
 with the ORM write the fifteen modules used to perform: the contrast is the
 argument, not the refusal on its own.
 
-Three of the command's checks turn out to be enforced twice — a typed
-reference outside its project is a foreign key as well as a command check, so
-that family was never the gap.  The gap is the digest of the exact text, the
-value's reproduction from the cell, and idempotent replay.
+Every scope check these commands make turns out to be enforced twice: a
+document, run, or segment outside its project is a foreign key as well as a
+command check, and a Fact with no digest is a not-null constraint.  That family
+was never the gap.  The gap is the digest of the exact text, the value's
+reproduction from the cell, and idempotent replay — and one test below states
+the doubly-enforced case explicitly so the distinction is not lost again.
 """
 
 from __future__ import annotations
