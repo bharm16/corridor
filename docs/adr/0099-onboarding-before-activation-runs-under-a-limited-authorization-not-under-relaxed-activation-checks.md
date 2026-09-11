@@ -5,7 +5,7 @@ scope: current product
 amends:
   - ADR-0079
   - ADR-0083
-migration: the limited onboarding authorization, its control-plane record, the retained proof that it was valid when an onboarding act committed, and the granted adoption command do not exist; #827 builds them and specifies how a withdrawn or stale authorization is observed, and until it does no production caller of the adoption or preview functions exists in `src/`, `workers/` or `scripts/`.
+migration: the limited onboarding authorization, its control-plane record, the retained proof that it was valid when an onboarding act committed, the atomic consumption of its adoption permission, its withdrawal record, and the granted adoption command do not exist; #827 builds them, states the withdrawal mechanism and the maximum stale-validity window before customer deployment, and gives the step after adoption its own bounded setup permission, and until it does no production caller of the adoption or preview functions exists in `src/`, `workers/` or `scripts/`.
 ---
 
 # Onboarding before activation runs under a limited authorization, not under relaxed activation checks
@@ -109,11 +109,31 @@ An authorization is not a standing capability of a role or a deployment; it
 names one project in one customer environment, the material it covers, and the
 operations it permits over that material.
 
+### What "authorization evidence" means
+
+Authorization evidence is two recorded things, not one:
+
+- the **stable identity and version** of the governing customer-authorization
+  record, such as the applicable #522 authorization;
+- the **identity and digest of the retained evidence** that supports it.
+
+Both are required, because either alone loses something the operator needs. A
+URL alone can change after it is recorded. A digest alone cannot tell the
+operator what permission was granted or where its evidence resides.
+
+The evidence is not redefined here as "one PDF". Use the authoritative
+evidence format the customer-authorization process already supports. The
+control plane keeps references and digests; **it need not duplicate the signed
+document or the customer's source material** — the same split the previous
+section draws.
+
 ### The source scope binds in two stages
 
-The authorization cannot bind exact source bytes before those bytes exist in
-Corridor, because a person cannot upload until the unknown file's digest has
-already been authorized. The binding happens in two stages:
+The authorization cannot bind exact source bytes that **Corridor has not yet
+received and verified**. A sender may well know a file's digest beforehand, so
+the obstacle is not that prior hashing is impossible; it is that binding one
+would put a fresh issuance round with the operations actor in front of every
+upload. The two stages exist to support the ordinary workflow safely:
 
 1. A recorded customer/project/source-scope authorization permits **bounded
    receipt and safe staging**.
@@ -193,6 +213,41 @@ establishes a baseline and the runtime that processes shadow sources are two
 credentials and two acts, and the existence of the onboarding authorization
 does not merge them.
 
+### What consumes it
+
+**Preparatory operations do not consume the authorization. The successful
+adoption consumes its adoption permission atomically.**
+
+| Operation | Consumes adoption permission? |
+|---|---|
+| Bounded receipt and staging | No |
+| Compatibility inspection | No |
+| Preparing or correcting a mapping | No |
+| Reading or regenerating a preview | No |
+| Answering a material baseline question | No |
+| Failed or rolled-back adoption | No |
+| **Successful adoption commit** | **Yes** |
+| Exact retry of the completed adoption | Returns the existing result; no second adoption |
+
+Consumption can be derived from the retained adoption receipt; **a second
+mutable flag saying "consumed" is not necessarily required**.
+
+The adoption result and its consumption are committed **atomically, in the
+authoritative customer-side transaction**. A concurrent second attempt must
+not create another baseline or consume the permission twice.
+
+The control plane may receive a completion acknowledgement afterwards. If that
+acknowledgement is delayed or lost, **the local committed result must still
+prevent another adoption.** A distributed transaction is not required merely
+to report completion.
+
+Consumption ends permission for **new adoption writes**. It does not erase the
+result, and it does not prohibit an otherwise authorized coordinator from
+viewing the completed onboarding status. An exact retry after expiry or
+consumption may return the existing receipt once the current read-access
+checks pass: that is retrieval of a prior result, not the exercise of expired
+authority.
+
 ### Expiry, withdrawal, and what activation asks for
 
 The onboarding authorization is temporary; the record it helps establish is
@@ -212,6 +267,20 @@ afterwards:
 customer-side authorization becomes stale or revoked, and fail closed when its
 validity cannot be established.
 
+**Who may withdraw it.** An authorized operations or security actor may
+execute a withdrawal. A verified customer representative authorized to control
+the processing permission may require one. **Ordinary project membership alone
+confers neither the ability to extend the permission nor the right to act as
+the customer's authorizing representative** — the asymmetry that keeps a
+coordinator from self-authorizing holds at the other end too. Withdrawal must
+not depend on the individual who originally issued the authorization still
+being available.
+
+**What a withdrawal records.** Who requested it, who executed it, the reason,
+and its effective and enforcement state — which are two different facts. **A
+customer's request must not be described as fully enforced while the customer
+database can still exercise the grant.**
+
 What this ADR does not claim is immediate cross-database revocation. The
 authorization is authoritative in the control plane and enforced in the
 customer database, and nothing here implements the propagation or the
@@ -221,7 +290,10 @@ actually give: an onboarding act commits only while a validity the customer
 environment can establish still holds, and it refuses when that validity cannot
 be established. How promptly a withdrawal reaches that check, and by what
 propagation or verification, is #827's to specify and to state plainly rather
-than to assume.
+than to assume — and it must state both the mechanism and **the maximum
+stale-validity window, before customer deployment**. "Validity could not be
+established, so refuse" is a sound answer; "a stale local copy proves validity
+indefinitely" is not.
 
 **Withdrawal does not erase previously recorded adoption.** Any later
 correction follows an explicit supported act.
@@ -249,11 +321,14 @@ at all is recorded elsewhere, by someone else, and is what onboarding actually
 needs.
 
 **Bind the exact source bytes in the authorization before they are received.**
-Rejected as circular. An authorization that named the digest of the file a
-person is about to upload could never be issued: the digest does not exist
-until the upload does. The two-stage binding above keeps the property that made
-the byte-exact version attractive — nothing is processed under a permission
-that did not name it — without requiring the impossible order.
+Rejected as impractical, not as impossible. A sender can hash a file before
+sending it, so a digest named in advance is not a contradiction; what it
+demands is a fresh issuance round with the operations actor before every
+upload, naming bytes **Corridor has not yet received and verified**. That is
+not a workflow a coordinator can work in. The two-stage binding above keeps
+the property that made the byte-exact version attractive — nothing is
+processed under a permission that did not name it — without putting an
+issuance round in front of every file.
 
 **Require a current, unexpired onboarding authorization receipt at
 activation.** Rejected. The onboarding authorization is deliberately temporary,
@@ -296,8 +371,19 @@ own authenticated session.
 - #827 implements the control-plane authorization record, its issuance and
   withdrawal by the restricted operations actor, the retained proof of
   validity, the granted adoption command, and the route that reaches it, and it
-  specifies how a customer-side authorization becomes stale or revoked. Nothing
-  ships in this ADR.
+  specifies how a customer-side authorization becomes stale or revoked.
+  Nothing ships in this ADR.
+- #827 states the withdrawal mechanism **and the maximum stale-validity
+  window, before customer deployment**, and records who requested a
+  withdrawal, who executed it, the reason, and its effective and enforcement
+  state.
+- **#827 tests the step after adoption, not adoption alone.** The journey the
+  audit requires goes "coordinator resolves material questions and adopts →
+  confirm the issue configuration", and if approving that initial issue
+  configuration (#828, `src/corridor/issue_profile_approval.py`) must happen
+  before full activation, it gets its own explicit, bounded setup permission.
+  **Consuming the adoption permission must not strand the person between
+  "baseline adopted" and "project ready for activation."**
 - #509's adoption importer, #520's one-way operating-mode transition, and
   #492's command-authority rules are unchanged. This decision adds the
   authority under which #509's command can be reached from a coordinator's
@@ -305,9 +391,11 @@ own authenticated session.
 - What remains unresolved: the strength of revocation. How promptly a
   withdrawal recorded in the control plane must be observed by the customer
   database, and by what propagation or verification, is #827's to decide and
-  to state; this ADR requires only that a write fail closed when validity
-  cannot be established, and forbids claiming more than is built. Whether
-  "limited onboarding authorization" becomes a customer-visible label, rather
-  than the internal technical name it is here, is also undecided and would need
-  the terminology procedure in
+  to state before customer deployment; this ADR requires only that a write
+  fail closed when validity cannot be established, that the stale-validity
+  window be a stated maximum rather than an unexamined consequence of
+  whatever propagation gets built, and that nothing claim more than is built.
+  Whether "limited onboarding authorization" becomes a customer-visible label,
+  rather than the internal technical name it is here, is also undecided and
+  would need the terminology procedure in
   [the domain guide](../agents/domain.md#research-before-proposing-terminology).
