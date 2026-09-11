@@ -174,7 +174,9 @@ def test_the_register_shows_a_refused_delivery_and_the_owner_of_it(
     assert register.status_code == 200
     assert "hostile.pdf" in register.text
     assert "Refused at intake and not processed" in register.text
-    assert "The project team" in register.text
+    # The Issue section's own owner words, so the two screens agree about who
+    # puts a mechanical failure right (#840).
+    assert "You, on this page" in register.text
 
 
 def test_the_register_filters_and_pages_over_the_deliveries_it_holds(

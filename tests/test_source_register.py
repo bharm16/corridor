@@ -41,8 +41,9 @@ from corridor.source_intake import (
 from corridor.source_register import (
     AWAITING_CONFIRMATION,
     DELIVERY_INCOMPLETE,
-    OWNER_PROJECT_TEAM,
-    OWNER_TECHNICAL_OPERATIONS,
+    NOT_EXTRACTED,
+    OWNER_CORRIDOR_OPERATIONS,
+    OWNER_YOU,
     REFUSED_AT_INTAKE,
     RegisterFilters,
     read_source_register,
@@ -229,6 +230,36 @@ def test_the_processing_state_of_each_source_is_derived_from_its_own_receipts(
     assert by_document[held.document_id].state == "held_unmodeled"
 
 
+def test_a_source_no_extractor_reads_says_so_rather_than_waiting_forever(
+    session, project, store
+):
+    """The defect the ticket names `excluded`.
+
+    A `plan` PDF is registered, parsed and correct, and the standing pass will
+    never hand it to an extractor. Reading its state from the runs alone left
+    it at "waiting for the processing pass" for the life of the project, which
+    is a sentence the record never supported.
+    """
+
+    _, plan = _upload_and_confirm(session, project, marker="Plan", doc_type="plan")
+    _, matrix = _upload_and_confirm(session, project, marker="Matrix")
+    session.flush()
+
+    rows, register = _rows(session, project)
+    by_document = {row.document_id: row for row in rows.values()}
+
+    assert by_document[plan.document_id].state == NOT_EXTRACTED
+    assert by_document[plan.document_id].state_words == (
+        "Registered — no extractor reads this kind of document"
+    )
+    # Nothing is wrong and nobody has to act, so the row names nobody.
+    assert by_document[plan.document_id].is_blocked is False
+    assert by_document[plan.document_id].tone == "neutral"
+    # The document a pass would take still reads as waiting for it.
+    assert by_document[matrix.document_id].state == "pending"
+    assert NOT_EXTRACTED in dict(register.states)
+
+
 def test_processed_never_reads_as_nothing_else_needing_attention(
     session, project, store
 ):
@@ -306,9 +337,9 @@ def test_a_blocked_row_names_one_owner_and_the_next_action(
         row for row in rows.values() if row.state == "held_unmodeled"
     )
 
-    assert waiting.owner == OWNER_PROJECT_TEAM
-    assert "Confirm it for processing" in waiting.next_action
-    assert quarantined.owner == OWNER_TECHNICAL_OPERATIONS
+    assert waiting.owner == OWNER_YOU
+    assert "confirm it there" in waiting.next_action
+    assert quarantined.owner == OWNER_CORRIDOR_OPERATIONS
     assert "models the relationship" in quarantined.next_action
     assert "work sequencing is not modeled" in quarantined.recorded_reason
     # A row nobody is waiting on names nobody.

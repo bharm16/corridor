@@ -491,8 +491,12 @@ PILOT_ROUTES: dict[tuple[str, str], PilotRoute] = {
             "counted from the Source Facts and the Proposed Deltas its "
             "document's delta groups carry, with the open ones read through "
             "the same supersession and disposition partition the Review "
-            "screen reads. It no longer reads `audit_log`: the confirmation "
-            "it used to scope itself by is now the delivery's own"
+            "screen reads. A parsed source with no run is only *waiting* for "
+            "a pass that would take it, so `extractable_document` is asked of "
+            "the document, and the operating mode it consults for a minutes "
+            "source is why `project_baseline_adoptions` is read. It no longer "
+            "reads `audit_log`: the confirmation it used to scope itself by "
+            "is now the delivery's own"
         ),
         relations=frozenset(
             {
@@ -503,6 +507,7 @@ PILOT_ROUTES: dict[tuple[str, str], PilotRoute] = {
                 "documents",
                 "extraction_runs",
                 "facts",
+                "project_baseline_adoptions",
                 "project_roster_entries",
                 "projects",
                 "proposed_deltas",

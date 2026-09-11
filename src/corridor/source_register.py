@@ -35,14 +35,27 @@ decision.  So the state a row carries is the processing state *and* what is
 still open: a processed row with open questions reads as needing attention and
 says how many.
 
-**What is blocked names one owner.**  A file Corridor could not read, could not
-store, or deliberately does not read is a mechanical problem, and a coordinator
-cannot decide their way out of one — the same rule ``project_workflow`` applies
-when it keeps source failures in issue readiness rather than in review.  The
-two owners are the two that exist: the project team, where supplying a
-different file or confirming a staged one is the next act, and Technical
-Operations, where it is not.  A row that is not blocked names nobody, because
-inventing an owner for work nobody has to do is how a register becomes a queue.
+**What is blocked names one owner, and it is the Issue section's own.**  A file
+Corridor could not read, could not store, or deliberately does not read is a
+mechanical problem, and a coordinator cannot decide their way out of one — the
+same rule ``project_workflow`` applies when it keeps source failures in issue
+readiness rather than in review.  So the owners are that module's two, imported
+rather than spelled again: a coordinator moves between the Issue section and
+this page, and two screens disagreeing about who owns a mechanical failure is
+worse than either answer alone (#840).  Neither is a designation claim — naming
+one would assert an authority rule the write path does not enforce (#839).  A
+row that is not blocked names nobody, because inventing an owner for work
+nobody has to do is how a register becomes a queue.
+
+**A source no extractor reads says so, instead of waiting forever.**  Only some
+declared kinds are ever handed to an extractor, and a ``plan`` PDF or an
+undeclared source registered as ``other`` is never one of them — which used to
+leave it at "waiting for the processing pass", a pass that was never going to
+take it.  ``extraction_run_queries.extractable_document`` is the one predicate
+that answers this, and it moved there from ``extract_project`` so that a reader
+can ask the question without importing the engines that act on it.  This is not
+a blocked row: nothing is lost and nobody has to do anything, and the register
+says exactly that.
 
 **No clock.**  Every ordering and every filter is read from the rows' own
 recorded times and from the caller's declared bounds, so two readings of the
@@ -67,6 +80,8 @@ from corridor.models import (
     SourceDelivery,
     SourceDeliveryConfirmation,
 )
+from corridor.extraction_run_queries import extractable_document
+from corridor.project_workflow import COORDINATOR_OWNER, OPERATIONS_OWNER
 from corridor.review_packet_reading import current_deltas, open_deltas
 from corridor.source_delivery import (
     DISPOSITION_DUPLICATE,
@@ -84,11 +99,14 @@ from corridor.source_delivery import (
 # shown, exactly as the Record view's audit trail does (#830).
 PAGE_LIMIT = 50
 
-# The two owners a blocked row can name, and the only two that exist. The
-# designations are `corridor.access`'s; the words are the ones the journey
-# matrix and `source_passage.html` already print.
-OWNER_PROJECT_TEAM = "The project team"
-OWNER_TECHNICAL_OPERATIONS = "Technical Operations"
+# The two owners a blocked row can name, which are the Issue section's two
+# (#840), imported so that the two screens cannot drift apart. `Corridor
+# Operations` is the bounded context `CONTEXT-MAP.md` names; `You, on this
+# page` is the person reading, and it is true here because the one act this
+# page offers -- uploading a document -- is where both coordinator-owned
+# recoveries start.
+OWNER_CORRIDOR_OPERATIONS = OPERATIONS_OWNER
+OWNER_YOU = COORDINATOR_OWNER
 
 
 @dataclass(frozen=True, slots=True)
@@ -395,6 +413,11 @@ ALREADY_RECEIVED = "already_received"
 AWAITING_CONFIRMATION = "awaiting_confirmation"
 NOT_REGISTERED = "not_registered"
 CONFIRMED_NOT_REGISTERED = "confirmed_not_registered"
+# A registered source no extractor reads. Deliberately not called "excluded":
+# `issue_coverage` already spends that word on a coordinator's declaration that
+# one source is left out of one issue, which is a human act at a cutoff rather
+# than a fact about the kind of document this is.
+NOT_EXTRACTED = "not_extracted"
 
 STATE_WORDS: Mapping[str, str] = {
     REFUSED_AT_INTAKE: "Refused at intake and not processed",
@@ -414,6 +437,7 @@ STATE_WORDS: Mapping[str, str] = {
     "parse_failed": "Failed to parse — the file could not be read",
     "processing_failed": "Processing failed — a later pass will retry",
     "held_unmodeled": "Held — its content is deliberately not read",
+    NOT_EXTRACTED: "Registered — no extractor reads this kind of document",
 }
 
 # The order the filter offers them in: what arrived, then what is waiting, then
@@ -424,6 +448,7 @@ STATE_ORDER: tuple[str, ...] = (
     "pending",
     "processed",
     ALREADY_RECEIVED,
+    NOT_EXTRACTED,
     "held_unmodeled",
     HELD_AT_INTAKE,
     REFUSED_AT_INTAKE,
@@ -449,51 +474,65 @@ _TONES: Mapping[str, str] = {
     "parse_failed": "refused",
     "processing_failed": "attention",
     "held_unmodeled": "neutral",
+    NOT_EXTRACTED: "neutral",
 }
 
-_ASK_TECHNICAL_OPERATIONS = (
-    "Ask technical operations to look at this attempt; a coordinator cannot "
-    "retry a run or change an extraction policy."
+# What each owner actually does about each blocked row, in the Issue section's
+# own voice: who acts, and then the sentence that says this page does not. A
+# coordinator reading both screens should not have to work out that "a source
+# that could not be read" means the same thing on each of them, so the two
+# read-failure sentences are #840's, for the condition #840 names.
+_OPERATIONS_READS_IT_AGAIN = (
+    "Corridor Operations reads this source again, or asks for a copy it can "
+    "read. Nothing on this page retries it."
 )
 
 _NEXT_ACTIONS: Mapping[str, tuple[str, str]] = {
     REFUSED_AT_INTAKE: (
-        OWNER_PROJECT_TEAM,
-        "Supply a file the stated limits admit. Nothing was registered, so "
+        OWNER_YOU,
+        "Upload a file the stated limits admit. Nothing was registered, so "
         "there is nothing to undo.",
     ),
     DELIVERY_INCOMPLETE: (
-        OWNER_TECHNICAL_OPERATIONS,
-        "Ask technical operations to take this delivery again. Nothing was "
-        "refused about the file itself.",
+        OWNER_CORRIDOR_OPERATIONS,
+        "Corridor Operations takes this delivery again. Nothing was refused "
+        "about the file itself, and nothing on this page retries it.",
     ),
     HELD_AT_INTAKE: (
-        OWNER_TECHNICAL_OPERATIONS,
-        "Ask technical operations what the intake policy did with these "
-        "bytes; nothing a coordinator does here releases them.",
+        OWNER_CORRIDOR_OPERATIONS,
+        "Corridor Operations says what the intake policy did with these "
+        "bytes. Nothing on this page releases them.",
     ),
     AWAITING_CONFIRMATION: (
-        OWNER_PROJECT_TEAM,
-        "Confirm it for processing on the upload screen. Nothing is read "
-        "until somebody does.",
+        OWNER_YOU,
+        "Upload it again to reach its preview, and confirm it there. The "
+        "delivery is already recorded, so uploading it again registers "
+        "nothing new; nothing is read until somebody confirms it.",
     ),
     NOT_REGISTERED: (
-        OWNER_TECHNICAL_OPERATIONS,
-        "Ask technical operations why this delivery registered no source.",
+        OWNER_CORRIDOR_OPERATIONS,
+        "Corridor Operations says why this delivery registered no source. "
+        "Nothing on this page registers it.",
     ),
     CONFIRMED_NOT_REGISTERED: (
-        OWNER_TECHNICAL_OPERATIONS,
-        "Ask technical operations why this delivery registered no source.",
+        OWNER_CORRIDOR_OPERATIONS,
+        "Corridor Operations says why this delivery registered no source. "
+        "Nothing on this page registers it.",
     ),
-    "parse_failed": (OWNER_TECHNICAL_OPERATIONS, _ASK_TECHNICAL_OPERATIONS),
-    "unreadable": (OWNER_TECHNICAL_OPERATIONS, _ASK_TECHNICAL_OPERATIONS),
+    "parse_failed": (OWNER_CORRIDOR_OPERATIONS, _OPERATIONS_READS_IT_AGAIN),
+    "unreadable": (
+        OWNER_CORRIDOR_OPERATIONS,
+        "Corridor Operations reads this source again, or changes how it is "
+        "read. Nothing on this page retries a run or changes an extraction "
+        "policy.",
+    ),
     "processing_failed": (
-        OWNER_TECHNICAL_OPERATIONS,
-        "Technical operations owns the retry; nothing a coordinator supplies "
-        "here changes it.",
+        OWNER_CORRIDOR_OPERATIONS,
+        "A later pass retries this. Corridor Operations owns that retry, and "
+        "nothing on this page changes it.",
     ),
     "held_unmodeled": (
-        OWNER_TECHNICAL_OPERATIONS,
+        OWNER_CORRIDOR_OPERATIONS,
         "Corridor does not model what this document asserts, so it is "
         "registered and deliberately unread. That changes when Corridor "
         "models the relationship, not when the file is supplied again.",
@@ -632,7 +671,10 @@ def _document_state(document: Document, context: _DocumentContext) -> str:
         return "held_unmodeled"
     run = context.runs.get(int(document.id))
     if run is None:
-        return "pending"
+        # "Waiting for the processing pass" is only true of a document a pass
+        # would take. Asked of the document rather than of the run, because a
+        # source no extractor reads never produces a receipt to read this from.
+        return "pending" if extractable_document(document) else NOT_EXTRACTED
     if run.outcome == "completed":
         return "processed"
     if run.outcome in ("unreadable", "no_matrix"):
