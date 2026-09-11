@@ -12,6 +12,7 @@ amends:
 amended_by:
   - ADR-0084
   - ADR-0089
+  - ADR-0099
 migration: SourceEnvelope, PullConnector, and PushIntake exist (#496, #511), and both transports now persist one delivery family (#599); run-kind provenance, customer-environment disposition, and historical backfill do not exist.
 ---
 
