@@ -1,0 +1,70 @@
+{
+  "rule": "prompts/ holds exactly the prompt files a live loader in src/ names. A superseded prompt file is never edited and never deleted: it is moved here, and listed below with the reason its bytes are still the preimage of something. tests/test_architecture.py enforces both halves, so a file in neither state fails make check rather than sitting unexplained.",
+  "why_not_deleted": "Every ExtractionRun row records prompt_version and prompt_sha256 (src/corridor/storage_baseline.py). Those rows live in databases this repository cannot read, so a released run may name a prompt whose only preimage is the file it was read from. minutes_v3.md shows the case is real and not hypothetical, and matrix_tiered_v2/v3 show what is lost without this rule: the same retained receipt names them, no file in the repository has their bytes, and that prompt is now unrecoverable.",
+  "basis_values": {
+    "receipt": "a retained artifact in this repository names this prompt version",
+    "stored-run-digest": "no artifact in this repository names it; retained because a stored ExtractionRun outside the repository still may"
+  },
+  "retained": {
+    "agreement_v1.md": {
+      "prompt_version": "agreement_v1",
+      "sha256": "9116c11125d7fb9f6514a188204a2fecd75e9af61cec57a52c57c656c9982ba2",
+      "superseded_by": "agreement_v3.md",
+      "basis": "stored-run-digest",
+      "preimage_of": []
+    },
+    "agreement_v2.md": {
+      "prompt_version": "agreement_v2",
+      "sha256": "1cf88c319c91f6d7e1f8e7e4ad36efeb4046f046bd7b4f3276163f3c2e33a649",
+      "superseded_by": "agreement_v3.md",
+      "basis": "stored-run-digest",
+      "preimage_of": []
+    },
+    "briefing_v1.md": {
+      "prompt_version": "briefing_v1",
+      "sha256": "eb18cd97cc97b4e8c886ea224df89113f1c38452ba802fdca439f7dbb80a3eaf",
+      "superseded_by": "briefing_v2.md",
+      "basis": "stored-run-digest",
+      "preimage_of": []
+    },
+    "evidence_investigator_v1.md": {
+      "prompt_version": "evidence_investigator_v1",
+      "sha256": "20c7eed23a7f0dc489ad278080560a4a8fc90fc501374e9f03250023e790ef1e",
+      "superseded_by": "evidence_investigator_v2.md",
+      "basis": "stored-run-digest",
+      "preimage_of": []
+    },
+    "minutes_v1.md": {
+      "prompt_version": "minutes_v1",
+      "sha256": "56c4a929d689968fe0176187e7617eb0792f2ae7f082117f9961a0dd9a1c4da2",
+      "superseded_by": "minutes_v5.md",
+      "basis": "stored-run-digest",
+      "preimage_of": []
+    },
+    "minutes_v2.md": {
+      "prompt_version": "minutes_v2",
+      "sha256": "721d952d27a9b9f03c5ef111b31be71dcba754bbb4d106b3a9f806b8678b5697",
+      "superseded_by": "minutes_v5.md",
+      "basis": "stored-run-digest",
+      "preimage_of": []
+    },
+    "minutes_v3.md": {
+      "prompt_version": "minutes_v3",
+      "sha256": "be55e1ca9c790594b5f321121d7327dffbd32a4bf920880a663992c23b5e4d1d",
+      "superseded_by": "minutes_v5.md",
+      "basis": "receipt",
+      "preimage_of": [
+        "artifacts/product-proving/sh99-8da8568-extraction-repeatability-failed/receipt.json",
+        "artifacts/product-proving/sh99-8da8568-extraction-repeatability-failed/canonical-content.json"
+      ],
+      "note": "extraction_run_receipts[1] of that receipt is an exported ExtractionRun (run_id 206507) recording prompt_version minutes_v3 and no prompt_sha256, so these bytes are the only preimage of the prompt that run read."
+    },
+    "minutes_v4.md": {
+      "prompt_version": "minutes_v4",
+      "sha256": "b8c78e62f53e42afaced608412df36a2334498b12af2fb46b0bf7d74af286425",
+      "superseded_by": "minutes_v5.md",
+      "basis": "stored-run-digest",
+      "preimage_of": []
+    }
+  }
+}

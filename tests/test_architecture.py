@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import importlib.util
+import json
 import re
 import sys
 from collections import defaultdict
@@ -1690,6 +1692,130 @@ def test_released_policy_sources_are_outside_executable_migration_history():
         "the family package belongs beside the executable version location, "
         "never inside it"
     )
+
+
+# --- Prompt files: loaded, or retained with the reason they are kept ---------
+#
+# `prompts/` is executable. `scripts/classify_ci_change.py` deliberately keeps
+# it out of `DOCUMENTATION_PATHS`, so every file in it runs the behavior
+# shards. Eight of its nineteen files ran them while no loader named them, no
+# artifact held their digest and no test opened them.
+#
+# A superseded prompt can still be worth keeping, and that reason was written
+# nowhere: an `ExtractionRun` row stores `prompt_version` and `prompt_sha256`
+# (`storage_baseline.py`), so a released run's prompt may have no preimage but
+# the file it was read from. It is not hypothetical. The retained receipt under
+# `artifacts/product-proving/sh99-8da8568-extraction-repeatability-failed`
+# exports a run recording `prompt_version: minutes_v3` and no digest, and the
+# same receipt names `matrix_tiered_v2` and `matrix_tiered_v3`, whose bytes are
+# in no file here at all. Those two prompts are already unrecoverable.
+#
+# So the retained-revision answer above applies unchanged: one executable
+# directory holding exactly what the code loads, one inert directory holding
+# the retained bytes, and a registry saying what each retained file is the
+# preimage of. `corridor_pdf_reader` keeps its own prompt beside its module;
+# only the top-level directory is this rule's subject.
+
+PROMPT_ROOT = REPO_ROOT / "prompts"
+RETAINED_PROMPTS = REPO_ROOT / "docs" / "history" / "prompts"
+PROMPT_REGISTRY = RETAINED_PROMPTS / "retained.json"
+
+
+def _source_string_literals() -> frozenset[str]:
+    """Every string literal `src/` spells, whatever module spells it."""
+    literals: set[str] = set()
+    for path in python_files(REPO_ROOT / "src"):
+        literals.update(
+            node.value
+            for node in read_python(path).nodes
+            if isinstance(node, ast.Constant) and isinstance(node.value, str)
+        )
+    return frozenset(literals)
+
+
+def _a_loader_names(prompt: Path, literals: frozenset[str]) -> bool:
+    """True when some module in `src/` names this prompt file.
+
+    Both conventions count: a path literal ending in the file name, and the
+    bare version string, which `corridor_pdf_reader.replacement.semantics`
+    already joins as `f"{PROMPT_VERSION}.md"`. Equality rather than substring
+    is what keeps a docstring that merely mentions a retired version from
+    reading as a loader -- `extract_minutes_v5` opens by explaining what it
+    took over from `extract_minutes_v4`, and that is not a use of the file.
+    """
+    return any(
+        literal == prompt.name
+        or literal.endswith("/" + prompt.name)
+        or literal == prompt.stem
+        for literal in literals
+    )
+
+
+def _registered_prompts() -> dict[str, dict]:
+    return json.loads(PROMPT_REGISTRY.read_text())["retained"]
+
+
+def test_the_prompt_directory_holds_exactly_the_files_a_loader_names():
+    literals = _source_string_literals()
+
+    unnamed = [
+        path.name
+        for path in sorted(PROMPT_ROOT.glob("*.md"))
+        if not _a_loader_names(path, literals)
+    ]
+    other = [path.name for path in sorted(PROMPT_ROOT.iterdir()) if path.suffix != ".md"]
+
+    assert unnamed == [], (
+        "no module in src/ reads these, so they are not executable prompts: move "
+        f"them to {RETAINED_PROMPTS.relative_to(REPO_ROOT)} and register why they "
+        "are retained, rather than leaving them to run the behavior shards"
+    )
+    assert other == [], "prompts/ holds prompt files and nothing else"
+
+
+def test_every_retained_prompt_file_is_registered_with_its_current_bytes():
+    registered = _registered_prompts()
+    present = sorted(path.name for path in RETAINED_PROMPTS.glob("*.md"))
+
+    assert present == sorted(registered), (
+        "a retained prompt is listed in retained.json or it is not retained; a "
+        "registered file that has disappeared is a preimage that is now lost"
+    )
+    changed = [
+        name
+        for name, entry in registered.items()
+        if hashlib.sha256((RETAINED_PROMPTS / name).read_bytes()).hexdigest()
+        != entry["sha256"]
+    ]
+
+    assert changed == [], (
+        "these retained prompts no longer hash to their registered digest -- "
+        "their bytes are the preimage of a released run and cannot be edited"
+    )
+
+
+def test_a_registered_retention_reason_names_a_real_preimage():
+    registered = _registered_prompts()
+    literals = _source_string_literals()
+    wrong = []
+    for name, entry in registered.items():
+        preimage_of = entry["preimage_of"]
+        if (entry["basis"] == "receipt") != bool(preimage_of):
+            wrong.append(f"{name}: basis {entry['basis']!r} disagrees with preimage_of")
+        if _a_loader_names(RETAINED_PROMPTS / name, literals):
+            wrong.append(f"{name}: a loader names it, so it belongs in prompts/")
+        if not (PROMPT_ROOT / entry["superseded_by"]).exists():
+            wrong.append(f"{name}: superseded_by names no file in prompts/")
+        recorded = re.compile(
+            r'"prompt_version"\s*:\s*"%s"' % re.escape(entry["prompt_version"])
+        )
+        for artifact in preimage_of:
+            path = REPO_ROOT / artifact
+            if not path.exists() or not recorded.search(path.read_text()):
+                wrong.append(f"{name}: {artifact} does not record that prompt version")
+
+    assert wrong == []
+
 
 
 # --- Shared coordinator-screen presentation (#559) ---------------------------
