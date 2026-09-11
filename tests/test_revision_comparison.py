@@ -36,10 +36,13 @@ from corridor.revision_comparison import (
     MissingExtractionRun,
     RevisionComparisonError,
     UnsupportedComparisonShape,
+    _RevisionRow,
     _ScoredEdge,
     _assignment_regret_pairs,
     _bounded_ambiguities,
+    _compare_rows,
     _global_matching,
+    _resolved_config,
     create_revision_comparison,
     list_revision_comparisons,
     read_revision_comparison,
@@ -546,139 +549,381 @@ def test_consecutive_nhhip_runs_persist_an_exact_reviewer_readable_receipt(
     } == {candidate.id for candidate in successor_candidates}
 
 
-def test_unique_maximum_cardinality_assignment_is_not_locally_ambiguous(
-    session, consecutive_nhhip_documents
-):
-    """A near edge is certain when forcing it would reduce cardinality."""
+# --- Row correspondence, without the receipt around it -----------------------
+#
+# `_compare_rows` is the whole matcher: projected rows in, ordered findings
+# out, no Session. The tests below ask only its question -- do these rows
+# correspond, and in what state -- so they build rows rather than a Project,
+# Documents, DocPages, Candidates and Extraction Runs. The receipt the matcher
+# feeds keeps its own database tests further down: sealing, identical-execution
+# reuse, the lock, and readback against persisted snapshots.
 
-    _, predecessor, successor = consecutive_nhhip_documents
-    predecessor_run, predecessor_candidates = _run(
-        session,
-        predecessor,
-        [
-            {
-                "utility_id": "FOC14-69",
-                "external_org": "Comcast",
-                "utility_type": "Telecom",
-            },
-            {
-                "utility_id": "FOC14-OTHER",
-                "external_org": "Comcast",
-                "utility_type": "Telecom",
-                "station_from": "200+00",
-            },
-        ],
-        prompt_version="matrix_tiered_v2",
-        model="gpt-test",
-        schema_version="matrix-schema-v2",
-    )
-    successor_run, successor_candidates = _run(
-        session,
-        successor,
-        [
-            {
-                "utility_id": "FOC14-69",
-                "external_org": "Comcast",
-                "utility_type": "Telecom",
-            },
-            {
-                "utility_id": "FOC14-69",
-                "external_org": "Comcast",
-                "utility_type": "Telecom",
-                "station_from": "200+00",
-            },
-        ],
-        prompt_version="matrix_tiered_v3",
-        model="gpt-test",
-        schema_version="matrix-schema-v3",
-    )
+_PREDECESSOR_ROW_BASE = 1
+_SUCCESSOR_ROW_BASE = 11
 
-    comparison = create_revision_comparison(
-        session,
-        predecessor_run.id,
-        successor_run.id,
-        matcher_config={"minimum_score": 0.70},
-    )
-    readback = read_revision_comparison(session, comparison.id)
+# Station alone, so a case can put a chosen edge and its competitor either side
+# of the assignment threshold without every other signal moving too.
+_STATION_ONLY_WEIGHTS = {
+    "minimum_score": 0.60,
+    "ambiguity_margin": 0.04,
+    "weights": {
+        "station": 1.0,
+        "source_ref": 0.0,
+        "owner": 0.0,
+        "type": 0.0,
+        "location": 0.0,
+    },
+}
 
-    assert len(readback.findings) == 2
-    assert {
-        (
-            tuple(finding.predecessor_candidate_ids),
-            tuple(finding.successor_candidate_ids),
+
+def _matrix_rows(field_sets, base):
+    """One completed Extraction Run's utility-matrix rows, numbered in order."""
+
+    return [
+        _RevisionRow(
+            candidate_id=base + ordinal,
+            kind="dependency",
+            fields=dict(fields),
         )
-        for finding in readback.findings
-    } == {
-        ((predecessor_candidates[0].id,), (successor_candidates[0].id,)),
-        ((predecessor_candidates[1].id,), (successor_candidates[1].id,)),
-    }
-    assert {finding.state for finding in readback.findings}.isdisjoint(
-        {"ambiguous", "added", "dropped", "split", "combined"}
+        for ordinal, fields in enumerate(field_sets)
+    ]
+
+
+def _findings(predecessor_rows, successor_rows, matcher_config=None):
+    """Every finding the matcher draws between two tables of rows."""
+
+    return _compare_rows(
+        _matrix_rows(predecessor_rows, _PREDECESSOR_ROW_BASE),
+        _matrix_rows(successor_rows, _SUCCESSOR_ROW_BASE),
+        _resolved_config(matcher_config),
     )
 
 
-def test_changed_ids_without_complete_coordinates_remain_unmatched(
-    session, consecutive_nhhip_documents
-):
-    """Cohort similarity cannot justify either matching or disappearance."""
+def _correspondence(predecessor_rows, successor_rows, matcher_config=None):
+    """Each finding as (state, predecessor row numbers, successor row numbers)."""
 
-    _, predecessor, successor = consecutive_nhhip_documents
-    predecessor_run, [predecessor_candidate] = _run(
-        session,
-        predecessor,
-        [
-            {
-                "utility_id": "FOC1-1",
-                "external_org": "AT&T",
-                "utility_type": "Telecom",
-            }
-        ],
-        prompt_version="matrix_tiered_v2",
-        model="gpt-test",
-        schema_version="matrix-schema-v2",
-    )
-    successor_run, [successor_candidate] = _run(
-        session,
-        successor,
-        [
-            {
-                "utility_id": "FOC9-999",
-                "external_org": "AT&T",
-                "utility_type": "Telecom",
-            }
-        ],
-        prompt_version="matrix_tiered_v3",
-        model="gpt-test",
-        schema_version="matrix-schema-v3",
-    )
-
-    comparison = create_revision_comparison(
-        session, predecessor_run.id, successor_run.id
-    )
-    findings = read_revision_comparison(session, comparison.id).findings
-
-    assert [finding.state for finding in findings] == ["unmatched", "unmatched"]
-    assert {
+    return [
         (
-            tuple(finding.predecessor_candidate_ids),
-            tuple(finding.successor_candidate_ids),
+            finding.state,
+            tuple(
+                candidate_id - _PREDECESSOR_ROW_BASE + 1
+                for candidate_id in finding.predecessor_ids
+            ),
+            tuple(
+                candidate_id - _SUCCESSOR_ROW_BASE + 1
+                for candidate_id in finding.successor_ids
+            ),
         )
-        for finding in findings
-    } == {
-        ((predecessor_candidate.id,), ()),
-        ((), (successor_candidate.id,)),
-    }
+        for finding in _findings(
+            predecessor_rows, successor_rows, matcher_config
+        )
+    ]
 
 
-def test_plausible_but_not_strong_station_identity_is_ambiguous(
-    session, consecutive_nhhip_documents
+@pytest.mark.parametrize(
+    ("predecessor_rows", "successor_rows", "expected", "matcher_config"),
+    [
+        # A near edge is certain when forcing it would reduce cardinality.
+        pytest.param(
+            [
+                {
+                    "utility_id": "FOC14-69",
+                    "external_org": "Comcast",
+                    "utility_type": "Telecom",
+                },
+                {
+                    "utility_id": "FOC14-OTHER",
+                    "external_org": "Comcast",
+                    "utility_type": "Telecom",
+                    "station_from": "200+00",
+                },
+            ],
+            [
+                {
+                    "utility_id": "FOC14-69",
+                    "external_org": "Comcast",
+                    "utility_type": "Telecom",
+                },
+                {
+                    "utility_id": "FOC14-69",
+                    "external_org": "Comcast",
+                    "utility_type": "Telecom",
+                    "station_from": "200+00",
+                },
+            ],
+            [("unchanged", (1,), (1,)), ("changed", (2,), (2,))],
+            {"minimum_score": 0.70},
+            id="unique_maximum_cardinality_assignment_is_not_locally_ambiguous",
+        ),
+        # Cohort similarity cannot justify either matching or disappearance.
+        pytest.param(
+            [
+                {
+                    "utility_id": "FOC1-1",
+                    "external_org": "AT&T",
+                    "utility_type": "Telecom",
+                }
+            ],
+            [
+                {
+                    "utility_id": "FOC9-999",
+                    "external_org": "AT&T",
+                    "utility_type": "Telecom",
+                }
+            ],
+            [("unmatched", (1,), ()), ("unmatched", (), (1,))],
+            None,
+            id="changed_ids_without_complete_coordinates_remain_unmatched",
+        ),
+        # Incomplete coordinates are safe when no disappearance is inferred.
+        pytest.param(
+            [{"utility_id": "FOC1-1", "external_org": "AT&T"}],
+            [{"utility_id": "FOC1-1", "external_org": "AT&T"}],
+            [("unchanged", (1,), (1,))],
+            None,
+            id="exact_id_only_rows_can_succeed_when_every_row_corresponds",
+        ),
+        # NHHIP repeats IDs, so an ID is evidence and never unique identity.
+        pytest.param(
+            [
+                {
+                    "utility_id": "47",
+                    "external_org": "AT&T",
+                    "utility_type": "Telecom",
+                    "station_from": "100+00",
+                    "baseline": "IH 69",
+                }
+            ],
+            [
+                {
+                    "utility_id": "47",
+                    "external_org": "Comcast",
+                    "utility_type": "Telecom",
+                    "station_from": "200+00",
+                    "baseline": "IH 69",
+                }
+            ],
+            [("dropped", (1,), ()), ("added", (), (1,))],
+            None,
+            id="duplicate_source_id_cannot_override_a_contradictory_owner",
+        ),
+        # No ID on two rows is absent identity, not an exact identifier.
+        pytest.param(
+            [
+                {
+                    "utility_id": "No ID",
+                    "external_org": "AT&T",
+                    "utility_type": "Telecom",
+                    "station_from": "100+00",
+                    "baseline": "IH 69",
+                }
+            ],
+            [
+                {
+                    "utility_id": "No ID",
+                    "external_org": "AT&T",
+                    "utility_type": "Telecom",
+                    "station_from": "200+00",
+                    "baseline": "IH 69",
+                }
+            ],
+            [("dropped", (1,), ()), ("added", (), (1,))],
+            None,
+            id="placeholder_source_ids_do_not_create_row_identity",
+        ),
+        # An all-placeholder location tuple contains no physical identity.
+        pytest.param(
+            [
+                {
+                    "utility_id": "A-17",
+                    "external_org": "AT&T",
+                    "utility_type": "Telecom",
+                    "location_start": "N/A",
+                    "alignment": "Unknown",
+                    "station_from": "100+00",
+                    "baseline": "IH 69",
+                }
+            ],
+            [
+                {
+                    "utility_id": "A-18",
+                    "external_org": "AT&T",
+                    "utility_type": "Telecom",
+                    "location_start": "N/A",
+                    "alignment": "Unknown",
+                    "station_from": "200+00",
+                    "baseline": "IH 69",
+                }
+            ],
+            [("dropped", (1,), ()), ("added", (), (1,))],
+            None,
+            id="placeholder_locations_do_not_create_row_identity",
+        ),
+        # Stationing is a coordinate only within its named baseline.
+        pytest.param(
+            [
+                {
+                    "utility_id": "E41",
+                    "external_org": "CenterPoint",
+                    "utility_type": "Electric",
+                    "station_from": "1100+28",
+                    "baseline": "IH69",
+                }
+            ],
+            [
+                {
+                    "utility_id": "E103",
+                    "external_org": "CenterPoint",
+                    "utility_type": "Electric",
+                    "station_from": "1100+28",
+                    "baseline": "IH10",
+                }
+            ],
+            [("dropped", (1,), ()), ("added", (), (1,))],
+            None,
+            id="equal_station_numbers_on_different_baselines_are_not_identity",
+        ),
+        # A reused matrix id is not identity across incompatible baselines.
+        pytest.param(
+            [
+                {
+                    "utility_id": "FOC14-1",
+                    "external_org": "Comcast",
+                    "utility_type": "Fiber Optic Cable",
+                    "station_from": "1080+93",
+                    "baseline": "IH 69",
+                    "alignment": "Eastex Freeway",
+                    "location_start": "North of McKay Drive",
+                }
+            ],
+            [
+                {
+                    "utility_id": "FOC14-1",
+                    "external_org": "Comcast",
+                    "utility_type": "Telecom",
+                    "station_from": "1107+21",
+                    "baseline": "IH 10",
+                    "alignment": "Katy Freeway",
+                    "location_start": "East of Beltway 8",
+                }
+            ],
+            [("dropped", (1,), ()), ("added", (), (1,))],
+            None,
+            id="repeated_source_id_cannot_override_contradictory_coordinates",
+        ),
+        # Printed spacing does not turn the same coordinate into review work.
+        pytest.param(
+            [
+                {
+                    "utility_id": "E41",
+                    "external_org": "CenterPoint",
+                    "utility_type": "Electric",
+                    "station_from": "STA 1100+28",
+                    "baseline": "IH 69",
+                }
+            ],
+            [
+                {
+                    "utility_id": "E41",
+                    "external_org": "CenterPoint",
+                    "utility_type": "Electric",
+                    "station_from": "1100+28",
+                    "baseline": "IH69",
+                }
+            ],
+            [("unchanged", (1,), (1,))],
+            None,
+            id="equivalent_baseline_and_station_formatting_is_unchanged",
+        ),
+        # A placeholder station and an absent one are the same absent coordinate.
+        pytest.param(
+            [
+                {
+                    "utility_id": "E41",
+                    "external_org": "CenterPoint",
+                    "station_from": "1100+28",
+                    "station_to": "N/A",
+                }
+            ],
+            [
+                {
+                    "utility_id": "E41",
+                    "external_org": "CenterPoint",
+                    "station_from": "1100+28",
+                }
+            ],
+            [("unchanged", (1,), (1,))],
+            None,
+            id="station_placeholder_and_missing_value_compare_as_absent",
+        ),
+        # Plausibility for ambiguity does not lower the assignment threshold.
+        pytest.param(
+            [
+                {
+                    "utility_id": "A",
+                    "station_from": "100+00",
+                    "baseline": "IH 69",
+                }
+            ],
+            [
+                {
+                    "utility_id": "A",
+                    "station_from": "102+05",
+                    "baseline": "IH 69",
+                }
+            ],
+            [("dropped", (1,), ()), ("added", (), (1,))],
+            _STATION_ONLY_WEIGHTS,
+            id="lone_below_threshold_edge_remains_added_and_dropped",
+        ),
+        # A stronger edge is irrelevant when forcing it loses cardinality.
+        pytest.param(
+            [
+                {
+                    "utility_id": "A",
+                    "external_org": "Owner X",
+                    "utility_type": "Telecom",
+                    "station_from": "100+00",
+                },
+                {
+                    "utility_id": "A",
+                    "external_org": "Owner X",
+                    "utility_type": "Pipeline",
+                },
+            ],
+            [
+                {
+                    "utility_id": "A",
+                    "external_org": "Owner X",
+                    "utility_type": "Telco",
+                },
+                {
+                    "external_org": "Owner X",
+                    "utility_type": "Telecom",
+                    "station_from": "101+00",
+                },
+            ],
+            [("changed", (1,), (2,)), ("changed", (2,), (1,))],
+            None,
+            id="infeasible_stronger_displaced_pair_does_not_override_assignment",
+        ),
+    ],
+)
+def test_row_correspondence(
+    predecessor_rows, successor_rows, expected, matcher_config
 ):
+    """Which rows correspond, in which state, and in which reviewer order."""
+
+    assert (
+        _correspondence(predecessor_rows, successor_rows, matcher_config)
+        == expected
+    )
+
+
+def test_plausible_but_not_strong_station_identity_is_ambiguous():
     """A possible renumbering inside tolerance is never added plus dropped."""
 
-    _, predecessor, successor = consecutive_nhhip_documents
-    predecessor_run, [predecessor_candidate] = _run(
-        session,
-        predecessor,
+    [finding] = _findings(
         [
             {
                 "utility_id": "A",
@@ -688,13 +933,6 @@ def test_plausible_but_not_strong_station_identity_is_ambiguous(
                 "baseline": "IH 69",
             }
         ],
-        prompt_version="matrix_tiered_v2",
-        model="gpt-test",
-        schema_version="matrix-schema-v2",
-    )
-    successor_run, [successor_candidate] = _run(
-        session,
-        successor,
         [
             {
                 "utility_id": "B",
@@ -704,113 +942,20 @@ def test_plausible_but_not_strong_station_identity_is_ambiguous(
                 "baseline": "IH 69",
             }
         ],
-        prompt_version="matrix_tiered_v3",
-        model="gpt-test",
-        schema_version="matrix-schema-v3",
     )
-
-    comparison = create_revision_comparison(
-        session, predecessor_run.id, successor_run.id
-    )
-    [finding] = read_revision_comparison(session, comparison.id).findings
 
     assert finding.state == "ambiguous"
-    assert finding.predecessor_candidate_ids == [predecessor_candidate.id]
-    assert finding.successor_candidate_ids == [successor_candidate.id]
+    assert finding.predecessor_ids == (_PREDECESSOR_ROW_BASE,)
+    assert finding.successor_ids == (_SUCCESSOR_ROW_BASE,)
     [alternative] = finding.matcher_detail["alternatives"]
     assert alternative["weak_identity"] is True
     assert alternative["chosen"] is False
 
 
-def test_exact_id_only_rows_can_succeed_when_every_row_corresponds(
-    session, consecutive_nhhip_documents
-):
-    """Incomplete coordinates are safe when no disappearance is inferred."""
-
-    _, predecessor, successor = consecutive_nhhip_documents
-    predecessor_run, _ = _run(
-        session,
-        predecessor,
-        [{"utility_id": "FOC1-1", "external_org": "AT&T"}],
-        prompt_version="matrix_tiered_v2",
-        model="gpt-test",
-        schema_version="matrix-schema-v2",
-    )
-    successor_run, _ = _run(
-        session,
-        successor,
-        [{"utility_id": "FOC1-1", "external_org": "AT&T"}],
-        prompt_version="matrix_tiered_v3",
-        model="gpt-test",
-        schema_version="matrix-schema-v3",
-    )
-
-    comparison = create_revision_comparison(
-        session, predecessor_run.id, successor_run.id
-    )
-    [finding] = read_revision_comparison(session, comparison.id).findings
-
-    assert finding.state == "unchanged"
-
-
-def test_duplicate_source_id_cannot_override_a_contradictory_owner(
-    session, consecutive_nhhip_documents
-):
-    """NHHIP repeats IDs, so an ID is evidence and never unique identity."""
-
-    _, predecessor, successor = consecutive_nhhip_documents
-    predecessor_run, _ = _run(
-        session,
-        predecessor,
-        [
-            {
-                "utility_id": "47",
-                "external_org": "AT&T",
-                "utility_type": "Telecom",
-                "station_from": "100+00",
-                "baseline": "IH 69",
-            }
-        ],
-        prompt_version="matrix_tiered_v2",
-        model="gpt-test",
-        schema_version="matrix-schema-v2",
-    )
-    successor_run, _ = _run(
-        session,
-        successor,
-        [
-            {
-                "utility_id": "47",
-                "external_org": "Comcast",
-                "utility_type": "Telecom",
-                "station_from": "200+00",
-                "baseline": "IH 69",
-            }
-        ],
-        prompt_version="matrix_tiered_v3",
-        model="gpt-test",
-        schema_version="matrix-schema-v3",
-    )
-
-    comparison = create_revision_comparison(
-        session, predecessor_run.id, successor_run.id
-    )
-
-    assert Counter(
-        finding.state
-        for finding in read_revision_comparison(session, comparison.id).findings
-    ) == {"dropped": 1, "added": 1}
-
-
-def test_owner_change_with_exact_ref_and_station_is_a_changed_row(
-    session, consecutive_nhhip_documents
-):
+def test_owner_change_with_exact_ref_and_station_is_a_changed_row():
     """Physical identity preserves review-visible owner annotation changes."""
 
-    _, predecessor, successor = consecutive_nhhip_documents
-    predecessor_run, _ = _run(
-        session,
-        predecessor,
+    [finding] = _findings(
         [
             {
                 "utility_id": "FOC2-1",
@@ -820,13 +965,6 @@ def test_owner_change_with_exact_ref_and_station_is_a_changed_row(
                 "baseline": "IH 69",
             }
         ],
-        prompt_version="matrix_tiered_v2",
-        model="gpt-test",
-        schema_version="matrix-schema-v2",
-    )
-    successor_run, _ = _run(
-        session,
-        successor,
         [
             {
                 "utility_id": "FOC2-1",
@@ -836,35 +974,22 @@ def test_owner_change_with_exact_ref_and_station_is_a_changed_row(
                 "baseline": "IH69",
             }
         ],
-        prompt_version="matrix_tiered_v3",
-        model="gpt-test",
-        schema_version="matrix-schema-v3",
     )
-
-    comparison = create_revision_comparison(
-        session, predecessor_run.id, successor_run.id
-    )
-    [finding] = read_revision_comparison(session, comparison.id).findings
 
     assert finding.state == "changed"
-    assert finding.field_changes == [
+    assert finding.field_changes == (
         {
             "field": "external_org",
             "before": "AT&T LNS (Metro, TCA)",
             "after": "AT&T LNS (TCA)",
-        }
-    ]
+        },
+    )
 
 
-def test_owner_change_with_only_weak_station_similarity_stays_ambiguous(
-    session, consecutive_nhhip_documents
-):
+def test_owner_change_with_only_weak_station_similarity_stays_ambiguous():
     """A renamed owner needs strong physical identity before assignment."""
 
-    _, predecessor, successor = consecutive_nhhip_documents
-    predecessor_run, predecessor_candidates = _run(
-        session,
-        predecessor,
+    [finding] = _findings(
         [
             {
                 "utility_id": "FOC2-1",
@@ -874,13 +999,6 @@ def test_owner_change_with_only_weak_station_similarity_stays_ambiguous(
                 "baseline": "IH69",
             }
         ],
-        prompt_version="matrix_tiered_v2",
-        model="gpt-test",
-        schema_version="matrix-schema-v2",
-    )
-    successor_run, successor_candidates = _run(
-        session,
-        successor,
         [
             {
                 "utility_id": "FOC2-1",
@@ -890,37 +1008,20 @@ def test_owner_change_with_only_weak_station_similarity_stays_ambiguous(
                 "baseline": "IH69",
             }
         ],
-        prompt_version="matrix_tiered_v3",
-        model="gpt-test",
-        schema_version="matrix-schema-v3",
     )
-
-    comparison = create_revision_comparison(
-        session, predecessor_run.id, successor_run.id
-    )
-    [finding] = read_revision_comparison(session, comparison.id).findings
 
     assert finding.state == "ambiguous"
-    assert tuple(finding.predecessor_candidate_ids) == (
-        predecessor_candidates[0].id,
-    )
-    assert tuple(finding.successor_candidate_ids) == (
-        successor_candidates[0].id,
-    )
+    assert finding.predecessor_ids == (_PREDECESSOR_ROW_BASE,)
+    assert finding.successor_ids == (_SUCCESSOR_ROW_BASE,)
     assert {item["score"] for item in finding.matcher_detail["alternatives"]} == {
         0.64444444
     }
 
 
-def test_owner_change_with_only_weak_station_identity_is_ambiguous(
-    session, consecutive_nhhip_documents
-):
+def test_owner_change_with_only_weak_station_identity_is_ambiguous():
     """A repeated id plus a possible coordinate match cannot prove an owner edit."""
 
-    _, predecessor, successor = consecutive_nhhip_documents
-    predecessor_run, _ = _run(
-        session,
-        predecessor,
+    [finding] = _findings(
         [
             {
                 "utility_id": "47",
@@ -929,13 +1030,6 @@ def test_owner_change_with_only_weak_station_identity_is_ambiguous(
                 "baseline": "IH 69",
             }
         ],
-        prompt_version="matrix_tiered_v2",
-        model="gpt-test",
-        schema_version="matrix-schema-v2",
-    )
-    successor_run, _ = _run(
-        session,
-        successor,
         [
             {
                 "utility_id": "47",
@@ -944,30 +1038,17 @@ def test_owner_change_with_only_weak_station_identity_is_ambiguous(
                 "baseline": "IH 69",
             }
         ],
-        prompt_version="matrix_tiered_v3",
-        model="gpt-test",
-        schema_version="matrix-schema-v3",
     )
-
-    comparison = create_revision_comparison(
-        session, predecessor_run.id, successor_run.id
-    )
-    [finding] = read_revision_comparison(session, comparison.id).findings
 
     assert finding.state == "ambiguous"
     [alternative] = finding.matcher_detail["alternatives"]
     assert alternative["weak_identity"] is True
 
 
-def test_placeholder_owner_does_not_contradict_a_named_successor_owner(
-    session, consecutive_nhhip_documents
-):
+def test_placeholder_owner_does_not_contradict_a_named_successor_owner():
     """Unknown is missing party identity, not a party named Unknown."""
 
-    _, predecessor, successor = consecutive_nhhip_documents
-    predecessor_run, _ = _run(
-        session,
-        predecessor,
+    [finding] = _findings(
         [
             {
                 "utility_id": "T41",
@@ -976,13 +1057,6 @@ def test_placeholder_owner_does_not_contradict_a_named_successor_owner(
                 "station_from": "1130+58",
             }
         ],
-        prompt_version="matrix_tiered_v2",
-        model="gpt-test",
-        schema_version="matrix-schema-v2",
-    )
-    successor_run, _ = _run(
-        session,
-        successor,
         [
             {
                 "utility_id": "T41",
@@ -991,133 +1065,18 @@ def test_placeholder_owner_does_not_contradict_a_named_successor_owner(
                 "station_from": "1130+58",
             }
         ],
-        prompt_version="matrix_tiered_v3",
-        model="gpt-test",
-        schema_version="matrix-schema-v3",
     )
-
-    comparison = create_revision_comparison(
-        session, predecessor_run.id, successor_run.id
-    )
-    [finding] = read_revision_comparison(session, comparison.id).findings
 
     assert finding.state == "changed"
-    assert finding.field_changes == [
-        {"field": "external_org", "before": "Unknown", "after": "AT&T"}
-    ]
-
-
-def test_placeholder_source_ids_do_not_create_row_identity(
-    session, consecutive_nhhip_documents
-):
-    """No ID on two rows is absent identity, not an exact identifier."""
-
-    _, predecessor, successor = consecutive_nhhip_documents
-    predecessor_run, _ = _run(
-        session,
-        predecessor,
-        [
-            {
-                "utility_id": "No ID",
-                "external_org": "AT&T",
-                "utility_type": "Telecom",
-                "station_from": "100+00",
-                "baseline": "IH 69",
-            }
-        ],
-        prompt_version="matrix_tiered_v2",
-        model="gpt-test",
-        schema_version="matrix-schema-v2",
-    )
-    successor_run, _ = _run(
-        session,
-        successor,
-        [
-            {
-                "utility_id": "No ID",
-                "external_org": "AT&T",
-                "utility_type": "Telecom",
-                "station_from": "200+00",
-                "baseline": "IH 69",
-            }
-        ],
-        prompt_version="matrix_tiered_v3",
-        model="gpt-test",
-        schema_version="matrix-schema-v3",
+    assert finding.field_changes == (
+        {"field": "external_org", "before": "Unknown", "after": "AT&T"},
     )
 
-    comparison = create_revision_comparison(
-        session, predecessor_run.id, successor_run.id
-    )
 
-    assert Counter(
-        finding.state
-        for finding in read_revision_comparison(session, comparison.id).findings
-    ) == {"dropped": 1, "added": 1}
-
-
-def test_placeholder_locations_do_not_create_row_identity(
-    session, consecutive_nhhip_documents
-):
-    """An all-placeholder location tuple contains no physical identity."""
-
-    _, predecessor, successor = consecutive_nhhip_documents
-    predecessor_run, _ = _run(
-        session,
-        predecessor,
-        [
-            {
-                "utility_id": "A-17",
-                "external_org": "AT&T",
-                "utility_type": "Telecom",
-                "location_start": "N/A",
-                "alignment": "Unknown",
-                "station_from": "100+00",
-                "baseline": "IH 69",
-            }
-        ],
-        prompt_version="matrix_tiered_v2",
-        model="gpt-test",
-        schema_version="matrix-schema-v2",
-    )
-    successor_run, _ = _run(
-        session,
-        successor,
-        [
-            {
-                "utility_id": "A-18",
-                "external_org": "AT&T",
-                "utility_type": "Telecom",
-                "location_start": "N/A",
-                "alignment": "Unknown",
-                "station_from": "200+00",
-                "baseline": "IH 69",
-            }
-        ],
-        prompt_version="matrix_tiered_v3",
-        model="gpt-test",
-        schema_version="matrix-schema-v3",
-    )
-
-    comparison = create_revision_comparison(
-        session, predecessor_run.id, successor_run.id
-    )
-
-    assert Counter(
-        finding.state
-        for finding in read_revision_comparison(session, comparison.id).findings
-    ) == {"dropped": 1, "added": 1}
-
-
-def test_fuzzy_location_identity_is_not_lost_before_scoring(
-    session, consecutive_nhhip_documents
-):
+def test_fuzzy_location_identity_is_not_lost_before_scoring():
     """A scorer-valid renamed location cannot become dropped plus added."""
 
-    _, predecessor, successor = consecutive_nhhip_documents
-    predecessor_run, _ = _run(
-        session,
-        predecessor,
+    [finding] = _findings(
         [
             {
                 "utility_id": "A-17",
@@ -1126,13 +1085,6 @@ def test_fuzzy_location_identity_is_not_lost_before_scoring(
                 "location_start": "Main Street at First Avenue",
             }
         ],
-        prompt_version="matrix_tiered_v2",
-        model="gpt-test",
-        schema_version="matrix-schema-v2",
-    )
-    successor_run, _ = _run(
-        session,
-        successor,
         [
             {
                 "utility_id": "A-18",
@@ -1141,30 +1093,17 @@ def test_fuzzy_location_identity_is_not_lost_before_scoring(
                 "location_start": "Main St at First Avenue",
             }
         ],
-        prompt_version="matrix_tiered_v3",
-        model="gpt-test",
-        schema_version="matrix-schema-v3",
     )
-
-    comparison = create_revision_comparison(
-        session, predecessor_run.id, successor_run.id
-    )
-    [finding] = read_revision_comparison(session, comparison.id).findings
 
     assert finding.state == "changed"
     assert finding.match_score is not None
     assert finding.match_score >= DEFAULT_MATCHER_CONFIG["minimum_score"]
 
 
-def test_station_containment_in_a_long_span_is_not_lost_before_scoring(
-    session, consecutive_nhhip_documents
-):
+def test_station_containment_in_a_long_span_is_not_lost_before_scoring():
     """A point inside a long predecessor span remains a valid edge."""
 
-    _, predecessor, successor = consecutive_nhhip_documents
-    predecessor_run, _ = _run(
-        session,
-        predecessor,
+    [finding] = _findings(
         [
             {
                 "utility_id": "A-17",
@@ -1174,13 +1113,6 @@ def test_station_containment_in_a_long_span_is_not_lost_before_scoring(
                 "station_to": "1000+00",
             }
         ],
-        prompt_version="matrix_tiered_v2",
-        model="gpt-test",
-        schema_version="matrix-schema-v2",
-    )
-    successor_run, _ = _run(
-        session,
-        successor,
         [
             {
                 "utility_id": "A-18",
@@ -1190,132 +1122,17 @@ def test_station_containment_in_a_long_span_is_not_lost_before_scoring(
                 "station_to": "501+00",
             }
         ],
-        prompt_version="matrix_tiered_v3",
-        model="gpt-test",
-        schema_version="matrix-schema-v3",
     )
-
-    comparison = create_revision_comparison(
-        session, predecessor_run.id, successor_run.id
-    )
-    [finding] = read_revision_comparison(session, comparison.id).findings
 
     assert finding.state == "changed"
     assert finding.match_score is not None
     assert finding.match_score >= DEFAULT_MATCHER_CONFIG["minimum_score"]
 
 
-def test_equal_station_numbers_on_different_baselines_are_not_identity(
-    session, consecutive_nhhip_documents
-):
-    """Stationing is a coordinate only within its named baseline."""
-
-    _, predecessor, successor = consecutive_nhhip_documents
-    predecessor_run, _ = _run(
-        session,
-        predecessor,
-        [
-            {
-                "utility_id": "E41",
-                "external_org": "CenterPoint",
-                "utility_type": "Electric",
-                "station_from": "1100+28",
-                "baseline": "IH69",
-            }
-        ],
-        prompt_version="matrix_tiered_v2",
-        model="gpt-test",
-        schema_version="matrix-schema-v2",
-    )
-    successor_run, _ = _run(
-        session,
-        successor,
-        [
-            {
-                "utility_id": "E103",
-                "external_org": "CenterPoint",
-                "utility_type": "Electric",
-                "station_from": "1100+28",
-                "baseline": "IH10",
-            }
-        ],
-        prompt_version="matrix_tiered_v3",
-        model="gpt-test",
-        schema_version="matrix-schema-v3",
-    )
-
-    comparison = create_revision_comparison(
-        session, predecessor_run.id, successor_run.id
-    )
-
-    assert Counter(
-        finding.state
-        for finding in read_revision_comparison(session, comparison.id).findings
-    ) == {"dropped": 1, "added": 1}
-
-
-def test_repeated_source_id_cannot_override_contradictory_coordinates(
-    session, consecutive_nhhip_documents
-):
-    """A reused matrix id is not identity across incompatible baselines."""
-
-    _, predecessor, successor = consecutive_nhhip_documents
-    predecessor_run, _ = _run(
-        session,
-        predecessor,
-        [
-            {
-                "utility_id": "FOC14-1",
-                "external_org": "Comcast",
-                "utility_type": "Fiber Optic Cable",
-                "station_from": "1080+93",
-                "baseline": "IH 69",
-                "alignment": "Eastex Freeway",
-                "location_start": "North of McKay Drive",
-            }
-        ],
-        prompt_version="matrix_tiered_v2",
-        model="gpt-test",
-        schema_version="matrix-schema-v2",
-    )
-    successor_run, _ = _run(
-        session,
-        successor,
-        [
-            {
-                "utility_id": "FOC14-1",
-                "external_org": "Comcast",
-                "utility_type": "Telecom",
-                "station_from": "1107+21",
-                "baseline": "IH 10",
-                "alignment": "Katy Freeway",
-                "location_start": "East of Beltway 8",
-            }
-        ],
-        prompt_version="matrix_tiered_v3",
-        model="gpt-test",
-        schema_version="matrix-schema-v3",
-    )
-
-    comparison = create_revision_comparison(
-        session, predecessor_run.id, successor_run.id
-    )
-
-    assert Counter(
-        finding.state
-        for finding in read_revision_comparison(session, comparison.id).findings
-    ) == {"dropped": 1, "added": 1}
-
-
-def test_exact_foc8_baseline_correction_corresponds_as_changed(
-    session, consecutive_nhhip_documents
-):
+def test_exact_foc8_baseline_correction_corresponds_as_changed():
     """The real FOC8-3 row is re-stationed across a corrected baseline."""
 
-    _, predecessor, successor = consecutive_nhhip_documents
-    predecessor_run, [predecessor_candidate] = _run(
-        session,
-        predecessor,
+    [finding] = _findings(
         [
             {
                 "alignment": "Rothwell Street",
@@ -1338,13 +1155,6 @@ def test_exact_foc8_baseline_correction_corresponds_as_changed(
                 "utility_type": "Telecom",
             }
         ],
-        prompt_version="matrix_tiered_v2",
-        model="gpt-test",
-        schema_version="matrix-schema-v2",
-    )
-    successor_run, [successor_candidate] = _run(
-        session,
-        successor,
         [
             {
                 "alignment": "Rothwell Street",
@@ -1367,19 +1177,11 @@ def test_exact_foc8_baseline_correction_corresponds_as_changed(
                 "utility_type": "Telecom",
             }
         ],
-        prompt_version="matrix_tiered_v3",
-        model="gpt-test",
-        schema_version="matrix-schema-v3",
     )
-
-    comparison = create_revision_comparison(
-        session, predecessor_run.id, successor_run.id
-    )
-    [finding] = read_revision_comparison(session, comparison.id).findings
 
     assert finding.state == "changed"
-    assert finding.predecessor_candidate_ids == [predecessor_candidate.id]
-    assert finding.successor_candidate_ids == [successor_candidate.id]
+    assert finding.predecessor_ids == (_PREDECESSOR_ROW_BASE,)
+    assert finding.successor_ids == (_SUCCESSOR_ROW_BASE,)
     assert {change["field"] for change in finding.field_changes} >= {
         "baseline",
         "station_from",
@@ -1391,15 +1193,10 @@ def test_exact_foc8_baseline_correction_corresponds_as_changed(
     )
 
 
-def test_one_location_anchor_routes_cross_baseline_identity_to_ambiguity(
-    session, consecutive_nhhip_documents
-):
+def test_one_location_anchor_routes_cross_baseline_identity_to_ambiguity():
     """One shared place is review evidence, not assignable baseline correction."""
 
-    _, predecessor, successor = consecutive_nhhip_documents
-    predecessor_run, _ = _run(
-        session,
-        predecessor,
+    [finding] = _findings(
         [
             {
                 "utility_id": "FOC14-1",
@@ -1409,13 +1206,6 @@ def test_one_location_anchor_routes_cross_baseline_identity_to_ambiguity(
                 "location_start": "Main Street at First Avenue",
             }
         ],
-        prompt_version="matrix_tiered_v2",
-        model="gpt-test",
-        schema_version="matrix-schema-v2",
-    )
-    successor_run, _ = _run(
-        session,
-        successor,
         [
             {
                 "utility_id": "FOC14-1",
@@ -1425,16 +1215,7 @@ def test_one_location_anchor_routes_cross_baseline_identity_to_ambiguity(
                 "location_start": "Main Street at First Avenue",
             }
         ],
-        prompt_version="matrix_tiered_v3",
-        model="gpt-test",
-        schema_version="matrix-schema-v3",
     )
-
-    comparison = create_revision_comparison(
-        session, predecessor_run.id, successor_run.id
-    )
-
-    [finding] = read_revision_comparison(session, comparison.id).findings
 
     assert finding.state == "ambiguous"
     [alternative] = finding.matcher_detail["alternatives"]
@@ -1446,104 +1227,10 @@ def test_one_location_anchor_routes_cross_baseline_identity_to_ambiguity(
     )
 
 
-def test_equivalent_baseline_and_station_formatting_is_unchanged(
-    session, consecutive_nhhip_documents
-):
-    """Printed spacing does not turn the same coordinate into review work."""
+def test_station_placeholder_to_real_coordinate_remains_a_change():
+    """A coordinate arriving where none was recorded is a review-visible change."""
 
-    _, predecessor, successor = consecutive_nhhip_documents
-    predecessor_run, _ = _run(
-        session,
-        predecessor,
-        [
-            {
-                "utility_id": "E41",
-                "external_org": "CenterPoint",
-                "utility_type": "Electric",
-                "station_from": "STA 1100+28",
-                "baseline": "IH 69",
-            }
-        ],
-        prompt_version="matrix_tiered_v2",
-        model="gpt-test",
-        schema_version="matrix-schema-v2",
-    )
-    successor_run, _ = _run(
-        session,
-        successor,
-        [
-            {
-                "utility_id": "E41",
-                "external_org": "CenterPoint",
-                "utility_type": "Electric",
-                "station_from": "1100+28",
-                "baseline": "IH69",
-            }
-        ],
-        prompt_version="matrix_tiered_v3",
-        model="gpt-test",
-        schema_version="matrix-schema-v3",
-    )
-
-    comparison = create_revision_comparison(
-        session, predecessor_run.id, successor_run.id
-    )
-    [finding] = read_revision_comparison(session, comparison.id).findings
-
-    assert finding.state == "unchanged"
-    assert finding.field_changes == []
-
-
-def test_station_placeholder_and_missing_value_compare_as_absent(
-    session, consecutive_nhhip_documents
-):
-    _, predecessor, successor = consecutive_nhhip_documents
-    predecessor_run, _ = _run(
-        session,
-        predecessor,
-        [
-            {
-                "utility_id": "E41",
-                "external_org": "CenterPoint",
-                "station_from": "1100+28",
-                "station_to": "N/A",
-            }
-        ],
-        prompt_version="matrix_tiered_v2",
-        model="gpt-test",
-        schema_version="matrix-schema-v2",
-    )
-    successor_run, _ = _run(
-        session,
-        successor,
-        [
-            {
-                "utility_id": "E41",
-                "external_org": "CenterPoint",
-                "station_from": "1100+28",
-            }
-        ],
-        prompt_version="matrix_tiered_v3",
-        model="gpt-test",
-        schema_version="matrix-schema-v3",
-    )
-
-    comparison = create_revision_comparison(
-        session, predecessor_run.id, successor_run.id
-    )
-    [finding] = read_revision_comparison(session, comparison.id).findings
-
-    assert finding.state == "unchanged"
-    assert finding.field_changes == []
-
-
-def test_station_placeholder_to_real_coordinate_remains_a_change(
-    session, consecutive_nhhip_documents
-):
-    _, predecessor, successor = consecutive_nhhip_documents
-    predecessor_run, _ = _run(
-        session,
-        predecessor,
+    [finding] = _findings(
         [
             {
                 "utility_id": "E41",
@@ -1552,13 +1239,6 @@ def test_station_placeholder_to_real_coordinate_remains_a_change(
                 "station_to": "NA",
             }
         ],
-        prompt_version="matrix_tiered_v2",
-        model="gpt-test",
-        schema_version="matrix-schema-v2",
-    )
-    successor_run, _ = _run(
-        session,
-        successor,
         [
             {
                 "utility_id": "E41",
@@ -1567,203 +1247,36 @@ def test_station_placeholder_to_real_coordinate_remains_a_change(
                 "station_to": "1101+00",
             }
         ],
-        prompt_version="matrix_tiered_v3",
-        model="gpt-test",
-        schema_version="matrix-schema-v3",
     )
-
-    comparison = create_revision_comparison(
-        session, predecessor_run.id, successor_run.id
-    )
-    [finding] = read_revision_comparison(session, comparison.id).findings
 
     assert finding.state == "changed"
-    assert finding.field_changes == [
-        {"field": "station_to", "before": "NA", "after": "1101+00"}
-    ]
+    assert finding.field_changes == (
+        {"field": "station_to", "before": "NA", "after": "1101+00"},
+    )
 
 
-def test_near_threshold_alternative_is_preserved_as_ambiguity(
-    session, consecutive_nhhip_documents
-):
+def test_near_threshold_alternative_is_preserved_as_ambiguity():
     """A .59 alternative keeps a .61 match uncertain at a .60 threshold."""
 
-    _, predecessor, successor = consecutive_nhhip_documents
-    predecessor_run, predecessor_candidates = _run(
-        session,
-        predecessor,
-        [
-            {
-                "utility_id": "A",
-                "station_from": "100+00",
-            }
-        ],
-        prompt_version="matrix_tiered_v2",
-        model="gpt-test",
-        schema_version="matrix-schema-v2",
-    )
-    successor_run, successor_candidates = _run(
-        session,
-        successor,
+    [finding] = _findings(
+        [{"utility_id": "A", "station_from": "100+00"}],
         [
             {"utility_id": "A", "station_from": "101+95"},
             {"utility_id": "A", "station_from": "102+05"},
         ],
-        prompt_version="matrix_tiered_v3",
-        model="gpt-test",
-        schema_version="matrix-schema-v3",
+        _STATION_ONLY_WEIGHTS,
     )
-
-    comparison = create_revision_comparison(
-        session,
-        predecessor_run.id,
-        successor_run.id,
-        matcher_config={
-            "minimum_score": 0.60,
-            "ambiguity_margin": 0.04,
-            "weights": {
-                "station": 1.0,
-                "source_ref": 0.0,
-                "owner": 0.0,
-                "type": 0.0,
-                "location": 0.0,
-            },
-        },
-    )
-    [finding] = read_revision_comparison(session, comparison.id).findings
 
     assert finding.state == "ambiguous"
-    assert finding.predecessor_candidate_ids == [predecessor_candidates[0].id]
-    assert set(finding.successor_candidate_ids) == {
-        candidate.id for candidate in successor_candidates
+    assert finding.predecessor_ids == (_PREDECESSOR_ROW_BASE,)
+    assert set(finding.successor_ids) == {
+        _SUCCESSOR_ROW_BASE,
+        _SUCCESSOR_ROW_BASE + 1,
     }
     assert sum(
         alternative["below_threshold"]
         for alternative in finding.matcher_detail["alternatives"]
     ) == 2
-
-
-def test_lone_below_threshold_edge_remains_added_and_dropped(
-    session, consecutive_nhhip_documents
-):
-    """Plausibility for ambiguity does not lower the assignment threshold."""
-
-    _, predecessor, successor = consecutive_nhhip_documents
-    predecessor_run, _ = _run(
-        session,
-        predecessor,
-        [
-            {
-                "utility_id": "A",
-                "station_from": "100+00",
-                "baseline": "IH 69",
-            }
-        ],
-        prompt_version="matrix_tiered_v2",
-        model="gpt-test",
-        schema_version="matrix-schema-v2",
-    )
-    successor_run, _ = _run(
-        session,
-        successor,
-        [
-            {
-                "utility_id": "A",
-                "station_from": "102+05",
-                "baseline": "IH 69",
-            }
-        ],
-        prompt_version="matrix_tiered_v3",
-        model="gpt-test",
-        schema_version="matrix-schema-v3",
-    )
-
-    comparison = create_revision_comparison(
-        session,
-        predecessor_run.id,
-        successor_run.id,
-        matcher_config={
-            "minimum_score": 0.60,
-            "ambiguity_margin": 0.04,
-            "weights": {
-                "station": 1.0,
-                "source_ref": 0.0,
-                "owner": 0.0,
-                "type": 0.0,
-                "location": 0.0,
-            },
-        },
-    )
-
-    assert Counter(
-        finding.state
-        for finding in read_revision_comparison(session, comparison.id).findings
-    ) == {"dropped": 1, "added": 1}
-
-
-def test_infeasible_stronger_displaced_pair_does_not_override_assignment(
-    session, consecutive_nhhip_documents
-):
-    """A stronger edge is irrelevant when forcing it loses cardinality."""
-
-    _, predecessor, successor = consecutive_nhhip_documents
-    predecessor_run, predecessor_candidates = _run(
-        session,
-        predecessor,
-        [
-            {
-                "utility_id": "A",
-                "external_org": "Owner X",
-                "utility_type": "Telecom",
-                "station_from": "100+00",
-            },
-            {
-                "utility_id": "A",
-                "external_org": "Owner X",
-                "utility_type": "Pipeline",
-            },
-        ],
-        prompt_version="matrix_tiered_v2",
-        model="gpt-test",
-        schema_version="matrix-schema-v2",
-    )
-    successor_run, successor_candidates = _run(
-        session,
-        successor,
-        [
-            {
-                "utility_id": "A",
-                "external_org": "Owner X",
-                "utility_type": "Telco",
-            },
-            {
-                "external_org": "Owner X",
-                "utility_type": "Telecom",
-                "station_from": "101+00",
-            },
-        ],
-        prompt_version="matrix_tiered_v3",
-        model="gpt-test",
-        schema_version="matrix-schema-v3",
-    )
-
-    comparison = create_revision_comparison(
-        session, predecessor_run.id, successor_run.id
-    )
-    findings = read_revision_comparison(session, comparison.id).findings
-
-    assert len(findings) == 2
-    assert {
-        (
-            tuple(finding.predecessor_candidate_ids),
-            tuple(finding.successor_candidate_ids),
-        )
-        for finding in findings
-    } == {
-        ((predecessor_candidates[0].id,), (successor_candidates[1].id,)),
-        ((predecessor_candidates[1].id,), (successor_candidates[0].id,)),
-    }
-    assert all(finding.state != "ambiguous" for finding in findings)
 
 
 def test_sparse_global_assignment_beats_greedy_cardinality():
@@ -2073,7 +1586,7 @@ def test_registry_edge_changed_during_compute_is_rejected_after_lock(
         model="gpt-test",
         schema_version="matrix-schema-v3",
     )
-    real_compare = revision_comparison._compare_inputs
+    real_compare = revision_comparison._compare_rows
 
     def compare_then_change_registry(*args, **kwargs):
         findings = real_compare(*args, **kwargs)
@@ -2089,7 +1602,7 @@ def test_registry_edge_changed_during_compute_is_rejected_after_lock(
         return findings
 
     monkeypatch.setattr(
-        revision_comparison, "_compare_inputs", compare_then_change_registry
+        revision_comparison, "_compare_rows", compare_then_change_registry
     )
 
     with pytest.raises(InvalidRevisionPair, match="declared"):
