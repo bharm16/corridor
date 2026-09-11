@@ -299,6 +299,7 @@
         </details>
         <form method="post" action="/candidates/{{ view.candidate.id }}/confirm-organization"
               style="display:flex;flex-wrap:wrap;gap:.5rem;align-items:center;margin-top:.6rem">
+          {{ csrf_field() }}
           <input type="hidden" name="slug" value="{{ project.slug }}">
           <select name="external_org_id">
             <option value="" selected>— choose an existing organization —</option>

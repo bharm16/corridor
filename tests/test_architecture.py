@@ -3028,7 +3028,7 @@ def test_no_template_mints_a_customer_sentence_in_a_set():
     )
 
 
-# --- Every authenticated form on a live-pilot page echoes its token (#821) ----
+# --- Every authenticated form echoes its token (#821, widened by #880) -------
 #
 # `get_human_principal` refuses an unsafe method whose request-forgery token is
 # missing or does not match the session's, and the token reaches the server
@@ -3038,14 +3038,21 @@ def test_no_template_mints_a_customer_sentence_in_a_set():
 # every test that drove them replaced `get_human_principal`, so nothing failed
 # until a real coordinator clicked.
 #
-# The rule below is the one a review would have to remember otherwise.  Scope
-# is the live-pilot boundary: the templates the manifest's own routes render,
-# plus the partials composed into them, because a form in a partial is markup
-# that page sends.  A `method="post"` form there must emit the field, unless
-# the route it posts to takes no signed-in person at all -- the public sign-in
-# form, which has its own contract and could not echo a token it has not been
-# issued.  An action that resolves to no route is held to the rule rather than
-# excused by it.
+# The rule below is the one a review would have to remember otherwise.  #821
+# scoped it to the live-pilot boundary, and that scoping is what let three more
+# inoperable forms sit outside it -- two on `key_dates.html`, one on
+# `queue.html` -- until #880 found them by reading the templates rather than
+# the manifest.  A form only becoming covered when its route is admitted to the
+# boundary is the wrong ratchet: admission is a capability decision, and
+# "signed-in people can click this" is true of the form either way.
+#
+# So the scope is every template this application renders.  A `method="post"`
+# form must emit the field, unless the route it posts to takes no signed-in
+# person at all -- the public sign-in form, which has its own contract and
+# could not echo a token it has not been issued.  An action that resolves to no
+# route is held to the rule rather than excused by it.  Being covered here
+# admits nothing to the boundary manifest: the two lists answer different
+# questions and `web_boundary.PILOT_ROUTES` is untouched by this rule.
 
 WEB_APP = SOURCE_ROOT / "web" / "app.py"
 
@@ -3157,13 +3164,17 @@ def _manifest_page_templates() -> frozenset[Path]:
     return frozenset(closed)
 
 
-def _post_forms_on_manifest_pages() -> list[tuple[str, str, bool, bool]]:
-    """Every state-changing form on a live-pilot page, classified.
+def _post_forms_on_every_page() -> list[tuple[str, str, bool, bool]]:
+    """Every state-changing form this application renders, classified.
 
     One entry per `method="post"` form: where it is, the action it posts to,
     whether that route takes a signed-in person, and whether the form emits the
     field. A form with no `action`, or one whose action matches no route, is
     read as authenticated: the rule holds it rather than excusing it.
+
+    Every template is read, partials included, rather than the manifest pages
+    alone (#880). A partial is markup some page sends, and a template outside
+    the live-pilot boundary is still a screen a signed-in person clicks.
     """
     functions = _web_app_functions()
     posts = {
@@ -3185,7 +3196,7 @@ def _post_forms_on_manifest_pages() -> list[tuple[str, str, bool, bool]]:
         return None
 
     forms = []
-    for path in sorted(_manifest_page_templates()):
+    for path in sorted(TEMPLATE_ROOT.rglob("*.html")):
         markup = path.read_text(encoding="utf-8")
         for opening in _FORM_TAG.finditer(markup):
             if not _FORM_METHOD.search(opening.group(0)):
@@ -3206,22 +3217,42 @@ def _post_forms_on_manifest_pages() -> list[tuple[str, str, bool, bool]]:
 def test_the_forgery_field_rule_reaches_the_pages_it_is_written_for():
     """The check is worthless if it silently covers nothing.
 
-    Its reach is the point, and both halves of it: `project_workflow.html` and
-    `review.html` are manifest pages carrying authenticated forms, and
-    `sign_in.html` is the manifest page whose one form is public, so the
-    exemption is exercised rather than theoretical.
+    Its reach is the point, and all three parts of it: `project_workflow.html`
+    and `review.html` are manifest pages carrying authenticated forms;
+    `key_dates.html` and `queue.html` carry authenticated forms and are *not*
+    manifest pages, which is the widening #880 asked for and the reason their
+    three forms sat inoperable outside #821's scope; and `sign_in.html` is the
+    one page whose form is public, so the exemption is exercised rather than
+    theoretical.
     """
-    pages = {path.name for path in _manifest_page_templates()}
-    assert {"project_workflow.html", "review.html", "sign_in.html"} <= pages
+    from corridor.web_boundary import PILOT_ROUTES
 
-    forms = _post_forms_on_manifest_pages()
-    assert [where for where, _, authenticated, _ in forms if authenticated]
+    manifest = {path.name for path in _manifest_page_templates()}
+    assert {"project_workflow.html", "review.html", "sign_in.html"} <= manifest
+    assert not ({"key_dates.html", "queue.html"} & manifest)
+
+    forms = _post_forms_on_every_page()
+    covered = {
+        where.split(":")[0] for where, _, authenticated, _ in forms if authenticated
+    }
+    assert {"project_workflow.html", "review.html"} <= covered
+    assert {"key_dates.html", "queue.html"} <= covered
     assert [where for where, _, authenticated, _ in forms if not authenticated] == [
         where for where, action, _, _ in forms if action == "/sign-in/request"
     ]
 
+    # Covering a form admits nothing. The three routes #880 named are still
+    # outside the live-pilot boundary; a form that now works is not a
+    # capability decision, and this rule may never become one.
+    assert ("POST", "/key-dates/{slug}/preview") not in PILOT_ROUTES
+    assert ("POST", "/key-dates/{slug}/confirm") not in PILOT_ROUTES
+    assert (
+        "POST",
+        "/candidates/{candidate_id}/confirm-organization",
+    ) not in PILOT_ROUTES
 
-def test_every_authenticated_form_on_a_pilot_page_carries_the_forgery_field():
+
+def test_every_authenticated_form_carries_the_forgery_field():
     """A form the write path would refuse is a control that cannot be clicked.
 
     `get_human_principal` requires the token on every unsafe method, and a
@@ -3232,12 +3263,12 @@ def test_every_authenticated_form_on_a_pilot_page_carries_the_forgery_field():
     """
     offenders = [
         f"{where} posts to {action!r}"
-        for where, action, authenticated, carried in _post_forms_on_manifest_pages()
+        for where, action, authenticated, carried in _post_forms_on_every_page()
         if authenticated and not carried
     ]
 
     assert offenders == [], (
-        f"{offenders}: a state-changing form on a live-pilot page omits "
+        f"{offenders}: a state-changing form omits "
         "`{{ csrf_field() }}`, so a signed-in person clicking it is refused "
         "with 403. Emit the field as the first thing inside the form"
     )
