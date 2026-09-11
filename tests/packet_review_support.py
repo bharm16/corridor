@@ -11,8 +11,8 @@ Every time is supplied by the caller. Nothing here reads a clock.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from hashlib import sha256
 from uuid import uuid4
 
@@ -27,15 +27,12 @@ from corridor.field_mapping_manifest import (
     MaterialMapping,
 )
 from corridor.models import (
-    ActiveExtractionRun,
     BaselineFormat,
     BaselineSource,
     BaselineSourceRow,
     Document,
     ExternalPartyStatement,
-    ExtractionRun,
     Fact,
-    FactSource,
     Project,
     ProposedDelta,
     SourceSegment,
@@ -65,12 +62,13 @@ from corridor.proposed_deltas import (
 )
 from corridor.support_assessments import FactProposition, record_support_assessment
 from harness_support import adopt_baseline_facts, as_role
+from source_capture_support import SHEET
+from source_capture_support import Rendition as _CellRendition
 
 
 ADOPTER = HumanPrincipal("local:adopter")
 ASSESSOR = HumanPrincipal("local:assessor")
 ASSESSED_AT = datetime(2026, 9, 1, 9, 0, tzinfo=timezone.utc)
-SHEET = "Utility Conflicts"
 SOURCE_FAMILY = "ucm-workbook"
 
 
@@ -81,96 +79,15 @@ def subject(row_number: int) -> str:
 
 
 @dataclass
-class Rendition:
-    """One arriving document and the Source Facts captured from it."""
+class Rendition(_CellRendition):
+    """This screen's workbook rendition, whose captured cells sit in column C.
 
-    session: Session
-    project: Project
-    name: str
-    document: Document = field(init=False)
-    run: ExtractionRun = field(init=False)
-    _ordinal: int = field(default=0, init=False)
+    The column is the only thing that differs from the shared capture seam:
+    the screen prints the exact cell a value was read from, and these tests
+    read that printed location.
+    """
 
-    def __post_init__(self) -> None:
-        self.document = Document(
-            project_id=self.project.id,
-            sha256=sha256(f"{self.project.slug}:{self.name}".encode()).hexdigest(),
-            filename=self.name,
-            doc_type="matrix",
-            numbering_scheme="project-unique",
-            pages=1,
-            parse_status="parsed",
-        )
-        self.session.add(self.document)
-        self.session.flush()
-        self.run = ExtractionRun(
-            document_id=self.document.id,
-            prompt_version="packet_review_fixture_v1",
-            outcome="completed",
-            candidate_count=0,
-            page_errors=0,
-        )
-        self.session.add(self.run)
-        self.session.flush()
-        self.session.add(
-            ActiveExtractionRun(
-                document_id=self.document.id, extraction_run_id=self.run.id
-            )
-        )
-        self.session.flush()
-
-    def capture(
-        self,
-        *,
-        fact_type: str,
-        value: str,
-        subject_key: str,
-        date_value: date | None = None,
-    ) -> tuple[Fact, SourceSegment]:
-        self._ordinal += 1
-        segment = SourceSegment(
-            project_id=self.project.id,
-            document_id=self.document.id,
-            kind="spreadsheet_cell",
-            exact_text=value,
-            content_sha256=sha256(f"{uuid4().hex}:{value}".encode()).hexdigest(),
-            ordinal=self._ordinal,
-            sheet_name=SHEET,
-            cell_range=f"C{self._ordinal}",
-        )
-        self.session.add(segment)
-        self.session.flush()
-        fact = Fact(
-            project_id=self.project.id,
-            document_id=self.document.id,
-            extraction_run_id=self.run.id,
-            fact_type=fact_type,
-            subject_kind="source_row",
-            subject_key=subject_key,
-            text_value=None if date_value is not None else value,
-            date_value=date_value,
-            transformation=(
-                "iso_date_cell_v1" if date_value is not None else "trim_cell_text_v1"
-            ),
-            recorded_by="extractor:packet_review_fixture_v1",
-            content_sha256=sha256(
-                f"{uuid4().hex}:{fact_type}:{value}".encode()
-            ).hexdigest(),
-        )
-        self.session.add(fact)
-        self.session.flush()
-        self.session.add(
-            FactSource(
-                project_id=self.project.id,
-                document_id=self.document.id,
-                fact_id=fact.id,
-                source_segment_id=segment.id,
-                role="value_source",
-                ordinal=1,
-            )
-        )
-        self.session.flush()
-        return fact, segment
+    column: str = "C"
 
 
 def accept_baseline_fact(session: Session, project: Project, fact: Fact) -> int:

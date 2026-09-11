@@ -1,7 +1,6 @@
 """Current/as-of Project Record view and four-reader equivalence gate."""
 
 from datetime import date
-from hashlib import sha256
 import json
 from pathlib import Path
 import re
@@ -20,18 +19,13 @@ from corridor.reader_equivalence import (
 )
 from corridor.fact_decisions import include_structured_cell_fact_by_policy
 from corridor.models import (
-    ActiveExtractionRun,
     Candidate,
     Dependency,
-    Document,
     ExtractedProposal,
     ExtractedProposalFact,
-    ExtractionRun,
-    Fact,
-    FactSource,
     Project,
-    SourceSegment,
 )
+from source_capture_support import Rendition
 
 from corridor.llm import RequestConfiguration
 from model_client_support import FakeModelClient
@@ -51,27 +45,14 @@ def record_case(session):
         station_to=None,
     )
     session.add(dependency)
-    document = Document(
-        project_id=project.id,
-        sha256="d" * 64,
-        filename="matrix.xlsx",
-        doc_type="matrix",
-        numbering_scheme="project-unique",
-        pages=1,
-        parse_status="parsed",
-    )
-    session.add(document)
-    session.flush()
-    run = ExtractionRun(
-        document_id=document.id,
+    rendition = Rendition(
+        session,
+        project,
+        "matrix.xlsx",
+        document_sha256="d" * 64,
         prompt_version="current_record_fixture_v1",
-        outcome="completed",
-        candidate_count=0,
-        page_errors=0,
     )
-    session.add(run)
-    session.flush()
-    session.add(ActiveExtractionRun(document_id=document.id, extraction_run_id=run.id))
+    document, run = rendition.document, rendition.run
     candidate = Candidate(
         project_id=project.id,
         kind="dependency",
@@ -98,46 +79,11 @@ def record_case(session):
     session.flush()
     facts = []
     for ordinal, value in enumerate(("100+00", "200+00"), 1):
-        segment = SourceSegment(
-            project_id=project.id,
-            document_id=document.id,
-            kind="spreadsheet_cell",
-            exact_text=value,
-            content_sha256=sha256(value.encode()).hexdigest(),
-            ordinal=ordinal,
-            sheet_name="Utility Conflicts",
-            cell_range=f"D{ordinal + 2}",
-        )
-        session.add(segment)
-        session.flush()
-        fact = Fact(
-            project_id=project.id,
-            document_id=document.id,
-            extraction_run_id=run.id,
+        fact, _segment = rendition.capture(
             fact_type="station_from",
-            subject_kind="source_row",
+            value=value,
             subject_key=proposal.subject_key,
-            text_value=value,
-            date_value=None,
-            date_range_start=None,
-            date_range_end=None,
-            external_org_value_id=None,
-            document_value_id=None,
-            transformation="trim_cell_text_v1",
-            recorded_by="extractor:current_record_fixture_v1",
-            content_sha256=("e" if ordinal == 1 else "f") * 64,
-        )
-        session.add(fact)
-        session.flush()
-        session.add(
-            FactSource(
-                project_id=project.id,
-                document_id=document.id,
-                fact_id=fact.id,
-                source_segment_id=segment.id,
-                role="value_source",
-                ordinal=1,
-            )
+            cell=f"D{ordinal + 2}",
         )
         session.add(
             ExtractedProposalFact(

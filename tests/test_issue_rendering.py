@@ -54,14 +54,9 @@ from corridor.issue_rendering import (
     render_weekly_report,
 )
 from corridor.models import (
-    ActiveExtractionRun,
     DocPage,
-    Document,
-    ExtractionRun,
     Fact,
-    FactSource,
     Project,
-    SourceSegment,
 )
 from corridor.native_follow_up_reading import (
     AcceptedFollowUpPlan,
@@ -77,6 +72,7 @@ from corridor.proposed_deltas import (
     record_delta_deferral,
 )
 from harness_support import adopt_baseline_facts
+from source_capture_support import Rendition
 from delta_supersession_support import record_delta_supersession
 from corridor.review_packets import (
     NEEDS_COORDINATION,
@@ -99,104 +95,22 @@ PLANNED_AT = datetime(2026, 9, 1, 9, 0, tzinfo=timezone.utc)
 RETURNS_AT = datetime(2026, 10, 1, 12, 0, tzinfo=timezone.utc)
 
 
-class _Source:
+class _Source(Rendition):
     """One document a source arrived as, and the Facts captured from it."""
 
-    def __init__(self, session: Session, project: Project, name: str):
-        self.session = session
-        self.project = project
-        self.document = Document(
-            project_id=project.id,
-            sha256=sha256(f"{project.slug}:{name}".encode()).hexdigest(),
-            filename=name,
-            doc_type="matrix",
-            numbering_scheme="project-unique",
-            pages=1,
-            parse_status="parsed",
-        )
-        session.add(self.document)
-        session.flush()
-        self.run = ExtractionRun(
-            document_id=self.document.id,
-            prompt_version="issue_rendering_fixture_v1",
-            outcome="completed",
-            candidate_count=0,
-            page_errors=0,
-        )
-        session.add(self.run)
-        session.flush()
-        session.add(
-            ActiveExtractionRun(
-                document_id=self.document.id, extraction_run_id=self.run.id
-            )
-        )
-        self._ordinal = 0
-
-    def segment(self, value: str) -> SourceSegment:
-        """One addressable piece of this document, with no Fact captured from it.
-
-        A replacement revision carries the same passage at a new locator, so
-        a test that clears the replacement check needs a segment in the
-        successor without capturing a second Source Fact from it.
-        """
-
-        self._ordinal += 1
-        segment = SourceSegment(
-            project_id=self.project.id,
-            document_id=self.document.id,
-            kind="spreadsheet_cell",
-            exact_text=value,
-            content_sha256=sha256(
-                f"{self.document.filename}:{self._ordinal}:{value}".encode()
-            ).hexdigest(),
-            ordinal=self._ordinal,
-            sheet_name="Utility Conflicts",
-            cell_range=f"A{self._ordinal}",
-        )
-        self.session.add(segment)
-        self.session.flush()
-        return segment
-
-    def capture(
+    def capture_fact(
         self,
         *,
         fact_type: str,
         value: str,
         subject_key: str = SUBJECT,
-        date_value: date | None = None,
         supported: bool = True,
     ) -> Fact:
-        segment = self.segment(value)
-        fact = Fact(
-            project_id=self.project.id,
-            document_id=self.document.id,
-            extraction_run_id=self.run.id,
-            fact_type=fact_type,
-            subject_kind="source_row",
-            subject_key=subject_key,
-            text_value=None if date_value is not None else value,
-            date_value=date_value,
-            transformation=(
-                "iso_date_cell_v1" if date_value is not None else "trim_cell_text_v1"
-            ),
-            recorded_by="extractor:issue_rendering_fixture_v1",
-            content_sha256=sha256(
-                f"{self.document.filename}:{fact_type}:{subject_key}:{value}".encode()
-            ).hexdigest(),
+        """Capture one cell's Source Fact, and by default assess its support."""
+
+        fact, segment = self.capture(
+            fact_type=fact_type, value=value, subject_key=subject_key
         )
-        self.session.add(fact)
-        self.session.flush()
-        self.session.add(
-            FactSource(
-                project_id=self.project.id,
-                document_id=self.document.id,
-                fact_id=fact.id,
-                source_segment_id=segment.id,
-                role="value_source",
-                ordinal=1,
-            )
-        )
-        self.session.flush()
         if supported:
             record_support_assessment(
                 self.session,
@@ -484,13 +398,11 @@ def _baseline(session, project):
     """An adopted project with a Promised For, a Required By, and an owner."""
 
     source = _Source(session, project, "ucm-2026-08-01.xlsx")
-    promised = source.capture(
-        fact_type="committed_date", value="2026-11-01", date_value=date(2026, 11, 1)
-    )
-    required = source.capture(
-        fact_type="need_date", value="2026-12-01", date_value=date(2026, 12, 1)
-    )
-    owner = source.capture(fact_type="external_org", value="City Water")
+    promised = source.capture_fact(
+        fact_type="committed_date", value="2026-11-01",)
+    required = source.capture_fact(
+        fact_type="need_date", value="2026-12-01",)
+    owner = source.capture_fact(fact_type="external_org", value="City Water")
     revision = _adopt(session, project, (promised, required, owner), "baseline")
     return source, revision
 
@@ -551,7 +463,7 @@ def test_binding_refuses_a_legacy_project(session, project):
     """A legacy project keeps its own readers; nothing is dual-written for it."""
 
     source = _Source(session, project, "ucm-legacy.xlsx")
-    fact = source.capture(fact_type="external_org", value="City Water")
+    fact = source.capture_fact(fact_type="external_org", value="City Water")
     revision = adopt_baseline_facts(session, project, fact, key="legacy")
 
     with pytest.raises(MixedIssueInputs) as refused:
@@ -575,9 +487,8 @@ def test_a_change_since_the_previous_issue_names_both_accepted_values(
         proposed_value="2026-12-15",
         baseline_revision=baseline,
     )
-    moved = source.capture(
-        fact_type="committed_date", value="2026-12-15", date_value=date(2026, 12, 15)
-    )
+    moved = source.capture_fact(
+        fact_type="committed_date", value="2026-12-15",)
     outcome = _accept(
         session,
         project,
@@ -631,9 +542,8 @@ def test_a_decision_before_the_previous_issue_is_outside_this_window(
         proposed_value="2026-11-20",
         baseline_revision=baseline,
     )
-    early_fact = source.capture(
-        fact_type="committed_date", value="2026-11-20", date_value=date(2026, 11, 20)
-    )
+    early_fact = source.capture_fact(
+        fact_type="committed_date", value="2026-11-20",)
     first = _accept(
         session,
         project,
@@ -651,9 +561,8 @@ def test_a_decision_before_the_previous_issue_is_outside_this_window(
         source_revision="rev-2",
         baseline_revision=baseline,
     )
-    late_fact = source.capture(
-        fact_type="need_date", value="2026-12-20", date_value=date(2026, 12, 20)
-    )
+    late_fact = source.capture_fact(
+        fact_type="need_date", value="2026-12-20",)
     second = _accept(
         session,
         project,
@@ -694,9 +603,8 @@ def test_a_missed_week_widens_the_window_rather_than_dropping_a_change(
         proposed_value="2026-11-20",
         baseline_revision=baseline,
     )
-    first_fact = source.capture(
-        fact_type="committed_date", value="2026-11-20", date_value=date(2026, 11, 20)
-    )
+    first_fact = source.capture_fact(
+        fact_type="committed_date", value="2026-11-20",)
     first = _accept(
         session,
         project,
@@ -714,9 +622,8 @@ def test_a_missed_week_widens_the_window_rather_than_dropping_a_change(
         source_revision="rev-2",
         baseline_revision=baseline,
     )
-    second_fact = source.capture(
-        fact_type="need_date", value="2026-12-20", date_value=date(2026, 12, 20)
-    )
+    second_fact = source.capture_fact(
+        fact_type="need_date", value="2026-12-20",)
     second = _accept(
         session,
         project,
@@ -756,9 +663,8 @@ def test_a_prepared_reading_never_moves_the_comparison_baseline(session, project
         proposed_value="2026-12-15",
         baseline_revision=baseline,
     )
-    moved = source.capture(
-        fact_type="committed_date", value="2026-12-15", date_value=date(2026, 12, 15)
-    )
+    moved = source.capture_fact(
+        fact_type="committed_date", value="2026-12-15",)
     accepted = _accept(
         session,
         project,
@@ -926,9 +832,8 @@ def test_a_delta_raised_against_a_moved_accepted_value_reads_as_stale(
     session, project
 ):
     source, baseline = _baseline(session, project)
-    moved = source.capture(
-        fact_type="committed_date", value="2026-12-15", date_value=date(2026, 12, 15)
-    )
+    moved = source.capture_fact(
+        fact_type="committed_date", value="2026-12-15",)
     mover = _delta(
         session,
         project,
@@ -1022,9 +927,8 @@ def test_an_overdue_promised_date_is_named_by_its_released_check(session, projec
     """The alert reuses the released rule and its customer label, unchanged."""
 
     source = _Source(session, project, "ucm-overdue.xlsx")
-    promised = source.capture(
-        fact_type="committed_date", value="2026-08-01", date_value=date(2026, 8, 1)
-    )
+    promised = source.capture_fact(
+        fact_type="committed_date", value="2026-08-01",)
     revision = _adopt(session, project, (promised,), "overdue-baseline")
     reading = _bind(session, project, revision)
     artifacts = read_issue_artifacts(session, reading)
@@ -1049,8 +953,8 @@ def test_an_accepted_value_with_no_supporting_documentation_raises_the_check(
     """The ported ``MISSING_EVIDENCE``, read from the Support Assessment relation."""
 
     source = _Source(session, project, "ucm-support.xlsx")
-    supported = source.capture(fact_type="external_org", value="City Water")
-    unsupported = source.capture(
+    supported = source.capture_fact(fact_type="external_org", value="City Water")
+    unsupported = source.capture_fact(
         fact_type="resolution_strategy", value="relocate", supported=False
     )
     unsupported_id = unsupported.id
@@ -1077,7 +981,7 @@ def test_the_ported_evidence_check_no_longer_names_the_source_passage_check(
     """ADR-0082: a locatable passage is not support, so the label cannot say it."""
 
     source = _Source(session, project, "ucm-relabelled.xlsx")
-    unsupported = source.capture(
+    unsupported = source.capture_fact(
         fact_type="external_org", value="City Water", supported=False
     )
     revision = _adopt(session, project, (unsupported,), "relabelled-baseline")
@@ -1171,7 +1075,7 @@ def test_an_assessment_that_contradicts_the_value_is_not_supporting_documentatio
     """A named person's adverse reading is a reading, and it is not support."""
 
     source = _Source(session, project, "ucm-contradicted.xlsx")
-    fact = source.capture(
+    fact = source.capture_fact(
         fact_type="external_org", value="City Water", supported=False
     )
     record_support_assessment(
@@ -1198,7 +1102,7 @@ def test_support_resting_only_on_a_replaced_revision_raises_the_replacement_chec
 
     replaced = _Source(session, project, "relocation-letter-rev-a.xlsx")
     successor = _Source(session, project, "relocation-letter-rev-b.xlsx")
-    fact = replaced.capture(fact_type="external_org", value="City Water")
+    fact = replaced.capture_fact(fact_type="external_org", value="City Water")
     _supersede(session, replaced, successor, on=date(2026, 8, 15))
     revision = _adopt(session, project, (fact,), "replaced-baseline")
     reading = _bind(session, project, revision)
@@ -1230,9 +1134,8 @@ def test_a_replaced_revision_goes_quiet_once_the_record_stands_on_the_successor(
 
     replaced = _Source(session, project, "letter-rev-a.xlsx")
     successor = _Source(session, project, "letter-rev-b.xlsx")
-    promised = replaced.capture(
-        fact_type="committed_date", value="2026-11-01", date_value=date(2026, 11, 1)
-    )
+    promised = replaced.capture_fact(
+        fact_type="committed_date", value="2026-11-01",)
     baseline = _adopt(session, project, (promised,), "replacement-baseline")
     _supersede(session, replaced, successor, on=date(2026, 8, 15))
 
@@ -1247,9 +1150,8 @@ def test_a_replaced_revision_goes_quiet_once_the_record_stands_on_the_successor(
         proposed_value="2026-12-15",
         baseline_revision=baseline,
     )
-    moved = successor.capture(
-        fact_type="committed_date", value="2026-12-15", date_value=date(2026, 12, 15)
-    )
+    moved = successor.capture_fact(
+        fact_type="committed_date", value="2026-12-15",)
     accepted = _accept(
         session,
         project,
@@ -1273,7 +1175,7 @@ def test_the_two_support_checks_never_both_fire_on_one_value(session, project):
 
     replaced = _Source(session, project, "orphan-rev-a.xlsx")
     successor = _Source(session, project, "orphan-rev-b.xlsx")
-    fact = replaced.capture(
+    fact = replaced.capture_fact(
         fact_type="external_org", value="City Water", supported=False
     )
     _supersede(session, replaced, successor, on=date(2026, 8, 15))
@@ -1289,8 +1191,8 @@ def test_the_ported_checks_do_not_move_under_an_absurd_clock(session, project):
 
     replaced = _Source(session, project, "clock-rev-a.xlsx")
     successor = _Source(session, project, "clock-rev-b.xlsx")
-    dated = replaced.capture(fact_type="external_org", value="City Water")
-    bare = replaced.capture(
+    dated = replaced.capture_fact(fact_type="external_org", value="City Water")
+    bare = replaced.capture_fact(
         fact_type="resolution_strategy", value="relocate", supported=False
     )
     _supersede(session, replaced, successor, on=date(2026, 8, 15))
@@ -1376,9 +1278,8 @@ def _moved_promise(session, project):
         proposed_value="2026-12-15",
         baseline_revision=baseline,
     )
-    moved = source.capture(
-        fact_type="committed_date", value="2026-12-15", date_value=date(2026, 12, 15)
-    )
+    moved = source.capture_fact(
+        fact_type="committed_date", value="2026-12-15",)
     accepted = _accept(
         session,
         project,
@@ -1697,10 +1598,9 @@ def test_a_value_without_class_complete_provenance_is_refused(session, project):
     """Support is named, never inferred from a passed source passage check."""
 
     source = _Source(session, project, "ucm-unsupported.xlsx")
-    promised = source.capture(
+    promised = source.capture_fact(
         fact_type="committed_date",
         value="2026-11-01",
-        date_value=date(2026, 11, 1),
         supported=False,
     )
     revision = _adopt(session, project, (promised,), "unsupported-baseline")
@@ -1809,9 +1709,8 @@ def test_the_structured_readings_carry_what_the_package_needs(session, project):
         proposed_value="2026-12-15",
         baseline_revision=baseline,
     )
-    moved = source.capture(
-        fact_type="committed_date", value="2026-12-15", date_value=date(2026, 12, 15)
-    )
+    moved = source.capture_fact(
+        fact_type="committed_date", value="2026-12-15",)
     accepted = _accept(
         session,
         project,

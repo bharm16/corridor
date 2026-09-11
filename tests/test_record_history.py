@@ -151,7 +151,6 @@ class Adopted:
                 fact_type="committed_date",
                 value=ACCEPTED,
                 subject_key=subject(number),
-                date_value=date.fromisoformat(ACCEPTED),
             )
             revision = accept_baseline_fact(self.session, self.project, fact)
             support(self.session, self.project, fact, segment)
@@ -212,7 +211,6 @@ class Adopted:
             fact_type="committed_date",
             value=value,
             subject_key=subject(number),
-            date_value=date.fromisoformat(value),
         )
         support(self.session, self.project, fact, segment)
         return append_deltas(

@@ -160,7 +160,6 @@ class Chase:
             fact_type=field_name,
             value=value,
             subject_key=subject(number),
-            date_value=date.fromisoformat(value) if is_date else None,
         )
         revision = accept_baseline_fact(self.session, self.project, fact)
         self.revision_of[(subject(number), field_name)] = revision
@@ -205,7 +204,6 @@ class Chase:
             fact_type="committed_date",
             value=value,
             subject_key=subject(number),
-            date_value=date.fromisoformat(value),
         )
         support(self.session, self.project, fact, segment)
         return append_deltas(
@@ -637,7 +635,6 @@ def test_a_plan_on_an_uncontradicted_difference_asks_the_plain_question(
         fact_type="committed_date",
         value=ALSO_SOON,
         subject_key=subject(FIRST),
-        date_value=date.fromisoformat(ALSO_SOON),
     )
     move_accepted_value(session, project, later)
     session.expire_all()

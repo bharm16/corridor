@@ -235,7 +235,6 @@ def _cross_source_answers(session: Session, project: Project, revision_id: int):
             fact_type="committed_date",
             value=value,
             subject_key=subject(3),
-            date_value=date.fromisoformat(value),
         )
         support(session, project, fact, segment)
         append_deltas(

@@ -25,7 +25,8 @@ from corridor.fact_values import (
     scalar_fact_value,
     typed_fact_value,
 )
-from corridor.models import ActiveExtractionRun, Candidate, Dependency, Document, ExtractedProposal, ExtractedProposalFact, ExtractionRun, Fact, FactAppliesTo, FactClosureResult, FactSource, FactStatementTiming, SourceSegment
+from corridor.models import Candidate, Dependency, ExtractedProposal, ExtractedProposalFact, Fact, FactAppliesTo, FactClosureResult, FactStatementTiming
+from source_capture_support import Rendition
 from corridor.record_projection import (
     CurrentRecordValue,
     CurrentStatementTiming,
@@ -167,46 +168,17 @@ def test_the_comparison_pass_compares_only_single_valued_fields():
 
 
 @pytest.fixture
-def document(session, project):
-    row = Document(
-        project_id=project.id,
-        sha256="a" * 64,
-        filename="matrix.xlsx",
-        doc_type="matrix",
-        numbering_scheme="project-unique",
-        pages=1,
-        parse_status="parsed",
-    )
-    session.add(row)
-    session.flush()
-    run = ExtractionRun(
-        document_id=row.id,
+def rendition(session, project):
+    """One arriving rendition whose cells these readings are taken from."""
+
+    return Rendition(
+        session,
+        project,
+        "matrix.xlsx",
+        subject_key="Utility Conflicts!3",
+        document_sha256="a" * 64,
         prompt_version="fact_values_fixture_v1",
-        outcome="completed",
-        candidate_count=0,
-        page_errors=0,
     )
-    session.add(run)
-    session.flush()
-    session.add(ActiveExtractionRun(document_id=row.id, extraction_run_id=run.id))
-    session.flush()
-    return row, run
-
-
-def _segment(session, project, document, *, ordinal, cell, value):
-    row = SourceSegment(
-        project_id=project.id,
-        document_id=document.id,
-        kind="spreadsheet_cell",
-        exact_text=value,
-        content_sha256=sha256(f"{cell}:{value}".encode()).hexdigest(),
-        ordinal=ordinal,
-        sheet_name="Utility Conflicts",
-        cell_range=cell,
-    )
-    session.add(row)
-    session.flush()
-    return row
 
 
 def _fact(session, project, document, run, *, fact_type, transformation, **values):
@@ -227,8 +199,8 @@ def _fact(session, project, document, run, *, fact_type, transformation, **value
     return row
 
 
-def test_a_captured_text_fact_reads_its_exact_cell(session, project, document):
-    doc, run = document
+def test_a_captured_text_fact_reads_its_exact_cell(session, project, rendition):
+    doc, run = rendition.document, rendition.run
     fact = _fact(
         session, project, doc, run,
         fact_type="station_from", transformation="trim_cell_text_v1",
@@ -237,8 +209,8 @@ def test_a_captured_text_fact_reads_its_exact_cell(session, project, document):
     assert read_fact_value(session, fact) == "1149+00"
 
 
-def test_a_captured_date_fact_reads_one_iso_date(session, project, document):
-    doc, run = document
+def test_a_captured_date_fact_reads_one_iso_date(session, project, rendition):
+    doc, run = rendition.document, rendition.run
     fact = _fact(
         session, project, doc, run,
         fact_type="committed_date", transformation="iso_date_cell_v1",
@@ -248,14 +220,14 @@ def test_a_captured_date_fact_reads_one_iso_date(session, project, document):
 
 
 def test_a_captured_applies_to_fact_reads_its_subject_keys_in_order(
-    session, project, document
+    session, project, rendition
 ):
-    doc, run = document
+    doc, run = rendition.document, rendition.run
     fact = _fact(
         session, project, doc, run,
         fact_type="applies_to", transformation="structured_reference_set_v1",
     )
-    segment = _segment(session, project, doc, ordinal=1, cell="K3", value="UC-2, UC-1")
+    segment = rendition.segment("UC-2, UC-1", cell="K3")
     for ordinal, key in enumerate(("UC-2", "UC-1"), start=1):
         session.add(
             FactAppliesTo(
@@ -270,7 +242,7 @@ def test_a_captured_applies_to_fact_reads_its_subject_keys_in_order(
 
 
 def test_a_legacy_dependency_scope_is_identity_and_not_a_value(
-    session, project, document
+    session, project, rendition
 ):
     """A ``dependency_id`` member stays out of the payload, by design.
 
@@ -279,7 +251,7 @@ def test_a_legacy_dependency_scope_is_identity_and_not_a_value(
     never compared against a native subject key as though it were a value.
     """
 
-    doc, run = document
+    doc, run = rendition.document, rendition.run
     target = Dependency(
         project_id=project.id, ref_code="DEP-00001",
         dep_type="utility_relocation", title="Target",
@@ -299,8 +271,8 @@ def test_a_legacy_dependency_scope_is_identity_and_not_a_value(
     assert read_fact_value(session, fact) == {"mode": "unknown", "subject_keys": []}
 
 
-def test_a_captured_closure_fact_reads_its_typed_kind(session, project, document):
-    doc, run = document
+def test_a_captured_closure_fact_reads_its_typed_kind(session, project, rendition):
+    doc, run = rendition.document, rendition.run
     fact = _fact(
         session, project, doc, run,
         fact_type="closure_result", transformation="typed_closure_result_v1",
@@ -317,8 +289,8 @@ def test_a_captured_closure_fact_reads_its_typed_kind(session, project, document
     }
 
 
-def test_an_unresolved_closure_fact_reads_as_no_kind(session, project, document):
-    doc, run = document
+def test_an_unresolved_closure_fact_reads_as_no_kind(session, project, rendition):
+    doc, run = rendition.document, rendition.run
     fact = _fact(
         session, project, doc, run,
         fact_type="closure_result", transformation="typed_closure_result_v1",
@@ -364,10 +336,10 @@ def test_a_captured_statement_timing_fact_reads_both_roles(session, project):
 
 
 @pytest.fixture
-def accepted_record(session, project, document):
+def accepted_record(session, project, rendition):
     """Two accepted stationing values, through the released inclusion policy."""
 
-    doc, run = document
+    doc, run = rendition.document, rendition.run
     dependency = Dependency(
         project_id=project.id, ref_code="DEP-00001",
         dep_type="utility_relocation", title="Utility conflict",
@@ -394,25 +366,15 @@ def accepted_record(session, project, document):
     for ordinal, (fact_type, value) in enumerate(
         (("station_from", "100+00"), ("station_to", "200+00")), start=1
     ):
-        segment = _segment(
-            session, project, doc, ordinal=ordinal, cell=f"D{ordinal + 2}", value=value
+        fact, _segment_row = rendition.capture(
+            fact_type=fact_type, value=value, subject_key=proposal.subject_key,
+            cell=f"D{ordinal + 2}",
         )
-        fact = _fact(
-            session, project, doc, run,
-            fact_type=fact_type, transformation="trim_cell_text_v1",
-            subject_key=proposal.subject_key, text_value=value,
-        )
-        session.add_all(
-            (
-                FactSource(
-                    project_id=project.id, document_id=doc.id, fact_id=fact.id,
-                    source_segment_id=segment.id, role="value_source", ordinal=1,
-                ),
-                ExtractedProposalFact(
-                    project_id=project.id, document_id=doc.id,
-                    extraction_run_id=run.id, proposal_id=proposal.id,
-                    fact_id=fact.id, ordinal=ordinal,
-                ),
+        session.add(
+            ExtractedProposalFact(
+                project_id=project.id, document_id=doc.id,
+                extraction_run_id=run.id, proposal_id=proposal.id,
+                fact_id=fact.id, ordinal=ordinal,
             )
         )
         session.flush()

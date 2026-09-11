@@ -17,7 +17,6 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
-from hashlib import sha256
 from uuid import uuid4
 
 import pytest
@@ -37,14 +36,9 @@ from corridor.delta_resolution import (
     resolve_delta,
 )
 from corridor.models import (
-    ActiveExtractionRun,
     DueWorkSchedule,
-    ExtractionRun,
-    Document,
     Fact,
-    FactSource,
     Project,
-    SourceSegment,
 )
 from corridor.principals import HumanPrincipal
 from corridor.proposed_deltas import (
@@ -56,6 +50,7 @@ from corridor.proposed_deltas import (
 from corridor.support_assessments import FactProposition, record_support_assessment
 from corridor.report_preparation import execute_report_preparation
 from harness_support import accepted_revision
+from source_capture_support import Rendition
 
 
 class ControlledClock:
@@ -77,66 +72,15 @@ def _supported_fact(session, project_id: int, subject: str, value: str):
     needs both to exist.
     """
 
-    document = Document(
-        project_id=project_id,
-        sha256=sha256(f"{project_id}:{subject}:{value}".encode()).hexdigest(),
-        filename=f"{subject}.xlsx",
-        doc_type="matrix",
-        numbering_scheme="project-unique",
-        pages=1,
-        parse_status="parsed",
-    )
-    session.add(document)
-    session.flush()
-    run = ExtractionRun(
-        document_id=document.id,
-        prompt_version="report_preparation_fixture_v1",
-        outcome="completed",
-        candidate_count=0,
-        page_errors=0,
-    )
-    session.add(run)
-    session.flush()
-    session.add(
-        ActiveExtractionRun(document_id=document.id, extraction_run_id=run.id)
-    )
-    segment = SourceSegment(
-        project_id=project_id,
-        document_id=document.id,
-        kind="spreadsheet_cell",
-        exact_text=value,
-        content_sha256=sha256(value.encode()).hexdigest(),
-        ordinal=1,
-        sheet_name="Utility Conflicts",
-        cell_range="A2",
-    )
-    session.add(segment)
-    session.flush()
-    fact = Fact(
-        project_id=project_id,
-        document_id=document.id,
-        extraction_run_id=run.id,
-        fact_type="station_from",
-        subject_kind="source_row",
+    rendition = Rendition(
+        session,
+        session.get_one(Project, project_id),
+        f"{subject}.xlsx",
         subject_key=subject,
-        text_value=value,
-        transformation="trim_cell_text_v1",
-        recorded_by="extractor:report_preparation_fixture_v1",
-        content_sha256=sha256(f"{subject}:{value}".encode()).hexdigest(),
     )
-    session.add(fact)
-    session.flush()
-    session.add(
-        FactSource(
-            project_id=project_id,
-            document_id=document.id,
-            fact_id=fact.id,
-            source_segment_id=segment.id,
-            role="value_source",
-            ordinal=1,
-        )
+    fact, segment = rendition.capture(
+        fact_type="station_from", value=value, cell="A2"
     )
-    session.flush()
     assessment = record_support_assessment(
         session,
         project_id=project_id,

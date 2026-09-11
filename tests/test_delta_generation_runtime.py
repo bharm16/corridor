@@ -35,21 +35,18 @@ from corridor.due_work import (
 )
 from corridor.fact_decisions import include_structured_cell_fact_by_policy
 from corridor.models import (
-    ActiveExtractionRun,
     Candidate,
     Dependency,
     Document,
     ExtractedProposal,
     ExtractedProposalFact,
-    ExtractionRun,
     Fact,
     FactDecision,
-    FactSource,
     Project,
     ProjectRecordRevision,
     ProposedDelta,
-    SourceSegment,
 )
+from source_capture_support import Rendition
 from corridor.operating_mode import ADOPTED_BASELINE, adopt_project_baseline
 
 
@@ -67,74 +64,17 @@ class ControlledClock:
         return self.value
 
 
-def _document(session, project, *, registry_id, sha_character, filename):
-    document = Document(
-        project_id=project.id,
+def _rendition(session, project, *, registry_id, sha_character, filename):
+    """One arriving rendition, with the file identity this module reads."""
+
+    return Rendition(
+        session,
+        project,
+        filename,
         registry_id=registry_id,
-        sha256=sha_character * 64,
-        filename=filename,
-        doc_type="matrix",
-        numbering_scheme="project-unique",
-        pages=1,
-        parse_status="parsed",
-    )
-    session.add(document)
-    session.flush([document])
-    run = ExtractionRun(
-        document_id=document.id,
+        document_sha256=sha_character * 64,
         prompt_version="delta_generation_fixture_v1",
-        outcome="completed",
-        candidate_count=0,
-        page_errors=0,
     )
-    session.add(run)
-    session.flush([run])
-    session.add(ActiveExtractionRun(document_id=document.id, extraction_run_id=run.id))
-    session.flush()
-    return document, run
-
-
-def _cell_fact(session, project, document, run, *, ordinal, cell, subject, kind, value):
-    segment = SourceSegment(
-        project_id=project.id,
-        document_id=document.id,
-        kind="spreadsheet_cell",
-        exact_text=value,
-        content_sha256=sha256(f"{document.sha256}:{cell}:{value}".encode()).hexdigest(),
-        ordinal=ordinal,
-        sheet_name="Utility Conflicts",
-        cell_range=cell,
-    )
-    session.add(segment)
-    session.flush([segment])
-    fact = Fact(
-        project_id=project.id,
-        document_id=document.id,
-        extraction_run_id=run.id,
-        fact_type=kind,
-        subject_kind="source_row",
-        subject_key=subject,
-        text_value=value,
-        transformation="trim_cell_text_v1",
-        recorded_by="extractor:delta_generation_fixture_v1",
-        content_sha256=sha256(
-            f"fact:{document.sha256}:{cell}:{value}".encode()
-        ).hexdigest(),
-    )
-    session.add(fact)
-    session.flush([fact])
-    session.add(
-        FactSource(
-            project_id=project.id,
-            document_id=document.id,
-            fact_id=fact.id,
-            source_segment_id=segment.id,
-            role="value_source",
-            ordinal=1,
-        )
-    )
-    session.flush()
-    return fact
 
 
 def _accept_by_policy(session, project, document, run, fact):
@@ -200,46 +140,33 @@ def _seed_project(factory, now, *, adopt=False):
         setup.add(project)
         setup.flush([project])
 
-        accepted_document, accepted_run = _document(
+        accepted = _rendition(
             setup, project, registry_id="REV-A", sha_character="a", filename="a.xlsx"
         )
-        accepted_fact = _cell_fact(
-            setup,
-            project,
-            accepted_document,
-            accepted_run,
-            ordinal=1,
-            cell="D3",
-            subject=SUBJECT,
-            kind="station_from",
+        accepted_fact, _ = accepted.capture(
+            fact_type="station_from",
             value=ACCEPTED_STATION,
+            subject_key=SUBJECT,
+            cell="D3",
         )
-        _accept_by_policy(setup, project, accepted_document, accepted_run, accepted_fact)
+        _accept_by_policy(
+            setup, project, accepted.document, accepted.run, accepted_fact
+        )
 
-        incoming_document, incoming_run = _document(
+        incoming = _rendition(
             setup, project, registry_id="REV-B", sha_character="b", filename="b.xlsx"
         )
-        _cell_fact(
-            setup,
-            project,
-            incoming_document,
-            incoming_run,
-            ordinal=1,
-            cell="D3",
-            subject=SUBJECT,
-            kind="station_from",
+        incoming.capture(
+            fact_type="station_from",
             value=PROPOSED_STATION,
+            subject_key=SUBJECT,
+            cell="D3",
         )
-        _cell_fact(
-            setup,
-            project,
-            incoming_document,
-            incoming_run,
-            ordinal=2,
-            cell="A9",
-            subject=NEW_SUBJECT,
-            kind="utility_id",
+        incoming.capture(
+            fact_type="utility_id",
             value="UC-9",
+            subject_key=NEW_SUBJECT,
+            cell="A9",
         )
 
         if adopt:
@@ -263,7 +190,7 @@ def _seed_project(factory, now, *, adopt=False):
             ),
             now=now,
         )
-        ids = (project.id, schedule.id, incoming_document.id)
+        ids = (project.id, schedule.id, incoming.document.id)
         setup.commit()
     return ids
 

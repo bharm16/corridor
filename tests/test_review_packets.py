@@ -16,8 +16,7 @@ question is answered from append-only identifiers.
 
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
-from hashlib import sha256
+from datetime import datetime, timezone
 from uuid import uuid4
 
 import pytest
@@ -43,7 +42,6 @@ from corridor.delta_resolution import (
     validate_child_decision,
 )
 from corridor.models import (
-    ActiveExtractionRun,
     DeltaDecisionSupport,
     DeltaDeferral,
     DeltaDisposition,
@@ -53,11 +51,8 @@ from corridor.models import (
     DeltaReviewPacketChild,
     DeltaReviewPacketReceipt,
     DeltaReviewPacketSupport,
-    Document,
-    ExtractionRun,
     Fact,
     FactDecision,
-    FactSource,
     Project,
     ProjectRecordRevision,
     ProposedDelta,
@@ -71,6 +66,7 @@ from corridor.proposed_deltas import (
 )
 from corridor.db_roles import RECORD_DECISION_ROLE
 from harness_support import adopt_baseline_facts, as_role
+from source_capture_support import Rendition
 from delta_supersession_support import record_delta_supersession
 from corridor.review_packets import (
     APPLY,
@@ -116,89 +112,10 @@ def project(session: Session) -> Project:
     return row
 
 
-class _Rendition:
-    """One document a source arrived as, and the Facts captured from it."""
+def _rendition(session: Session, project: Project, name: str) -> Rendition:
+    """One arriving workbook rendition, concerning this module's one subject."""
 
-    def __init__(self, session: Session, project: Project, name: str):
-        self.session = session
-        self.project = project
-        self.document = Document(
-            project_id=project.id,
-            sha256=sha256(f"{project.slug}:{name}".encode()).hexdigest(),
-            filename=name,
-            doc_type="matrix",
-            numbering_scheme="project-unique",
-            pages=1,
-            parse_status="parsed",
-        )
-        session.add(self.document)
-        session.flush()
-        self.run = ExtractionRun(
-            document_id=self.document.id,
-            prompt_version="review_packet_fixture_v1",
-            outcome="completed",
-            candidate_count=0,
-            page_errors=0,
-        )
-        session.add(self.run)
-        session.flush()
-        session.add(
-            ActiveExtractionRun(
-                document_id=self.document.id, extraction_run_id=self.run.id
-            )
-        )
-        self._ordinal = 0
-
-    def capture(
-        self,
-        *,
-        fact_type: str,
-        value: str,
-        subject_key: str = SUBJECT,
-        date_value: date | None = None,
-    ) -> tuple[Fact, SourceSegment]:
-        self._ordinal += 1
-        segment = SourceSegment(
-            project_id=self.project.id,
-            document_id=self.document.id,
-            kind="spreadsheet_cell",
-            exact_text=value,
-            content_sha256=sha256(f"{uuid4().hex}:{value}".encode()).hexdigest(),
-            ordinal=self._ordinal,
-            sheet_name="Utility Conflicts",
-            cell_range=f"A{self._ordinal}",
-        )
-        self.session.add(segment)
-        self.session.flush()
-        fact = Fact(
-            project_id=self.project.id,
-            document_id=self.document.id,
-            extraction_run_id=self.run.id,
-            fact_type=fact_type,
-            subject_kind="source_row",
-            subject_key=subject_key,
-            text_value=None if date_value is not None else value,
-            date_value=date_value,
-            transformation=(
-                "iso_date_cell_v1" if date_value is not None else "trim_cell_text_v1"
-            ),
-            recorded_by="extractor:review_packet_fixture_v1",
-            content_sha256=sha256(f"{uuid4().hex}:{fact_type}:{value}".encode()).hexdigest(),
-        )
-        self.session.add(fact)
-        self.session.flush()
-        self.session.add(
-            FactSource(
-                project_id=self.project.id,
-                document_id=self.document.id,
-                fact_id=fact.id,
-                source_segment_id=segment.id,
-                role="value_source",
-                ordinal=1,
-            )
-        )
-        self.session.flush()
-        return fact, segment
+    return Rendition(session, project, name, subject_key=SUBJECT)
 
 
 def _support(
@@ -347,7 +264,7 @@ def _spine_counts(session: Session, project: Project) -> dict[str, int]:
 def test_a_stale_child_refuses_the_whole_packet_and_writes_nothing(
     session: Session, project: Project
 ) -> None:
-    rendition = _Rendition(session, project, "ucm-a.xlsx")
+    rendition = _rendition(session, project, "ucm-a.xlsx")
     accepted, _ = rendition.capture(fact_type="station_from", value="1149+00")
     baseline = _adopt(session, project, accepted, f"adopt-{project.id}")
     first_incoming, first_segment = rendition.capture(
@@ -402,7 +319,7 @@ def test_a_stale_child_refuses_the_whole_packet_and_writes_nothing(
 def test_a_superseded_child_refuses_the_whole_packet(
     session: Session, project: Project
 ) -> None:
-    rendition = _Rendition(session, project, "ucm-b.xlsx")
+    rendition = _rendition(session, project, "ucm-b.xlsx")
     incoming, segment = rendition.capture(fact_type="station_from", value="1200+00")
     support = _support(session, project, incoming, segment)
     superseded = _delta(session, project, field="station_from")
@@ -436,7 +353,7 @@ def test_a_cross_project_child_refuses_the_whole_packet(
     )
     session.add(other)
     session.flush()
-    rendition = _Rendition(session, project, "ucm-c.xlsx")
+    rendition = _rendition(session, project, "ucm-c.xlsx")
     incoming, segment = rendition.capture(fact_type="station_from", value="1200+00")
     support = _support(session, project, incoming, segment)
     mine = _delta(session, project)
@@ -486,7 +403,7 @@ def test_a_child_read_against_another_source_version_refuses_the_packet(
 ) -> None:
     """The source version is named per child, so no child is implicitly selected."""
 
-    rendition = _Rendition(session, project, "ucm-d.xlsx")
+    rendition = _rendition(session, project, "ucm-d.xlsx")
     incoming, segment = rendition.capture(fact_type="station_from", value="1200+00")
     support = _support(session, project, incoming, segment)
     delta = _delta(session, project, source_revision="rev-7")
@@ -508,7 +425,7 @@ def test_a_child_read_against_another_source_version_refuses_the_packet(
 def test_a_child_without_named_support_refuses_the_whole_packet(
     session: Session, project: Project
 ) -> None:
-    rendition = _Rendition(session, project, "ucm-e.xlsx")
+    rendition = _rendition(session, project, "ucm-e.xlsx")
     good, good_segment = rendition.capture(fact_type="station_from", value="1200+00")
     unsupported, _ = rendition.capture(fact_type="station_to", value="1260+00")
     good_support = _support(session, project, good, good_segment)
@@ -547,7 +464,7 @@ def test_a_child_without_named_support_refuses_the_whole_packet(
 def test_an_already_resolved_child_refuses_the_whole_packet(
     session: Session, project: Project
 ) -> None:
-    rendition = _Rendition(session, project, "ucm-f.xlsx")
+    rendition = _rendition(session, project, "ucm-f.xlsx")
     incoming, segment = rendition.capture(fact_type="station_from", value="1200+00")
     support = _support(session, project, incoming, segment)
     resolved = _delta(session, project)
@@ -700,7 +617,7 @@ def test_a_packet_of_dated_deferrals_alone_writes_no_project_record_revision(
 def test_one_packet_writes_one_revision_holding_every_child_decision(
     session: Session, project: Project
 ) -> None:
-    rendition = _Rendition(session, project, "ucm-g.xlsx")
+    rendition = _rendition(session, project, "ucm-g.xlsx")
     accepted, _ = rendition.capture(fact_type="station_from", value="1149+00")
     baseline = _adopt(session, project, accepted, f"adopt-{project.id}")
     incoming, incoming_segment = rendition.capture(
@@ -796,7 +713,7 @@ def test_a_packet_child_and_a_standalone_resolution_validate_identically(
 ) -> None:
     """One validation and decision-construction seam, not two (#519)."""
 
-    rendition = _Rendition(session, project, "ucm-h.xlsx")
+    rendition = _rendition(session, project, "ucm-h.xlsx")
     incoming, segment = rendition.capture(fact_type="station_from", value="1200+00")
     support = _support(session, project, incoming, segment)
     delta = _delta(session, project)
@@ -840,7 +757,7 @@ def test_an_edit_child_of_unsupported_free_text_refuses_the_whole_packet(
 ) -> None:
     """ADR-0084's rule is #519's, and the packet does not soften it."""
 
-    rendition = _Rendition(session, project, "ucm-q.xlsx")
+    rendition = _rendition(session, project, "ucm-q.xlsx")
     incoming, segment = rendition.capture(fact_type="station_from", value="1200+00")
     support = _support(session, project, incoming, segment)
     healthy = _delta(session, project, field="station_from")
@@ -881,7 +798,7 @@ def test_free_text_on_an_external_fact_returns_the_coordination_question(
 ) -> None:
     """The bounded result #519 returns so #526 can open the Follow-up Plan form."""
 
-    rendition = _Rendition(session, project, "ucm-r.xlsx")
+    rendition = _rendition(session, project, "ucm-r.xlsx")
     incoming, segment = rendition.capture(
         fact_type="external_org", value="Regional Water"
     )
@@ -952,10 +869,9 @@ def test_free_text_on_an_external_fact_returns_the_coordination_question(
 def test_needs_coordination_records_a_plan_and_leaves_the_delta_open(
     session: Session, project: Project
 ) -> None:
-    rendition = _Rendition(session, project, "ucm-i.xlsx")
+    rendition = _rendition(session, project, "ucm-i.xlsx")
     incoming, segment = rendition.capture(
-        fact_type="committed_date", value="2026-11-02", date_value=date(2026, 11, 2)
-    )
+        fact_type="committed_date", value="2026-11-02",)
     evidence = _support(session, project, incoming, segment)
     delta = _delta(
         session,
@@ -1053,7 +969,7 @@ def test_needs_coordination_without_a_responsible_party_refuses_the_packet(
 def test_a_mixed_packet_commits_one_revision_its_plans_and_its_deferrals_at_once(
     session: Session, project: Project
 ) -> None:
-    rendition = _Rendition(session, project, "ucm-j.xlsx")
+    rendition = _rendition(session, project, "ucm-j.xlsx")
     incoming, segment = rendition.capture(fact_type="station_from", value="1200+00")
     support = _support(session, project, incoming, segment)
     applied = _delta(session, project, field="station_from")
@@ -1113,7 +1029,7 @@ def test_a_mixed_packet_commits_one_revision_its_plans_and_its_deferrals_at_once
 def test_the_receipt_enumerates_the_rule_children_outcomes_and_support(
     session: Session, project: Project
 ) -> None:
-    rendition = _Rendition(session, project, "ucm-k.xlsx")
+    rendition = _rendition(session, project, "ucm-k.xlsx")
     accepted, _ = rendition.capture(fact_type="station_from", value="1149+00")
     baseline = _adopt(session, project, accepted, f"adopt-{project.id}")
     incoming, segment = rendition.capture(fact_type="station_from", value="1200+00")
@@ -1199,7 +1115,7 @@ def test_the_receipt_enumerates_the_rule_children_outcomes_and_support(
 def test_a_replay_of_the_same_packet_returns_what_it_already_wrote(
     session: Session, project: Project
 ) -> None:
-    rendition = _Rendition(session, project, "ucm-l.xlsx")
+    rendition = _rendition(session, project, "ucm-l.xlsx")
     incoming, segment = rendition.capture(fact_type="station_from", value="1200+00")
     support = _support(session, project, incoming, segment)
     delta = _delta(session, project)
@@ -1224,7 +1140,7 @@ def test_a_replay_of_the_same_packet_returns_what_it_already_wrote(
 def test_undo_reverses_the_complete_packet_when_no_later_act_depends_on_it(
     session: Session, project: Project
 ) -> None:
-    rendition = _Rendition(session, project, "ucm-m.xlsx")
+    rendition = _rendition(session, project, "ucm-m.xlsx")
     accepted, _ = rendition.capture(fact_type="station_from", value="1149+00")
     baseline = _adopt(session, project, accepted, f"adopt-{project.id}")
     incoming, segment = rendition.capture(fact_type="station_from", value="1200+00")
@@ -1312,7 +1228,7 @@ def test_undo_of_a_deferral_only_packet_writes_no_revision(
 def test_undo_is_refused_when_a_later_act_depends_on_a_result(
     session: Session, project: Project
 ) -> None:
-    rendition = _Rendition(session, project, "ucm-n.xlsx")
+    rendition = _rendition(session, project, "ucm-n.xlsx")
     accepted, accepted_segment = rendition.capture(
         fact_type="station_from", value="1149+00"
     )
@@ -1375,7 +1291,7 @@ def test_a_later_correction_targets_one_child_and_keeps_the_original_receipt(
 ) -> None:
     """Correction is a later decision on a new delta, never a rewritten receipt."""
 
-    rendition = _Rendition(session, project, "ucm-o.xlsx")
+    rendition = _rendition(session, project, "ucm-o.xlsx")
     accepted, accepted_segment = rendition.capture(
         fact_type="station_from", value="1149+00"
     )
@@ -1463,7 +1379,7 @@ def test_a_later_correction_targets_one_child_and_keeps_the_original_receipt(
 def test_packet_save_and_follow_up_plan_creation_emit_versioned_events(
     session: Session, project: Project
 ) -> None:
-    rendition = _Rendition(session, project, "ucm-p.xlsx")
+    rendition = _rendition(session, project, "ucm-p.xlsx")
     incoming, segment = rendition.capture(fact_type="station_from", value="1200+00")
     support = _support(session, project, incoming, segment)
     applied = _delta(session, project, field="station_from")
