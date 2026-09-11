@@ -17,7 +17,7 @@ import pytest
 
 from corridor.admission import load_project
 from corridor.config import settings
-from corridor.models import DocPage, Document, Project, ScannedPageObservation, UnreadableCellResolution
+from corridor.models import DocPage, Document, ScannedPageObservation, UnreadableCellResolution
 from corridor.page_inventory import (
     OCR_ENGINES,
     TEXTRACT_ENGINE,
@@ -833,14 +833,6 @@ def test_a_transcription_is_only_checked_against_the_provider_that_read_the_page
 
 
 # --- an unconfirmed reading: flagged, never Ready, upgraded on corroboration ----
-
-
-@pytest.fixture
-def project(session):
-    project = Project(slug="scanned-textract-test", name="Scanned Textract Test", is_synthetic=True)
-    session.add(project)
-    session.flush()
-    return project
 
 
 def _document(session, project, *, filename, text, text_source):

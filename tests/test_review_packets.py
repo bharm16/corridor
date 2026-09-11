@@ -100,18 +100,6 @@ SOURCE_REVISION = "rev-1"
 RULE_VERSION = "packetizer-v1"
 
 
-@pytest.fixture
-def project(session: Session) -> Project:
-    row = Project(
-        slug=f"review-packet-{uuid4().hex[:8]}",
-        name="Review Packet",
-        is_synthetic=True,
-    )
-    session.add(row)
-    session.flush()
-    return row
-
-
 def _rendition(session: Session, project: Project, name: str) -> Rendition:
     """One arriving workbook rendition, concerning this module's one subject."""
 

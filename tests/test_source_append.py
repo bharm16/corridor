@@ -25,14 +25,6 @@ from corridor.source_append import (
 
 
 @pytest.fixture
-def project(session):
-    project = Project(slug="source-append", name="Source Append", is_synthetic=True)
-    session.add(project)
-    session.flush()
-    return project
-
-
-@pytest.fixture
 def other_project(session):
     project = Project(slug="source-append-other", name="Other", is_synthetic=True)
     session.add(project)

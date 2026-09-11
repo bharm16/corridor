@@ -45,14 +45,6 @@ TEST_PRINCIPAL = HumanPrincipal("local:changes-reviewer")
 
 
 @pytest.fixture
-def project(session):
-    p = Project(slug="chg-test", name="Changes Test", is_synthetic=True)
-    session.add(p)
-    session.flush()
-    return p
-
-
-@pytest.fixture
 def document(session, project):
     d = Document(
         project_id=project.id,

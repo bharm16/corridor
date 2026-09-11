@@ -69,16 +69,8 @@ from clock_support import ControlledClock
 
 
 @pytest.fixture
-def project(session):
-    project = Project(
-        slug=f"capture-{uuid4().hex}",
-        name="Capture test",
-        is_synthetic=True,
-    )
-    session.add(project)
-    session.flush()
-    seed_membership(session, project, RECORDER)
-    return project
+def project(member_project):
+    return member_project(RECORDER)
 
 
 def _contract(case, *, cutoff, window_start=None, history_retained_from=None, **overrides):

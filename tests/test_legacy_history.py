@@ -6,7 +6,8 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 
-from corridor.db import Session, engine
+from conftest import rollback_scoped_session
+
 from corridor.legacy_history import (
     HistoryRefused, capture_history, coordination_decisions_as_of, history_rows,
     inventory_history, read_history, reverse_history,
@@ -16,14 +17,10 @@ from corridor.models import Dependency, Project, WorkDecision
 
 @pytest.fixture
 def session():
-    connection = engine.connect().execution_options(isolation_level="REPEATABLE READ")
-    transaction = connection.begin()
-    scoped = Session(bind=connection)
-    yield scoped
-    scoped.close()
-    if transaction.is_active:
-        transaction.rollback()
-    connection.close()
+    """The shared rollback-scoped session, at REPEATABLE READ."""
+
+    with rollback_scoped_session(isolation_level="REPEATABLE READ") as scoped:
+        yield scoped
 
 
 @pytest.fixture

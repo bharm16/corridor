@@ -56,14 +56,6 @@ class FakeAdapter(RecordedAdapter):
     adapter = "fake-intake-draft"
 
 
-@pytest.fixture
-def project(session):
-    row = Project(slug="intake-draft", name="Intake Draft", is_synthetic=True)
-    session.add(row)
-    session.flush()
-    return row
-
-
 def _staged_workbook(
     tmp_path: Path,
     rows=_COVER_ROWS,

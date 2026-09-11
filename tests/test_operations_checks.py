@@ -57,12 +57,8 @@ def client_without_principal(session):
 
 
 @pytest.fixture
-def project(session):
-    p = Project(slug="ops-checks", name="Ops Checks", is_synthetic=True)
-    session.add(p)
-    session.flush()
-    seed_membership(session, p, TEST_PRINCIPAL)
-    return p
+def project(member_project):
+    return member_project(TEST_PRINCIPAL)
 
 
 def _due_soon_dep(session, project, ref="DUE-1", days=20):
