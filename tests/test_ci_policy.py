@@ -19,11 +19,8 @@ from sqlalchemy import create_engine, text
 import yaml
 
 from corridor.render_profiles import DEFAULT_WORKER_PROJECT
-from scripts.run_test_gate import CHECK_OWNED_FILES
-from scripts.test_gate import partition
-from scripts.test_gate.partition import (
-    DURATIONS, SLOW_DURATIONS, SLOW_MINIMUM_FILE_SECONDS, recorded_seconds, shard,
-)
+from scripts import run_test_gate
+from scripts.test_gate.partition import CHECK_OWNED_FILES
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -421,26 +418,32 @@ def test_the_shared_state_fixture_reaches_a_migrated_database(
     )
 
 
-def test_every_test_file_lands_in_exactly_one_shard():
-    """Sharding must cover the suite, or the gate silently proves less.
+def test_every_test_file_lands_in_exactly_one_shard(monkeypatch, tmp_path):
+    """Sharding must cover the suite, less what check owns, or the gate proves less.
 
     The risk of splitting a suite across runners is a file that falls in no
-    shard: the gate stays green while nothing runs it.
+    shard: the gate stays green while nothing runs it. The two check-owned
+    files are the one deliberate omission, because the `check` job runs them
+    and each required proof runs once.
     """
 
     expected = {
         str(path.relative_to(ROOT)) for path in (ROOT / "tests").glob("test_*.py")
-    }
+    } - set(CHECK_OWNED_FILES)
 
-    # Each gate balances on its own recorded seconds and carries its own
-    # runner count, so each has its own partition; both must cover the suite
-    # exactly.
-    for job, durations, floor in (
-        ("pytest", DURATIONS, 0.0), ("slow", SLOW_DURATIONS, SLOW_MINIMUM_FILE_SECONDS),
-    ):
-        buckets = shard(partition.test_files(), recorded_seconds(durations), _shard_count(job),
-                        minimum_file_seconds=floor)
-        assigned = [name for bucket in buckets for name in bucket]
+    # Partition through the gate's own command, on the recorded bootstrap
+    # weights, so the cover is the one CI computes rather than one this test
+    # rebuilds. Each gate balances on its own recorded seconds and carries its
+    # own runner count, so each has its own partition.
+    monkeypatch.delenv("CORRIDOR_CI_WEIGHTS", raising=False)
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    for job in ("pytest", "slow"):
+        count = _shard_count(job)
+        assigned = [
+            name
+            for number in range(1, count + 1)
+            for name in run_test_gate.partition(job, count, number, tmp_path)
+        ]
 
         assert len(assigned) == len(set(assigned)), f"{job}: a file landed twice"
         assert set(assigned) == expected, (

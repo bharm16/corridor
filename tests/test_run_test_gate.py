@@ -61,7 +61,20 @@ def test_slow_runner_preserves_measured_order_when_case_counts_differ(tmp_path):
 
 
 def test_required_runner_preserves_failure_and_does_not_repeat_source_checks(tmp_path, monkeypatch):
-    assigned = [*gate.CHECK_OWNED_FILES, "tests/test_example.py"]
+    """`make check` owns two files, so neither behavior gate may select them.
+
+    Zeroing their weight left them placed in a shard and filtered out of the
+    pytest command afterwards, so the receipt still claimed them and the
+    coverage guard still required them. The exclusion is the partition's.
+    """
+    monkeypatch.delenv("CORRIDOR_CI_WEIGHTS", raising=False)
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    for suite in ("pytest", "slow"):
+        whole_suite = gate.partition(suite, 1, 1, tmp_path)
+        assert "tests/test_run_test_gate.py" in whole_suite
+        assert not set(gate.CHECK_OWNED_FILES).intersection(whole_suite), suite
+
+    assigned = ["tests/test_example.py"]
     monkeypatch.setattr(gate, "partition", lambda *args: assigned)
     monkeypatch.setenv("GITHUB_SHA", "a" * 40)
     monkeypatch.setenv("GITHUB_RUN_ID", "123")
@@ -69,7 +82,6 @@ def test_required_runner_preserves_failure_and_does_not_repeat_source_checks(tmp
     step_output = tmp_path / "github-output"
     monkeypatch.setenv("GITHUB_OUTPUT", str(step_output))
     def run(command, **kwargs):
-        assert not set(gate.CHECK_OWNED_FILES).intersection(command)
         assert "GITHUB_OUTPUT" not in kwargs["env"]
         junit = Path(next(arg.split("=", 1)[1] for arg in command if arg.startswith("--junitxml=")))
         junit.write_text('<testsuites><testcase classname="tests.test_example" time="1"><failure/></testcase></testsuites>')
@@ -79,7 +91,7 @@ def test_required_runner_preserves_failure_and_does_not_repeat_source_checks(tmp
     receipt = json.loads((tmp_path / "receipt-pytest-1.json").read_text())
     assert receipt["exit_code"] == 1
     assert receipt["test_count"] == 1
-    assert receipt["per_file_seconds"] == dict.fromkeys(gate.CHECK_OWNED_FILES, 0.0) | {"tests/test_example.py": 1.0}
+    assert receipt["per_file_seconds"] == {"tests/test_example.py": 1.0}
     key, encoded = step_output.read_text().strip().split("=", 1)
     assert key == "pytest_1"
     assert json.loads(encoded) == receipt
@@ -106,7 +118,7 @@ def test_slow_partition_spreads_zero_time_imports_without_changing_coverage(monk
     heavy = {f"tests/test_heavy_{i}.py": value for i, value in enumerate((100, 98, 90, 85, 74, 55))}
     durations = {**heavy, **{f"tests/test_zero_{i:03}.py": 0.0 for i in range(278)}}
     files = sorted(durations)
-    monkeypatch.setattr(gate, "test_files", lambda: files)
+    monkeypatch.setattr(gate, "test_files", lambda exclude=(): files)
     monkeypatch.setenv("CORRIDOR_CI_WEIGHTS", json.dumps({"slow": durations, "pytest": durations}))
     previous = shard(files, durations, 3)
     slow = [gate.partition("slow", 3, index, tmp_path) for index in range(1, 4)]

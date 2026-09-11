@@ -157,6 +157,12 @@ def test_test_files_names_every_top_level_test_module_once():
     assert len(files) == len(set(files))
     assert "tests/test_test_gate.py" in files
     assert not any("/" in name.removeprefix("tests/") for name in files)
+    # A gate that does not run a file states it once, here, rather than
+    # filtering the partition it was already placed in.
+    assert partition.test_files(exclude=partition.CHECK_OWNED_FILES) == [
+        name for name in files if name not in partition.CHECK_OWNED_FILES
+    ]
+    assert set(partition.CHECK_OWNED_FILES) < set(files)
 
 
 def test_job_names_output_slots_and_latest_attempts_follow_the_workflow():

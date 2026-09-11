@@ -24,7 +24,7 @@ if str(ROOT) not in sys.path:
 from scripts.test_gate.contract import REPORT_MARKER, job_name, latest_jobs, output_slot
 from scripts.test_gate.evidence import EvidenceError, loads, read_json
 from scripts.test_gate.feedback import aggregate_receipts, assess, validate_report
-from scripts.test_gate.partition import test_files
+from scripts.test_gate.partition import CHECK_OWNED_FILES, test_files
 from scripts.test_gate.receipt import ShardReceipt
 
 
@@ -220,7 +220,8 @@ def finish(repository: str, run_id: str) -> int:
     receipts = receipts_from_outputs(suites)
     now = datetime.now(timezone.utc).isoformat()
     report = aggregate_receipts(receipts, expected, verified_gate_seconds(receipts, run, jobs, now))
-    required_files = set(test_files())
+    # The behavior gates run the suite apart from the files `make check` owns.
+    required_files = set(test_files(exclude=CHECK_OWNED_FILES))
     for suite in ("pytest", "slow"):
         if set(report["suites"][suite]["per_file_seconds"]) != required_files:
             raise EvidenceError(f"{suite} receipts do not cover every current test file")
