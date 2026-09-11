@@ -1,4 +1,4 @@
-"""Permanent-state de-duplication (#457, ADR-0081, ADR-0083).
+"""Permanent-state de-duplication (#457, #859, ADR-0018, ADR-0081, ADR-0083).
 
 Every family above already knows what makes a row the same row.  What most
 of them do not have is that knowledge in *permanent state*: the identity is
@@ -53,6 +53,18 @@ constraint, so a duplicate stops being unlikely and becomes unrepresentable.
     content_sha256)`` becomes unique in its own right, and a trigger
     re-derives ADR-0083's two digests from the row's own columns and the
     bound project's slug and refuses a row whose identity is not its own.
+
+  * **Revision Comparisons.**  ``create_revision_comparison`` already reads
+    the receipt an execution retained -- the two exact Extraction Runs, the
+    matcher version, and the canonical matcher configuration -- and returns
+    that one rather than running again.  Nothing in the record stopped a
+    second writer from appending another receipt for the same execution,
+    though: the project row lock held the window shut, so an invariant
+    ADR-0018 states about an immutable run lived inside one procedure.  That
+    execution identity becomes unique.  The receipt's own ``content_sha256``
+    is deliberately not part of the key, because two receipts that disagree
+    about identical inputs must collide and be refused rather than be
+    retained as if they were two different executions (#859).
 
 What was considered and rejected: repairing existing duplicates.  A
 constraint added over data that violates it must either fail or change the
@@ -124,6 +136,15 @@ DEDUPLICATION_REFUSALS = (
         "  having count(*) > 1) duplicated",
     ),
     (
+        "Revision Comparison receipts sharing one execution identity",
+        "select coalesce(sum(extra), 0) from ("
+        "  select count(*) - 1 as extra from revision_comparison_runs"
+        "   group by predecessor_extraction_run_id,"
+        "            successor_extraction_run_id, matcher_version,"
+        "            matcher_config"
+        "  having count(*) > 1) duplicated",
+    ),
+    (
         "connector deliveries whose stored identity is not their own",
         "select count(*) from push_deliveries delivery"
         "  join projects project on project.id = delivery.project_id"
@@ -192,9 +213,16 @@ create function public.enforce_push_delivery_identity() returns trigger
 create trigger trg_push_deliveries_identity
     before insert on public.push_deliveries
     for each row execute function public.enforce_push_delivery_identity();
+
+alter table public.revision_comparison_runs
+    add constraint uq_revision_comparison_execution_identity
+    unique (predecessor_extraction_run_id, successor_extraction_run_id,
+            matcher_version, matcher_config);
 """
 
 DEDUPLICATED_IDENTITIES_DOWN = """
+alter table public.revision_comparison_runs
+    drop constraint if exists uq_revision_comparison_execution_identity;
 drop trigger if exists trg_push_deliveries_identity on public.push_deliveries;
 drop function if exists public.enforce_push_delivery_identity() cascade;
 alter table public.push_deliveries

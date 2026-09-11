@@ -234,6 +234,7 @@ __all__ = [  # noqa: F405
     "READY_WITH_EXCEPTIONS",
     "RELEASE_READINESS_STATES",
     "RESOLUTION_STRATEGIES",
+    "REVISION_COMPARISON_EXECUTION_IDENTITY",
     "REVISION_COMPARISON_STATES",
     "ReconfirmationReceipt",
     "RecordInclusionRequest",

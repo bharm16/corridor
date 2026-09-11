@@ -67,7 +67,10 @@ EXPECTED_SCHEMA_SHA256 = (
     # checks off the five assistant configuration relations, which each gain
     # `authorization_id`, `operation` and the composite reference that holds a
     # configuration to a declaration of its own project and operation.
-    "79ce393229e9cb42a468d07d5fb4abe4b6849a077c9f638fd4e6a51715a41893"
+    # #859 makes a Revision Comparison's execution identity unique: one
+    # constraint and its index on `revision_comparison_runs`, and no new
+    # relation, so the table and sequence counts are unchanged.
+    "51a40a0c0e8bfef83f92d9ec54b5976f6b3d7e118aafd0bbfbfaf2d13c3abb12"
 )
 
 pytestmark = [pytest.mark.slow, pytest.mark.migration]

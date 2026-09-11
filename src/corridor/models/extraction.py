@@ -46,6 +46,7 @@ __all__ = [
     "ExtractionRunCandidate",
     "ExtractorConfiguration",
     "PREDATES_OBSERVATION_BINDING",
+    "REVISION_COMPARISON_EXECUTION_IDENTITY",
     "RevisionComparisonFinding",
     "RevisionComparisonRun",
     "ScannedPageObservation",
@@ -617,6 +618,12 @@ class ActiveRunDeclaration(Base):
     predecessor_declaration_id: Mapped[int | None] = mapped_column(BigInteger)
 
 
+# One receipt per execution identity (#859).  Named here because the service
+# has to recognize this constraint by name when a competing writer loses the
+# insert, and a second spelling of it would recognize nothing.
+REVISION_COMPARISON_EXECUTION_IDENTITY = "uq_revision_comparison_execution_identity"
+
+
 class RevisionComparisonRun(Base):
     """An immutable receipt for comparing two exact Extraction Runs.
 
@@ -653,6 +660,20 @@ class RevisionComparisonRun(Base):
         ),
         CheckConstraint(
             "finding_count >= 0", name="ck_revision_comparison_finding_count"
+        ),
+        # ADR-0018 makes a Revision Comparison an immutable run, so its
+        # identity is what was executed: the two exact Extraction Runs, the
+        # matcher version, and the matcher configuration.  Two receipts for
+        # one such execution are not two runs; they are a defect, and the
+        # final digest is deliberately *not* the key, so two conflicting
+        # outputs over identical inputs collide here instead of being
+        # retained as if they were different executions.
+        UniqueConstraint(
+            "predecessor_extraction_run_id",
+            "successor_extraction_run_id",
+            "matcher_version",
+            "matcher_config",
+            name=REVISION_COMPARISON_EXECUTION_IDENTITY,
         ),
     )
 
