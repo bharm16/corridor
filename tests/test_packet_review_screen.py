@@ -244,8 +244,11 @@ def test_the_opened_item_shows_its_counts_values_source_and_artifacts(
 
     assert "Values this revision left unchanged" in body
     assert "Changes ready for decision" in body
-    assert "Selected now" in body
     assert "Held out of this batch" in body
+    # Not a count of the selection. It was rendered once, from the reading the
+    # page was sent with, and a box ticked afterwards did not move it -- the
+    # same staleness #834 took off the batch buttons (#890).
+    assert "Selected now" not in body
     # Accepted value, its revision, the incoming value, and the exact source.
     assert "1001+00" in body and "2001+00" in body
     assert "sheet Utility Conflicts, cell C1" in body

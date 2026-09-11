@@ -817,10 +817,6 @@ class ItemReading(ActionableItem):
         )
 
     @property
-    def selected_count(self) -> int:
-        return sum(1 for child in self.children if child.selected)
-
-    @property
     def selection_children(self) -> tuple[ChildReading, ...]:
         """Every delta of this source revision: this item's, then its siblings'.
 

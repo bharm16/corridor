@@ -5696,11 +5696,16 @@ def _review_counts(item) -> tuple[tuple[str, object], ...]:
                 item.ready_count,
             ),
         )
+    # No count of the selection here either. #834 took the number off the
+    # batch buttons because the server read it when the page was sent and a
+    # checkbox ticked afterwards does not change it; "Selected now" was the
+    # same number in the same reading, with the same staleness, one list
+    # further up the screen (#890). Each checkbox states its own selected or
+    # held-out state, which is where the selection is readable.
     return (
         ("Source revision", f"{item.source_family} {item.source_revision}"),
         ("Values this revision left unchanged", item.unchanged_count),
         ("Changes ready for decision", item.ready_count),
-        ("Selected now", item.selected_count),
         ("Held out of this batch", item.held_out_count),
         ("Utility Conflicts affected", len(item.subject_names)),
         ("Fields affected", ", ".join(item.field_names) or "none"),
