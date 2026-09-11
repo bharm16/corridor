@@ -53,6 +53,7 @@ from typing import Any, ClassVar
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from corridor.delta_resolution import reversed_disposition_ids
 from corridor.due_work_contract import (
     DueWorkScheduling,
     HandlerRegistration,
@@ -160,7 +161,14 @@ def execute_report_preparation(
             select(ProposedDelta.id).where(
                 ProposedDelta.project_id == project_id,
                 ProposedDelta.id <= delta_ceiling,
-                ~ProposedDelta.id.in_(select(DeltaDisposition.delta_id)),
+                ~ProposedDelta.id.in_(
+                    # A decision the coordinator undid resolved nothing, so
+                    # its question is open again and a prepared package has to
+                    # say so (#948, ADR-0035).
+                    select(DeltaDisposition.delta_id).where(
+                        ~DeltaDisposition.id.in_(reversed_disposition_ids())
+                    )
+                ),
                 ~ProposedDelta.id.in_(select(DeltaSupersession.prior_delta_id)),
                 ~ProposedDelta.id.in_(select(DeltaCaptureCorrection.delta_id)),
             )
@@ -227,6 +235,11 @@ def count_delta_window(
     Current open/deferred standing stays on the original preparation receipt.
     """
 
+    # Deliberately every disposition the window holds, reversed or not: this
+    # counts the decisions that were *made* between two watermarks, and a
+    # receipt that can be recomputed from its own identifier range cannot also
+    # depend on what happened after its ceiling. An Undo is a later act with a
+    # later window of its own (#948).
     resolved = {"accept": 0, "edit": 0, "reject": 0}
     for disposition, count in session.execute(
         select(DeltaDisposition.disposition, func.count())

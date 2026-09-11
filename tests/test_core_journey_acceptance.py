@@ -1421,20 +1421,15 @@ def step_report_an_extraction_error(journey: Journey) -> None:
 def step_undo_one_decision(journey: Journey) -> None:
     """Take back exactly the decision the receipt records.
 
-    What the customer gets back is the accepted value, and that is what is
-    checked: the size this walk applied is the one the baseline held again.
-
-    What they do *not* get back is the change as something still to answer,
-    and that is deliberate rather than incidental. ``reverse_review_packet``
-    "never deletes and never cascades": it appends one compensating revision
-    restoring each predecessor decision the packet superseded, and leaves the
-    decision it compensated standing in history. So the delta this walk applied
-    stays *resolved* and Review offers one change fewer afterwards; deciding
-    that subject again is a later delta resolved by a later attributable
-    decision (#519), not this one reopened.
+    Two things come back, and ADR-0035 says both: "Undo reverses every result
+    of that guided Save and returns the Extracted Proposal". The accepted value
+    is the first -- the size this walk applied is the one the baseline held
+    again. The question is the second, and it is the one #948 was about: the
+    decision stays in history, compensated rather than deleted, and the change
+    it settled is the customer's to answer again.
 
     The walk reads that standing back rather than inferring it from the count,
-    because "one fewer change" has several possible causes and only one of them
+    because "one more change" has several possible causes and only one of them
     is this contract.
     """
 
@@ -1451,8 +1446,14 @@ def step_undo_one_decision(journey: Journey) -> None:
         journey.client, journey.carried["receipt_url"] + "/undo", undo
     )
     assert undone.status_code == 200, undone.text
+    # The approved sentence, as the page carries it: the outcome heading and
+    # the words under it (#948).
     assert "This decision was undone" in prose(undone.text), (
         f"the undo did not report itself: {prose(undone.text)[:400]}"
+    )
+    assert "The change is back in Review." in prose(undone.text), (
+        "the page does not say the question came back, so nobody reading it "
+        f"knows to answer it again: {prose(undone.text)[:600]}"
     )
     assert accepted_sizes(journey) == journey.carried["sizes_before_apply"], (
         "the decision was reported as undone and the accepted record does not "
@@ -1464,18 +1465,21 @@ def step_undo_one_decision(journey: Journey) -> None:
             project_id=journey.carried["project_id"],
             as_of=journey.clock.now(),
         )
-    settled = {standing.delta_id for standing in standings.resolved}
-    assert int(journey.carried["applied_delta"]) in settled, (
-        "the undone decision no longer stands in the delta's history, and the "
-        "command's contract is that Undo compensates the record without "
-        "deleting the decision: "
+    returned = int(journey.carried["applied_delta"])
+    assert returned in standings.actionable_delta_ids, (
+        "the undone decision still settles its change, so the question the "
+        "customer took their answer back on is one nobody can answer: "
         f"{[(one.delta_id, one.standing) for one in standings.standings]}"
     )
+    # The act itself is still there to read, compensated rather than deleted.
+    assert "was already undone by" in prose(
+        journey.client.get(journey.carried["receipt_url"]).text
+    ), "the receipt of the undone decision no longer says it was undone"
     review_offers(
         journey,
-        len(PROPOSED_CONFLICTS) - 1,
-        because="the compensated decision still stands in the delta's own "
-        "history and is not offered again, which leaves",
+        len(PROPOSED_CONFLICTS),
+        because="the compensated decision settles nothing and its change is "
+        "offered again, which leaves",
     )
 
 
@@ -1541,9 +1545,8 @@ def step_a_corrected_capture_that_still_differs_replaces_the_proposal(
 
     review_offers(
         journey,
-        len(PROPOSED_CONFLICTS) - 1,
-        because="one change was decided and its decision compensated "
-        "rather than deleted, which leaves",
+        len(PROPOSED_CONFLICTS),
+        because="the one decision this walk made was undone, which leaves",
     )
     # The other misread conflict: its own cell says a size the record has
     # never held, so correcting the capture leaves a real difference behind.
@@ -1604,7 +1607,7 @@ def step_a_corrected_capture_that_still_differs_replaces_the_proposal(
     # registered source can account for.
     review_offers(
         journey,
-        len(PROPOSED_CONFLICTS) - 1,
+        len(PROPOSED_CONFLICTS),
         because="a retired proposal was replaced one for one, which leaves",
     )
 
@@ -1624,7 +1627,7 @@ def step_a_deferred_proposal_is_retired_by_a_corrected_capture(
 
     review_offers(
         journey,
-        len(PROPOSED_CONFLICTS) - 1,
+        len(PROPOSED_CONFLICTS),
         because="nothing has been settled since the replacement, which leaves",
     )
     deferred = journey.carried["dated_delta"]
@@ -1690,9 +1693,8 @@ def step_a_deferred_proposal_is_retired_by_a_corrected_capture(
     )
     review_offers(
         journey,
-        len(PROPOSED_CONFLICTS) - 2,
-        because="one change stays settled after its Undo and one was "
-        "dated and then retired, which leaves",
+        len(PROPOSED_CONFLICTS) - 1,
+        because="one change was dated and then retired, which leaves",
     )
 
 

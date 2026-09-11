@@ -419,6 +419,12 @@
           {{ child.incoming_value if child.incoming_value else not_recorded }}
         </legend>
         <input type="hidden" name="answer_delta" value="{{ child.delta_id }}">
+        {# What this page was rendered against: how many decisions on this
+           change have been made and undone (#948). It travels with the answer
+           so a page opened before an Undo cannot save as though it were
+           current; the command refuses a submission that names another. #}
+        <input type="hidden" name="answer_generation"
+               value="{{ child.decision_generation }}">
 
         {%- if not child.ready %}
         <p>{{ ui.state(state_label("attention", child.not_ready_reason)) }}</p>
@@ -500,6 +506,14 @@
     <form method="post" action="/review/{{ project.slug }}">
       {{ csrf_field() }}
       <input type="hidden" name="item_key" value="{{ view.item.item_key }}">
+
+      {# The history each offered change was rendered against (#948), beside
+         the selection rather than inside it: the shared selection primitive
+         renders one control per change and this is not a control. #}
+      {%- for child in view.item.selection_children %}
+      <input type="hidden" name="child_generation"
+             value="{{ child.delta_id }}:{{ child.decision_generation }}">
+      {%- endfor %}
 
       {{ ui.child_selection(
            "child",

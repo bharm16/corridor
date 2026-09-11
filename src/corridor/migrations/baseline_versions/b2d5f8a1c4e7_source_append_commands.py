@@ -138,6 +138,36 @@ Run to point at.  Readings that already existed are marked as predating the
 binding rather than bound to a guess, and the downgrade refuses while an
 observation exists.
 
+The transition also gives a resolved Proposed Delta a successor-decision
+contract (#948), folded in here for the same window reason.  ADR-0035 says an
+Undo "reverses every result of that guided Save and returns the Extracted
+Proposal", and the implementation returned the accepted value but left the
+disposition standing, so the question read resolved and Review never offered it
+again.  Removing the Python and plpgsql refusals would not have fixed it:
+``delta_dispositions`` carried ``unique (delta_id)``, so a second decision on
+the same delta failed on the index however it arrived.
+
+Two shapes were available.  A nullable ``reversed_by`` link with a partial
+unique index is this repository's own precedent — ``fact_decisions.superseded_by``
+works exactly that way and the reversal already updates it in place.  It was
+rejected anyway, because the ruling that ordered this work said to implement it
+"not by deleting or **mutating** the original disposition", and a link column
+writes to the retained row.  What is built instead is a generation counter:
+``unique (delta_id, generation)``, the generation being how many decisions this
+delta has already carried, so a successor takes a new slot and the rows before
+it are never touched.  Under the guard below that number is also how many
+reversals the delta has recorded, because a new generation is admitted only
+when every earlier one is reversed.
+
+``proposed_delta_effective_disposition`` states what "in force" means once
+history holds more than one: the highest generation no reversal names.  It is
+one function for the same reason ``proposed_delta_capture_correction`` is —
+five commands asking the question in five places is a rule that is four
+commands out of date the first time it changes — and it lives beside that one,
+after the relations whose join it walks.  ``delta_record_decisions`` gives up
+``unique (delta_id)`` with it: one decision per disposition already bounds the
+authority binding, and the generation is where "how many" is now recorded.
+
 Every family above except this revision's own append commands now lives in
 ``corridor.migrations.source_append_commands`` — one module per family, each
 opening with the block comment that used to sit above its constants, each
@@ -729,6 +759,15 @@ create table public.delta_dispositions (
     id bigserial primary key,
     project_id bigint not null references public.projects (id),
     delta_id bigint not null,
+    -- Which decision on this delta this row is, counting from zero (#948).
+    -- A resolution is recorded once; Undo does not delete it and does not
+    -- write to it, so the row that says "accepted" still says "accepted"
+    -- forever.  What a later reader needs is not that row edited but a slot
+    -- for the *next* decision, and this is that slot.  `unique (delta_id)`
+    -- had no such slot, so a question the customer had undone could be
+    -- reoffered and never answered again: the insert failed on the index
+    -- whatever Python or plpgsql allowed.
+    generation integer not null default 0,
     disposition character varying(32) not null,
     decided_at timestamp with time zone not null,
     decided_by_principal character varying(128),
@@ -736,7 +775,13 @@ create table public.delta_dispositions (
     rationale text,
     effective_value jsonb,
     recorded_at timestamp with time zone not null default now(),
-    constraint uq_delta_dispositions_delta unique (delta_id),
+    -- One decision per generation, and `proposed_delta_effective_disposition`
+    -- says which generation is in force: the highest one no reversal names.
+    -- A new generation may only be written when that predicate finds none, so
+    -- at most one disposition of a delta is ever effective, and the ones
+    -- before it stay exactly as they were recorded (ADR-0035, #948).
+    constraint uq_delta_dispositions_generation unique (delta_id, generation),
+    constraint ck_delta_dispositions_generation check (generation >= 0),
     constraint fk_delta_dispositions_delta
         foreign key (project_id, delta_id)
         references public.proposed_deltas (project_id, id),

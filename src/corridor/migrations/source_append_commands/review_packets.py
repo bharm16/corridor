@@ -374,9 +374,11 @@ create function public.record_delta_follow_up_plan(
                     using errcode='23514';
             end if;
             perform public.lock_proposed_delta_terminal(p_delta_id);
-            if exists (
-                select 1 from delta_dispositions where delta_id = p_delta_id
-            ) then
+            -- An effective disposition, not merely a row: a decision the
+            -- coordinator undid is retained history and settles nothing,
+            -- so the question it answered is answerable again (#948).
+            if public.proposed_delta_effective_disposition(p_delta_id)
+               is not null then
                 raise exception 'review_packet:already_resolved Proposed Delta % is already resolved', p_delta_id
                     using errcode='23514';
             end if;
@@ -754,9 +756,10 @@ create function public.reverse_review_packet(
             if exists (
                 select 1
                   from delta_review_packet_children c
-                  join delta_dispositions d on d.delta_id = c.delta_id
                  where c.receipt_id = p_receipt_id
                    and (c.deferral_id is not null or c.follow_up_plan_id is not null)
+                   and public.proposed_delta_effective_disposition(c.delta_id)
+                       is not null
             ) then
                 raise exception 'review_packet:later_act_depends a delta this packet left open has since been resolved'
                     using errcode='23514';

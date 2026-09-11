@@ -126,11 +126,15 @@ from corridor.models import (
     SourceSegment,
 )
 from corridor.accepted_field_reading import SupportInUse, accepted_support_in_use
+from corridor.delta_resolution import reversed_disposition_ids
 from corridor.native_follow_up_reading import AcceptedFollowUpPlan
 from corridor.operating_mode import ADOPTED_BASELINE, project_operating_mode
 from corridor.presentation import accepted_record_exception_name, field_label
 from corridor.report_preparation import AUTHORIZED_PACKAGE_COMPARISON
-from corridor.review_packet_reading import is_stale
+from corridor.review_packet_reading import (
+    is_stale,
+    undone_decisions_by_project,
+)
 from corridor.support_assessments import FactProposition, current_support_assessments
 
 
@@ -1135,6 +1139,17 @@ def _accepted_changes(
             DeltaRecordDecision.disposition.in_(ACCEPTED_DISPOSITIONS),
             DeltaRecordDecision.revision_id > (reading.previous_revision_id or 0),
             DeltaRecordDecision.revision_id <= reading.accepted_revision_id,
+            # A decision undone by this reading's own accepted revision did not
+            # change what the record holds, and an issue that listed it would
+            # contradict its own current-state section (#948, ADR-0035). The
+            # bound is the reading's, not the wall clock's: an Undo recorded
+            # after this revision leaves the decision standing here, exactly as
+            # `accepted_field_reading` reads a reversal.
+            ~DeltaRecordDecision.disposition_id.in_(
+                reversed_disposition_ids(
+                    through_revision_id=reading.accepted_revision_id
+                )
+            ),
         )
         .order_by(DeltaRecordDecision.revision_id, DeltaRecordDecision.id)
     ).all()
@@ -1322,9 +1337,16 @@ def _current_state(
 def _unaccepted_deltas(
     session: Session, reading: BoundIssueReading
 ) -> tuple[UnacceptedDelta, ...]:
+    # The same boundary `_accepted_changes` uses, and for the same reason: the
+    # two sections have to agree about one decision, or an issue discloses a
+    # change as accepted and as still open at once (#948).
+    undone = reversed_disposition_ids(
+        through_revision_id=reading.accepted_revision_id
+    )
     accepted = select(DeltaDisposition.delta_id).where(
         DeltaDisposition.project_id == reading.project_id,
         DeltaDisposition.disposition.in_(ACCEPTED_DISPOSITIONS),
+        ~DeltaDisposition.id.in_(undone),
     )
     # A proposal Corridor withdrew because it had misread the source is not an
     # unaccepted proposed change an issue owes the reader (ADR-0101). It is a
@@ -1357,6 +1379,7 @@ def _unaccepted_deltas(
             select(DeltaDisposition.delta_id).where(
                 DeltaDisposition.project_id == reading.project_id,
                 DeltaDisposition.delta_id.in_(ids),
+                ~DeltaDisposition.id.in_(undone),
             )
         ).all()
     )
@@ -1382,6 +1405,13 @@ def _unaccepted_deltas(
         ).all()
     )
     standing = _standing_revisions(session, reading)
+    # A revision that only put an undone decision back moved no value, so the
+    # question it returned is offered rather than parked in the stale band
+    # (#948). A compensation later than this reading names a revision the
+    # frozen standing above does not hold, so it is inert here.
+    undone = undone_decisions_by_project(session, (reading.project_id,))[
+        reading.project_id
+    ]
 
     lines: list[UnacceptedDelta] = []
     for delta in deltas:
@@ -1391,7 +1421,7 @@ def _unaccepted_deltas(
             state = DELTA_SUPERSEDED
         elif delta.id in deferred:
             state = DELTA_DEFERRED
-        elif is_stale(delta, standing):
+        elif is_stale(delta, standing, undone=undone):
             state = DELTA_STALE
         else:
             state = DELTA_OPEN

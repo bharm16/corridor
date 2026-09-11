@@ -297,6 +297,13 @@ def test_public_fingerprint_discovers_all_current_tables_and_sequences_read_only
     # schedule each act replaced, as two columns and three constraints on
     # `delta_deferrals`. A column is not a relation and carries no sequence of
     # its own, so it moves the digest and neither count.
+    # #948 gives a resolved Proposed Delta a successor-decision contract, so an
+    # Undo can return the question it settled: `delta_dispositions` gains a
+    # `generation` column and trades `unique (delta_id)` for
+    # `unique (delta_id, generation)`, `delta_record_decisions` gives up its
+    # own per-delta unique, and one more shared predicate function joins the
+    # two every terminal writer already calls. A column, two constraints and a
+    # function move the digest and neither count.
     assert fingerprint.table_count == 235
     assert fingerprint.sequence_count == 214
     assert fingerprint.schema_object_count > 0

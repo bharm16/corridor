@@ -63,6 +63,7 @@ from corridor.delta_resolution import (
     ACCEPT,
     DEFER,
     ChildDecisionRequest,
+    ContradictoryDeltaResolution,
     ContradictoryDeltaStanding,
     RecordEffect,
     live_delta_status,
@@ -87,6 +88,17 @@ from corridor.operations_repair import (
 from corridor.packet_review import read_review_items
 from corridor.principals import HumanPrincipal
 from corridor.review_packet_reading import read_open_deltas
+from corridor.review_packets import (
+    APPLY,
+    REVERSED,
+    SAVED,
+    DeferralRequest,
+    PacketChildRequest,
+    ReviewPacketRequest,
+    resolve_review_packet,
+    reverse_review_packet,
+)
+from corridor.review_packets import DEFER as DEFER_OUTCOME
 from corridor.record_history import CAPTURE_CORRECTED, read_record_history
 
 from access_support import seed_membership
@@ -1630,3 +1642,203 @@ def test_a_record_carrying_two_terminal_relationships_is_an_integrity_problem(
 
     assert contradiction.value.carried == ("resolved", "capture_corrected")
     assert "contradicts itself" in str(contradiction.value)
+
+
+# --- Undo meets the retirement (#948, ADR-0035) ----------------------------
+
+
+def _packet_defer(session: Session, misread: Misread):
+    """One guided Save that puts this proposal away until a date."""
+
+    return resolve_review_packet(
+        session,
+        ReviewPacketRequest(
+            project_id=misread.project.id,
+            grouping_rule_version="packetizer-v1",
+            grouping_key_kind="source_revision",
+            grouping_key=misread.delta.source_revision,
+            principal=ALICE,
+            idempotency_key=f"packet:{uuid4().hex[:10]}",
+            decided_at=DECIDED_AT,
+            observed_accepted_revision_id=misread.revision_id,
+            children=(
+                PacketChildRequest(
+                    delta_id=misread.delta.id,
+                    outcome=DEFER_OUTCOME,
+                    observed_source_revision=misread.delta.source_revision,
+                    deferral=DeferralRequest(
+                        deferred_until=datetime(2026, 10, 1, tzinfo=timezone.utc),
+                        reason="waiting on the district",
+                    ),
+                ),
+            ),
+        ),
+    )
+
+
+def _undo(session: Session, misread: Misread, receipt_id: int):
+    return reverse_review_packet(
+        session,
+        project_id=misread.project.id,
+        receipt_id=receipt_id,
+        principal=ALICE,
+        reversed_at=CORRECTED_AT,
+        idempotency_key=f"undo:{uuid4().hex[:10]}",
+    )
+
+
+def test_undo_does_not_revive_a_proposal_whose_capture_was_corrected(
+    session: Session, misread: Misread
+) -> None:
+    """#948's sixth row, on ADR-0101's half of it.
+
+    Undo returns a question that is still applicable, and a comparison whose
+    basis Corridor has withdrawn is not one. So releasing the schedule this act
+    wrote does not put the proposal back in front of anyone: the retirement is
+    the applicable terminal reason and it survives the compensation, which is
+    the same precedence the reading already applies to a deferral.
+    """
+
+    report = misread.report()
+    saved = _packet_defer(session, misread)
+    assert saved.status == SAVED
+    _correct(misread, report)
+    assert live_delta_status(session, misread.delta.id) == "capture_corrected"
+
+    undone = _undo(session, misread, saved.receipt_id)
+
+    assert undone.status == REVERSED
+    assert live_delta_status(session, misread.delta.id) == "capture_corrected"
+    reading = read_open_deltas(session, project_id=misread.project.id, as_of=CUTOFF)
+    assert misread.delta.id not in reading.actionable_delta_ids
+    assert misread.delta.id not in reading.open_delta_ids
+
+
+def test_a_returned_question_can_still_be_retired_by_a_corrected_capture(
+    session: Session, misread: Misread
+) -> None:
+    """The other order, and why #948 needs no precedence clause of its own.
+
+    A decision made during the investigation is preserved rather than
+    overridden, and the retirement is refused (property 8). Undoing that
+    decision withdraws it, so the proposal is eligible again and the correction
+    lands -- and the delta then carries a retained disposition *and* a
+    retirement without the reading calling that a contradiction, because the
+    retained one is not in force.
+    """
+
+    report = misread.report()
+    saved = resolve_review_packet(
+        session,
+        ReviewPacketRequest(
+            project_id=misread.project.id,
+            grouping_rule_version="packetizer-v1",
+            grouping_key_kind="source_revision",
+            grouping_key=misread.delta.source_revision,
+            principal=ALICE,
+            idempotency_key=f"packet:{uuid4().hex[:10]}",
+            decided_at=DECIDED_AT,
+            observed_accepted_revision_id=misread.revision_id,
+            children=(
+                PacketChildRequest(
+                    delta_id=misread.delta.id,
+                    outcome=APPLY,
+                    observed_source_revision=misread.delta.source_revision,
+                    record_effects=(RecordEffect(fact_id=misread.fact.id),),
+                    support_assessment_ids=(misread.support.id,),
+                ),
+            ),
+        ),
+    )
+    assert saved.status == SAVED
+    with pytest.raises(CaptureCorrectionRefused) as refused:
+        with session.begin_nested():
+            _correct(misread, report)
+    assert refused.value.reason == "already_resolved"
+
+    assert _undo(session, misread, saved.receipt_id).status == REVERSED
+    assert live_delta_status(session, misread.delta.id) == "open"
+
+    outcome = _correct(misread, report)
+
+    assert outcome.retired
+    # Two terminal rows exist and the reading is not confused by them: the
+    # disposition is retained history, not a standing resolution.
+    assert session.scalar(
+        select(DeltaDisposition.id).where(
+            DeltaDisposition.delta_id == misread.delta.id
+        )
+    )
+    assert live_delta_status(session, misread.delta.id) == "capture_corrected"
+
+
+def test_two_decisions_in_force_are_an_integrity_problem_not_a_later_generation(
+    session: Session, misread: Misread
+) -> None:
+    """ADR-0101 property 12's shape, on the resolution history #948 opened.
+
+    An Undo leaves its decision in history and lets a successor take the next
+    generation, so a delta may carry several dispositions. At most one is ever
+    in force: the generation is assigned by the command under the terminal
+    lock, from the decisions already reversed, and a standing decision is
+    refused before any of that. ``unique (delta_id, generation)`` alone would
+    admit an unreversed decision in generation 0 and another in generation 1,
+    so both halves say the record contradicts itself rather than answering with
+    whichever generation the order reaches -- the same rule, for the same
+    reason, as the terminal relationships above.
+    """
+
+    saved = resolve_review_packet(
+        session,
+        ReviewPacketRequest(
+            project_id=misread.project.id,
+            grouping_rule_version="packetizer-v1",
+            grouping_key_kind="source_revision",
+            grouping_key=misread.delta.source_revision,
+            principal=ALICE,
+            idempotency_key=f"packet:{uuid4().hex[:10]}",
+            decided_at=DECIDED_AT,
+            observed_accepted_revision_id=misread.revision_id,
+            children=(
+                PacketChildRequest(
+                    delta_id=misread.delta.id,
+                    outcome=APPLY,
+                    observed_source_revision=misread.delta.source_revision,
+                    record_effects=(RecordEffect(fact_id=misread.fact.id),),
+                    support_assessment_ids=(misread.support.id,),
+                ),
+            ),
+        ),
+    )
+    assert saved.status == SAVED, saved.refusals
+
+    # Written as the record-decision role, which is the only principal the
+    # guard trigger admits; no command would write this pair.
+    with as_role(session, RECORD_DECISION_ROLE):
+        session.execute(
+            text(
+                "insert into delta_dispositions ("
+                "project_id, delta_id, generation, disposition,"
+                " decided_by_principal, decided_at"
+                ") values (:project_id, :delta_id, 1, 'reject', :principal, :at)"
+            ),
+            {
+                "project_id": misread.project.id,
+                "delta_id": misread.delta.id,
+                "principal": ALICE.subject,
+                "at": DECIDED_AT,
+            },
+        )
+
+    with pytest.raises(ContradictoryDeltaResolution) as contradiction:
+        live_delta_status(session, misread.delta.id)
+    assert contradiction.value.generations == (0, 1)
+    assert "contradicts itself" in str(contradiction.value)
+
+    # And the database half, which every write guard and the shadow seal ask.
+    with pytest.raises(DBAPIError) as refused:
+        with session.begin_nested():
+            session.execute(
+                select(func.proposed_delta_effective_disposition(misread.delta.id))
+            )
+    assert "more than one effective decision" in str(refused.value.orig)

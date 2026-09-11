@@ -390,6 +390,60 @@ create function public.proposed_delta_capture_correction(p_delta_id bigint)
 """
 
 
+# "Which decision on this delta is in force?", in one place (#948).  A Proposed
+# Delta may carry more than one disposition once an Undo has returned it to
+# Review, and the retained rows are never rewritten, so "is this delta settled?"
+# stopped being "does a row exist".  It is the highest generation no reversal
+# names -- and a reversal names a disposition through the authority binding the
+# decision wrote and the packet child that carried it, which is the same chain
+# `live_delta_status` already walks for a reversed deferral.  A standalone
+# resolution belongs to no packet, so no reversal can name it and it stays
+# effective, which is the behaviour that family has always had.
+#
+# `language sql` and `stable`, like the sibling above, so a caller keeps its own
+# authority: this reads no more than the role calling it could read itself.
+PROPOSED_DELTA_EFFECTIVE_DISPOSITION = """
+create function public.proposed_delta_effective_disposition(p_delta_id bigint)
+    returns bigint
+    language plpgsql
+    stable
+    set search_path to 'public'
+    as $$
+        declare
+            v_effective bigint[];
+        begin
+            select coalesce(array_agg(d.id order by d.generation), '{}'::bigint[])
+              into v_effective
+              from public.delta_dispositions d
+             where d.delta_id = p_delta_id
+               and not exists (
+                    select 1
+                      from public.delta_record_decisions decision
+                      join public.delta_review_packet_children child
+                        on child.decision_id = decision.id
+                      join public.delta_review_packet_reversals reversal
+                        on reversal.receipt_id = child.receipt_id
+                     where decision.disposition_id = d.id
+               );
+            -- Deliberately not "take the highest generation". Two decisions in
+            -- force for one delta is history contradicting itself, and a
+            -- reader that quietly picked one would be the mechanism that made
+            -- a contradictory write look harmless -- the failure ADR-0101
+            -- names for its own precedence order. No command can write this
+            -- pair: the generation is assigned here, under the terminal lock,
+            -- from the decisions already reversed. It is raised rather than
+            -- resolved so an import or a raw insert that produced it is seen.
+            if coalesce(array_length(v_effective, 1), 0) > 1 then
+                raise exception
+                    'Proposed Delta % carries more than one effective decision (%); its resolution history contradicts itself',
+                    p_delta_id, v_effective
+                    using errcode='23514';
+            end if;
+            return v_effective[1];
+        end; $$;
+"""
+
+
 RECORD_CAPTURE_CORRECTION_RESULT = f"""
 create function public.record_capture_correction_result(
     p_project_id bigint,
@@ -704,9 +758,11 @@ create function public.record_capture_correction_result(
                 -- made during the investigation is preserved, not undone, and
                 -- a newer source version that already superseded the delta
                 -- keeps its own explanation.
-                if exists (
-                    select 1 from delta_dispositions where delta_id = p_delta_id
-                ) then
+                -- An effective disposition, not merely a row: a decision the
+                -- coordinator undid is retained history and settles nothing,
+                -- so the question it answered is answerable again (#948).
+                if public.proposed_delta_effective_disposition(p_delta_id)
+                   is not null then
                     raise exception 'capture_correction:already_resolved Proposed Delta % was decided during this investigation; the decision stands and any repair returns through Review', p_delta_id
                         using errcode='23514';
                 end if;
@@ -786,6 +842,7 @@ RECORD_CAPTURE_CORRECTION_RESULT_SIGNATURE = (
 
 LOCK_PROPOSED_DELTA_TERMINAL_SIGNATURE = "(bigint)"
 PROPOSED_DELTA_CAPTURE_CORRECTION_SIGNATURE = "(bigint)"
+PROPOSED_DELTA_EFFECTIVE_DISPOSITION_SIGNATURE = "(bigint)"
 
 
 # A correction result and a retirement name one customer's own finding, so they
@@ -824,6 +881,7 @@ end $$;
 
 CAPTURE_CORRECTION_RETIREMENT_SCHEMA_DOWN = f"""
 drop function if exists public.record_capture_correction_result{RECORD_CAPTURE_CORRECTION_RESULT_SIGNATURE};
+drop function if exists public.proposed_delta_effective_disposition{PROPOSED_DELTA_EFFECTIVE_DISPOSITION_SIGNATURE};
 drop function if exists public.proposed_delta_capture_correction{PROPOSED_DELTA_CAPTURE_CORRECTION_SIGNATURE};
 drop function if exists public.lock_proposed_delta_terminal{LOCK_PROPOSED_DELTA_TERMINAL_SIGNATURE};
 drop table if exists public.{RETIREMENT_TABLE} cascade;
@@ -868,9 +926,27 @@ def upgrade(op) -> None:
     op.execute(
         f"grant select on public.{RETIREMENT_TABLE} to {SOURCE_APPEND_ROLE}"
     )
+    # `proposed_delta_effective_disposition` is `security invoker` for the same
+    # reason, and the same two bulk sweeps call it to skip a delta whose
+    # decision still stands (#948). It walks the authority binding, the packet
+    # child and the reversal, and the source-append role reads none of those
+    # three today; execute without select is the `insufficient_privilege` that
+    # sibling above was fixed for. It reads them and writes none of them.
+    op.execute(
+        "grant select on public.delta_record_decisions, "
+        "public.delta_review_packet_children, "
+        f"public.delta_review_packet_reversals to {SOURCE_APPEND_ROLE}"
+    )
 
     op.execute(LOCK_PROPOSED_DELTA_TERMINAL)
     op.execute(PROPOSED_DELTA_CAPTURE_CORRECTION)
+    # The third shared predicate, created here for the same reason the second
+    # is: it joins `delta_record_decisions`, `delta_review_packet_children` and
+    # `delta_review_packet_reversals`, and a `language sql` body is parsed when
+    # the function is created, so it has to follow the families that make those
+    # relations. The commands that call it are plpgsql and bind late, exactly
+    # as they already do for `proposed_delta_capture_correction` (#948).
+    op.execute(PROPOSED_DELTA_EFFECTIVE_DISPOSITION)
     # Read-only and lock-only helpers, called from inside other roles' own
     # `security definer` commands, so every role that owns one of those needs
     # execute. They are `security invoker`: a caller keeps its own authority
@@ -879,6 +955,8 @@ def upgrade(op) -> None:
         f"lock_proposed_delta_terminal{LOCK_PROPOSED_DELTA_TERMINAL_SIGNATURE}",
         f"proposed_delta_capture_correction"
         f"{PROPOSED_DELTA_CAPTURE_CORRECTION_SIGNATURE}",
+        f"proposed_delta_effective_disposition"
+        f"{PROPOSED_DELTA_EFFECTIVE_DISPOSITION_SIGNATURE}",
     ):
         op.execute(f"revoke all on function public.{signature} from public")
         op.execute(

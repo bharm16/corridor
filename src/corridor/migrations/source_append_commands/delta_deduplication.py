@@ -454,9 +454,11 @@ create function public.defer_proposed_delta(
                 end if;
                 return asked.id;
             end if;
-            if exists (
-                select 1 from delta_dispositions where delta_id = p_delta_id
-            ) then
+            -- An effective disposition, not merely a row: a decision the
+            -- coordinator undid is retained history and settles nothing,
+            -- so the question it answered is answerable again (#948).
+            if public.proposed_delta_effective_disposition(p_delta_id)
+               is not null then
                 raise exception 'resolve_delta:already_resolved Proposed Delta % is resolved and no longer schedulable', p_delta_id
                     using errcode='23514';
             end if;

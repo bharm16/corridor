@@ -114,7 +114,11 @@ begin
         state := jsonb_build_object('delta_id',native_row.id,'status','open',
           'disposition',null,'deferred_until',null,'wake_condition',null,'superseded_by_delta_id',null,
           'capture_correction_result_id',null);
-        select * into disposition from public.delta_dispositions where delta_id=native_row.id;
+        -- The disposition in force, not merely one that exists: an undone
+        -- decision is retained history and leaves the delta actionable
+        -- (#948, ADR-0035).
+        select * into disposition from public.delta_dispositions
+          where id=public.proposed_delta_effective_disposition(native_row.id);
         if found then
             state := state || jsonb_build_object('status','resolved','disposition',disposition.disposition);
         else

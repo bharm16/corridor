@@ -138,6 +138,7 @@ from corridor.review_packet_reading import (
     resolved_delta_ids_by_project,
     standing_accepted_revisions_by_project,
     standing_sets,
+    undone_decisions_by_project,
     superseding_delta_ids_by_project,
 )
 
@@ -347,6 +348,7 @@ def derive_standings(
     corrected = capture_corrected_delta_ids_by_project(session, project_ids)
     schedules = live_deferrals_by_project(session, project_ids)
     standing = standing_accepted_revisions_by_project(session, project_ids)
+    undone = undone_decisions_by_project(session, project_ids)
     accepted = accepted_revision_ids_by_project(session, project_ids)
 
     sets = {
@@ -357,6 +359,7 @@ def derive_standings(
             capture_corrected=corrected.get(project_id, set()),
             schedules=schedules.get(project_id, {}),
             standing=standing.get(project_id, {}),
+            undone=undone.get(project_id, {}),
             as_of=as_of,
         )
         for project_id in project_ids

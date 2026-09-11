@@ -156,7 +156,10 @@ begin
     from proposed_deltas d where d.project_id = p_project
       and d.source_family = 'email-thread:' || p_thread::text
       and d.id is distinct from p_delta
-      and not exists (select 1 from delta_dispositions where delta_id = d.id)
+      -- A decision the coordinator undid settles nothing, so the delta it
+      -- was about is an open question a newer reading supersedes like any
+      -- other (#948, ADR-0035).
+      and public.proposed_delta_effective_disposition(d.id) is null
       and not exists (select 1 from delta_supersessions where prior_delta_id = d.id)
       -- A delta retired because its capture was corrected is not superseded by
       -- a newer reading either; it already left the actionable set with its own

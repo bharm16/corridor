@@ -6190,6 +6190,11 @@ def save_source_changes(
     item_key: str = Form(...),
     outcome: str = Form(...),
     child: list[str] = Form(default=[]),
+    # What the rendered page said about each offered change: "<delta>:<n>",
+    # where n is how many decisions on it have been made and undone (#948). It
+    # is the form's memory, so a page opened before a decision was made and
+    # undone cannot save as though it were current.
+    child_generation: list[str] = Form(default=[]),
     defer_until: str = Form(""),
     judgment: str = Form(""),
     judgment_minutes: str = Form(""),
@@ -6209,6 +6214,7 @@ def save_source_changes(
         judgment_rule_version,
     )
     selected = [int(value) for value in child if value.strip().isdigit()]
+    observed_generations = _observed_generations(child_generation)
     reading = read_review_items(session, project_id=project.id, as_of=now)
     item = reading.item(item_key)
     if item is None:
@@ -6292,6 +6298,7 @@ def save_source_changes(
             principal=principal,
             decided_at=now,
             delta_ids=selected,
+            observed_generations=observed_generations,
             deferred_until=(
                 datetime.combine(return_date, time(0, 0), tzinfo=timezone.utc)
                 if return_date is not None
@@ -6377,6 +6384,7 @@ def save_focused_answers(
     slug: str,
     item_key: str = Form(...),
     answer_delta: list[str] = Form(default=[]),
+    answer_generation: list[str] = Form(default=[]),
     answer_outcome: list[str] = Form(default=[]),
     answer_source: list[str] = Form(default=[]),
     answer_question: list[str] = Form(default=[]),
@@ -6445,6 +6453,12 @@ def save_focused_answers(
         answers.append(
             FocusedAnswer(
                 delta_id=delta_id,
+                observed_generation=(
+                    int(answer_generation[index])
+                    if index < len(answer_generation)
+                    and answer_generation[index].strip().isdigit()
+                    else 0
+                ),
                 outcome=answer_outcome[index],
                 question=answer_question[index],
                 responsible_principal=answer_person[index],
@@ -6883,14 +6897,20 @@ def undo_packet_decision(
             status_code=409,
         )
     session.commit()
+    reading = _packet_receipt(session, project, receipt_id)
+    # The question is back only where this act had settled one, so the sentence
+    # that says so is printed only there (#948, ADR-0035).  A dated Defer keeps
+    # the scheduling words below, and a Needs coordination answer never took
+    # its change out of Review to return it to.
+    returned = "The change is back in Review. " if reading.settled_a_question else ""
     return _packet_receipt_response(
         request,
         project,
-        _packet_receipt(session, project, receipt_id),
+        reading,
         undone={
             "heading": "This decision was undone",
             "detail": (
-                "Project record revision "
+                f"{returned}Project record revision "
                 f"{result.revision_id} records the compensation; the original "
                 "decision and everything it recorded stay in history."
                 if result.revision_id is not None
@@ -7482,6 +7502,25 @@ def _optional_form_id(value: str) -> int | None:
         return int(text)
     except ValueError:
         raise HTTPException(400, "a form identity must be a whole number")
+
+
+def _observed_generations(fields: list[str]) -> dict[int, int]:
+    """What the rendered page said each change's decision generation was (#948).
+
+    One ``"<delta>:<generation>"`` field per offered change, so the form
+    carries its own memory of the history it was composed against rather than
+    picking up whatever is current when it arrives. A malformed or missing
+    entry is left out, and the command then reads that change as never having
+    been decided -- which is the safe direction: a change that *has* been
+    decided and undone refuses instead of being answered from a stale page.
+    """
+
+    observed: dict[int, int] = {}
+    for field in fields:
+        delta, _, generation = field.partition(":")
+        if delta.strip().isdigit() and generation.strip().isdigit():
+            observed[int(delta)] = int(generation)
+    return observed
 
 
 def _optional_form_date(value: str) -> date | None:

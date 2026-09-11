@@ -189,6 +189,12 @@ class PacketChildRequest:
     delta_id: int
     outcome: str
     observed_source_revision: str
+    #: Which decision on this delta the coordinator was shown (#948): zero for
+    #: a change nobody has decided, and one more for each decision since made
+    #: and undone. A semantic child carries it to the command, which assigns
+    #: the generation itself under the terminal lock and refuses a submission
+    #: composed against a different one.
+    observed_decision_generation: int = 0
     record_effects: tuple[RecordEffect, ...] = ()
     support_assessment_ids: tuple[int, ...] = ()
     edit_basis: EditBasis | None = None
@@ -627,6 +633,7 @@ def _child_decision_request(
         idempotency_key=child_idempotency_key(request.idempotency_key, child.delta_id),
         decided_at=request.decided_at,
         observed_accepted_revision_id=request.observed_accepted_revision_id,
+        observed_decision_generation=child.observed_decision_generation,
         record_effects=tuple(child.record_effects),
         support_assessment_ids=tuple(child.support_assessment_ids),
         edit_basis=child.edit_basis,
