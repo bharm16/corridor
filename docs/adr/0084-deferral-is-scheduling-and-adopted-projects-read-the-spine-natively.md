@@ -6,6 +6,8 @@ amends:
   - ADR-0076
   - ADR-0081
   - ADR-0083
+amended_by:
+  - ADR-0101
 migration: the deferral receipt and the constrained-edit rules are implemented (#518, #519); the spine-native adopted-project readers and the #512 sequencing rule are not.
 ---
 
