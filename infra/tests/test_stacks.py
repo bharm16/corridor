@@ -13,11 +13,13 @@ import aws_cdk as cdk
 import pytest
 from aws_cdk.assertions import Match, Template
 
+from corridor_infra import application_stack
 from corridor_infra.account_foundation_stack import CorridorAccountFoundationStack
 from corridor_infra.application_stack import CorridorApplicationStack
 from corridor_infra.control_plane_stack import CorridorControlPlaneStack
 from corridor_infra.data_stack import CorridorDataStack
 from corridor_infra.network_stack import CorridorNetworkStack
+from scripts import container_entrypoint
 
 ENV = cdk.Environment(account="111111111111", region="us-east-2")
 
@@ -525,28 +527,22 @@ def test_env_and_secret_names_exist_in_corridor_config():
     }
     readable = aliases | plain
 
-    # Names the image entrypoint consumes to compose the URLs config.py reads.
-    entrypoint_inputs = {
-        "CORRIDOR_DB_HOST",
-        "CORRIDOR_DB_PORT",
-        "CORRIDOR_DB_NAME",
-        "CORRIDOR_DB_ADMIN_USERNAME",
-        "CORRIDOR_DB_ADMIN_PASSWORD",
-        "CORRIDOR_TASK_ROLE",
-        "CORRIDOR_CONTROL_DB_HOST", "CORRIDOR_CONTROL_DB_PORT", "CORRIDOR_CONTROL_DB_NAME",
-        "CORRIDOR_CONTROL_OWNER_DB_USERNAME", "CORRIDOR_CONTROL_OWNER_DB_PASSWORD",
-        "CORRIDOR_CONTROL_OPERATIONS_DB_USERNAME", "CORRIDOR_CONTROL_OPERATIONS_DB_PASSWORD",
-        "CORRIDOR_CONTROL_RESOLVER_DB_USERNAME", "CORRIDOR_CONTROL_RESOLVER_DB_PASSWORD",
-    }
+    # The entrypoint declares what it consumes; this asserts the two halves of
+    # that declaration against config.py rather than retyping either.
+    shared = container_entrypoint.SETTINGS_COLLISIONS
+    entrypoint_only = container_entrypoint.ENTRYPOINT_INPUTS - shared
 
-    assert "CORRIDOR_WEB_DB_PASSWORD" in readable
-    assert "CORRIDOR_WORKER_DB_PASSWORD" in readable
+    assert shared <= container_entrypoint.ENTRYPOINT_INPUTS
     assert "DATABASE_URL" in readable
     assert "WEB_DATABASE_URL" in readable
     assert "WORKER_DATABASE_URL" in readable
-    # These must NOT be treated as settings; they are entrypoint inputs only.
-    assert not (entrypoint_inputs & readable), (
-        "an entrypoint input collides with a real setting name"
+    # A name declared as shared must really be a setting, or the declaration
+    # would be a way to excuse a collision instead of recording one.
+    assert shared <= readable, sorted(shared - readable)
+    # Everything else the entrypoint consumes must NOT be a setting name.
+    assert not (entrypoint_only & readable), (
+        "an entrypoint input collides with a real setting name: "
+        f"{sorted(entrypoint_only & readable)}"
     )
 
 
@@ -555,17 +551,7 @@ def test_no_task_sets_an_unreadable_corridor_variable(stacks):
     source = config.read_text()
     aliases = set(re.findall(r'validation_alias="([A-Z0-9_]+)"', source))
     plain = {f.upper() for f in re.findall(r"^    ([a-z_]+):", source, re.MULTILINE)}
-    entrypoint_inputs = {
-        "CORRIDOR_DB_HOST", "CORRIDOR_DB_PORT", "CORRIDOR_DB_NAME",
-        "CORRIDOR_DB_ADMIN_USERNAME", "CORRIDOR_DB_ADMIN_PASSWORD",
-        "CORRIDOR_TASK_ROLE",
-        "CORRIDOR_CONTROL_DB_HOST", "CORRIDOR_CONTROL_DB_PORT", "CORRIDOR_CONTROL_DB_NAME",
-        "CORRIDOR_CONTROL_OWNER_DB_USERNAME", "CORRIDOR_CONTROL_OWNER_DB_PASSWORD",
-        "CORRIDOR_CONTROL_OPERATIONS_DB_USERNAME", "CORRIDOR_CONTROL_OPERATIONS_DB_PASSWORD",
-        "CORRIDOR_CONTROL_RESOLVER_DB_USERNAME", "CORRIDOR_CONTROL_RESOLVER_DB_PASSWORD",
-        "CORRIDOR_DEPLOYMENT_DATA_CLASS",
-    }
-    allowed = aliases | plain | entrypoint_inputs
+    allowed = aliases | plain | container_entrypoint.ENTRYPOINT_INPUTS
 
     template = stacks["application"].to_json()["Resources"]
     for logical_id, resource in template.items():
@@ -578,6 +564,56 @@ def test_no_task_sets_an_unreadable_corridor_variable(stacks):
                     f"{logical_id} sets {name}, which config.py does not read "
                     f"and the entrypoint does not consume"
                 )
+
+
+def test_the_runtime_login_secrets_name_the_logins_the_entrypoint_connects_as(stacks):
+    """`corridor_web` and `corridor_worker` are spelled twice more here.
+
+    `corridor.db_roles` owns the two capability logins and says why: every site
+    that holds one *compares* a live PostgreSQL answer against its own copy, so
+    a rename that missed one leaves a check that silently never matches. This
+    stack spells each login inside the generated secret's username and again
+    inside the secret's name; the entrypoint connects as them. The infra
+    project cannot import `corridor`, so the pairing runs through the
+    entrypoint, whose copy `tests/test_vocabulary_owners.py` pins to
+    `db_roles`.
+    """
+    expected = {login for login, _, _ in container_entrypoint.ROLES.values() if login}
+
+    declared = {}
+    for secret in stacks["data"].find_resources("AWS::SecretsManager::Secret").values():
+        properties = secret["Properties"]
+        template = properties.get("GenerateSecretString", {}).get("SecretStringTemplate")
+        username = json.loads(template)["username"] if template else None
+        if username in expected:
+            declared[username] = properties["Name"]
+
+    assert set(declared) == expected, sorted(expected - set(declared))
+    for login, secret_name in declared.items():
+        assert secret_name == f"corridor/nonprod/{login}"
+
+
+def test_synthesis_applies_the_same_identifier_rule_the_container_applies():
+    """The two guards must refuse the same shapes.
+
+    `corridor.control_plane.identifier` owns the rule. Neither this stack nor
+    the container entrypoint may import it -- this project excludes the
+    application's dependencies and the entrypoint runs before the application
+    exists -- so each keeps a copy. This pins the stack's copy to the
+    entrypoint's, and `tests/test_vocabulary_owners.py` pins the entrypoint's
+    to the owner.
+    """
+    assert (
+        application_stack.STABLE_IDENTIFIER_PATTERN
+        == container_entrypoint.STABLE_IDENTIFIER_PATTERN
+    )
+
+
+@pytest.mark.parametrize("refused", ["-leading-hyphen", "has space", "a" * 129, "caf\u00e9"])
+def test_synthesis_refuses_an_identifier_the_rule_rejects(refused):
+    """The constant has to be load-bearing, not merely equal to its twin."""
+    with pytest.raises(ValueError, match="explicit stable identifier"):
+        _build(customer_id=refused)
 
 
 # --- fail-closed TLS ---------------------------------------------------
