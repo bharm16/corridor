@@ -106,7 +106,7 @@ from corridor.work_decisions import (
     assign_internal_owner,
     cancel_next_action,
     complete_next_action,
-    current_deferral_decision,
+    current_effective_deferral,
     current_internal_owner_decision,
     current_next_action_decision,
     defer_work,
@@ -444,12 +444,7 @@ def read_admitted_statement_coordination(
         action_tail if action_tail is not None and action_tail.after_value is not None
         else None
     )
-    deferral_tail = current_deferral_decision(session, subject)
-    deferral_decision = (
-        deferral_tail
-        if deferral_tail is not None and deferral_tail.after_value is not None
-        else None
-    )
+    deferral_decision = current_effective_deferral(session, subject)
     return AdmittedStatementCoordination(
         event=event,
         affected_party_name=(
