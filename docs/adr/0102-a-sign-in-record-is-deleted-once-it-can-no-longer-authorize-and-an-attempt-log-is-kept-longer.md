@@ -4,7 +4,7 @@ domain: retention
 scope: current product
 amends:
   - ADR-0080
-migration: the pass exists and is proved, but nothing runs it on a schedule and its receipt is an `audit_log` entry rather than a row in a receipt family of its own; this ADR specifies both changes and builds neither. The `sign_in_attempts` period is the one number here that a customer contract or agency records schedule may override, and no such schedule has been read.
+migration: the pass exists and is proved, but nothing runs it on a schedule; the environment-scoped deployed invocation specified below is a deployment task that is not built, and until it exists expiry depends on somebody running the command. All three periods are recommended operating defaults subject to the applicable customer records schedule and to legal review; no such schedule has been read.
 ---
 
 # A sign-in record is deleted once it can no longer authorize anyone, and an attempt log is kept longer
@@ -48,21 +48,34 @@ Published practice, researched before any number was proposed
 ([note](../research/sign-in-record-retention-2026-09-11.md)), turns out to be
 uneven in a way that shapes this decision:
 
-- **It is emphatic that a period must exist.** NIST SP 800-63B-4 §2.4.2
-  (July 2025): a verifier retaining records "in the absence of mandatory
-  requirements" SHALL run a risk process "to determine how long records should
-  be retained" and SHALL inform the subscriber. OWASP ASVS 5.0 requirement
-  16.1.1 requires the log inventory to document "for how long logs are kept".
+- **It is emphatic that a period must exist, and it delegates the number.**
+  NIST SP 800-63B-4 §2.4.2 (July 2025) directs a verifier to comply with the
+  records retention requirements that apply to it and, where none mandates a
+  period, to run a privacy and security risk process "to determine how long
+  records should be retained" and inform the subscriber. OWASP ASVS 5.0
+  requirement 16.1.1 requires the log inventory to document "for how long logs
+  are kept". Neither supplies a value.
 - **It says nothing about deleting a session record or a spent link.** Every
   requirement found — NIST SP 800-63B-4 §5.1, NIST SP 800-63A-4 §3.8, ASVS
   7.4.1 — says *invalidate*, never *delete*. There is abundant guidance on when
-  a session must stop working and none on when its row must go.
-- **It does give numbers for an authentication log.** PCI DSS v4.0.1 10.5.1:
-  at least twelve months, three immediately available. CIS Critical Security
-  Controls v8 Safeguard 8.10: a minimum of ninety days. CNIL Délibération
-  n° 2021-122 ¶8: between six months and one year, explicitly balancing the
-  need to detect attacks against "la nécessité de ne pas conserver un volume de
-  données trop important".
+  a session must stop working and none on when its row must go. A permitted
+  credential lifetime is not a retention allowance for the dead row: AAL1's
+  thirty-day reauthentication ceiling bounds how long a session may keep
+  working, and says nothing about keeping its expired row for thirty days
+  afterwards.
+- **It gives audit-log figures, and none of them is established as governing
+  this relation.** CIS Critical Security Controls v8 Safeguard 8.10 recommends
+  a minimum of ninety days for enterprise assets under IG2 and IG3. CNIL
+  Délibération n° 2021-122 ¶8 generally discusses six months to one year for
+  connection logs, with contextual exceptions (¶19 allows three years where
+  logging also serves internal control) and an explicit minimisation argument
+  (¶22: a log should not keep personal data the logged processing no longer
+  keeps). PCI DSS v4.0.1 10.5.1's twelve months **was not verified against the
+  primary document** — PCI SSC gates it behind a click-through — and Corridor,
+  which stores no cardholder data, is not in PCI scope; it is recorded because
+  it is the figure most often quoted, not because it applies. Longer is not
+  automatically safer or more compliant, and a period chosen to satisfy a scope
+  Corridor is not in would be a year of personal data held for a hypothetical.
 
 And no source draws the distinction #907 assumes — that an attempt record is a
 security log while a session and a token are operational credentials. The
@@ -89,9 +102,18 @@ durable about the act is already in `audit_log`.
 
 | Relation | Period | Measured from |
 |---|---|---|
-| `web_sessions` | **30 days** | the earlier of `expires_at` and `revoked_at` |
-| `sign_in_tokens` | **7 days** | the earlier of `expires_at` and `consumed_at` |
-| `sign_in_attempts` | **365 days** | `occurred_at` |
+| `web_sessions` | **7 days** | the earlier of `expires_at` and `revoked_at` |
+| `sign_in_tokens` | **24 hours** | the earlier of `expires_at` and `consumed_at` |
+| `sign_in_attempts` | **180 days** | `occurred_at` |
+
+**These are recommended operating defaults, and all three are product
+judgements.** They are subject to the applicable customer records schedule and
+to legal review: where such a schedule exists it governs and these numbers
+change to match it. They are not values mandated by NIST or by any other source
+read for this decision, and adopting them certifies nothing about any
+particular customer's obligations. What published practice supplied was a
+procedure — follow the retention requirements that apply, and otherwise decide
+by a privacy and security risk assessment — not the values.
 
 The anchor is deliberate. A period measured from creation would be the "N years
 after ingest" schedule ADR-0080 rejects; a period measured from the moment the
@@ -103,87 +125,80 @@ from extending the life of a session that had already died.
 
 ### 3. Why the three differ
 
-**A sign-in link: 7 days, the shortest, because it is the shortest-lived secret
-and the least informative row.** It is usable for fifteen minutes
-(`SIGN_IN_TOKEN_TTL`), once, and only as a hash. After that the row answers
-exactly one question — "was the link I was sent spent, or did it run out?" —
-which is worth answering for a support request and worth nothing after. NIST SP
-800-63B-4 §3.1.3.2 requires an out-of-band authentication to complete within ten
-minutes and to be accepted once; NIST SP 800-63A-4 §3.8 allows an emailed
-confirmation code at most twenty-four hours. Corridor's fifteen minutes is
-inside both. **Neither says when the spent row goes, so seven days is a
-judgement**, chosen as long enough for a support question to arrive and short
-enough that a hash of an emailed secret is not sitting in the database a month
-later.
+All three are judgements, so the question is not which one a standard settles —
+none of them does — but what each row is still *for* once it stops working, and
+how much personal data that remaining use justifies keeping.
 
-**A session record: 30 days, longer, because a dead session is still the shape
-of somebody's access and is the one dead row the product reads.** Two facts set
-it. First, `access.expired_web_session` deliberately reads a session that
-expired and was not revoked, so #844 can hand a coordinator back what they had
-typed; that reader needs the row only while a held draft could exist, and
-`form_drafts.DRAFT_TTL` is thirty minutes, so any period in days is clear of it
-— but a period in minutes would break #844. Second, after that the row's only
-remaining use is reconstructing an incident. **This too is a judgement**: no
-source says when a session record goes. Thirty days is the number this product
-already uses for non-authoritative operational data (`retention.CLASS_B_DAYS`),
-and it is also the longest a session may live under any NIST assurance level
-(SP 800-63B-4 §2.1.3, AAL1), so a session record is never kept for longer after
-it dies than a session could have lived.
+**A sign-in link: 24 hours, the shortest, because the row is dead
+authentication material that answers one question.** It is usable for fifteen
+minutes (`SIGN_IN_TOKEN_TTL`), once, and only as a hash. After that the row
+answers exactly one question — "was the link I was sent spent, or did it run
+out?" — which is worth answering while somebody is still asking about a sign-in
+that did not work, and worth much less the following day. Twenty-four hours
+covers that immediate support investigation without retaining dead
+authentication material for a week by default. NIST SP 800-63A-4 §3.8 puts a
+twenty-four hour ceiling on how long an emailed confirmation code may still be
+*redeemed*; that is a validity limit, not a retention period, and the
+coincidence of numbers is not a citation for this one.
 
-**A sign-in attempt: 365 days, the longest, and the only one with a published
-basis.** Two separate reasons, and they compound:
+**A session record: 7 days, because a dead session supports recovery and
+short-term diagnosis.** Two facts set it. First, `access.expired_web_session`
+deliberately reads a session that expired and was not revoked, so #844 can hand
+a coordinator back what they had typed. That reader needs the row only while a
+held draft could still exist, and `form_drafts.DRAFT_TTL` is thirty minutes, so
+seven days — 10,080 minutes — clears the draft-recovery interval by a factor of
+336, comfortably beyond it, while a period measured in minutes would break #844.
+Second, after that the row's only remaining use is reconstructing an incident
+within the week it happened, which is the span over which anyone is still
+asking. No source bears on this number; it is a judgement about those two uses.
 
-1. *It is the only record that an attempt happened.* A successful sign-in is in
-   `audit_log` as `SIGN_IN` and survives this sweep untouched. An attempt from
-   an address bound to nobody, or one that never reached consumption, is
-   recorded **only** in `sign_in_attempts`. Deleting a dead session or a spent
-   link destroys no history. Deleting an attempt row destroys the only evidence
-   that somebody tried and did not get in — which is precisely the pattern an
-   access review or an incident investigation is looking for.
-2. *Published practice for an authentication log is measured in months, and
-   365 days is the only value that clears every cited figure at once.* PCI DSS
-   10.5.1's twelve-month floor and CIS Safeguard 8.10's ninety-day floor are
-   minimums; CNIL ¶8's six-months-to-a-year is a band whose upper end is
-   twelve months. 365 days satisfies both floors and stays inside the band.
-   180 days clears CIS and sits mid-band but falls well under PCI's floor.
+**A sign-in attempt: 180 days, the longest, because it is the only record that
+an attempt happened.** A successful sign-in is in `audit_log` as `SIGN_IN` and
+survives this sweep untouched. An attempt from an address bound to nobody, or
+one that never reached consumption, is recorded **only** in `sign_in_attempts`.
+Deleting a dead session or a spent link destroys no history; deleting an attempt
+row destroys the only evidence that somebody tried and did not get in — which is
+precisely the pattern an access review or an incident investigation looks for.
+So what this relation needs is an investigation history rather than an
+operational window, and 180 days is a bounded one: half a year of failed-attempt
+history, above CIS Safeguard 8.10's ninety-day minimum recommendation and inside
+the span CNIL's logging guidance generally discusses, without adopting a year of
+personal data to satisfy a standard that has not been shown to govern these rows.
 
-The operational need is far shorter than either: the backoff counter stops
+The operational need is far shorter than any of this: the backoff counter stops
 mattering after `ATTEMPT_WINDOW`, fifteen minutes, and NIST SP 800-63B-4 §3.2.2
 says a verifier SHOULD reset the retry count on successful authentication.
-Everything past fifteen minutes is retained as a security log, not as a
+Everything past fifteen minutes is retained as a security record, not as a
 throttle.
 
-### 4. What the maintainer is being asked to settle, and what the alternatives are
+### 4. What is settled here, and what would change it
 
-Three of the numbers above are open in different ways, and this ADR states
-which rather than presenting all three as equally settled.
+The three numbers were approved as operating defaults rather than derived from a
+source, and this section records that difference so a later reader does not
+mistake one for the other.
 
-- **`sign_in_attempts` = 365 days is the one that depends on something not yet
-  known.** It is the widest compliant envelope in the absence of a customer
-  contract or agency records schedule. If Corridor should instead lead with
-  minimisation — CNIL ¶8's own reason for a ceiling is that a large log is
-  itself something to attack — **180 days** is the alternative: mid-band under
-  CNIL, above CIS's floor, under PCI's. If a customer's own schedule turns up,
-  it governs and this number changes to match it.
-- **`web_sessions` = 30 days rests on judgement.** **7 days** is the
-  minimisation-leaning alternative and still 336 times the #844 draft TTL.
-  **90 days** is the alternative if session records should be treated as part
-  of the security log rather than as spent machinery, which would put them at
-  CIS Safeguard 8.10's floor.
-- **`sign_in_tokens` = 7 days rests on judgement.** **24 hours** is the
-  alternative, and is the only other figure with anything published behind it
-  (NIST SP 800-63A-4 §3.8's ceiling for an emailed confirmation code, borrowed
-  from proofing rather than authentication).
-
-Any of the three can be changed by editing one constant in
-`corridor.sign_in_retention` and the corresponding row in the table above.
-Changing one does not disturb the other two, and the reasons above are written
-so that one can be reconsidered without rereading the rest.
+- **None of the three is fixed by a citation.** An earlier draft of this ADR
+  presented `sign_in_attempts` = 365 days as "the widest compliant envelope
+  absent a customer contract". That was wrong in kind and not only in value: no
+  source read for this decision is established as governing these relations, so
+  there is no envelope for a number to be widest inside, and a wider one would
+  not be safer. The research note carried the same error and has been corrected
+  with it.
+- **A customer records schedule or legal review supersedes all three.** Where a
+  customer contract or an agency records schedule states a period for
+  authentication records, it governs and these numbers change to match it. None
+  has been read, so these defaults stand in the meantime.
+- **Each is one constant and one table row.** Any of the three can be changed by
+  editing the constant in `corridor.sign_in_retention` and the matching row
+  above, and bumping `POLICY_VERSION` beside it so a receipt written under the
+  old numbers still says which numbers produced its counts. Changing one does
+  not disturb the other two, and the reasons above are written so that one can
+  be reconsidered without rereading the rest.
 
 ### 5. A hold stops this pass, for the reason it stops an unattributable object deletion
 
 An active `RetentionHold` anywhere — on any project — refuses this pass, and it
-deletes nothing. This is not a new rule: `retention.permit_deletion_unreferenced`
+deletes nothing. This is not a new rule: `retention.permit_unreferenced_deletion`
 already decided what a project hold means for a deletion that cannot be
 attributed to a project, and decided "any active hold anywhere refuses it",
 because the thing being deleted might be the held project's. A sign-in record is
@@ -191,6 +206,18 @@ in exactly that position — the person whose session it was may be the person a
 litigation hold is about — so it takes the same answer. ADR-0080's "legal holds
 suspend every deletion path" therefore remains literally true with this pass
 added.
+
+**The hold is read inside each delete, not once before them all.** A read that
+finds no hold followed by a delete leaves the window between the two, and a hold
+committed in that window is honoured by neither statement. So the predicate is
+part of the `DELETE`: at the READ COMMITTED isolation this application runs
+under, each statement takes its own snapshot, so a hold committed at any point
+before a given delete begins is seen by it and that delete removes nothing. The
+separate read at the top of the pass is kept only for what it is good for, which
+is telling the receipt that a hold is the reason nothing happened. What this
+does not do, because it cannot, is put back rows a delete had already removed
+when the hold was placed; those rows were past their stated period and no hold
+existed at the moment they went.
 
 The cost, stated rather than hidden: a hold on one project suspends sign-in
 record expiry for the whole customer environment, which over-retains. That is
@@ -218,8 +245,18 @@ is bounded by holds being rare and lifted by a separate attributable act.
   `ix_sign_in_attempt_scope`, so every unauthenticated attempt would pay for a
   scan. Worse, an attacker who never succeeds never triggers the pass that
   would remove their own rows.
-- **Declaring this to the Due Work runtime now.** Rejected as unbuildable
-  today, not as wrong; see below.
+- **Extending Due Work's scope model to carry this schedule.** Declined.
+  Due Work is per project by schema — `due_work_schedules.project_id` and
+  `due_work_receipts.project_id` are `NOT NULL` foreign keys, and
+  `DueWorkScheduling.project_id` is required — and that is an invariant its
+  handlers and receipts are built on, not an incidental column shape. Sign-in
+  record expiry is one customer-environment-wide maintenance operation, so
+  declaring one schedule per project would run the same global delete N times.
+  The way through is *not* to make those foreign keys nullable as a side effect
+  of retention work: if Due Work should ever carry environment-scoped work, that
+  is a deliberate invariant change across every handler and receipt, scoped and
+  decided on its own. What this pass needs instead is an environment-scoped
+  scheduled invocation of the command, specified under Consequences below.
 - **Making this an operator command and stopping there.** Rejected as the
   answer. #488 already established what happens to a retention boundary whose
   only caller is a command: "intermediary content expired when somebody
@@ -230,46 +267,82 @@ is bounded by holds being rare and lifted by a separate attributable act.
 ## Consequences
 
 **What is built.** `corridor.sign_in_retention` holds the three periods and one
-pass, `sweep_sign_in_records`, which checks the hold, deletes what is past its
-period from the three relations and nothing else, writes one `audit_log` entry
-recording what it removed, and returns a schema-versioned reading whether it
-deleted, declined, or found nothing due. `tests/test_sign_in_retention.py`
-proves an expired row is actually removed, that a live one is not, that the
-period runs from revocation rather than a later expiry, that #844's expired
-session outlives a pass, and that a hold deletes nothing.
-`make retention ARGS="expire-sign-in-records --as-of <iso>"` runs it.
+pass, `sweep_sign_in_records`, which deletes what is past its period from the
+three relations and nothing else under the hold predicate, writes one
+`audit_log` entry recording what it removed, and returns the same receipt
+whether it deleted, refused or found nothing due: policy version, executing
+identity, observation time, the three cutoffs, the count removed per relation,
+the outcome and any refusal — counts and timestamps only, nothing copied out of
+a row before it went. `tests/test_sign_in_retention.py` proves an expired row is
+actually removed, that the period runs from revocation rather than a later
+expiry, that an idle pass writes no domain audit event, and the four boundaries
+this decision turns on: an active credential still authorizes after a pass, a
+draft's permitted recovery window survives one, a credential the pass removed
+stays invalid rather than becoming ambiguous, and a hold another transaction
+commits after the pass has begun is honoured by the delete itself.
+`make retention ARGS="expire-sign-in-records"` runs it, with an optional
+`--as-of <iso>` for reproducing a past pass.
 
-**What is not built, and exactly what each would need.** Both are honest gaps,
-recorded in the frontmatter's `migration` key rather than half-implemented.
+**What is not built: the recurring trigger, which is a deployment task.**
+Recorded in the frontmatter's `migration` key rather than half-implemented, and
+specified here concretely enough to act on.
 
-1. **A recurring trigger.** Due Work is the product's one supervised runtime
-   (#332), and it is per project by schema: `due_work_schedules.project_id`,
-   `due_work_receipts.project_id` are `NOT NULL` foreign keys to `projects`,
-   and `DueWorkScheduling.project_id` is a required field. A
-   customer-environment-wide pass cannot be declared to it as it stands.
-   Declaring one schedule per project is not a workaround — the relations are
-   customer-wide, so N projects would run the same global delete N times. The
-   change is to let a schedule name the customer environment instead of a
-   project: `project_id` nullable on `due_work_schedules` and
-   `due_work_receipts`, the `uq_due_work_schedule_identity` unique constraint
-   made null-safe, and a check constraint requiring a scope kind that says
-   which of the two a row is. Until that exists, expiry depends on somebody
-   running the command, which is the defect #488 named.
-2. **A receipt of its own.** The pass writes its receipt to `audit_log`,
-   which takes it without a schema change: `access.CUSTOMER_WIDE_RELATIONS`
-   already classifies `audit_log` as "the append-only attribution ledger of the
-   whole customer database", it already carries sign-in, sign-out and
-   offboarding, `corridor_worker` already holds `INSERT` on it, and
-   `UNBOUND_IDENTITY` already exists for an act that names no identity row. It
-   is a fair home and not the best one: the entry names no subject, and a
-   sweep is not a ledger mutation. The better home is
-   `sign_in_record_expiry_receipts` in `models/operations.py` — `id` bigserial,
-   `public_id` varchar(64) unique, `as_of` timestamptz, the three period
-   lengths in days, the three deleted counts, a bounded `refusal` string, and
-   `created_at`; `SELECT, INSERT` to `corridor_worker` and nothing to
-   `corridor_web`. It carries no personal data, so it needs no partition
-   policy. Neither the relation nor the census entries it implies were built
-   here: this change did not hold the schema slot.
+- **What it runs.** `python -m corridor.retention_cli expire-sign-in-records`,
+  with no arguments. `--as-of` defaults to the moment the process starts,
+  because a fixed command line in a task definition cannot compute a timestamp
+  per run; it stays available for an operator reproducing a past pass.
+- **Where it runs.** The batch Fargate task definition
+  `CorridorApplicationStack` already publishes as `BatchTaskDefinitionArn`. It
+  runs the same image under the `corridor_worker` credentials this pass needs,
+  and `corridor_worker` already holds `DELETE` on the three relations and
+  `INSERT` on `audit_log`, so the schedule needs no grant change and no new
+  role.
+- **How many.** Exactly one schedule per customer environment, explicitly scoped
+  to that environment's database. Never one per project, and never a placeholder
+  project: the relations are customer-wide, so a per-project schedule would run
+  the same global delete once per project.
+- **How often.** Daily. None of the three relations carries a time-only index —
+  `sign_in_attempts` is indexed on `(scope_kind, scope_value, occurred_at)` for
+  the throttle, and the other two on their hashes — so each pass scans all three.
+  That is cheap while they are small and is the reason not to run it hourly. The
+  interval is also the lag: a row becomes *eligible* when its period ends and
+  goes at the next pass, so a daily schedule removes a spent link within a day
+  of its twenty-four hours ending. If these relations ever grow enough for the
+  scan to cost something, the answer is a time index, which is a schema change,
+  not a rarer schedule.
+- **What success and failure look like.** Success is exit status zero and one
+  printed receipt. A hold is not a failure: the receipt reads `"outcome":
+  "refused"` with `"refusal": "hold_active"`, the exit status is still zero, and
+  the schedule should not alarm on it, because a hold is a deliberate state
+  lifted by a separate attributable act. A failure is a non-zero exit with the
+  traceback in the same log. A scheduled window with no receipt at all is the
+  signal that the job did not run.
+- **What makes an idle run observable.** Every pass prints its receipt, so the
+  scheduled invocation's own run record shows that the job ran and what it
+  concluded even when it removed nothing. Only a pass that deleted something
+  also writes the `audit_log` entry: a domain audit event per idle sweep would
+  be a daily row saying nothing happened, and the run record is the right place
+  for "it ran".
+
+**#907's "nothing ever runs the purge" belongs to that deployment task.** A
+manually runnable purge does not resolve it, so the criterion transfers rather
+than closing with this change — the defect #488 named for Class B is the same
+one, and it is not resolved by the command existing.
+
+**The receipt's home.** `audit_log` is an acceptable interim home and stays.
+It takes the entry without a schema change: `access.CUSTOMER_WIDE_RELATIONS`
+already classifies it as "the append-only attribution ledger of the whole
+customer database", it already carries sign-in, sign-out and offboarding,
+`corridor_worker` already holds `INSERT` on it, and `UNBOUND_IDENTITY` already
+exists for an act that names no identity row. It is a fair home and not the
+best one — the entry names no subject, and a sweep is not a ledger mutation —
+so `sign_in_record_expiry_receipts` in `models/operations.py` remains the better
+one for a change that holds the schema slot: `id` bigserial, `public_id`
+varchar(64) unique, `as_of` timestamptz, the three periods, the three deleted
+counts, a bounded `refusal` string, and `created_at`; `SELECT, INSERT` to
+`corridor_worker` and nothing to `corridor_web`, and no partition policy because
+it carries no personal data. It is not a prerequisite for this pass, and it was
+not built here: this change held no schema slot.
 
 **The fourth per-person store, and whether this covers it.** #844 holds what a
 coordinator had typed across an expired session. It is deliberately not a
@@ -303,7 +376,7 @@ and ADR-0080's posture on record history governs it.
 
 **What remains open.** The research note records one design observation that
 #907 did not ask for and this ADR does not settle: `sign_in_attempts` is doing
-two jobs, a fifteen-minute throttle counter and a year-long security log, over
+two jobs, a fifteen-minute throttle counter and a six-month security record, over
 the same rows keyed by an email address or a client address. CNIL ¶22 and the
 OWASP Logging Cheat Sheet both point toward pseudonymizing the scope once the
 counter has reset. Neither prescribes it, and separating the two is a change to

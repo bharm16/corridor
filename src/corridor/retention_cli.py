@@ -8,15 +8,22 @@ name, so the command line cannot broaden the Class B allowlist.
 ``expire-sign-in-records`` is a second, deliberately separate boundary over
 ``sign_in_retention`` (#907, ADR-0102): per person rather than per project, no
 manifest, and a deleted row rather than a nulled content column. It is here
-because this is the retention surface an operator already knows, and because
-the pass has no recurring trigger yet -- ADR-0102 records what Due Work would
-need before it stops depending on somebody running this.
+because this is the retention surface an operator already knows, and because it
+is what a deployed schedule is meant to invoke once per customer environment --
+ADR-0102 names that deployment task. Its ``--as-of`` is therefore optional and
+defaults to now, so a scheduled invocation needs no per-run argument, while an
+operator reproducing a past pass can still pin the moment it measures from.
+
+Every command prints its payload, and the sign-in pass returns one whether it
+deleted, refused or found nothing due. That printed line is the run record: an
+idle pass writes no domain audit event, so the scheduled job's own log is what
+shows it ran at all.
 """
 
 from __future__ import annotations
 
 import argparse
-from datetime import datetime
+from datetime import datetime, timezone
 import json
 
 from sqlalchemy import select
@@ -64,17 +71,29 @@ def _parser() -> argparse.ArgumentParser:
         "expire-sign-in-records",
         help="delete sessions, links and attempts past their stated retention",
     )
-    expire.add_argument("--as-of", required=True, type=datetime.fromisoformat)
+    # Optional, unlike `plan`'s: the scheduled invocation this command exists
+    # for cannot compute a fresh timestamp for a fixed command line.
+    expire.add_argument("--as-of", type=datetime.fromisoformat, default=None)
     return parser
 
 
 def main(argv: list[str] | None = None, *, session_factory=None) -> int:
     args = _parser().parse_args(argv)
-    principal = HumanPrincipal(settings.human_principal)
     factory = session_factory or WorkerSession
+
+    def principal() -> HumanPrincipal:
+        # Read only by the commands that are attributable to a person. The
+        # sign-in expiry is not one: its actor is
+        # `audit.SIGN_IN_RECORD_EXPIRY_ACTOR`, so a scheduled invocation must
+        # not have to declare a human -- and must not be made to name a false
+        # one -- in order to run.
+        return HumanPrincipal(settings.human_principal)
+
     with factory() as session:
         if args.command == "plan":
-            manifest = plan_retention(session, as_of=args.as_of, principal=principal)
+            manifest = plan_retention(
+                session, as_of=args.as_of, principal=principal()
+            )
             items = session.scalars(
                 select(RetentionManifestItem)
                 .where(RetentionManifestItem.manifest_id == manifest.id)
@@ -107,14 +126,16 @@ def main(argv: list[str] | None = None, *, session_factory=None) -> int:
                 session,
                 project_id=args.project_id,
                 reason=args.reason,
-                principal=principal,
+                principal=principal(),
             )
             payload = {"hold_id": hold.id, "status": "active"}
         elif args.command == "lift":
-            hold = lift_hold(session, hold_id=args.hold_id, principal=principal)
+            hold = lift_hold(session, hold_id=args.hold_id, principal=principal())
             payload = {"hold_id": hold.id, "status": "lifted"}
         elif args.command == "expire-sign-in-records":
-            payload = sweep_sign_in_records(session, as_of=args.as_of)
+            payload = sweep_sign_in_records(
+                session, as_of=args.as_of or datetime.now(timezone.utc)
+            )
         else:
             delete_rebuildable_page_data(session)
             payload = {"status": "class_c_cleared"}

@@ -8,6 +8,16 @@ reach the product accumulated for the life of the customer database, with no
 stated period after which they go. ADR-0102 states that period; this module is
 the pass that enforces it.
 
+**The three periods are product judgements, not figures a standard requires.**
+Published practice says a period must exist and says to determine it by risk
+assessment where no requirement governs (NIST SP 800-63B-4 §2.4.2); the audit
+log retention figures that do exist -- CIS's ninety-day minimum, CNIL's usual
+six-months-to-a-year discussion -- are about audit logs in general, and no
+source read for #907 says when *these* rows may be deleted. Every requirement
+found says *invalidate*, never *delete*. The research note records what each
+source does and does not establish; a longer period is not automatically the
+safer or the more compliant one.
+
 **Why the Class B apparatus could not take these three.** ``retention`` is
 per project: every candidate carries a ``project_id``, the hold is placed on a
 project, the manifest lists a digest per row, and execution *nulls the content
@@ -19,7 +29,7 @@ no project to scope a sweep to and no completion-shaped column to anchor one
 on. And there is no content to null: the *whole row* is the credential, so
 what has to go is the row.
 
-**What it does reuse, exactly.** The hold. ``retention.permit_deletion_unreferenced``
+**What it does reuse, exactly.** The hold. ``retention.permit_unreferenced_deletion``
 already answered the question this pass asks -- what does a project hold mean
 for a deletion that cannot be attributed to a project -- and answered it
 "any active hold anywhere refuses it", because the thing being deleted might
@@ -27,6 +37,18 @@ be the held project's. A sign-in record is in the same position: the person
 whose session this was may be the person a litigation hold is about. So an
 active ``RetentionHold`` anywhere stops this pass, and the pass reports that
 rather than raising, the way ``retention_sweep`` reports a refusal.
+
+**The hold is read inside each delete, not once before them all.** A read that
+finds no hold, followed by a delete, leaves the window between the two: a hold
+committed in it would be honoured by neither statement. So the predicate lives
+in the ``DELETE`` itself, and at the READ COMMITTED isolation this application
+runs under, each statement takes its own snapshot -- a hold committed at any
+point before a given ``DELETE`` begins is seen by that ``DELETE``, which then
+removes nothing. The separate read at the top of the pass is kept for what it
+is good for, which is telling the receipt that a hold is why nothing happened.
+What this does not do, because it cannot: a hold committed while a ``DELETE``
+is already executing does not put back the rows that statement removed. Those
+rows were past their stated period and no hold existed when they went.
 
 **Nothing recorded is lost.** Who signed in and who signed out are
 ``audit_log`` entries written in the same transaction as the act, and
@@ -42,20 +64,29 @@ all. ADR-0102 keeps attempts longer for that reason and says why.
 period may be: ``access.expired_web_session`` deliberately reads a session that
 expired and was not revoked, so #844 can hand back what a coordinator had typed.
 That reader needs the row only while a held draft could still exist, and #844's
-holder keeps one for thirty minutes, so any session period measured in days is
-clear of it. A period shorter than that holder's TTL would break #844.
+holder keeps one for thirty minutes, so the seven-day session period is 336
+times the window it has to clear. A period shorter than that holder's TTL would
+break #844.
 
-**What is deliberately not here.** Two things, both recorded in ADR-0102 rather
-than half-built. This pass has no recurring trigger: Due Work is the product's
-one supervised runtime and every relation it uses -- schedules, occurrences and
-receipts -- carries a ``NOT NULL`` foreign key to ``projects``, so a
-customer-environment-wide pass cannot be declared to it without a schema
-change. And the receipt below is one ``audit_log`` entry, not a row in a
-receipt family of its own; ``audit_log`` is already the append-only ledger of
-the whole customer database rather than of one project (``access``'s own
-classification), and already carries sign-in, sign-out and offboarding, so it
-takes this act without a new relation. Both are stated in the ADR with the
-exact change each would need.
+**The receipt, and what makes an idle run observable.** A pass that deleted
+something records one ``audit_log`` entry; a pass that deleted nothing records
+none, because a domain audit event per idle sweep is a row saying nothing
+happened. Every pass returns the same receipt either way -- policy version,
+executing identity, the three cutoffs, the counts, the outcome and any refusal
+-- and ``retention_cli`` prints it on every run, so the scheduled invocation's
+own run record shows that the job ran and what it concluded even when it
+removed nothing. None of it copies anything that was deleted: counts and
+timestamps only, no address and no hash.
+
+**What is deliberately not here.** The recurring trigger. This pass runs when
+something invokes ``retention_cli``, and until a deployed schedule invokes it
+once per customer environment, expiry depends on somebody remembering -- the
+defect #488 named. Extending Due Work's per-project scope model to carry it was
+considered and declined: Due Work is per project by schema and by invariant, and
+this is one customer-environment-wide maintenance operation, so the answer is an
+environment-scoped scheduled invocation of the command rather than nullable
+project columns inside Due Work. ADR-0102 records exactly what that deployment
+task needs.
 """
 
 from __future__ import annotations
@@ -79,9 +110,15 @@ from corridor.models import (
 # to authorize anything -- not from when it was created. ADR-0102 gives the
 # reason for each and for why they differ; changing one here without changing
 # the ADR makes the stated retention and the enforced retention disagree.
-SESSION_RETENTION = timedelta(days=30)
-TOKEN_RETENTION = timedelta(days=7)
-ATTEMPT_RETENTION = timedelta(days=365)
+SESSION_RETENTION = timedelta(days=7)
+TOKEN_RETENTION = timedelta(hours=24)
+ATTEMPT_RETENTION = timedelta(days=180)
+
+# Which stated policy a receipt was produced under. The periods above *are* the
+# policy, so this changes whenever one of them does: a receipt read a year later
+# has to say which set of numbers produced its counts, and the cutoffs it
+# records are only interpretable against them.
+POLICY_VERSION = "adr-0102-2026-09-11"
 
 RESULT_SCHEMA_VERSION = "sign-in-record-expiry-v1"
 
@@ -94,6 +131,13 @@ SWEPT_RELATIONS: tuple[str, ...] = (
     "sign_in_attempts",
 )
 
+# Any unlifted hold, on any project. Held as an EXISTS rather than run as a
+# read of its own so it can be evaluated inside each delete; see the module
+# docstring for why the window between a separate read and a delete matters.
+_ACTIVE_HOLD = (
+    select(RetentionHold.id).where(RetentionHold.lifted_at.is_(None)).exists()
+)
+
 
 class SignInRetentionRefused(ValueError):
     """The pass was given a clock it cannot measure a retention period from."""
@@ -102,36 +146,37 @@ class SignInRetentionRefused(ValueError):
 def sweep_sign_in_records(session: Session, *, as_of: datetime) -> dict[str, Any]:
     """Delete every sign-in record past its stated period, or decline and say why.
 
-    Returns the pass's receipt whether or not it deleted anything. A pass that
-    deleted nothing writes no ``audit_log`` entry, for the reason
-    ``retention_sweep`` discards an empty dry run: a row per idle pass is a row
-    saying nothing happened. A refusal writes none either -- it deleted nothing,
-    and the hold that caused it is already an attributable recorded act.
+    Returns the pass's receipt whether it deleted, declined, or found nothing
+    due, so the caller that scheduled it can record that it ran either way.
+    Only a pass that actually deleted something writes an ``audit_log`` entry.
     """
 
     moment = _aware_utc(as_of)
+    cutoff = {
+        "web_sessions": moment - SESSION_RETENTION,
+        "sign_in_tokens": moment - TOKEN_RETENTION,
+        "sign_in_attempts": moment - ATTEMPT_RETENTION,
+    }
     receipt: dict[str, Any] = {
         "schema_version": RESULT_SCHEMA_VERSION,
+        "policy_version": POLICY_VERSION,
+        "executed_by": audit.SIGN_IN_RECORD_EXPIRY_ACTOR,
         "observed_at": moment.isoformat(),
+        "outcome": "nothing_due",
         "health": "healthy",
         "refusal": "",
-        "retained_for_days": {
-            "web_sessions": SESSION_RETENTION.days,
-            "sign_in_tokens": TOKEN_RETENTION.days,
-            "sign_in_attempts": ATTEMPT_RETENTION.days,
+        "cutoff": {
+            relation: cutoff[relation].isoformat() for relation in SWEPT_RELATIONS
         },
         "deleted": {relation: 0 for relation in SWEPT_RELATIONS},
         "audit_id": None,
     }
 
     if _held(session):
+        receipt["outcome"] = "refused"
         receipt["health"] = "retention_attention_required"
         receipt["refusal"] = "hold_active"
         return receipt
-
-    session_cutoff = moment - SESSION_RETENTION
-    token_cutoff = moment - TOKEN_RETENTION
-    attempt_cutoff = moment - ATTEMPT_RETENTION
 
     deleted = receipt["deleted"]
     # A session stops being usable at whichever came first, its expiry or its
@@ -142,8 +187,8 @@ def sweep_sign_in_records(session: Session, *, as_of: datetime) -> dict[str, Any
         session,
         WebSession,
         or_(
-            WebSession.expires_at <= session_cutoff,
-            WebSession.revoked_at <= session_cutoff,
+            WebSession.expires_at <= cutoff["web_sessions"],
+            WebSession.revoked_at <= cutoff["web_sessions"],
         ),
     )
     # Same shape for a link: consumption requires `consumed_at is null` and a
@@ -152,8 +197,8 @@ def sweep_sign_in_records(session: Session, *, as_of: datetime) -> dict[str, Any
         session,
         SignInToken,
         or_(
-            SignInToken.expires_at <= token_cutoff,
-            SignInToken.consumed_at <= token_cutoff,
+            SignInToken.expires_at <= cutoff["sign_in_tokens"],
+            SignInToken.consumed_at <= cutoff["sign_in_tokens"],
         ),
     )
     # An attempt has one time. It stops counting toward backoff when
@@ -162,10 +207,11 @@ def sweep_sign_in_records(session: Session, *, as_of: datetime) -> dict[str, Any
     deleted["sign_in_attempts"] = _delete(
         session,
         SignInAttempt,
-        SignInAttempt.occurred_at <= attempt_cutoff,
+        SignInAttempt.occurred_at <= cutoff["sign_in_attempts"],
     )
 
     if any(deleted.values()):
+        receipt["outcome"] = "deleted"
         entry = audit.record(
             session,
             actor=audit.SIGN_IN_RECORD_EXPIRY_ACTOR,
@@ -174,8 +220,9 @@ def sweep_sign_in_records(session: Session, *, as_of: datetime) -> dict[str, Any
             entity_id=audit.UNBOUND_IDENTITY,
             after={
                 "schema_version": RESULT_SCHEMA_VERSION,
+                "policy_version": POLICY_VERSION,
                 "observed_at": receipt["observed_at"],
-                "retained_for_days": receipt["retained_for_days"],
+                "cutoff": receipt["cutoff"],
                 "deleted": dict(deleted),
             },
         )
@@ -184,25 +231,31 @@ def sweep_sign_in_records(session: Session, *, as_of: datetime) -> dict[str, Any
 
 
 def _delete(session: Session, model, condition) -> int:
-    result = session.execute(delete(model).where(condition))
+    """Remove what is past its period, under the hold predicate, in one statement.
+
+    The hold is read *inside* this statement. A read of the holds table
+    followed by a delete would leave the window between them, in which a hold
+    another transaction commits is honoured by neither; evaluated here, at READ
+    COMMITTED, the statement's own snapshot includes any hold committed before
+    it began and the delete then matches no row at all.
+    """
+
+    result = session.execute(
+        delete(model).where(condition).where(~_ACTIVE_HOLD)
+    )
     return int(result.rowcount or 0)
 
 
 def _held(session: Session) -> bool:
     """Any active project hold refuses a deletion no project can be named for.
 
-    The rule and its reason are ``retention.permit_deletion_unreferenced``'s:
+    The rule and its reason are ``retention.permit_unreferenced_deletion``'s:
     a row that cannot be attributed to a project might be the held project's.
+    This read is what lets the receipt say *why* nothing was deleted; the
+    deletes carry the same predicate themselves.
     """
 
-    return (
-        session.scalar(
-            select(RetentionHold.id)
-            .where(RetentionHold.lifted_at.is_(None))
-            .limit(1)
-        )
-        is not None
-    )
+    return session.scalar(select(_ACTIVE_HOLD)) is True
 
 
 def _aware_utc(value: datetime) -> datetime:

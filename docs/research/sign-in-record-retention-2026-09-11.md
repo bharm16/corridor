@@ -10,9 +10,11 @@
 |---|---|---|
 | Session record | Yes, several, and they disagree by design across assurance levels | **No.** Every source says *invalidate*; none says *delete* |
 | Single-use emailed sign-in link | Yes: 10 minutes as an authenticator, 24 hours as an emailed confirmation code | **No** |
-| Authentication attempt log | The throttle counter's useful life is short and NIST says to reset it on success | **Yes**: 90 days, 6-12 months and 12 months from three independent sources |
+| Authentication attempt log | The throttle counter's useful life is short and NIST says to reset it on success | **Only for "audit logs" in general**: 90 days, six months to a year, and twelve months, from three sources, none of which is established as governing *this* relation |
 
-So of the three periods ADR-0102 proposes, **only the attempt-log period rests on published practice.** The session and token periods are judgements, and the ADR says so rather than dressing them in citations.
+So **all three periods are product judgements.** That is a stronger statement than the first draft of this note made, and it is the correct one. The attempt-log period is the only one with published figures anywhere near it, but those figures are recommendations about audit logs in general: they do not say that Corridor's `sign_in_attempts` is the kind of audit log they address, and none of them fixes a number for it. What published practice does supply for all three is a *procedure* rather than a value — NIST SP 800-63B-4 §2.4.2 directs an organization to follow whatever retention requirements apply to it and, absent those, to determine a period through a privacy and security risk assessment. The periods ADR-0102 records are the output of that judgement, not of a citation.
+
+Two things follow, and an earlier draft of this note got both of them wrong. A source that fixes how long a credential may *work* fixes nothing about how long its dead row may be *kept*; the two questions have separate answers and the second one is mostly unanswered in the literature. And a longer period is not automatically the safer or the more compliant choice — minimisation cuts the other way, and CNIL's own reason for naming a ceiling is that a large log is itself a thing worth attacking.
 
 **One thing I looked for and did not find.** No primary source states the distinction #907 assumes — that an authentication attempt record is a security log retained for investigation while a session record and a one-time token are operational credentials to be deleted once they can no longer authorize anything. I searched for it directly. What exists is two separate bodies of requirement that are consistent with that reasoning without ever joining it up (§4 below). The step from "this row can no longer authorize anything" to "therefore delete this row" is Corridor's argument to make, not a citation it can lean on.
 
@@ -53,6 +55,8 @@ If a user session has been idle for more than **15 minutes**, the user must re-a
 
 **Conclusion for the session record.** There is a great deal of published practice on when a session must stop working and none at all on when its row must go. Any Corridor period for `web_sessions` is a judgement.
 
+It is worth saying explicitly what does *not* follow, because it is an easy step to take by accident. AAL1's thirty-day reauthentication ceiling is a limit on how long a session may remain usable without proving identity again. It is not a statement that an expired session row may, still less should, be retained for thirty days afterwards. Reading a permitted credential lifetime as a retention allowance would let a number about authentication strength decide a question about personal-data minimisation, which is not what §2.1.3 is for. §2.4.2 is the paragraph that addresses retention, and it delegates.
+
 ## 2. What the sources say about the emailed sign-in link
 
 "Magic link" appears in no standard. Two NIST terms cover it, and they give numbers two orders of magnitude apart because they describe different acts.
@@ -64,6 +68,8 @@ If a user session has been idle for more than **15 minutes**, the user must re-a
 **The scope caveat, stated rather than buried.** A confirmation code under 800-63A-4 proves control of an address during proofing and enrollment; it is not an authentication act, so 24 hours is not NIST endorsing a 24-hour sign-in link. And ASVS 5.0's V6.6 intro says outright that "Unsafe out-of-band authentication mechanisms such as **e-mail** and VOIP are not permitted" — so OWASP does not treat an emailed link as an acceptable authenticator at all, and 6.5.5's 10 minutes is being borrowed rather than applied on its own terms. Corridor's 15-minute window is defensible against both, but neither source blesses the channel.
 
 **And again: nothing says when the consumed row goes.** 800-63A-4 says "invalidate", not "delete". Any Corridor period for `sign_in_tokens` is a judgement.
+
+This applies to the twenty-four hour figure in particular. §3.8's twenty-four hours is a **maximum validity** for an emailed confirmation code — the outer limit on how long the secret may still be redeemed. It is not a retention period, and a Corridor retention period of twenty-four hours may not be described as having published backing on the strength of it. If Corridor keeps a spent token row for twenty-four hours, the reason is a product judgement about how long a support question takes to arrive, and the numerical coincidence with §3.8 is a coincidence.
 
 ## 3. What the sources say about the attempt log — the one with real numbers
 
@@ -84,9 +90,15 @@ If a user session has been idle for more than **15 minutes**, the user must re-a
 
 ### How the three numbers relate
 
-They are not the same kind of statement. PCI's 12 months and CIS's 90 days are **floors** ("at least", "a minimum of"). CNIL's six-months-to-a-year is a **band with a soft ceiling**, justified by the risk of holding the data at all. **365 days is the only single value that clears both floors and stays inside CNIL's band.** 180 days clears CIS and sits mid-band but falls a long way under PCI's floor.
+They are not the same kind of statement, and the differences matter more than the arithmetic.
 
-Corridor is in neither PCI nor (today) GDPR scope, so no floor binds; the choice is which posture to adopt in advance of a customer contract or agency records schedule that does bind. That is the maintainer's call and ADR-0102 puts it to them.
+- **CIS Safeguard 8.10 is a minimum recommendation** — ninety days, for IG2 and IG3 enterprise assets. It is a floor for organizations that have adopted the control set, not a period assigned to any particular relation.
+- **CNIL's six months to a year is guidance for connection logs, with contextual exceptions and an explicit minimisation argument.** ¶19 allows up to three years where logging also serves internal control; ¶22 says a log should not keep personal data that the processing it logs no longer keeps, and may retain only pseudonymous identifiers. The band is not a compliance corridor to sit at the top of — its upper end exists because holding more is itself a risk.
+- **PCI DSS 10.5.1's twelve months was not verified against the primary document** (§6), and its applicability to these Corridor records is not established either. Corridor stores no cardholder data and is not in PCI scope. The figure is recorded because it is the one most often quoted, not because it governs.
+
+What must not be concluded from these three, and was concluded in an earlier draft of this note: that 365 days is "the widest compliant envelope" for Corridor. It is not. None of the three sources is established as binding on `sign_in_attempts`, so there is no envelope to be widest inside, and choosing a year in order to satisfy a scope Corridor is not in would be retaining a year of personal data to answer a hypothetical. Longer is not automatically safer and it is not automatically more compliant; under GDPR Article 5(1)(c) and (e), which are the provisions actually in the neighbourhood, it is the opposite by default.
+
+So the period for `sign_in_attempts` is a judgement like the other two, informed by these figures rather than derived from them: long enough to be a usable incident-investigation history, and bounded because the data is personal. Where a customer contract or an agency records schedule does apply, it governs and this number should match it. None has been read.
 
 ### The tension inside the table, which the sources do point at
 
@@ -135,5 +147,5 @@ No new Corridor term is proposed. ADR-0102 uses "sign-in record" as a plain coll
 | CNIL Délibération n° 2021-122 (journalisation) | adopted 14 October 2021 | Primary: CNIL's own PDF, French text extracted verbatim |
 | CNIL, *Sécurité : Tracer les opérations* | updated 14 March 2024 | Primary: cnil.fr |
 | CIS Critical Security Controls v8 / v8.1, Safeguard 8.10 | v8 / v8.1 | Secondary reproductions, consistent |
-| **PCI DSS v4.0.1, requirements 10.5.1 and 8.2.8** | v4.0.1 | **Secondary only.** PCI SSC gates the PDF behind a click-through terms acceptance, which was not accepted. Multiple consistent secondary reproductions; **verify against a copy of the standard before relying on these two figures** |
+| **PCI DSS v4.0.1, requirements 10.5.1 and 8.2.8** | v4.0.1 | **Secondary only, and applicability not established.** PCI SSC gates the PDF behind a click-through terms acceptance, which was not accepted. Multiple consistent secondary reproductions; **verify against a copy of the standard before relying on these two figures** — and separately, nothing here establishes that PCI DSS governs these Corridor relations, which hold no cardholder data |
 | GDPR Articles 5(1)(c) and 5(1)(e) | Regulation (EU) 2016/679 | Primary text |
