@@ -18,14 +18,23 @@ unadopted project and a person who has not yet signed in** and ends with
 **that person retrieving the exact approved package and returning for the next
 cycle**. Two things about its shape are deliberate.
 
-**Only two seams are declared.** A controlled clock, so no step races the wall
-clock, and a non-sending mail delivery, so a sign-in link is captured instead
-of posted. Nothing else is replaced: authentication is the real magic-link
-path, authorization is the real membership gate, the reads run as the real
-live-pilot database login under the enforced boundary, and preparation is the
-production dispatch and worker. A seam added here is a gap the exercise stops
-detecting, which is why the list is written down rather than left to whatever
-a fixture happened to override.
+**Every seam is declared, and a scenario says which ones it has.** The runner
+itself replaces nothing. A scenario's own seams are written down where the
+scenario is: the core journey declares three -- a controlled clock, so no step
+races the wall clock; a non-sending mail delivery, so a sign-in link is
+captured instead of posted; and one test-only extraction fault, so that
+correcting a capture that is genuinely wrong is reachable without changing
+what the retained source says. Nothing else is replaced: authentication is the
+real magic-link path, authorization is the real membership gate, the reads run
+as the real live-pilot database login under the enforced boundary, and
+preparation is the production dispatch and worker. A seam added and not
+written down is a gap the exercise silently stops detecting, which is why the
+list is declared rather than left to whatever a fixture happened to override.
+
+**What a run of a scenario is evidence of is the scenario's to state.** This
+runner walks steps and reports them; it establishes nothing about an
+environment. The core journey's own module docstring says what its passing run
+may be described as, and what it may not.
 
 **A step that cannot pass yet is declared, not omitted.** The whole journey
 (#849) is written out, and each step whose owning ticket has not landed says

@@ -501,6 +501,120 @@ def test_a_passage_from_another_source_is_refused(
     assert refused.value.control == CONTROL_PASSAGE
 
 
+def _a_neighbouring_conflicts_own_cell(session: Session, project: Project):
+    """One misread size, and the *next* Utility Conflict's own size cell.
+
+    Two adopted rows of one sheet.  The revision misread the first row's size,
+    and the second row's size is captured as *that row's* own Source Fact, so
+    the cell a coordinator could point at is not merely another cell that
+    happens to read plausibly: the record itself already says it describes a
+    different Utility Conflict.
+    """
+
+    adopted = Rendition(session, project, "ucm-2026-08.xlsx")
+    accepted, _ = adopted.capture(
+        fact_type="size", value="12 in", subject_key=subject(1), cell="C1"
+    )
+    revision = accept_baseline_fact(session, project, accepted)
+    baseline = register_baseline(session, project, adopted.document, revision)
+    for row_number, identity in ((1, "U-001"), (2, "U-002")):
+        register_source_row(
+            session,
+            project,
+            baseline,
+            row_number=row_number,
+            business_identity=identity,
+        )
+    register_output_template(
+        session, project, identity="district-ucm-template", version="v3"
+    )
+    incoming = Rendition(session, project, "ucm-2026-09.xlsx")
+    misread, misread_cell = incoming.capture(
+        fact_type="size", value="16 in", subject_key=subject(1), cell="C1"
+    )
+    support(session, project, misread, misread_cell)
+    neighbour, neighbours_cell = incoming.capture(
+        fact_type="size", value="6 in", subject_key=subject(2), cell="C2"
+    )
+    support(session, project, neighbour, neighbours_cell)
+    append_deltas(
+        session,
+        project,
+        incoming,
+        source_revision="2026-09",
+        values=[
+            modify(
+                subject_key=subject(1),
+                field_name="size",
+                accepted_value="12 in",
+                proposed_value="16 in",
+                baseline_revision=revision,
+            )
+        ],
+    )
+    reading = read_review_items(session, project_id=project.id, as_of=CUTOFF)
+    (item,) = reading.items
+    (child,) = item.children
+    return item, child, neighbours_cell
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="the product accepts it: `build_correction_request` checks only "
+    "that the passage belongs to this document and this project "
+    "(capture_correction.py:393-406), so a correction from another Utility "
+    "Conflict's own cell is built, `correct_captured_reading` writes a Source "
+    "Fact under the challenged capture's subject with that cell's words, holds "
+    "it there with a supported value_support assessment naming only that cell, "
+    "retires the proposal and raises a replacement proposing the neighbour's "
+    "value onto this conflict. Reported, not worked around; the marking is "
+    "strict so it fails the moment a refusal exists.",
+)
+def test_another_conflicts_valid_cell_cannot_support_this_conflict(
+    session: Session, project: Project
+):
+    """A plausible number somewhere else in the file is not evidence here.
+
+    ``PASSAGE_NOT_IN_THIS_SOURCE`` establishes that a correction is grounded in
+    *this document's* retained bytes.  Being in the same document is necessary
+    and is not sufficient: a correction re-reads the passage a coordinator
+    names and records the result as a Source Fact about the challenged
+    capture's own subject, held to that passage by a ``value_support``
+    assessment.  So a passage the record already attributes to a different
+    Utility Conflict establishes support for a conflict it says nothing about,
+    and nothing in the request declares a relationship under which it could.
+
+    What that means for the fixture the core journey walks is the reason this
+    test exists: "another cell in the same document contains a plausible
+    value" cannot stand in for a misread capture, because it does not
+    establish that the cell describes the same Utility Conflict.  The journey's
+    correction scenarios now inject a declared extraction fault and point the
+    correction at each conflict's *own* cell, which is why they no longer
+    depend on the answer to this.
+
+    What a permitted evidentiary relationship would be is a maintainer's
+    decision, not this test's: the refusal's words, and whether one row may
+    ever be evidence about another, belong with ADR-0100 and ADR-0101.
+    """
+
+    item, child, neighbours_cell = _a_neighbouring_conflicts_own_cell(
+        session, project
+    )
+
+    with pytest.raises(CaptureCorrectionRefused) as refused:
+        build_correction_request(
+            session,
+            item,
+            child,
+            principal=ALICE,
+            reported_at=REPORTED_AT,
+            selected_source_segment_id=neighbours_cell.id,
+            expected_interpretation="this conflict's size is 6 in",
+        )
+
+    assert refused.value.control == CONTROL_PASSAGE
+
+
 @pytest.mark.parametrize(
     "passage_id, interpretation, reason, control",
     [

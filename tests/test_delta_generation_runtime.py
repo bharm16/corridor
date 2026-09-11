@@ -435,7 +435,28 @@ def test_gate7_refuses_a_nonzero_model_budget_without_writing_a_schedule(
 
 
 # --- one delivery, one lineage (#937) --------------------------------------
-
+#
+# Four tests, run over the ordinary configured schedules rather than by calling
+# a producer directly, and they divide into the two halves of the fix:
+#
+# * **one source stays one logical set of proposals** -- one delivery of the
+#   registered workbook opens one Delta Group under one lineage, whichever of
+#   the two standing passes the runtime claims first, whether the generic pass
+#   reaches the delivery before anything has read it, and when it runs again
+#   over the Facts the specialized producer has since written, which is both
+#   the position the defect was found in and the retry a lease recovery
+#   replays; and the reading a coordinator gets says so in its own sentence;
+# * **two sources that really disagree still read as a disagreement** -- the
+#   narrowing must not have become a silencing, so a project with the declared
+#   workbook revision *and* a second retained document that answers one size
+#   differently keeps two lineages and raises the contradiction.
+#
+# What a correction's replacement capture and a later accepted-record change do
+# to the same reading is walked through the product in
+# `tests/test_core_journey_acceptance.py`, which decides a change, undoes it,
+# and corrects two captures, asserting the change and source counts at every
+# Review step.
+#
 # The three baseline rows this revision changes, one field each, so a delivery
 # whose changes are compared twice is visible as six proposals rather than
 # three.
@@ -455,13 +476,23 @@ def _revised(rows):
     return copied
 
 
-def _adopted_project_with_a_later_revision(factory, now, tmp_path):
+def _adopted_project_with_a_later_revision(
+    factory, now, tmp_path, *, disagreeing: str | None = None
+):
     """An adopted project, a declared later revision, and both standing passes.
 
     Configured through the same ``configure_due_work`` a deployment configures
     them through, and both of them: the defect this fixture exists for is only
     reachable when the ordinary processing pass and the generic delta pass are
     both standing, which is what a provisioned project has.
+
+    ``disagreeing`` adds a second, genuinely independent source saying that
+    size about the first conflict, for the half of the contract that proves the
+    fix narrowed the generic pass rather than suppressing disagreement.
+
+    Returns the project, the delivered document, and the generic pass's own
+    schedule, which a test that wants to choose the order of the two producers
+    runs directly rather than waiting for the runtime to pick one.
     """
 
     with factory() as setup:
@@ -483,22 +514,46 @@ def _adopted_project_with_a_later_revision(factory, now, tmp_path):
             completeness=COMPLETE_ENUMERATION,
         )
         starts_at = now.replace(minute=0, second=0, microsecond=0)
-        for declaration in (
+        configure_due_work(
+            setup,
             ProjectProcessingDeclaration.released_hourly(
                 project_id=project.id,
                 configuration_version="project-processing-v1",
                 extractor_identity="corridor.extract_project",
                 starts_at=starts_at,
             ),
+            now=now,
+        )
+        generic = configure_due_work(
+            setup,
             DeltaGenerationDeclaration.released_hourly(
                 project_id=project.id,
                 configuration_version="delta-generation-v1",
                 comparison_rule_version=COMPARISON_RULE_VERSION,
                 starts_at=starts_at,
             ),
-        ):
-            configure_due_work(setup, declaration, now=now)
-        ids = (int(project.id), int(document.id))
+            now=now,
+        )
+        if disagreeing is not None:
+            # A second retained source of this same project: a different
+            # document, arriving through no declared delivery, answering one
+            # Utility Conflict's size its own way. This is the case the generic
+            # pass exists for and the one `_lineage`'s fallback is the right
+            # answer to, so it is also the case that proves #937 narrowed the
+            # generic pass rather than silencing it.
+            _rendition(
+                setup,
+                project,
+                registry_id=None,
+                sha_character="c",
+                filename="field-note-2026-09.xlsx",
+            ).capture(
+                fact_type="size",
+                value=disagreeing,
+                subject_key=SUBJECT,
+                cell="D3",
+            )
+        ids = (int(project.id), int(document.id), int(generic.id))
         setup.commit()
     return ids
 
@@ -540,7 +595,7 @@ def test_a_delivered_revision_is_compared_by_the_one_producer_that_owns_it(
     monkeypatch.setattr(settings, "corpus_images", str(tmp_path / "images"))
     factory = runtime_database.session_factory
     now = datetime(2026, 9, 3, 7, 0, tzinfo=timezone.utc)
-    project_id, document_id = _adopted_project_with_a_later_revision(
+    project_id, document_id, _generic = _adopted_project_with_a_later_revision(
         factory, now, tmp_path
     )
 
@@ -591,7 +646,7 @@ def test_one_delivery_never_reads_as_two_sources_disagreeing(
     monkeypatch.setattr(settings, "corpus_images", str(tmp_path / "images"))
     factory = runtime_database.session_factory
     now = datetime(2026, 9, 3, 7, 0, tzinfo=timezone.utc)
-    project_id, _document_id = _adopted_project_with_a_later_revision(
+    project_id, _document, _generic = _adopted_project_with_a_later_revision(
         factory, now, tmp_path
     )
 
@@ -616,3 +671,125 @@ def test_one_delivery_never_reads_as_two_sources_disagreeing(
         assert KEY_CONTRADICTED_IDENTITY not in {
             item.key_reason for item in reading.items
         }
+
+
+def test_the_generic_pass_declines_a_declared_delivery_whichever_runs_first(
+    runtime_database, tmp_path, monkeypatch
+):
+    """Order and repetition are the runtime's, and neither doubles a delivery.
+
+    The test above lets the runtime choose which of the two standing passes it
+    claims first, which is the ordinary configured case and is also one draw
+    out of several. This fixes the two that matter. The generic pass runs
+    *before* the specialized producer has read anything, so its decline cannot
+    be an artefact of finding the work already done; then the specialized
+    producer reads and appends; then the generic pass runs again on its next
+    slot, over Facts that are now there, which is exactly the position the
+    defect was found in and is also the retry a lease recovery replays.
+    """
+
+    monkeypatch.setattr(settings, "corpus_store", str(tmp_path / "files"))
+    monkeypatch.setattr(settings, "corpus_images", str(tmp_path / "images"))
+    factory = runtime_database.session_factory
+    now = datetime(2026, 9, 3, 7, 0, tzinfo=timezone.utc)
+    project_id, document_id, generic_schedule = (
+        _adopted_project_with_a_later_revision(factory, now, tmp_path)
+    )
+
+    first = execute_delta_generation(
+        factory, schedule_id=generic_schedule, clock=ControlledClock(now)
+    )
+    assert first["groups_created"] == 0 and first["deltas_created"] == 0, (
+        "the generic pass proposed something before the delivery had been "
+        f"read at all: {first}"
+    )
+
+    worked = _work_everything_due(factory, now)
+    assert HANDLER_PROJECT_PROCESSING in worked
+
+    later = now + timedelta(hours=1)
+    retried = execute_delta_generation(
+        factory, schedule_id=generic_schedule, clock=ControlledClock(later)
+    )
+    assert retried["groups_created"] == 0 and retried["deltas_created"] == 0, (
+        "the generic pass swept the Facts the declared delivery's own producer "
+        f"had just written and compared them a second time: {retried}"
+    )
+
+    with factory() as verify:
+        groups = verify.scalars(
+            select(DeltaGroup).where(DeltaGroup.project_id == project_id)
+        ).all()
+        assert [(group.source_family, group.document_id) for group in groups] == [
+            ("ucm_workbook:ucm-published-column-headings", document_id)
+        ]
+        assert len(_deltas(verify, project_id)) == len(REVISED_FIELDS)
+
+
+def test_two_independent_sources_that_disagree_still_read_as_a_disagreement(
+    runtime_database, tmp_path, monkeypatch
+):
+    """The other half of #937, and the half a suppression would have passed.
+
+    Leaving a declared delivery to its own producer is only right if the
+    generic pass still does its job for a source that has no producer of its
+    own. So this project has both: the declared workbook revision, and a
+    second retained document that arrived through no declared delivery and
+    says a different size for the same Utility Conflict. The two really do
+    disagree, and a coordinator has to be told so.
+
+    Both numbers are asserted, because both could have been broken in opposite
+    directions: two sources, and the item keyed as a contradicted value rather
+    than batched with the revision it has nothing to do with.
+    """
+
+    monkeypatch.setattr(settings, "corpus_store", str(tmp_path / "files"))
+    monkeypatch.setattr(settings, "corpus_images", str(tmp_path / "images"))
+    factory = runtime_database.session_factory
+    now = datetime(2026, 9, 3, 7, 0, tzinfo=timezone.utc)
+    project_id, document_id, _generic = _adopted_project_with_a_later_revision(
+        factory, now, tmp_path, disagreeing="20 in"
+    )
+
+    worked = _work_everything_due(factory, now)
+
+    # The generic pass compared the independent source and nothing else.
+    generic = worked[HANDLER_DELTA_GENERATION].handler_result
+    assert generic["groups_created"] == 1
+    assert generic["deltas_created"] == 1
+
+    with factory() as verify:
+        groups = verify.scalars(
+            select(DeltaGroup).where(DeltaGroup.project_id == project_id)
+        ).all()
+        families = {group.source_family for group in groups}
+        assert len(families) == 2, (
+            "two retained sources bear on this project and the record holds "
+            f"{len(families)} lineages: {sorted(families)}"
+        )
+        assert "ucm_workbook:ucm-published-column-headings" in families
+        assert any(family.startswith("document:") for family in families), (
+            "the source with no registered family was not named by its own "
+            f"document: {sorted(families)}"
+        )
+
+        reading = read_open_deltas(
+            verify, project_id=project_id, as_of=REVIEW_AS_OF
+        )
+        contradicted = [
+            item for item in reading.items if item.key_reason == KEY_CONTRADICTED_VALUE
+        ]
+        assert len(contradicted) == 1, (
+            "two sources answer this size differently and the reading raises "
+            f"{len(contradicted)} disagreements: "
+            f"{[item.key_sentence for item in reading.items]}"
+        )
+        (disagreement,) = contradicted
+        assert disagreement.key_sentence == (
+            "two retained sources answer the same field differently, so the "
+            "disagreement is the decision"
+        )
+        assert len(disagreement.delta_ids) == 2, (
+            "a disagreement between two sources offers one side of it: "
+            f"{disagreement.delta_ids}"
+        )
