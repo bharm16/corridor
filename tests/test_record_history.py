@@ -30,21 +30,15 @@ from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from corridor import access, audit
 from corridor.models import (
-    AuditLog,
-    DeltaDisposition,
-    DeltaFollowUpPlan,
-    DeltaRecordDecision,
-    DeltaReviewPacketReceipt,
     ExternalReportArtifact,
     ExternalReportRelease,
     Fact,
     Project,
-    ProjectRecordRevision,
 )
 from corridor.operating_mode import adopt_project_baseline
 from corridor.packet_review import read_review_items, packet_request
@@ -69,6 +63,7 @@ from corridor.review_packets import APPLY, KEEP_CURRENT, resolve_review_packet
 from corridor.web.app import app, get_human_principal, get_session
 
 from access_support import seed_membership
+from record_counts import nothing_written, project_record_counts
 from packet_review_support import (
     Rendition,
     accept_baseline_fact,
@@ -265,24 +260,6 @@ def _settle(session: Session, project: Project, outcome: str) -> int:
     assert result.status == "saved", result
     session.expire_all()
     return int(result.revision_id)
-
-
-def _write_counts(session: Session, project: Project) -> tuple[int, ...]:
-    """Every row family this page could conceivably be accused of writing."""
-
-    spine = tuple(
-        session.scalar(
-            select(func.count()).select_from(model).where(model.project_id == project.id)
-        )
-        for model in (
-            ProjectRecordRevision,
-            DeltaRecordDecision,
-            DeltaDisposition,
-            DeltaFollowUpPlan,
-            DeltaReviewPacketReceipt,
-        )
-    )
-    return (*spine, session.scalar(select(func.count()).select_from(AuditLog)))
 
 
 # --- current and as-of readings come from the projection -------------------
@@ -752,13 +729,10 @@ def test_reading_the_record_history_records_nothing(session, project, client):
     """Looking is not an act, so there is no receipt for having looked."""
 
     _adopted(session, project)
-    before = _write_counts(session, project)
 
-    for query in ("", "?conflict=U-042", "?field=Promised for", "?source=ucm"):
-        assert client.get(f"/record/{project.slug}{query}").status_code == 200
-
-    session.expire_all()
-    assert _write_counts(session, project) == before
+    with nothing_written(session, project.id):
+        for query in ("", "?conflict=U-042", "?field=Promised for", "?source=ucm"):
+            assert client.get(f"/record/{project.slug}{query}").status_code == 200
 
 
 def test_the_reading_takes_no_time_from_a_clock(session, project):
@@ -899,7 +873,7 @@ def test_native_coordination_current_and_revision_history_preserve_original_auth
     native = migrate_coordination_history(session, batch)
     first_revision = session.scalar(text("select min(revision_id) from coordination_record_decisions where project_id=:project"),
         {"project": project.id})
-    before = _write_counts(session, project)
+    before = project_record_counts(session, project.id)
     history = read_record_history(session, project_id=project.id, terms=SearchTerms(revision=first_revision))
     row = next(row for row in history.coordination if row.current and row.current.field == "internal_owner")
     assert row.current == native[0]
@@ -915,7 +889,7 @@ def test_native_coordination_current_and_revision_history_preserve_original_auth
     assert "Coordination decisions from the native record" in body
     assert "local:original-second" in body and "First owner" in body
     assert "Forged compatibility value" not in body
-    assert _write_counts(session, project) == before
+    assert project_record_counts(session, project.id) == before
 
 
 def test_source_decision_history_keeps_superseded_source_and_original_revision_actor(session, project, client):

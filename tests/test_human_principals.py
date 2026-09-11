@@ -1,5 +1,5 @@
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import select
 
 from corridor import audit
 from corridor.adjudicate import accept_candidate, edit_candidate, merge_candidate
@@ -9,16 +9,15 @@ from corridor.extraction_runs import (
 )
 from corridor.models import (
     AuditLog,
-    Assertion,
     Candidate,
     Dependency,
     DocPage,
     Document,
     ExternalOrg,
-    EvidenceLink,
     Project,
 )
 from corridor.principals import HumanPrincipal, InvalidHumanPrincipal
+from record_counts import nothing_written
 
 DECLARER = HumanPrincipal("local:human-principals-declarer")
 
@@ -109,43 +108,6 @@ def _human_principal(name: str) -> HumanPrincipal:
     return HumanPrincipal(f"local:{name}")
 
 
-def _project_counts(session, project_id):
-    dependency_ids = select(Dependency.id).where(Dependency.project_id == project_id)
-    candidate_ids = select(Candidate.id).where(Candidate.project_id == project_id)
-    return (
-        session.scalar(
-            select(func.count())
-            .select_from(Candidate)
-            .where(Candidate.project_id == project_id)
-        ),
-        session.scalar(
-            select(func.count())
-            .select_from(Dependency)
-            .where(Dependency.project_id == project_id)
-        ),
-        session.scalar(
-            select(func.count())
-            .select_from(Assertion)
-            .where(Assertion.dependency_id.in_(dependency_ids))
-        ),
-        session.scalar(
-            select(func.count())
-            .select_from(EvidenceLink)
-            .where(EvidenceLink.dependency_id.in_(dependency_ids))
-        ),
-        session.scalar(
-            select(func.count())
-            .select_from(AuditLog)
-            .where(
-                (AuditLog.entity_type == audit.DEPENDENCY)
-                & (AuditLog.entity_id.in_(dependency_ids))
-                | (AuditLog.entity_type == audit.CANDIDATE)
-                & (AuditLog.entity_id.in_(candidate_ids))
-            )
-        ),
-    )
-
-
 @pytest.mark.parametrize("principal", ["reviewer", "agent", "demo"])
 def test_acceptance_requires_a_stable_human_principal(
     session, project, document, principal
@@ -153,13 +115,11 @@ def test_acceptance_requires_a_stable_human_principal(
     """Role/free-text actors are not admissible principal identities."""
 
     candidate = make_candidate(session, project, document)
-    before = _project_counts(session, project.id)
-
-    with pytest.raises(InvalidHumanPrincipal):
-        accept_candidate(session, candidate, principal=principal)
+    with nothing_written(session, project.id):
+        with pytest.raises(InvalidHumanPrincipal):
+            accept_candidate(session, candidate, principal=principal)
 
     assert candidate.state == "pending"
-    assert _project_counts(session, project.id) == before
 
 
 def test_edit_then_accept_refuses_a_role_actor(session, project, document):
@@ -178,13 +138,11 @@ def test_edit_then_accept_refuses_a_role_actor(session, project, document):
         principal=editor,
     )
 
-    before = _project_counts(session, project.id)
-
-    with pytest.raises(InvalidHumanPrincipal):
-        accept_candidate(session, candidate, principal="demo")
+    with nothing_written(session, project.id):
+        with pytest.raises(InvalidHumanPrincipal):
+            accept_candidate(session, candidate, principal="demo")
 
     assert candidate.state == "pending"
-    assert _project_counts(session, project.id) == before
 
 
 @pytest.mark.parametrize("principal", ["reviewer", "agent", "demo"])
@@ -203,14 +161,12 @@ def test_merge_requires_a_stable_human_principal(
     session.flush()
 
     candidate = make_candidate(session, project, document)
-    before = _project_counts(session, project.id)
-
-    with pytest.raises(InvalidHumanPrincipal):
-        merge_candidate(session, candidate, target, principal=principal)
+    with nothing_written(session, project.id):
+        with pytest.raises(InvalidHumanPrincipal):
+            merge_candidate(session, candidate, target, principal=principal)
 
     assert candidate.state == "pending"
     assert candidate.merged_into is None
-    assert _project_counts(session, project.id) == before
 
 
 def test_successful_admission_records_exact_principal_identity(session, project, document):

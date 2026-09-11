@@ -56,7 +56,6 @@ from corridor.models import (
     BaselineFormat,
     BaselineFormatManifest,
     BaselineSource,
-    BaselineSourceRow,
     Dependency,
     Document,
     Fact,
@@ -73,6 +72,7 @@ from corridor.operating_mode import (
     project_operating_mode,
 )
 from corridor.principals import HumanPrincipal
+from record_counts import nothing_written, project_record_counts
 from corridor.source_intake import validate_and_stage
 from corridor.support_assessments import FactProposition, current_support_assessments
 
@@ -706,12 +706,11 @@ def test_the_preview_creates_no_accepted_authority(
     session, project, tmp_path, store
 ):
     staged = _stage(_workbook_bytes(tmp_path))
-    before = _spine_counts(session, project.id)
 
-    preview = _preview(session, project, staged)
+    with nothing_written(session, project.id):
+        preview = _preview(session, project, staged)
 
     assert preview.questions
-    assert _spine_counts(session, project.id) == before
     assert project_operating_mode(session, project.id) == LEGACY
 
 
@@ -742,15 +741,14 @@ def test_replaying_the_same_adoption_writes_nothing_further(
     staged = _stage(_workbook_bytes(tmp_path))
     preview = _preview(session, project, staged)
     first = _adopt(session, preview, tmp_path)
-    before = _spine_counts(session, project.id)
 
-    again = _adopt(session, preview, tmp_path)
+    with nothing_written(session, project.id):
+        again = _adopt(session, preview, tmp_path)
 
     assert again.revision_id == first.revision_id
     assert again.baseline_source_id == first.baseline_source_id
     assert again.adoption_id == first.adoption_id
     assert again.created is False
-    assert _spine_counts(session, project.id) == before
     # A replay records no second attributable act, of either kind.
     assert session.scalar(
         select(func.count()).select_from(AuditLog).where(
@@ -782,7 +780,7 @@ def test_a_stale_preview_is_refused(session, project, tmp_path, store):
     with pytest.raises(StaleBaselinePreview):
         _adopt(session, tampered, tmp_path)
 
-    assert _spine_counts(session, project.id)["project_record_revisions"] == 0
+    assert project_record_counts(session, project.id)["project_record_revisions"] == 0
 
 
 def test_changed_bytes_are_refused(session, project, tmp_path, store):
@@ -793,7 +791,7 @@ def test_changed_bytes_are_refused(session, project, tmp_path, store):
     with pytest.raises(StaleBaselinePreview):
         _adopt(session, preview, tmp_path)
 
-    assert _spine_counts(session, project.id)["project_record_revisions"] == 0
+    assert project_record_counts(session, project.id)["project_record_revisions"] == 0
 
 
 def test_a_preview_of_another_project_cannot_adopt_this_ones_baseline(
@@ -821,7 +819,7 @@ def test_a_preview_of_another_project_cannot_adopt_this_ones_baseline(
     with pytest.raises(StaleBaselinePreview):
         _adopt(session, crossed, tmp_path)
 
-    assert _spine_counts(session, project.id)["project_record_revisions"] == 0
+    assert project_record_counts(session, project.id)["project_record_revisions"] == 0
 
 
 def test_a_second_different_baseline_is_refused(session, project, tmp_path, store):
@@ -880,7 +878,7 @@ def test_a_nonempty_project_record_is_not_silently_adopted_over(
     with pytest.raises(BaselineAdoptionRefused, match="accepted record decisions"):
         with session.begin_nested():
             _adopt(session, preview, tmp_path, key="adopt-race")
-    assert _spine_counts(session, fresh.id)["project_record_revisions"] == 0
+    assert project_record_counts(session, fresh.id)["project_record_revisions"] == 0
 
 
 def test_the_database_itself_refuses_adoption_over_an_accepted_record(
@@ -938,7 +936,7 @@ def test_a_refused_adoption_leaves_no_partial_spine_rows(
         with session.begin_nested():
             _adopt(session, preview, tmp_path)
 
-    counts = _spine_counts(session, project.id)
+    counts = project_record_counts(session, project.id)
     assert counts["project_record_revisions"] == 0
     assert counts["facts"] == 0
     assert counts["fact_decisions"] == 0
@@ -974,7 +972,7 @@ def test_a_replacement_output_template_changes_no_accepted_value(
     staged = _stage(_workbook_bytes(tmp_path))
     preview = _preview(session, project, staged)
     result = _adopt(session, preview, tmp_path)
-    before = _spine_counts(session, project.id)
+    before = project_record_counts(session, project.id)
     previous = effective_baseline_formats(session, project.id)["output_template"]
 
     registered = register_baseline_format(
@@ -991,7 +989,7 @@ def test_a_replacement_output_template_changes_no_accepted_value(
         template_bytes=b"template",
     )
 
-    after = _spine_counts(session, project.id)
+    after = project_record_counts(session, project.id)
     assert after["project_record_revisions"] == before["project_record_revisions"]
     assert after["fact_decisions"] == before["fact_decisions"]
     assert after["facts"] == before["facts"]
@@ -1275,20 +1273,3 @@ def test_the_adopted_baseline_cannot_be_written_around_the_command(
     )
 
 
-def _spine_counts(session, project_id: int) -> dict[str, int]:
-    return {
-        table.name: session.scalar(
-            select(func.count()).select_from(table).where(
-                table.c.project_id == project_id
-            )
-        )
-        for table in (
-            ProjectRecordRevision.__table__,
-            Fact.__table__,
-            FactDecision.__table__,
-            BaselineSource.__table__,
-            BaselineSourceRow.__table__,
-            BaselineFormat.__table__,
-            SupportAssessment.__table__,
-        )
-    }

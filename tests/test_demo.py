@@ -1,13 +1,12 @@
 import pytest
-from sqlalchemy import func, select
 
-from corridor import audit
 from corridor.adjudicate import accept_candidate
 from corridor.demo import _reset
 from corridor.extraction_runs import declare_active_run, record_extraction_run
-from corridor.models import AuditLog, Candidate, Dependency, DocPage, Document, ExternalOrg, Project
+from corridor.models import Candidate, DocPage, Document, ExternalOrg, Project
 from corridor.principals import HumanPrincipal
 from corridor.demo import DEMO_SLUG, DemoIsolationError
+from record_counts import nothing_written, project_record_counts
 
 DECLARER = HumanPrincipal("local:demo-declarer")
 
@@ -105,31 +104,6 @@ def make_candidate(session, document):
     return candidate
 
 
-def _project_counts(session, project_id):
-    return (
-        session.scalar(
-            select(func.count()).select_from(Candidate).where(
-                Candidate.project_id == project_id
-            )
-        ),
-        session.scalar(
-            select(func.count()).select_from(Dependency).where(
-                Dependency.project_id == project_id
-            )
-        ),
-        session.scalar(
-            select(func.count())
-            .select_from(AuditLog)
-            .where(
-                (AuditLog.entity_type == audit.DEPENDENCY)
-                & (AuditLog.entity_id.in_(
-                    select(Dependency.id).where(Dependency.project_id == project_id)
-                ))
-            )
-        ),
-    )
-
-
 def test_reset_only_clears_demonstration_project_rows(session, demo_project, real_project):
     """Demo rollback should be project-scoped, not a global delete."""
     demo_doc = make_document(session, demo_project, sha="a" * 64)
@@ -146,15 +120,16 @@ def test_reset_only_clears_demonstration_project_rows(session, demo_project, rea
         principal=HumanPrincipal("local:real-tester"),
     )
 
-    before_demo = _project_counts(session, demo_project.id)
-    before_real = _project_counts(session, real_project.id)
+    with nothing_written(session, demo_project.id, real_project.id):
+        with pytest.raises(DemoIsolationError, match="organization identity history"):
+            _reset(session, demo_project)
 
-    with pytest.raises(DemoIsolationError, match="organization identity history"):
-        _reset(session, demo_project)
-
-    assert _project_counts(session, demo_project.id) == before_demo
-    assert _project_counts(session, real_project.id) == before_real
-    assert before_demo == (1, 1, 1)
+    demonstration = project_record_counts(session, demo_project.id)
+    assert (
+        demonstration["candidates"],
+        demonstration["dependencies"],
+        demonstration["audit_log"],
+    ) == (1, 1, 1)
 
 
 def test_reset_refuses_a_real_project_without_changing_it(session, real_project):
@@ -166,9 +141,6 @@ def test_reset_refuses_a_real_project_without_changing_it(session, real_project)
         make_candidate(session, document),
         principal=HumanPrincipal("local:real-reviewer"),
     )
-    before = _project_counts(session, real_project.id)
-
-    with pytest.raises(DemoIsolationError):
-        _reset(session, real_project)
-
-    assert _project_counts(session, real_project.id) == before
+    with nothing_written(session, real_project.id):
+        with pytest.raises(DemoIsolationError):
+            _reset(session, real_project)
