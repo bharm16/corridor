@@ -284,7 +284,13 @@
         <p>What this is based on:</p>
         <ul>
           {%- for reference in view.bundle.references %}
-          <li>{{ reference.kind }} {{ reference.identity }} &mdash; {{ reference.detail }}</li>
+          <li>{{ reference.kind }} {{ reference.identity }} &mdash; {{ reference.detail }}
+            {%- if reference.source_segment_ids %} &mdash;
+            {%- for segment_id in reference.source_segment_ids %}
+            <a href="/sources/{{ project.slug }}/passage/{{ segment_id }}">{{ label('cited_passage') }}{% if reference.source_segment_ids|length > 1 %} {{ loop.index }}{% endif %}</a>{% if not loop.last %},{% endif %}
+            {%- endfor %}
+            {%- endif %}
+          </li>
           {%- endfor %}
         </ul>
         {%- endif %}

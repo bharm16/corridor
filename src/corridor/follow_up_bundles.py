@@ -118,6 +118,7 @@ from corridor.models import (
     OutgoingRequestResponse,
     Project,
     ProposedDelta,
+    SupportAssessmentSource,
 )
 from corridor.native_follow_up_reading import plan_field, plan_subject_identity
 from corridor.presentation import field_label
@@ -316,11 +317,35 @@ class FollowUpBundleRefused(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class SourceReference:
-    """One retained record a reader can go back to."""
+    """One retained record a reader can go back to.
+
+    ``source_segment_ids`` are the Source Segments *this record itself names*,
+    in the order it named them, so a screen can open the cited passage rather
+    than print an identifier a coordinator has to chase (#831). It is plural
+    because a Support Assessment weighs the passages it lists, and it is empty
+    wherever nothing recorded resolves the reference to a passage.
+
+    **Empty is a fact, not a gap to fill by inference.** A ``proposed_delta``
+    reference has no recorded edge to a Source Segment anywhere in the schema:
+    ``proposed_deltas`` carries no fact or segment column and no relation
+    joins it to one. The Review screen shows a delta beside a passage by
+    *matching* on the source revision's document, subject and field and taking
+    the latest Fact's first value source, which is a correspondence it derives
+    rather than one the record states. Following that from here would let a
+    bundle citation open a passage nobody recorded it against, and a citation
+    that opens the wrong passage is worse than one that does not open.
+
+    The released ``bundle_reading_payload`` deliberately does not carry this
+    field: its digest is the proof that the rules are deterministic, and an
+    address a consumer can resolve for itself out of
+    ``support_assessment_sources`` is not a reason to change every recorded
+    reading's digest.
+    """
 
     kind: str
     identity: str
     detail: str
+    source_segment_ids: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -834,6 +859,11 @@ def _plan_items(
         )
     }
     evidence = _plan_evidence(session, project_id, tuple(plans))
+    cited_segments = _assessment_segments(
+        session,
+        project_id,
+        tuple({identity for ids in evidence.values() for identity in ids}),
+    )
 
     made: list[FollowUpItem] = []
     for need in needs:
@@ -878,6 +908,7 @@ def _plan_items(
                 kind="support_assessment",
                 identity=str(assessment_id),
                 detail="evidence the Follow-up Plan cited",
+                source_segment_ids=cited_segments.get(assessment_id, ()),
             )
             for assessment_id in evidence.get(plan.id, ())
         )
@@ -1339,6 +1370,40 @@ def _plan_evidence(
     for plan_id, assessment_id in rows:
         found[plan_id].append(assessment_id)
     return {plan_id: tuple(ids) for plan_id, ids in found.items()}
+
+
+def _assessment_segments(
+    session: Session, project_id: int, assessment_ids: Sequence[int]
+) -> dict[int, tuple[int, ...]]:
+    """The Source Segments each Support Assessment named, in its own order.
+
+    Read from ``support_assessment_sources``, which is where the assessment
+    recorded them, so the address the screen offers is the one the record
+    states rather than one this module worked out. Reading the ids alone keeps
+    the reading off ``source_segments``: the passage view resolves and
+    authorizes the segment itself, and a bundle has no use for its words.
+    """
+
+    if not assessment_ids:
+        return {}
+    rows = session.execute(
+        select(
+            SupportAssessmentSource.support_assessment_id,
+            SupportAssessmentSource.source_segment_id,
+        )
+        .where(
+            SupportAssessmentSource.project_id == project_id,
+            SupportAssessmentSource.support_assessment_id.in_(tuple(assessment_ids)),
+        )
+        .order_by(
+            SupportAssessmentSource.support_assessment_id,
+            SupportAssessmentSource.ordinal,
+        )
+    ).all()
+    found: dict[int, list[int]] = defaultdict(list)
+    for assessment_id, segment_id in rows:
+        found[assessment_id].append(segment_id)
+    return {assessment_id: tuple(ids) for assessment_id, ids in found.items()}
 
 
 def _project_name(session: Session, project_id: int) -> str:

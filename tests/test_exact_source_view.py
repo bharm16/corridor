@@ -56,6 +56,7 @@ from corridor.source_passage_view import (
 )
 from corridor.web.app import app, get_human_principal, get_session
 
+from packet_review_support import accept_baseline_fact, subject
 from source_capture_support import SHEET, Rendition
 
 
@@ -538,6 +539,76 @@ def test_a_review_citation_is_a_link_to_the_passage_it_names():
     # The reading behind those links carries the address, not only the words.
     assert "source_segment_id" in SourceReference.__dataclass_fields__
     assert "source_segment_id" in SourceAnswer.__dataclass_fields__
+
+
+def test_the_record_view_opens_the_passage_behind_an_accepted_value(
+    session, member_project, client
+):
+    """An accepted value on the Record view links to where it was captured.
+
+    The Record view already held the address — every ``record_history``
+    source reference carries its ``source_segment_id`` — and printed it as
+    words. This is the same citation as a link, proved by rendering the page
+    rather than by reading the template, because what has to be true is that
+    the id in the href is the segment this value really came from.
+    """
+
+    project = member_project(COORDINATOR)
+    rendition = Rendition(session, project, "ucm-record.xlsx")
+    fact, segment = rendition.capture(
+        fact_type="committed_date", value="2026-04-01", subject_key=subject(42)
+    )
+    accept_baseline_fact(session, project, fact)
+
+    page = client.get(f"/record/{project.slug}")
+
+    assert page.status_code == 200, page.text
+    assert "What each value was captured from" in page.text
+    assert (
+        f'href="/sources/{project.slug}/passage/{segment.id}"' in page.text
+    ), "the accepted value's own passage is not linked"
+
+
+def test_every_record_citation_site_is_a_link_to_its_passage():
+    """All three places the Record view prints a citation, not just the one.
+
+    The other two — a native source decision's Source Fact, and native
+    publication support — need an accepted decision history and a retained
+    support receipt to render, which is a different module's fixture. What
+    they share with the rendered case is the address, so the template is read
+    for the three and the rendered case above proves the address is right.
+    """
+
+    record = (TEMPLATE_ROOT / "record_history.html").read_text(encoding="utf-8")
+
+    links = [
+        line
+        for line in record.splitlines()
+        if "/sources/{{ project.slug }}/passage/" in line
+    ]
+    assert len(links) == 3, links
+    assert sum("source.source_segment_id" in line for line in links) == 2
+    assert sum("support.source_segment_id" in line for line in links) == 1
+
+
+def test_the_follow_up_bundle_links_only_the_citations_the_record_resolves():
+    """The bundle's citation list offers a passage only where one is recorded.
+
+    The behaviour behind this is in ``tests/test_follow_up_bundles.py`` and the
+    rendered screen is in ``tests/test_follow_up_chase_screen.py``; what is
+    read here is that the markup is guarded by the reference's own resolved
+    ids rather than printing a link for every reference.
+    """
+
+    workflow = (TEMPLATE_ROOT / "project_workflow.html").read_text(encoding="utf-8")
+
+    assert "reference.source_segment_ids" in workflow
+    [link] = [
+        line
+        for line in workflow.splitlines()
+        if "/sources/{{ project.slug }}/passage/" in line
+    ]
+    assert "{{ segment_id }}" in link
 
 
 def test_the_source_register_opens_each_document_it_lists():

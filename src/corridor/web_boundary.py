@@ -256,6 +256,11 @@ PILOT_ROUTES: dict[tuple[str, str], PilotRoute] = {
                 "release_preparation_requests",
                 "source_deliveries",
                 "source_segments",
+                # #831 the follow-up bundle's citations, resolved to the exact
+                # passages each Support Assessment recorded, so a bundle links
+                # to the source rather than printing an assessment id. Read
+                # beside `delta_follow_up_plan_evidence`, in the same call.
+                "support_assessment_sources",
                 "support_assessments",
             }
         ),

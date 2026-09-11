@@ -67,7 +67,13 @@ from corridor.follow_up_bundles import (
     read_follow_up_bundles,
     read_retained_outgoing_requests,
 )
-from corridor.models import DeltaDeferral, DeltaFollowUpPlan, OutgoingRequest, Project
+from corridor.models import (
+    DeltaDeferral,
+    DeltaFollowUpPlan,
+    OutgoingRequest,
+    Project,
+    SourceSegment,
+)
 from corridor.operating_mode import adopt_project_baseline
 from corridor.outgoing_requests import (
     OutgoingRequestRefused,
@@ -587,6 +593,92 @@ def test_a_clarification_bundle_never_states_an_unaccepted_value_as_the_record(
     for quote in bundle.quoted_wording:
         assert "not a value the Project Record holds" in quote.attribution
         assert quote.reference.identity
+
+
+def test_a_bundle_citation_opens_the_exact_passage_the_assessment_recorded(
+    session, project
+):
+    """A citation carries the address of its passage, not only an id (#831).
+
+    A Support Assessment names the Source Segments it weighed, in order, so
+    the bundle can offer the exact-source view of each of them rather than
+    printing an assessment id a coordinator has to chase. The check that it is
+    the *right* passage is the one below: the words behind each citation are
+    the incoming values this ask exists to reconcile.
+    """
+
+    _cross_source(session, project)
+    _plan_every_child(session, project, return_date=RETURNS_AT)
+
+    bundle = next(
+        bundle
+        for bundle in _read(session, project).bundles
+        if bundle.ask == ASK_RESOLVE_SOURCE_DISCREPANCY
+    )
+
+    assessments = [
+        reference
+        for reference in bundle.references
+        if reference.kind == "support_assessment"
+    ]
+    assert assessments, bundle.references
+    assert {
+        session.get(SourceSegment, segment_id).exact_text
+        for reference in assessments
+        for segment_id in reference.source_segment_ids
+    } == {"2026-12-15", "2027-01-20"}
+
+
+def test_a_proposed_delta_citation_claims_no_passage_because_none_is_recorded(
+    session, project
+):
+    """Nothing joins `proposed_deltas` to a Source Segment, so nothing links.
+
+    The Review screen shows a delta beside a passage by matching on the source
+    revision's document, subject and field; that is a correspondence it
+    derives, not one the record states. A bundle citation that opened the
+    wrong passage would be worse than one that does not open, so the quoted
+    wording's reference carries no address at all until a recorded edge exists
+    to carry (#831).
+    """
+
+    _cross_source(session, project)
+    _plan_every_child(session, project, return_date=RETURNS_AT)
+
+    bundle = next(
+        bundle
+        for bundle in _read(session, project).bundles
+        if bundle.ask == ASK_RESOLVE_SOURCE_DISCREPANCY
+    )
+
+    quoted = [quote.reference for quote in bundle.quoted_wording]
+    assert quoted
+    assert all(reference.kind == "proposed_delta" for reference in quoted)
+    assert all(reference.source_segment_ids == () for reference in quoted)
+
+
+def test_the_released_reading_payload_carries_no_passage_address(session, project):
+    """The digest proves the rules are deterministic; a screen address is not one.
+
+    `bundle_reading_payload` is a released contract whose `content_sha256` is
+    compared across replays. A consumer that wants the passages behind a
+    citation resolves them from `support_assessment_sources` itself, which is
+    where the assessment recorded them, so nothing here changes a digest that
+    every retained reading was measured under.
+    """
+
+    _cross_source(session, project)
+    _plan_every_child(session, project, return_date=RETURNS_AT)
+
+    payload = bundle_reading_payload(_read(session, project))
+
+    references = [
+        reference
+        for bundle in payload["bundles"]
+        for reference in bundle["references"]
+    ]
+    assert references
+    assert all("source_segment_ids" not in reference for reference in references)
 
 
 def test_a_bundle_whose_accepted_position_is_not_the_projection_is_refused(

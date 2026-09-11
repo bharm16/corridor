@@ -182,7 +182,7 @@
       <ul>
         {%- for source in reading.sources %}
         <li>
-          {{ source.filename }} — {{ source.locator }} ({{ source.role }})
+          <a href="/sources/{{ project.slug }}/passage/{{ source.source_segment_id }}">{{ source.filename }} — {{ source.locator }}</a> ({{ source.role }})
           <p class="passage">Exact text: <q>{{ source.exact_text }}</q></p>
         </li>
         {%- endfor %}
@@ -262,7 +262,7 @@
         <td>{% if decision.fact %}
           <details><summary>Source Fact {{ decision.fact.fact_id }}</summary>
             <p>Captured by {{ decision.fact.recorded_by }} at {{ decision.fact.recorded_at }}.</p>
-            {% for source in decision.fact.sources %}<p>{{ source.filename }} — {{ source.locator }} ({{ source.role }})</p><p class="passage"><q>{{ source.exact_text }}</q></p>
+            {% for source in decision.fact.sources %}<p><a href="/sources/{{ project.slug }}/passage/{{ source.source_segment_id }}">{{ source.filename }} — {{ source.locator }}</a> ({{ source.role }})</p><p class="passage"><q>{{ source.exact_text }}</q></p>
             {% else %}<p>No exact source passage is recorded for this fact.</p>{% endfor %}
           </details>
           {% else %}Source Fact unavailable; no source provenance claimed.{% endif %}</td>
@@ -477,7 +477,7 @@
       {% for support in readings %}
       <tr>
         <th scope="row">Constraint {{ support.dependency_id }} — {{ support.field_name if support.field_name else 'whole record' }}</th>
-        <td>Document {{ support.document_id }} · source segment {{ support.source_segment_id }}<p class="passage"><q>{{ support.exact_text }}</q></p></td>
+        <td><a href="/sources/{{ project.slug }}/passage/{{ support.source_segment_id }}">Document {{ support.document_id }} · source segment {{ support.source_segment_id }}</a><p class="passage"><q>{{ support.exact_text }}</q></p></td>
         <td>{{ support.authority_kind }}: {{ support.decision_actor }}<br>{{ support.decision_time }}</td>
         <td>{{ support.original_actor }}<br>{{ support.original_time }}</td>
         <td>{{ support.fact_decision_id }} · revision {{ support.revision_id }}</td>
