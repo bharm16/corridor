@@ -409,17 +409,30 @@ def confirm_delivery(
     ).one()
 
 
-def confirmed_delivery_ids(session: Session, project_id: int) -> frozenset[int]:
-    """Which of one project's deliveries a person has admitted to processing."""
+def delivery_confirmations(
+    session: Session, project_id: int
+) -> dict[int, SourceDeliveryConfirmation]:
+    """One project's admissions, by the delivery each one admitted.
 
-    return frozenset(
-        int(identifier)
-        for identifier in session.scalars(
-            select(SourceDeliveryConfirmation.delivery_id).where(
+    The register (#841) shows who admitted a delivery and when, not only that
+    somebody did, and one relation read one way is what keeps the two readings
+    from disagreeing about which deliveries are confirmed.
+    """
+
+    return {
+        int(row.delivery_id): row
+        for row in session.scalars(
+            select(SourceDeliveryConfirmation).where(
                 SourceDeliveryConfirmation.project_id == project_id
             )
         ).all()
-    )
+    }
+
+
+def confirmed_delivery_ids(session: Session, project_id: int) -> frozenset[int]:
+    """Which of one project's deliveries a person has admitted to processing."""
+
+    return frozenset(delivery_confirmations(session, project_id))
 
 
 def binding_of_delivery(session: Session, row: SourceDelivery) -> DeliveryBinding:

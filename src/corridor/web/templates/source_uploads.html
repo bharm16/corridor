@@ -1,31 +1,53 @@
+{% import "_primitives.html" as ui -%}
+{#
+  Every delivery this project has received, and what became of each one (#841).
+
+  This page decides nothing and offers exactly one act: uploading a document.
+  Its only form is a GET filter that changes the URL and nothing else. A
+  proposed change is decided on the review screen, a record question on the
+  record view, and a mechanical repair by technical operations; naming an act
+  here as well would be a second door onto the same work.
+
+  The words a row carries are `corridor.source_register`'s, not this
+  template's: the state, what is still open, who owns a blocked row, and what
+  would change it are all facts about the record, so they live beside the
+  record and this page renders them.
+#}
 <!doctype html>
 <meta charset="utf-8">
-<title>Uploaded documents — {{ project.name }}</title>
+<title>Source register — {{ project.name }}</title>
 <style>
-  :root { --line:#e2e2e2; --muted:#666; --warn:#b54708; --ok:#067647; }
+  :root { --line:#e2e2e2; --muted:#666; }
   * { box-sizing: border-box; }
-  body { font: 14px/1.5 system-ui, sans-serif; margin: 0; color:#111;
+  body { font: 15px/1.5 system-ui, sans-serif; margin: 0; color:#111;
          background:#fff; }
+  a { color:#06c; }
   header { display:flex; justify-content:space-between; align-items:baseline;
-           padding:.7rem 1.2rem; border-bottom:1px solid var(--line); }
+           padding:.8rem 1.2rem; border-bottom:1px solid var(--line); }
   header b { font-size:1rem; }
   header a { color:#111; }
-  main { max-width: 56rem; margin: 2.5rem auto; padding: 0 1.2rem; }
-  h1 { font-size:1.4rem; margin:0 0 .3rem; letter-spacing:-.01em; }
-  .lead { color:var(--muted); margin:0 0 1.6rem; font-size:.95rem; }
-  .top { margin:0 0 1.4rem; }
-  .top a { font:inherit; padding:.35rem .9rem; border:1px solid #111;
-           background:#111; color:#fff; border-radius:4px; text-decoration:none; }
-  table { border-collapse:collapse; width:100%; font-size:.9rem; }
-  th, td { text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line);
-           vertical-align:top; }
-  th { color:var(--muted); font-weight:600; }
+  main { max-width: 72rem; margin: 2rem auto; padding: 0 1.2rem 4rem; }
+  h1 { font-size:1.55rem; margin:0 0 .25rem; letter-spacing:-.01em; }
+  .lead { color:var(--muted); margin:0 0 1.4rem; }
+  .quiet { color:var(--muted); font-size:.9rem; }
+  .region { border:1px solid var(--line); border-radius:7px;
+            padding:.9rem 1.1rem; margin:1rem 0; }
+  .region > h2 { font-size:1.15rem; margin:0 0 .35rem; }
+  .top a.upload { font:inherit; padding:.35rem .9rem; border:1px solid #111;
+                  background:#111; color:#fff; border-radius:4px;
+                  text-decoration:none; }
+  .search { display:flex; flex-wrap:wrap; gap:.8rem; align-items:flex-end; }
+  .search .field { margin:0; }
+  .search input, .search select { padding:.3rem .4rem; min-width:11rem; }
+  table.record td, table.record th { word-break:break-word; }
   .file { font-weight:600; }
-  .mono { font-family:ui-monospace, monospace; font-size:.78rem; color:var(--muted); }
-  .who { color:var(--muted); font-size:.82rem; }
-  .status { white-space:nowrap; }
+  .mono { font-family:ui-monospace, monospace; font-size:.78rem;
+          color:var(--muted); }
+  .who { color:var(--muted); font-size:.85rem; }
+  ul.produced { margin:.2rem 0 0; padding-left:1.1rem; font-size:.9rem; }
   .empty { color:var(--muted); }
 </style>
+{{ ui.styles() }}
 
 <header>
   <b>{{ project.name }}</b>
@@ -35,47 +57,150 @@
 </header>
 
 <main>
-  <h1>Uploaded documents</h1>
+  <h1>Source register — {{ project.name }}</h1>
   <p class="lead">
-    Documents registered through product upload, and the honest state of their
-    processing. A document that could not be read shows as failed; one the
-    processing pass has not reached yet shows as pending. Each file name opens
-    the original document, exactly as it arrived.
+    Every delivery this project has received, whatever carried it: what
+    Corridor was given, what it is, whether it has been read, what reading it
+    produced, and what is still waiting on somebody. A delivery that was
+    refused, that did not complete, or that nobody has confirmed for
+    processing is here too, with the reason the record holds for it. Processed
+    does not mean nothing else needs attention: a source that was read in full
+    can still leave proposed changes nobody has decided.
   </p>
 
   <p class="top">
-    <a href="/projects/{{ project.slug }}/sources/upload">Upload a document</a>
+    <a class="upload" href="/projects/{{ project.slug }}/sources/upload">Upload a document</a>
   </p>
 
-  {% if uploads %}
-    <table>
-      <thead>
-        <tr>
-          <th>File</th>
-          <th>Kind</th>
-          <th>Status</th>
-          <th>Confirmed</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for row in uploads %}
-          <tr>
-            <td>
-              <div class="file"><a href="/sources/{{ project.slug }}/document/{{ row.document_id }}/original">{{ row.filename }}</a></div>
-              <div class="mono">{{ row.sha256[:16] }}…</div>
-            </td>
-            <td>{{ row.doc_type }}</td>
-            <td class="status">{{ status_labels.get(row.processing_status,
-                                                     row.processing_status) }}</td>
-            <td>
-              <div>{{ row.confirmed_at.strftime('%Y-%m-%d %H:%M') }}</div>
-              <div class="who">{{ row.confirmed_by }}</div>
-            </td>
-          </tr>
-        {% endfor %}
-      </tbody>
-    </table>
+  {% call ui.region("filters", "Narrow this register") %}
+    <form class="search" method="get" action="/projects/{{ project.slug }}/sources"
+          role="search" aria-label="Narrow this project's source register">
+      {% call ui.field("q-state", "State", "What became of the delivery.") %}
+        <select id="q-state" name="state" aria-describedby="q-state-hint">
+          <option value="">Any state</option>
+          {%- for code, words in register.states %}
+          <option value="{{ code }}"{% if register.filters.state == code %} selected{% endif %}>{{ words }}</option>
+          {%- endfor %}
+        </select>
+      {% endcall %}
+      {% call ui.field("q-family", "Source family",
+                       "A delivered file name, or the source family a change was recorded under.") %}
+        <input type="search" id="q-family" name="family"
+               value="{{ register.filters.family }}" aria-describedby="q-family-hint">
+      {% endcall %}
+      {% call ui.field("q-from", "Received on or after", "A date, as yyyy-mm-dd.") %}
+        <input type="date" id="q-from" name="from"
+               value="{{ register.filters.received_from.date() if register.filters.received_from else '' }}"
+               aria-describedby="q-from-hint">
+      {% endcall %}
+      {% call ui.field("q-to", "Received on or before", "A date, as yyyy-mm-dd.") %}
+        <input type="date" id="q-to" name="to"
+               value="{{ register.filters.received_to.date() if register.filters.received_to else '' }}"
+               aria-describedby="q-to-hint">
+      {% endcall %}
+      <p><button type="submit">Show matching deliveries</button></p>
+    </form>
+    {%- if register.filters.any_applied %}
+    <p class="quiet">
+      {{ register.matching }} of {{ register.total }} deliveries match.
+      <a href="/projects/{{ project.slug }}/sources">Show every delivery</a>
+    </p>
+    {%- endif %}
+  {% endcall %}
+
+  {% if register.rows %}
+    {% call ui.record_table(
+         "Deliveries this project has received, most recent first",
+         ["What Corridor received", "What it is", "State",
+          "What reading it produced", "Who acts next"]) %}
+      {%- for row in register.rows %}
+      <tr>
+        <th scope="row">
+          <div class="file">
+            {%- if row.document_id %}
+            <a href="/sources/{{ project.slug }}/document/{{ row.document_id }}/original">{{ row.filename }}</a>
+            {%- else %}{{ row.filename }}{% endif -%}
+          </div>
+          <div>{{ row.received_at.strftime('%Y-%m-%d %H:%M') if row.received_at else not_recorded }}</div>
+          <div class="who">
+            {%- if row.channel %}{{ row.channel }} &middot; {{ row.transport }}
+            {%- else %}registered from no recorded delivery{% endif -%}
+          </div>
+          {%- if row.confirmed_at %}
+          <div class="who">confirmed by {{ row.confirmed_by }}
+            on {{ row.confirmed_at.strftime('%Y-%m-%d %H:%M') }}</div>
+          {%- endif %}
+          <div class="mono">{{ row.content_sha256[:16] }}…</div>
+        </th>
+        <td>
+          <div>{{ row.doc_type if row.doc_type else not_recorded }}</div>
+          {%- if row.external_version %}
+          <div class="who">revision {{ row.external_version }}</div>
+          {%- endif %}
+          {%- if row.source_family %}
+          <div class="who">family {{ row.source_family }}</div>
+          {%- endif %}
+          {%- if row.revision_relationship %}
+          <div class="who">{{ row.revision_relationship }}</div>
+          {%- endif %}
+        </td>
+        <td>
+          {{ ui.state(state_label(row.tone, row.state_words)) }}
+          {%- if row.recorded_reason %}
+          <p class="quiet">{{ row.recorded_reason }}</p>
+          {%- endif %}
+        </td>
+        <td>
+          {%- if row.output %}
+          <ul class="produced">
+            {%- if row.output.rows_detected is not none %}
+            <li>{{ row.output.rows_extracted }} of {{ row.output.rows_detected }} rows read,
+              {{ row.output.rows_unaccounted }} unaccounted</li>
+            {%- endif %}
+            <li>{{ row.output.facts }} captured facts</li>
+            <li>{{ row.output.proposed_changes }} proposed changes,
+              {{ row.output.open_questions }} still open</li>
+          </ul>
+          {%- else %}
+          <span class="quiet">nothing has been read from this delivery</span>
+          {%- endif %}
+        </td>
+        <td>
+          {%- if row.is_blocked %}
+          <div>{{ row.owner }}</div>
+          <p class="quiet">{{ row.next_action }}</p>
+          {%- else %}
+          <span class="quiet">nobody: nothing is waiting on a person here</span>
+          {%- endif %}
+        </td>
+      </tr>
+      {%- endfor %}
+    {% endcall %}
+    {#
+      The register is the one reading on this page no filter narrows to a
+      single row, so it says when it has been cut and offers the deliveries
+      received before the oldest one shown rather than stopping silently at a
+      number nobody was told about (#830). The filters travel with the link,
+      so paging does not undo the question the controls are asking.
+    #}
+    {%- if register.has_older %}
+    <p>{{ ui.state(state_label("attention",
+        "Only the most recent " ~ register.rows|length ~ " deliveries are shown.")) }}</p>
+    <p>
+      <a href="/projects/{{ project.slug }}/sources?{{ register_query }}&amp;before={{ register.oldest_key }}">
+        Deliveries received before this one &rarr;</a>
+    </p>
+    {%- endif %}
+    {%- if register.before %}
+    <p><a href="/projects/{{ project.slug }}/sources?{{ register_query }}">&larr; Back to the most recent deliveries</a></p>
+    {%- endif %}
+  {% elif register.before %}
+    <p class="empty">There is no delivery older than the page you came from.</p>
+    <p><a href="/projects/{{ project.slug }}/sources?{{ register_query }}">&larr; Back to the most recent deliveries</a></p>
+  {% elif register.total %}
+    <p class="empty">No delivery matches this filter.</p>
+    <p><a href="/projects/{{ project.slug }}/sources">Show every delivery</a></p>
   {% else %}
-    <p class="empty">No documents have been uploaded to this project yet.</p>
+    <p class="empty">This project has received no delivery yet.</p>
   {% endif %}
 </main>
