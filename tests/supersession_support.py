@@ -64,12 +64,6 @@ from corridor.models import (
 from corridor.principals import HumanPrincipal
 from corridor.supersession import SupersessionDeclaration, register_supersessions
 
-PREDECESSOR_REGISTRY_ID = "REV-A"
-SUCCESSOR_REGISTRY_ID = "REV-B"
-INDEX_REGISTRY_ID = "INDEX"
-REPLACEMENT_DATE = date(2026, 8, 1)
-
-
 @dataclass(frozen=True)
 class SupersededChain:
     """One revision pair, the source that declares it, and every stage built.
@@ -219,13 +213,13 @@ def superseded_chain(
     project: Project,
     *,
     principal: HumanPrincipal | None = None,
-    predecessor_registry_id: str = PREDECESSOR_REGISTRY_ID,
-    successor_registry_id: str = SUCCESSOR_REGISTRY_ID,
-    index_registry_id: str = INDEX_REGISTRY_ID,
+    predecessor_registry_id: str = "REV-A",
+    successor_registry_id: str = "REV-B",
+    index_registry_id: str = "INDEX",
     predecessor_text: str = "",
     successor_text: str = "",
     index_text: str | None = None,
-    replacement_date: date = REPLACEMENT_DATE,
+    replacement_date: date = date(2026, 8, 1),
     source_page: int = 1,
     predecessor_date: date | None = None,
     successor_date: date | None = None,
