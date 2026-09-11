@@ -8,6 +8,13 @@
   record view, and a mechanical repair by technical operations; naming an act
   here as well would be a second door onto the same work.
 
+  #842 added what a repair *left behind*, which is a reading and not an act:
+  beside the owner of a blocked row, what operations did about it, who did it
+  and when, and whether the source has been read since. It stays beside the
+  owner rather than in a column of its own, because "who acts next" and "has
+  anybody yet" are two halves of one answer and a reader should not have to
+  join them across the table.
+
   The words a row carries are `corridor.source_register`'s, not this
   template's: the state, what is still open, who owns a blocked row, and what
   would change it are all facts about the record, so they live beside the
@@ -173,6 +180,14 @@
           <p class="quiet">{{ row.next_action }}</p>
           {%- else %}
           <span class="quiet">nobody: nothing is waiting on a person here</span>
+          {%- endif %}
+          {%- if row.repair %}
+          <p class="quiet">{{ row.repair.sentence }}
+            {%- if row.repair.recorded %}
+            <br>{{ row.repair.performed_by }}{% if row.repair.performed_at %},
+              {{ row.repair.performed_at.strftime('%Y-%m-%d %H:%M') }}{% endif %}
+            {%- endif %}
+          </p>
           {%- endif %}
         </td>
       </tr>

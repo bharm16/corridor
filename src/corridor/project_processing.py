@@ -33,9 +33,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from corridor import operations_repair
 from corridor.admission import LoadResult, reconcile_record_inclusion
 from corridor.extract_project import (
     Outcome,
@@ -51,7 +52,13 @@ from corridor.models import Document, DocumentQuarantine, ExtractionRun, Project
 # unhandled layout or a matrix the geometry could not find is a permanent
 # condition, not a transient failure. A transient ``failed`` run stays eligible
 # for a bounded retry; these do not (#342 retry-eligibility).
-_PERMANENT_FAILURE_OUTCOMES = ("unreadable", "no_matrix")
+#
+# "Permanent" meant "for ever" until #842, and the customer-journey audit found
+# that to be a dead end: nothing could ever take the source again, whatever
+# operations did about the condition that stopped it. It now means "until a
+# technical operator records a repair against it", which is one attributable
+# receipt and not a flag anybody can set -- see ``corridor.operations_repair``.
+_PERMANENT_FAILURE_OUTCOMES = operations_repair.PERMANENT_FAILURE_OUTCOMES
 
 
 class ProcessingScopeRefused(ValueError):
@@ -190,6 +197,17 @@ def _eligible_documents(
     deliberately unread), documents whose parse did not succeed, and documents
     whose only terminal reading is a permanent unreadable/no-matrix outcome.
     Each exclusion is counted by reason for honest reporting.
+
+    The last of those four is the one a repair lifts (#842). A repair receipt
+    names the newest reading this source had when it was made, and the source
+    is taken again while no newer permanent reading exists -- so one receipt
+    re-admits the source once and a second identical failure excludes it again,
+    rather than a single old repair making the source eligible for ever. The
+    repair itself is refused unless the actor holds the technical-operations
+    designation, so this reads a receipt rather than deciding an authority. The
+    other three exclusions stand: a quarantine is not released by a repair, a
+    sealed input is never re-read, and a failed parse is put right by the
+    bounded re-parse rather than by this selection.
     """
 
     documents = session.scalars(
@@ -205,15 +223,20 @@ def _eligible_documents(
         ).all()
     )
     completed = completed_document_ids(session, project_id)
-    permanently_failed = set(
-        session.scalars(
-            select(ExtractionRun.document_id)
+    permanently_failed = {
+        int(document_id): int(run_id)
+        for document_id, run_id in session.execute(
+            select(ExtractionRun.document_id, func.max(ExtractionRun.id))
             .join(Document, Document.id == ExtractionRun.document_id)
             .where(
                 Document.project_id == project_id,
                 ExtractionRun.outcome.in_(_PERMANENT_FAILURE_OUTCOMES),
             )
+            .group_by(ExtractionRun.document_id)
         ).all()
+    }
+    repaired = operations_repair.repaired_through(
+        session, document_ids=sorted(permanently_failed)
     )
 
     eligible: list[Document] = []
@@ -232,7 +255,12 @@ def _eligible_documents(
             excluded["held_quarantined"] += 1
         elif document.parse_status != "parsed":
             excluded["failed_parse"] += 1
-        elif document.id in permanently_failed and document.id not in completed:
+        elif (
+            document.id in permanently_failed
+            and document.id not in completed
+            and repaired.get(int(document.id), 0)
+            < permanently_failed[int(document.id)]
+        ):
             excluded["unreadable_permanent"] += 1
         else:
             eligible.append(document)

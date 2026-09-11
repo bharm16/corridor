@@ -181,6 +181,15 @@ class RequestBoundary:
         return asdict(self)
 
 
+#: The two reasons this check itself refuses with, named rather than spelled
+#: at the raise site alone. Every adapter records the reason verbatim -- a
+#: routed page's Processing Failure stores it as its ``error_type`` -- so a
+#: reader asking "was this refused for want of a customer authorization" is
+#: comparing against these exact strings and should not have to retype them.
+AUTHORIZATION_ABSENT = "authorization-absent"
+AUTHORIZATION_REFUSED = "authorization-refused"
+
+
 class ProviderRefused(RuntimeError):
     """A refusal, with its reason, every failing field, and what went out.
 
@@ -413,7 +422,7 @@ class AuthorizationCheck(Generic[P, R, C, E]):
         """
         found = self.mismatches(record, request, posture)
         if found:
-            reason = "authorization-absent" if record is None else "authorization-refused"
+            reason = AUTHORIZATION_ABSENT if record is None else AUTHORIZATION_REFUSED
             raise refuse(reason, mismatches=found, outbound_requests=0, request=request)
         assert isinstance(record, self.record_kinds)
         return cast("C | E", record)

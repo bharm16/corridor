@@ -190,6 +190,14 @@ AUTHORIZE_DISCOVERED_REFERENCE = "authorize_discovered_reference"
 # A person ran the explicit bounded parse recovery on one failed-parse document
 # (#350). Append-only, so the prior failure and every recovery attempt are kept.
 RECOVER_DOCUMENT_PARSE = "recover_document_parse"
+# A technical operator ran the receipted repair on one source the standing pass
+# had stopped taking (#842). It is an AuditLog action rather than a second table
+# for the reason CONFIRM_SOURCE_INTAKE gives: the attribution shares the exact
+# transaction as the re-parse or the re-admission it authorizes, so a rolled-back
+# repair records no claim that one happened. It is also what the eligibility rule
+# and the source register read, so an engineer who quietly fixed a project by
+# hand leaves the same visible receipt an operator does.
+REPAIR_SOURCE_PROCESSING = "repair_source_processing"
 # Nothing records these any more: the admission policies stopped asking
 # for a signature (ADR-0029). They stay named because the audit log is
 # append-only and still holds entries that carry them.
@@ -280,6 +288,7 @@ ACTIONS = frozenset(
         CAPTURE_KEY_DATE_TABLE,
         AUTHORIZE_DISCOVERED_REFERENCE,
         RECOVER_DOCUMENT_PARSE,
+        REPAIR_SOURCE_PROCESSING,
         AUTHORIZE_DEPENDENCY_ADMISSION,
         CLEAR_CONDITION,
         DISMISS_CONDITION,

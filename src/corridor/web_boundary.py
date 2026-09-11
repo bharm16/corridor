@@ -508,12 +508,17 @@ PILOT_ROUTES: dict[tuple[str, str], PilotRoute] = {
             "screen reads. A parsed source with no run is only *waiting* for "
             "a pass that would take it, so `extractable_document` is asked of "
             "the document, and the operating mode it consults for a minutes "
-            "source is why `project_baseline_adoptions` is read. It no longer "
-            "reads `audit_log`: the confirmation it used to scope itself by "
-            "is now the delivery's own"
+            "source is why `project_baseline_adoptions` is read. #841 had it "
+            "read no `audit_log`, because the confirmation it used to scope "
+            "itself by is now the delivery's own; #842 gave it one reading "
+            "there again and a different one -- the repair receipt operations "
+            "leaves against a blocked source, selected by this project's own "
+            "document ids, so a row that names an owner also says what has "
+            "been done about it"
         ),
         relations=frozenset(
             {
+                "audit_log",
                 "delta_dispositions",
                 "delta_groups",
                 "delta_supersessions",
