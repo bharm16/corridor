@@ -62,16 +62,46 @@ The grant the customer database enforces against is recorded by the operations
 capability, through `record_onboarding_grant`. A reissue is a new row at a
 higher `grant_version`; nothing is ever updated.
 
+## Three identities, and what each one binds
+
+Two of the three name material a customer supplied, so they read as one and
+are not. Operations answering a question about "the evidence" has to say which
+of these it means.
+
+| Identity | What it proves |
+|---|---|
+| Governing authorization identity **and version** | Which customer permission governs the operation |
+| Authorization evidence reference **and digest** (`evidence_identity`, `evidence_sha256`) | Which retained document supports that permission |
+| Source delivery identity **and content digest** | Which project material the operation will process |
+
+A signed authorization document and an uploaded UCM workbook ordinarily have
+**different digests**. `evidence_sha256` is therefore never the workbook's
+digest: a check comparing the two would refuse every honest preparation, and a
+grant recording a workbook digest there would change what older authorization
+evidence means. `tests/test_architecture.py` keeps the field inside the modules
+that record, carry and enforce the grant.
+
 ## The two-stage source binding
 
 1. The recorded customer/project/source-scope authorization permits **bounded
-   receipt and safe staging**. It admits only material inside the recorded
-   scope and does nothing with it but hold it safely.
+   receipt and safe staging**, and nothing but holding the material safely.
 2. Once the bytes are received and hashed, the **exact source identity** is
    bound to the permission, and every operation after that point is permitted
    against that identity rather than against the scope that admitted it.
 
 This is not permission to process arbitrary uploads.
+
+**What stage 1 enforces today, and what it does not.** The permission itself is
+enforced: `prepare_baseline_reading` proves a current `inspect_compatibility`
+grant for this project in the database before it opens anything, and the
+delivery it names is re-proved against the ledger — this project, these exact
+bytes, a stored disposition, and a source binding this project's recorded
+authorization still permits. The grant's own `source_scope` is **recorded and
+not compared**: it is a narrative sentence, and no operation is admitted or
+refused by it. Giving it a typed, versioned contract — permitted alternatives,
+conjunctive restrictions within each — is [#951](https://github.com/bharm16/corridor/issues/951),
+and until it lands a narrative scope should be read as a statement of intent
+that operations enforces by what it issues, not as an enforced restriction.
 
 ## What consumes it
 

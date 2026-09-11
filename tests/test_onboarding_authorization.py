@@ -83,6 +83,7 @@ from corridor.operating_mode import ADOPTED_BASELINE, project_operating_mode
 from corridor.principals import HumanPrincipal
 from corridor.source_authorization import (
     CONNECTOR_CONFIGURATION,
+    HUMAN_PRINCIPAL,
     AuthorizedSourceBinding,
     authentication_mode_of,
     record_source_authorization,
@@ -1176,9 +1177,15 @@ def test_a_prepared_reading_names_the_delivery_it_was_read_from(
 
 
 def test_a_delivery_of_another_project_is_not_a_delivery_of_this_one(
-    session, onboarding, tmp_path
+    session, onboarding, tmp_path, monkeypatch
 ):
-    """The id arrives on a form, so it is checked rather than believed."""
+    """The id arrives on a form, so it is checked rather than believed.
+
+    Everything else about the two deliveries agrees: the same channel, the
+    same connector configuration and version, the same authentication mode,
+    the same bytes. Only the project differs, and that alone is enough --
+    a matching configuration does not override the wrong project (#951).
+    """
 
     project, _ = onboarding
     elsewhere = Project(
@@ -1188,7 +1195,21 @@ def test_a_delivery_of_another_project_is_not_a_delivery_of_this_one(
     session.flush()
     staged = validate_and_stage(workbook(tmp_path), "ucm.xlsx")
     theirs = delivered(session, elsewhere, staged)
+    ours = delivered(session, project, staged)
+    selection = (
+        "channel",
+        "configuration_identity",
+        "configuration_version",
+        "transport",
+    )
+    assert [
+        getattr(session.get(SourceDelivery, theirs), name) for name in selection
+    ] == [getattr(session.get(SourceDelivery, ours), name) for name in selection], (
+        "the two deliveries have to agree on everything but the project for "
+        "this to be about the project"
+    )
 
+    _refuse_to_open_the_workbook(monkeypatch)
     with refusal(session, BaselineAdoptionRefused) as refused:
         prepare_baseline_reading(
             session,
@@ -1208,9 +1229,15 @@ def test_a_delivery_of_another_project_is_not_a_delivery_of_this_one(
 
 
 def test_a_delivery_that_carries_other_bytes_is_refused(
-    session, onboarding, tmp_path
+    session, onboarding, tmp_path, monkeypatch
 ):
-    """Named *and* checked: the delivery has to hold the bytes being read."""
+    """Named *and* checked: the delivery has to hold the bytes being read.
+
+    The receipt itself was permitted: these are this project's own stored
+    bytes, handed over under the grant that permits the reading. What is
+    refused is the *binding* -- a preparation naming one receipt and reading
+    different bytes -- and it is refused before those bytes are opened (#951).
+    """
 
     project, _ = onboarding
     # Genuinely different content, not a second save of the same rows:
@@ -1222,7 +1249,13 @@ def test_a_delivery_that_carries_other_bytes_is_refused(
     other_delivery = delivered(session, project, other, name="other.xlsx")
     staged = validate_and_stage(workbook(tmp_path), "ucm.xlsx")
     assert other.sha256 != staged.sha256
+    receipt = session.get(SourceDelivery, other_delivery)
+    assert (receipt.project_id, receipt.disposition) == (project.id, "stored"), (
+        "the receipt this preparation names was itself permitted, so what is "
+        "refused below is the binding and not the hand-over"
+    )
 
+    _refuse_to_open_the_workbook(monkeypatch)
     with refusal(session, BaselineAdoptionRefused) as refused:
         prepare_baseline_reading(
             session,
@@ -1486,6 +1519,264 @@ def test_a_withdrawn_limited_grant_is_not_rescued_by_the_absent_source_set(
             images_dir=tmp_path / "images",
         )
     assert refused.value.code == "onboarding_authorization_withdrawn"
+
+
+# --- three identities, and what each one binds (#951) -----------------------
+#
+# One preparation carries three identities that are easy to read as one, and
+# the difference is the whole of what the grant's evidence digest means:
+#
+# | Identity                                 | What it proves                      |
+# |------------------------------------------|-------------------------------------|
+# | governing authorization identity/version | which customer permission governs    |
+# | authorization evidence reference/digest  | which retained document supports it  |
+# | delivery identity and content digest     | which project material is read      |
+#
+# A signed authorization document and an uploaded UCM workbook ordinarily
+# have *different* digests, so `evidence_sha256` is not the workbook's digest
+# and a preparation that compared the two would refuse every honest reading.
+# What binds the bytes is the delivery the caller names, re-proved against the
+# ledger before the workbook is opened.
+#
+# Each refusal below installs `_refuse_to_open_the_workbook` first. A refusal
+# that arrives after the reading has happened is not a refusal of the reading,
+# and the database command at the end of the pass raises some of the same
+# codes -- so without the sentinel a check that was deleted outright would
+# still look enforced.
+
+
+def test_the_authorization_evidence_and_the_workbook_are_different_digests(
+    session, onboarding, tmp_path
+):
+    """The grant's evidence digest names the authorization, not the workbook.
+
+    `evidence_identity` and `evidence_sha256` are the retained customer
+    authorization -- the signed document operations holds -- and the workbook
+    a coordinator uploads is different material with a different digest. The
+    two differing is the ordinary case, not a mismatch: this preparation runs
+    to completion with them different, and what the reading is bound to is the
+    delivery's own content digest.
+    """
+
+    project, _ = onboarding
+    staged = validate_and_stage(workbook(tmp_path), "ucm.xlsx")
+    delivery_id = delivered(session, project, staged)
+    grant = held_grant(session, int(project.id))
+    # Captured before the preparation, so the comparison after it is against a
+    # value this test read rather than against whatever the row now holds.
+    authorization_evidence = grant.evidence_sha256
+
+    assert grant.evidence_sha256 != staged.sha256, (
+        "the fixture accidentally made the authorization evidence and the "
+        "workbook one digest, so this scenario would prove nothing"
+    )
+    assert grant.governing_authorization_identity in grant.evidence_identity, (
+        "the retained evidence is supposed to name the customer authorization "
+        f"it supports; it names {grant.evidence_identity!r}"
+    )
+    assert staged.filename not in grant.evidence_identity
+
+    retained = prepare_baseline_reading(
+        session,
+        project=project,
+        staged=staged,
+        customer="Lone Star Transit Authority",
+        source_identity="UCM workbook revision C",
+        principal=COORDINATOR,
+        at=AT,
+        source_delivery_id=delivery_id,
+        field_mapping=DEMO,
+        images_dir=tmp_path / "images",
+    )
+
+    delivery = session.get(SourceDelivery, delivery_id)
+    assert retained.content_sha256 == staged.sha256 == delivery.content_sha256, (
+        "the reading is bound to the bytes through the delivery it names"
+    )
+    standing = onboarding_standing(
+        session, project_id=int(project.id), operation=INSPECT_COMPATIBILITY, at=AT
+    )
+    assert standing.evidence_sha256 == authorization_evidence != staged.sha256, (
+        "the standing the preparation reads carries the authorization's "
+        "evidence digest; a repurposed field would carry the workbook's"
+    )
+
+
+def test_the_right_channel_under_the_wrong_configuration_is_refused(
+    session, onboarding, tmp_path, monkeypatch
+):
+    """Restrictions inside one binding are conjunctive, not alternatives.
+
+    The recorded set permits this project, this customer, this channel and
+    this authentication mode, and names a different connector configuration.
+    Three restrictions out of four match. The delivery is still outside the
+    set, because a matching channel does not override the wrong configuration
+    -- and the authorized configuration is asked for separately here, so the
+    refusal cannot be read as the channel having failed too.
+    """
+
+    project, _ = onboarding
+    staged = validate_and_stage(workbook(tmp_path), "ucm.xlsx")
+    delivery_id = delivered(session, project, staged)
+    delivery = session.get(SourceDelivery, delivery_id)
+    record_source_authorization(
+        session,
+        project_id=int(project.id),
+        authorization_identity="source-set-2026-05",
+        authorization_version=1,
+        customer="lone-star-transit",
+        environment="pilot-1",
+        governing_authorization_identity="customer-authorization-7",
+        governing_authorization_version="2026-04-01",
+        bindings=[
+            AuthorizedSourceBinding(
+                channel=delivery.channel,
+                configuration_identity="product-upload-v2",
+                configuration_version="2",
+                permitted_source_classes=("ucm_revision",),
+                authentication_mode=HUMAN_PRINCIPAL,
+            )
+        ],
+        issued_at=AT - timedelta(minutes=5),
+        issued_by_actor=OPERATIONS_ACTOR,
+        recorded_by_actor=OPERATIONS_ACTOR,
+    )
+    session.flush()
+
+    assert _binding_standing(session, delivery).permitted is False
+    authorized = source_binding_standing(
+        session,
+        project_id=int(project.id),
+        customer=delivery.customer,
+        channel=delivery.channel,
+        configuration_identity="product-upload-v2",
+        configuration_version="2",
+        authentication_mode=authentication_mode_of(delivery),
+    )
+    assert authorized.permitted, (
+        "the same channel and authentication mode are permitted under the "
+        "authorized configuration, so the configuration is the only "
+        f"difference: {authorized.reason}"
+    )
+
+    _refuse_to_open_the_workbook(monkeypatch)
+    with refusal(session, BaselineAdoptionRefused) as refused:
+        prepare_baseline_reading(
+            session,
+            project=project,
+            staged=staged,
+            customer="Lone Star Transit Authority",
+            source_identity="UCM workbook revision C",
+            principal=COORDINATOR,
+            at=AT,
+            source_delivery_id=delivery_id,
+            field_mapping=DEMO,
+            images_dir=tmp_path / "images",
+        )
+    assert "no longer permits the way this workbook was delivered" in str(
+        refused.value
+    )
+
+
+def test_a_governing_authorization_superseded_while_the_delivery_waits_refuses(
+    session, onboarding, tmp_path, monkeypatch
+):
+    """The permission is asked for at the reading, not at the hand-over.
+
+    The bytes arrived under a grant that permitted them, and the customer
+    authorization behind that grant has since been replaced. Reading the
+    workbook is new work, so it asks again and stops: nothing infers that the
+    replacement document says the same thing, and nothing is opened while the
+    question is unanswered.
+    """
+
+    project, grant_id = onboarding
+    staged = validate_and_stage(workbook(tmp_path), "ucm.xlsx")
+    delivery_id = delivered(session, project, staged)
+    assert onboarding_standing(
+        session, project_id=int(project.id), operation=INSPECT_COMPATIBILITY, at=AT
+    ).permitted, "the delivery was taken under a grant that permitted the reading"
+
+    record_onboarding_event(
+        session,
+        project_id=int(project.id),
+        grant_id=grant_id,
+        kind="governing_authorization_superseded",
+        executed_by_actor=OPERATIONS_ACTOR,
+        executed_at=AT,
+        reason="customer-authorization-7 replaced by customer-authorization-8",
+    )
+    session.flush()
+
+    _refuse_to_open_the_workbook(monkeypatch)
+    with refusal(session) as refused:
+        prepare_baseline_reading(
+            session,
+            project=project,
+            staged=staged,
+            customer="Lone Star Transit Authority",
+            source_identity="UCM workbook revision C",
+            principal=COORDINATOR,
+            at=AT,
+            source_delivery_id=delivery_id,
+            field_mapping=DEMO,
+            images_dir=tmp_path / "images",
+        )
+    assert refused.value.code == "governing_authorization_superseded"
+
+
+def test_two_deliveries_of_the_same_workbook_stay_two_acts(
+    session, onboarding, tmp_path
+):
+    """Identical bytes are not one delivery, and the digest never selects one.
+
+    A connector pull and a person's upload an hour later carry the same
+    digest and are different acts by different parties under different
+    authority. The reading names the delivery it acts on, so the second one
+    here is what the retained reading, the Document and the admission all
+    name, and the first is left exactly as it arrived -- unadmitted, and
+    still available to be read as its own act.
+    """
+
+    project, _ = onboarding
+    staged = validate_and_stage(workbook(tmp_path), "ucm.xlsx")
+    first = delivered(session, project, staged)
+    second = delivered(session, project, staged)
+    rows = [session.get(SourceDelivery, first), session.get(SourceDelivery, second)]
+
+    assert first != second
+    assert rows[0].content_sha256 == rows[1].content_sha256 == staged.sha256
+    assert rows[0].delivery_identity != rows[1].delivery_identity, (
+        "two acts that share a digest are still two deliveries, so neither "
+        "may converge on the other's row"
+    )
+    assert [row.disposition for row in rows] == ["stored", "stored"]
+
+    retained = prepare_baseline_reading(
+        session,
+        project=project,
+        staged=staged,
+        customer="Lone Star Transit Authority",
+        source_identity="UCM workbook revision C",
+        principal=COORDINATOR,
+        at=AT,
+        source_delivery_id=second,
+        field_mapping=DEMO,
+        images_dir=tmp_path / "images",
+    )
+    session.flush()
+
+    assert retained.source_delivery_id == second
+    assert session.get(Document, retained.document_id).source_delivery_id == second
+    admitted = session.scalars(
+        select(SourceDeliveryConfirmation.delivery_id).where(
+            SourceDeliveryConfirmation.project_id == project.id
+        )
+    ).all()
+    assert list(admitted) == [second], (
+        "the delivery the caller never named was admitted to processing on "
+        "the strength of sharing a digest"
+    )
 
 
 def test_adopting_a_reading_whose_document_lost_its_delivery_is_refused(

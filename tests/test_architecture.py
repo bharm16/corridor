@@ -4692,3 +4692,66 @@ def test_every_operator_command_states_its_contract_on_its_parser():
         recorded=HAND_PARSED_COMMANDS,
     )
 
+
+
+# --- The authorization's evidence digest is not a source digest (#951) -------
+#
+# Three digests travel through onboarding and two of them name material the
+# customer supplied, so they are easy to read as one:
+#
+# | Field | What it digests |
+# |---|---|
+# | `evidence_sha256` | the retained document supporting the customer authorization |
+# | a delivery's `content_sha256` | the project material a delivery carried |
+# | a staged source's `sha256` | the exact bytes about to be read |
+#
+# A signed authorization and an uploaded workbook ordinarily have *different*
+# digests, so a preparation that compared `evidence_sha256` against staged
+# bytes would refuse every honest reading -- and one that stored a workbook
+# digest there would silently redefine what older authorization evidence
+# means. #951 proposed exactly that comparison before it was corrected. The
+# rule below is what stops the correction being lost: the field stays inside
+# the four modules that record, carry and enforce the grant, and never reaches
+# a module that holds source bytes.
+
+#: Every module that may write the name at all: the customer environment's
+#: grant, the control plane's authoritative row and its schema, the enforcing
+#: revision, and the ORM column. A source reader is not on this list, and
+#: adding one is how the corrected meaning would be lost.
+AUTHORIZATION_EVIDENCE_MODULES = {
+    "src/corridor/onboarding_authorization.py",
+    "src/corridor/control_plane.py",
+    "src/corridor/control_plane_schema.py",
+    "src/corridor/models/spine.py",
+    "src/corridor/migrations/source_append_commands/onboarding_authorization.py",
+}
+
+
+def test_the_authorization_evidence_digest_never_reaches_a_source_reader():
+    """`evidence_sha256` names the authorization's evidence, and only that.
+
+    The weaker question `mentions_of` answers is the right one here, because
+    what must not happen is the name appearing beside source bytes at all --
+    in a comparison, in a docstring proposing one, or in a payload that
+    carries it to a reader. A module that genuinely needs the grant's evidence
+    digest belongs on the list above with the reason it needs it.
+    """
+
+    written = {
+        str(path.relative_to(REPO_ROOT))
+        for path in mentions_of(["evidence_sha256"], (REPO_ROOT / "src",))[
+            "evidence_sha256"
+        ]
+    }
+
+    assert sorted(written - AUTHORIZATION_EVIDENCE_MODULES) == [], (
+        "a module outside the onboarding authorization names the customer "
+        "authorization's evidence digest; the workbook's own digest is the "
+        "delivery's `content_sha256`, not this field (#951): "
+        + ", ".join(sorted(written - AUTHORIZATION_EVIDENCE_MODULES))
+    )
+    assert sorted(AUTHORIZATION_EVIDENCE_MODULES - written) == [], (
+        "these modules no longer name the authorization evidence digest, so "
+        "the list above describes a boundary that has moved: "
+        + ", ".join(sorted(AUTHORIZATION_EVIDENCE_MODULES - written))
+    )
