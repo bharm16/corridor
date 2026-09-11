@@ -82,11 +82,14 @@ class SupersededChain:
 
     session: Session
     project: Project
-    principal: HumanPrincipal
     index: Document
     predecessor: Document
     successor: Document
     declaration: SupersessionDeclaration
+    # The human whose acts the remaining stages are recorded under. A chain
+    # that only declares a revision pair performs no human act and names none;
+    # the act that needs one refuses a chain without it.
+    principal: HumanPrincipal | None = None
     predecessor_proposals: tuple[Candidate, ...] = ()
     predecessor_run: ExtractionRun | None = None
     successor_proposals: tuple[Candidate, ...] = ()
@@ -215,7 +218,7 @@ def superseded_chain(
     session: Session,
     project: Project,
     *,
-    principal: HumanPrincipal,
+    principal: HumanPrincipal | None = None,
     predecessor_registry_id: str = PREDECESSOR_REGISTRY_ID,
     successor_registry_id: str = SUCCESSOR_REGISTRY_ID,
     index_registry_id: str = INDEX_REGISTRY_ID,
@@ -289,7 +292,7 @@ def active_run(
     session: Session,
     document: Document,
     *proposals: Candidate,
-    principal: HumanPrincipal,
+    principal: HumanPrincipal | None,
     active: bool = True,
     outcome: str = "completed",
     page_errors: int = 0,
