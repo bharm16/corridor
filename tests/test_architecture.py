@@ -14,7 +14,7 @@ from pathlib import Path
 from corridor.migrations import policy
 from corridor.prompt_library import installed_prompt_path
 from makefile_support import entry_point, parser_description, targets as make_targets
-from ratchet_support import assert_ratchet
+from ratchet_support import Relocation, assert_ratchet, assert_reviewed_relocations
 from source_scan_support import (  # noqa: F401
     callers_of,
     imported_names,
@@ -1181,6 +1181,28 @@ LEGACY_TABLE_CONSUMERS: dict[str, tuple[str, ...]] = {
 }
 
 
+# The one way a name may join the census above: an existing reading that moved
+# from one module to another. Lifting a screen's reading out of a 7k-line route
+# body adds the destination to the list, so the direction check refuses it like
+# any other new consumer -- and it is not a new consumer, it is the same reads
+# in a different file. Each line below is checked against the merge base by
+# `assert_reviewed_relocations`, which authorizes exactly the pairs it can
+# prove; nothing here is an entitlement to consume a legacy class, and writing
+# a line here buys nothing on its own.
+#
+# A relocation is not retirement progress. ADR-0081 stage 4 exits when no
+# reader imports a legacy table module, and a relocation leaves the census one
+# name longer than it found it; the census above goes on saying so. It does not
+# cross the freeze in either direction either: no legacy-only capability is
+# built by moving a reading, and no reader reaches the spine by changing files.
+#
+# Each declaration is spent by the merge that uses it. At the next merge base
+# the source reading no longer holds the dependency, the evidence check stops
+# passing, and the line has to go -- the destination is an ordinary consumer
+# from then on.
+RELOCATED_LEGACY_READINGS: tuple[Relocation, ...] = ()
+
+
 def _legacy_table_consumers() -> dict[str, tuple[str, ...]]:
     """Every source module that names one of the legacy ORM classes.
 
@@ -1232,6 +1254,12 @@ def test_the_legacy_table_consumer_list_may_fall_and_may_never_rise():
     against a constant the same commit may edit cannot see direction.
     `assert_ratchet` reads the list back out of the merge base and names the
     consumer that joined.
+
+    One name may still join, and only one way: a reviewed relocation, where an
+    existing reading moved to its own module and the merge base can be made to
+    prove it. `RELOCATED_LEGACY_READINGS` above declares those, and the pairs
+    that survive that proof come off both sides below so that the comparison is
+    unchanged for every other name. The list itself keeps counting them.
     """
 
     listed = {name: tuple(sorted(modules)) for name, modules in LEGACY_TABLE_CONSUMERS.items()}
@@ -1260,13 +1288,23 @@ def test_the_legacy_table_consumer_list_may_fall_and_may_never_rise():
 
     assert problems == {}
 
+    # The census above is already held exact by `problems`, so a relocation
+    # never hides its destination from the list. What comes back here is only
+    # the joining that the merge base proved is a move, dropped from both sides
+    # so the direction check below judges every other name as before.
+    relocated = assert_reviewed_relocations(
+        RELOCATED_LEGACY_READINGS,
+        consumers=found,
+        source_root=SOURCE_ROOT.relative_to(REPO_ROOT).as_posix(),
+    )
     pairs = lambda listed: {
         (name, module) for name, modules in listed.items() for module in modules
     }
     assert_ratchet(
         "tests/test_architecture.py:LEGACY_TABLE_CONSUMERS",
-        measured={(name, module) for name in listed for module in found[name]},
-        recorded=pairs(listed),
+        measured={(name, module) for name in listed for module in found[name]}
+        - relocated,
+        recorded=pairs(listed) - relocated,
         as_measured=pairs,
     )
 
