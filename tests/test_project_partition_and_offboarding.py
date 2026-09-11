@@ -2728,7 +2728,7 @@ def test_the_classification_and_the_grants_agree_about_every_relation(
     assert sorted(readable & web_boundary.PARTITIONED_UNGRANTED_RELATIONS) == []
 
 
-# --- #937 A privileged reading of a named project is still that project's ---
+# --- #933 A privileged reading of a named project is still that project's ---
 #
 # `project_accepted_record_decision_count` is the guard Adopt Baseline asks
 # before it opens a workbook: how many accepted record decisions would adopting
@@ -2822,8 +2822,8 @@ def test_the_legacy_half_of_the_guard_still_answers_inside_the_partition(
     """The case #933 exists for: legacy rows the web capability cannot select.
 
     `corridor_web` holds no privilege on `dependencies`, so the count has to
-    come from the command's owner. What #937 adds is that the owner answers
-    only about the project this transaction declared.
+    come from the command's owner. What #933's second pass adds is that the
+    owner answers only about the project this transaction declared.
     """
 
     project_id = accepted_record_projects["legacy-half"]
@@ -2909,7 +2909,7 @@ def test_asking_about_a_project_you_are_not_on_reveals_no_count(
 def test_the_guard_answers_the_refusal_in_words_and_leaves_the_session_usable(
     accepted_record_projects, web_connection
 ):
-    """What the route renders instead of a 500 (#937).
+    """What the route renders instead of a 500 (#933).
 
     The command raises, which aborts the transaction the caller is sitting in,
     so the Python guard runs it in a savepoint exactly as
@@ -3007,7 +3007,7 @@ def test_the_operations_capability_reads_without_a_partition(
     a background run carries no person's authorization to enforce and its
     isolation boundary is the customer database (ADR-0079). So the check is
     asked of exactly the capability that has a partition, and the supported
-    internal path is unaffected by #937.
+    internal path is unaffected by #933.
     """
 
     worker_engine = create_engine(

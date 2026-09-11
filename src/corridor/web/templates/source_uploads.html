@@ -94,9 +94,15 @@
     `corridor.project_processing_banner`'s, like every other word about a
     record on this page; an expired claim says the claim lapsed, never that the
     worker stopped, because nothing fences that worker and nothing records
-    whether it is still going.
+    whether it is still going -- and that qualification is `detail`, under the
+    sentence rather than inside it.
+
+    The condition is the sentence, not the reading. A pass nobody holds has no
+    sentence, deliberately: a permanent line saying no worker holds a claim is
+    true almost always, says nothing a coordinator can act on, and pushes down
+    the rows that do. A pass the runtime recorded as failed keeps its sentence.
   #}
-  {%- if processing_pass %}
+  {%- if processing_pass and processing_pass.sentence %}
   <div class="pass">
     <p>{{ processing_pass.sentence }}</p>
     {%- if processing_pass.claimed_at %}
@@ -107,6 +113,9 @@
       {%- else %} lapsed at{% endif %}
       {{ processing_pass.lease_expires_at.strftime('%Y-%m-%d %H:%M') }}.
     </p>
+    {%- endif %}
+    {%- if processing_pass.detail %}
+    <p class="quiet">{{ processing_pass.detail }}</p>
     {%- endif %}
   </div>
   {%- endif %}

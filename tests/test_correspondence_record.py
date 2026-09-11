@@ -1343,7 +1343,7 @@ def test_a_superseded_plan_does_not_inherit_the_predecessors_correspondence(
 
     page = _readable(client.get(f"/record/{project.slug}").text)
     assert f"Recorded as sent on {SENT_ON} to {WATER}" in page
-    assert "Replaced by a corrected Follow-up Plan" in page
+    assert f"Replaced by Follow-up Plan {successor}" in page
     assert (
         f"Closed on {LATER.date()} by {COORDINATOR.subject}, replaced by "
         f"Follow-up Plan {successor}. The question was corrected, not "

@@ -179,7 +179,7 @@ class StaleBaselinePreview(BaselineAdoptionRefused):
 
 
 class BaselineReadingNotPermitted(refusals.Refusal, BaselineAdoptionRefused):
-    """This login may not ask what this project's accepted record holds (#937).
+    """This login may not ask what this project's accepted record holds (#933).
 
     Its own type, and ``not_authorized`` rather than the conflict every other
     refusal here answers, because nothing about the record is in conflict: the
@@ -1368,7 +1368,7 @@ def _refuse_nonempty_project_record(session: Session, project: Project) -> None:
     boundary exactly as narrow as it was.
 
     The command bounds the web capability to its own sealed partition and
-    raises ``insufficient_privilege`` for anything else (#937). Two different
+    raises ``insufficient_privilege`` for anything else (#933). Two different
     situations reach that one SQLSTATE and a person acts on them differently,
     so they are told apart here by asking the database a structural question --
     does this login hold execute on the command at all -- rather than by
@@ -1420,7 +1420,7 @@ def _reading_not_permitted(
     ``corridor_legacy_dev`` is the login this reaches in practice. Leaving that
     development mode out of the grant is deliberate -- it is the opt-in
     unpartitioned login, and handing it an unpartitioned reading of every
-    project's accepted record is the thing #937 exists to stop -- but a
+    project's accepted record is the thing #933 exists to stop -- but a
     development deployment meeting it deserves a sentence rather than a 500.
     """
 
@@ -1644,7 +1644,7 @@ class RetainedPreview:
     document_id: int
     #: The delivery the adopted bytes were handed over on. Retained beside the
     #: Document rather than re-derived from the digest, because two deliveries
-    #: of one workbook share a digest and are not one act (#937).
+    #: of one workbook share a digest and are not one act (#933).
     source_delivery_id: int
     fact_ids: tuple[int, ...]
     operations_resolved: bool
@@ -1748,7 +1748,7 @@ def _submitted_baseline_delivery(
     staged: StagedSource,
     source_delivery_id: int,
 ) -> SourceDelivery:
-    """The delivery a reading was asked for, re-proved rather than trusted (#937).
+    """The delivery a reading was asked for, re-proved rather than trusted (#933).
 
     A delivery id that arrives on a form is a claim. Every stage of the
     preparation re-proves it against something the customer's record already
@@ -1773,6 +1773,16 @@ def _submitted_baseline_delivery(
     new processing. A project that records no authorized set at all is left
     alone rather than newly gated: the delivery path did not require one
     either, and inventing a second rule here is how two paths come to disagree.
+
+    **An absent set is not itself authority, and is not described as any.**
+    This limb declines to answer a question no recorded set can answer; it
+    does not admit the reading. The positive permission is proved a few lines
+    into ``prepare_baseline_reading``, which opens
+    ``limited_onboarding_authorization`` for ``inspect_compatibility`` before
+    it opens anything else, so a project with no current grant, an expired
+    one, or a withdrawn one is refused with the absent set exactly as it is
+    here. Leaving the absence alone is bounded by that proof rather than
+    standing in for it.
     """
 
     # Imported here rather than at the top for the reason `source_intake`
@@ -1839,7 +1849,7 @@ def prepare_baseline_reading(
     adopted is retained for checking and is not an adoptable baseline.
 
     ``source_delivery_id`` is the delivery these exact bytes were handed over
-    on, and it is required rather than optional (#937). Without it the
+    on, and it is required rather than optional (#933). Without it the
     confirmation below registered a Document that named no delivery, so the
     source register showed an awaiting-confirmation delivery beside a
     separately registered document and nothing joined them -- a preparation and
@@ -2082,7 +2092,7 @@ def adopt_retained_baseline(
             # the screen it was given on.
             "coordinator_answers": [item.as_payload() for item in answered],
             # And which delivery it rests on, so the retained proof of the act
-            # names the receipt as well as the document it produced (#937).
+            # names the receipt as well as the document it produced (#933).
             "source_delivery_id": int(retained.source_delivery_id),
         },
     )
@@ -2106,7 +2116,7 @@ def _write_retained_adoption(
         or int(document.project_id) != int(project.id)
         or document.sha256 != retained.content_sha256
         # The delivery relationship, re-proved rather than assumed to have
-        # survived preparation (#937). A Document that carries the right bytes
+        # survived preparation (#933). A Document that carries the right bytes
         # in the right project but arrived on some other delivery -- or on
         # none -- is not the receipt this adoption claims to rest on, and an
         # adoption whose retained source names one delivery while the record

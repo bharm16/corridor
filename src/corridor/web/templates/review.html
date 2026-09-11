@@ -583,7 +583,7 @@
         <input type="hidden" name="item" value="{{ view.item.item_key }}">
         {% call ui.field(
              "correction-change-" ~ view.id,
-             "Which of these changes did Corridor read wrong?",
+             "Which change was read incorrectly?",
              "These changes are decided together; a capture is reported one at a time.") %}
         <select id="correction-change-{{ view.id }}" name="correction"
                 aria-describedby="correction-change-{{ view.id }}-hint">
@@ -594,7 +594,7 @@
           {%- endfor %}
         </select>
         {% endcall %}
-        <button type="submit">Show this capture</button>
+        <button type="submit">Show the captured value</button>
       </form>
       {%- endif %}
 
@@ -662,7 +662,7 @@
         <input type="hidden" name="correction" value="{{ child.delta_id }}">
         {% call ui.field(
              "correction-search-" ~ child.delta_id,
-             "Find another passage of this source",
+             "Find another passage in this document",
              "Search what this file retained: the words of a passage, or where it was read from, such as a cell or a page.") %}
         <input type="text" id="correction-search-{{ child.delta_id }}" name="search"
                aria-describedby="correction-search-{{ child.delta_id }}-hint"

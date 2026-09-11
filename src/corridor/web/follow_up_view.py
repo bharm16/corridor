@@ -144,14 +144,25 @@ AWAITING_REPLY = StateLabel("attention", "Nothing recorded back yet")
 # uses for work still owed would turn a closed ask back into a chase. The words
 # are the ones the closure act itself prints (#835), not new ones.
 PLAN_CANCELLED = StateLabel("neutral", "No longer an outside ask")
-PLAN_SUPERSEDED = StateLabel("neutral", "Replaced by a corrected Follow-up Plan")
 PLAN_NOT_CLOSED = StateLabel(
     "attention", "No closure is recorded for this Follow-up Plan"
 )
 PLAN_STATES_BY_CLOSURE = {
     "cancelled": PLAN_CANCELLED,
-    "superseded": PLAN_SUPERSEDED,
 }
+
+
+def plan_superseded(successor_plan_id: int) -> StateLabel:
+    """A superseded plan names the plan that replaced it, in the label itself.
+
+    "Replaced by a corrected Follow-up Plan" said the right thing and left out
+    the only part a reader can act on: which plan. The number is where the
+    question went, and a coordinator should not have to find it in a sentence
+    further down the page.
+    """
+
+    return StateLabel("neutral", f"Replaced by Follow-up Plan {successor_plan_id}")
+
 
 # What recording a reply did not do. The accepted #652 contract says it in as
 # many words, and the history page is where a reader is most likely to read a
@@ -706,6 +717,8 @@ def _named_plan_view(plan: NamedFollowUpPlan) -> NamedPlanView:
         state=(
             PLAN_NOT_CLOSED
             if plan.closure_kind is None
+            else plan_superseded(int(plan.successor_plan_id))
+            if plan.closure_kind == "superseded"
             else PLAN_STATES_BY_CLOSURE[plan.closure_kind]
         ),
     )

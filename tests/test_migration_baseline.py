@@ -194,11 +194,12 @@ EXPECTED_SCHEMA_SHA256 = (
     # relations and commands that already exist, so the digest moves and
     # neither count does. Recomputed against a fresh disposable database with
     # template reuse off.
-    # #937 bounds the web half of `project_accepted_record_decision_count` to
-    # the partition the database sealed on this transaction, and refuses
-    # anything else with `insufficient_privilege`. A `SECURITY DEFINER` command
-    # steps outside row-level security by construction, so #933's reading --
-    # correct about the privilege it needed -- answered about any project the
+    # #933 again, bounding the web half of
+    # `project_accepted_record_decision_count` to the partition the database
+    # sealed on this transaction, and refusing anything else with
+    # `insufficient_privilege`. A `SECURITY DEFINER` command steps outside
+    # row-level security by construction, so its first reading -- correct
+    # about the privilege it needed -- answered about any project the
     # caller named, membership or no membership; "only a number" is still that
     # project's number. The unpartitioned worker reading is unchanged, because
     # a background run carries no person's authorization to bound (ADR-0079).
