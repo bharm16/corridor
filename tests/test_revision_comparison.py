@@ -620,294 +620,300 @@ def _correspondence(predecessor_rows, successor_rows, matcher_config=None):
     ]
 
 
+# Each case is (predecessor rows, successor rows, expected findings, matcher
+# configuration overrides), and the expected findings are the matcher's
+# ordered (state, predecessor row numbers, successor row numbers) list.
+_ROW_CORRESPONDENCE_CASES = [
+    # A near edge is certain when forcing it would reduce cardinality.
+    pytest.param(
+        [
+            {
+                "utility_id": "FOC14-69",
+                "external_org": "Comcast",
+                "utility_type": "Telecom",
+            },
+            {
+                "utility_id": "FOC14-OTHER",
+                "external_org": "Comcast",
+                "utility_type": "Telecom",
+                "station_from": "200+00",
+            },
+        ],
+        [
+            {
+                "utility_id": "FOC14-69",
+                "external_org": "Comcast",
+                "utility_type": "Telecom",
+            },
+            {
+                "utility_id": "FOC14-69",
+                "external_org": "Comcast",
+                "utility_type": "Telecom",
+                "station_from": "200+00",
+            },
+        ],
+        [("unchanged", (1,), (1,)), ("changed", (2,), (2,))],
+        {"minimum_score": 0.70},
+        id="unique_maximum_cardinality_assignment_is_not_locally_ambiguous",
+    ),
+    # Cohort similarity cannot justify either matching or disappearance.
+    pytest.param(
+        [
+            {
+                "utility_id": "FOC1-1",
+                "external_org": "AT&T",
+                "utility_type": "Telecom",
+            }
+        ],
+        [
+            {
+                "utility_id": "FOC9-999",
+                "external_org": "AT&T",
+                "utility_type": "Telecom",
+            }
+        ],
+        [("unmatched", (1,), ()), ("unmatched", (), (1,))],
+        None,
+        id="changed_ids_without_complete_coordinates_remain_unmatched",
+    ),
+    # Incomplete coordinates are safe when no disappearance is inferred.
+    pytest.param(
+        [{"utility_id": "FOC1-1", "external_org": "AT&T"}],
+        [{"utility_id": "FOC1-1", "external_org": "AT&T"}],
+        [("unchanged", (1,), (1,))],
+        None,
+        id="exact_id_only_rows_can_succeed_when_every_row_corresponds",
+    ),
+    # NHHIP repeats IDs, so an ID is evidence and never unique identity.
+    pytest.param(
+        [
+            {
+                "utility_id": "47",
+                "external_org": "AT&T",
+                "utility_type": "Telecom",
+                "station_from": "100+00",
+                "baseline": "IH 69",
+            }
+        ],
+        [
+            {
+                "utility_id": "47",
+                "external_org": "Comcast",
+                "utility_type": "Telecom",
+                "station_from": "200+00",
+                "baseline": "IH 69",
+            }
+        ],
+        [("dropped", (1,), ()), ("added", (), (1,))],
+        None,
+        id="duplicate_source_id_cannot_override_a_contradictory_owner",
+    ),
+    # No ID on two rows is absent identity, not an exact identifier.
+    pytest.param(
+        [
+            {
+                "utility_id": "No ID",
+                "external_org": "AT&T",
+                "utility_type": "Telecom",
+                "station_from": "100+00",
+                "baseline": "IH 69",
+            }
+        ],
+        [
+            {
+                "utility_id": "No ID",
+                "external_org": "AT&T",
+                "utility_type": "Telecom",
+                "station_from": "200+00",
+                "baseline": "IH 69",
+            }
+        ],
+        [("dropped", (1,), ()), ("added", (), (1,))],
+        None,
+        id="placeholder_source_ids_do_not_create_row_identity",
+    ),
+    # An all-placeholder location tuple contains no physical identity.
+    pytest.param(
+        [
+            {
+                "utility_id": "A-17",
+                "external_org": "AT&T",
+                "utility_type": "Telecom",
+                "location_start": "N/A",
+                "alignment": "Unknown",
+                "station_from": "100+00",
+                "baseline": "IH 69",
+            }
+        ],
+        [
+            {
+                "utility_id": "A-18",
+                "external_org": "AT&T",
+                "utility_type": "Telecom",
+                "location_start": "N/A",
+                "alignment": "Unknown",
+                "station_from": "200+00",
+                "baseline": "IH 69",
+            }
+        ],
+        [("dropped", (1,), ()), ("added", (), (1,))],
+        None,
+        id="placeholder_locations_do_not_create_row_identity",
+    ),
+    # Stationing is a coordinate only within its named baseline.
+    pytest.param(
+        [
+            {
+                "utility_id": "E41",
+                "external_org": "CenterPoint",
+                "utility_type": "Electric",
+                "station_from": "1100+28",
+                "baseline": "IH69",
+            }
+        ],
+        [
+            {
+                "utility_id": "E103",
+                "external_org": "CenterPoint",
+                "utility_type": "Electric",
+                "station_from": "1100+28",
+                "baseline": "IH10",
+            }
+        ],
+        [("dropped", (1,), ()), ("added", (), (1,))],
+        None,
+        id="equal_station_numbers_on_different_baselines_are_not_identity",
+    ),
+    # A reused matrix id is not identity across incompatible baselines.
+    pytest.param(
+        [
+            {
+                "utility_id": "FOC14-1",
+                "external_org": "Comcast",
+                "utility_type": "Fiber Optic Cable",
+                "station_from": "1080+93",
+                "baseline": "IH 69",
+                "alignment": "Eastex Freeway",
+                "location_start": "North of McKay Drive",
+            }
+        ],
+        [
+            {
+                "utility_id": "FOC14-1",
+                "external_org": "Comcast",
+                "utility_type": "Telecom",
+                "station_from": "1107+21",
+                "baseline": "IH 10",
+                "alignment": "Katy Freeway",
+                "location_start": "East of Beltway 8",
+            }
+        ],
+        [("dropped", (1,), ()), ("added", (), (1,))],
+        None,
+        id="repeated_source_id_cannot_override_contradictory_coordinates",
+    ),
+    # Printed spacing does not turn the same coordinate into review work.
+    pytest.param(
+        [
+            {
+                "utility_id": "E41",
+                "external_org": "CenterPoint",
+                "utility_type": "Electric",
+                "station_from": "STA 1100+28",
+                "baseline": "IH 69",
+            }
+        ],
+        [
+            {
+                "utility_id": "E41",
+                "external_org": "CenterPoint",
+                "utility_type": "Electric",
+                "station_from": "1100+28",
+                "baseline": "IH69",
+            }
+        ],
+        [("unchanged", (1,), (1,))],
+        None,
+        id="equivalent_baseline_and_station_formatting_is_unchanged",
+    ),
+    # A placeholder station and an absent one are the same absent coordinate.
+    pytest.param(
+        [
+            {
+                "utility_id": "E41",
+                "external_org": "CenterPoint",
+                "station_from": "1100+28",
+                "station_to": "N/A",
+            }
+        ],
+        [
+            {
+                "utility_id": "E41",
+                "external_org": "CenterPoint",
+                "station_from": "1100+28",
+            }
+        ],
+        [("unchanged", (1,), (1,))],
+        None,
+        id="station_placeholder_and_missing_value_compare_as_absent",
+    ),
+    # Plausibility for ambiguity does not lower the assignment threshold.
+    pytest.param(
+        [
+            {
+                "utility_id": "A",
+                "station_from": "100+00",
+                "baseline": "IH 69",
+            }
+        ],
+        [
+            {
+                "utility_id": "A",
+                "station_from": "102+05",
+                "baseline": "IH 69",
+            }
+        ],
+        [("dropped", (1,), ()), ("added", (), (1,))],
+        _STATION_ONLY_WEIGHTS,
+        id="lone_below_threshold_edge_remains_added_and_dropped",
+    ),
+    # A stronger edge is irrelevant when forcing it loses cardinality.
+    pytest.param(
+        [
+            {
+                "utility_id": "A",
+                "external_org": "Owner X",
+                "utility_type": "Telecom",
+                "station_from": "100+00",
+            },
+            {
+                "utility_id": "A",
+                "external_org": "Owner X",
+                "utility_type": "Pipeline",
+            },
+        ],
+        [
+            {
+                "utility_id": "A",
+                "external_org": "Owner X",
+                "utility_type": "Telco",
+            },
+            {
+                "external_org": "Owner X",
+                "utility_type": "Telecom",
+                "station_from": "101+00",
+            },
+        ],
+        [("changed", (1,), (2,)), ("changed", (2,), (1,))],
+        None,
+        id="infeasible_stronger_displaced_pair_does_not_override_assignment",
+    ),
+]
+
+
 @pytest.mark.parametrize(
     ("predecessor_rows", "successor_rows", "expected", "matcher_config"),
-    [
-        # A near edge is certain when forcing it would reduce cardinality.
-        pytest.param(
-            [
-                {
-                    "utility_id": "FOC14-69",
-                    "external_org": "Comcast",
-                    "utility_type": "Telecom",
-                },
-                {
-                    "utility_id": "FOC14-OTHER",
-                    "external_org": "Comcast",
-                    "utility_type": "Telecom",
-                    "station_from": "200+00",
-                },
-            ],
-            [
-                {
-                    "utility_id": "FOC14-69",
-                    "external_org": "Comcast",
-                    "utility_type": "Telecom",
-                },
-                {
-                    "utility_id": "FOC14-69",
-                    "external_org": "Comcast",
-                    "utility_type": "Telecom",
-                    "station_from": "200+00",
-                },
-            ],
-            [("unchanged", (1,), (1,)), ("changed", (2,), (2,))],
-            {"minimum_score": 0.70},
-            id="unique_maximum_cardinality_assignment_is_not_locally_ambiguous",
-        ),
-        # Cohort similarity cannot justify either matching or disappearance.
-        pytest.param(
-            [
-                {
-                    "utility_id": "FOC1-1",
-                    "external_org": "AT&T",
-                    "utility_type": "Telecom",
-                }
-            ],
-            [
-                {
-                    "utility_id": "FOC9-999",
-                    "external_org": "AT&T",
-                    "utility_type": "Telecom",
-                }
-            ],
-            [("unmatched", (1,), ()), ("unmatched", (), (1,))],
-            None,
-            id="changed_ids_without_complete_coordinates_remain_unmatched",
-        ),
-        # Incomplete coordinates are safe when no disappearance is inferred.
-        pytest.param(
-            [{"utility_id": "FOC1-1", "external_org": "AT&T"}],
-            [{"utility_id": "FOC1-1", "external_org": "AT&T"}],
-            [("unchanged", (1,), (1,))],
-            None,
-            id="exact_id_only_rows_can_succeed_when_every_row_corresponds",
-        ),
-        # NHHIP repeats IDs, so an ID is evidence and never unique identity.
-        pytest.param(
-            [
-                {
-                    "utility_id": "47",
-                    "external_org": "AT&T",
-                    "utility_type": "Telecom",
-                    "station_from": "100+00",
-                    "baseline": "IH 69",
-                }
-            ],
-            [
-                {
-                    "utility_id": "47",
-                    "external_org": "Comcast",
-                    "utility_type": "Telecom",
-                    "station_from": "200+00",
-                    "baseline": "IH 69",
-                }
-            ],
-            [("dropped", (1,), ()), ("added", (), (1,))],
-            None,
-            id="duplicate_source_id_cannot_override_a_contradictory_owner",
-        ),
-        # No ID on two rows is absent identity, not an exact identifier.
-        pytest.param(
-            [
-                {
-                    "utility_id": "No ID",
-                    "external_org": "AT&T",
-                    "utility_type": "Telecom",
-                    "station_from": "100+00",
-                    "baseline": "IH 69",
-                }
-            ],
-            [
-                {
-                    "utility_id": "No ID",
-                    "external_org": "AT&T",
-                    "utility_type": "Telecom",
-                    "station_from": "200+00",
-                    "baseline": "IH 69",
-                }
-            ],
-            [("dropped", (1,), ()), ("added", (), (1,))],
-            None,
-            id="placeholder_source_ids_do_not_create_row_identity",
-        ),
-        # An all-placeholder location tuple contains no physical identity.
-        pytest.param(
-            [
-                {
-                    "utility_id": "A-17",
-                    "external_org": "AT&T",
-                    "utility_type": "Telecom",
-                    "location_start": "N/A",
-                    "alignment": "Unknown",
-                    "station_from": "100+00",
-                    "baseline": "IH 69",
-                }
-            ],
-            [
-                {
-                    "utility_id": "A-18",
-                    "external_org": "AT&T",
-                    "utility_type": "Telecom",
-                    "location_start": "N/A",
-                    "alignment": "Unknown",
-                    "station_from": "200+00",
-                    "baseline": "IH 69",
-                }
-            ],
-            [("dropped", (1,), ()), ("added", (), (1,))],
-            None,
-            id="placeholder_locations_do_not_create_row_identity",
-        ),
-        # Stationing is a coordinate only within its named baseline.
-        pytest.param(
-            [
-                {
-                    "utility_id": "E41",
-                    "external_org": "CenterPoint",
-                    "utility_type": "Electric",
-                    "station_from": "1100+28",
-                    "baseline": "IH69",
-                }
-            ],
-            [
-                {
-                    "utility_id": "E103",
-                    "external_org": "CenterPoint",
-                    "utility_type": "Electric",
-                    "station_from": "1100+28",
-                    "baseline": "IH10",
-                }
-            ],
-            [("dropped", (1,), ()), ("added", (), (1,))],
-            None,
-            id="equal_station_numbers_on_different_baselines_are_not_identity",
-        ),
-        # A reused matrix id is not identity across incompatible baselines.
-        pytest.param(
-            [
-                {
-                    "utility_id": "FOC14-1",
-                    "external_org": "Comcast",
-                    "utility_type": "Fiber Optic Cable",
-                    "station_from": "1080+93",
-                    "baseline": "IH 69",
-                    "alignment": "Eastex Freeway",
-                    "location_start": "North of McKay Drive",
-                }
-            ],
-            [
-                {
-                    "utility_id": "FOC14-1",
-                    "external_org": "Comcast",
-                    "utility_type": "Telecom",
-                    "station_from": "1107+21",
-                    "baseline": "IH 10",
-                    "alignment": "Katy Freeway",
-                    "location_start": "East of Beltway 8",
-                }
-            ],
-            [("dropped", (1,), ()), ("added", (), (1,))],
-            None,
-            id="repeated_source_id_cannot_override_contradictory_coordinates",
-        ),
-        # Printed spacing does not turn the same coordinate into review work.
-        pytest.param(
-            [
-                {
-                    "utility_id": "E41",
-                    "external_org": "CenterPoint",
-                    "utility_type": "Electric",
-                    "station_from": "STA 1100+28",
-                    "baseline": "IH 69",
-                }
-            ],
-            [
-                {
-                    "utility_id": "E41",
-                    "external_org": "CenterPoint",
-                    "utility_type": "Electric",
-                    "station_from": "1100+28",
-                    "baseline": "IH69",
-                }
-            ],
-            [("unchanged", (1,), (1,))],
-            None,
-            id="equivalent_baseline_and_station_formatting_is_unchanged",
-        ),
-        # A placeholder station and an absent one are the same absent coordinate.
-        pytest.param(
-            [
-                {
-                    "utility_id": "E41",
-                    "external_org": "CenterPoint",
-                    "station_from": "1100+28",
-                    "station_to": "N/A",
-                }
-            ],
-            [
-                {
-                    "utility_id": "E41",
-                    "external_org": "CenterPoint",
-                    "station_from": "1100+28",
-                }
-            ],
-            [("unchanged", (1,), (1,))],
-            None,
-            id="station_placeholder_and_missing_value_compare_as_absent",
-        ),
-        # Plausibility for ambiguity does not lower the assignment threshold.
-        pytest.param(
-            [
-                {
-                    "utility_id": "A",
-                    "station_from": "100+00",
-                    "baseline": "IH 69",
-                }
-            ],
-            [
-                {
-                    "utility_id": "A",
-                    "station_from": "102+05",
-                    "baseline": "IH 69",
-                }
-            ],
-            [("dropped", (1,), ()), ("added", (), (1,))],
-            _STATION_ONLY_WEIGHTS,
-            id="lone_below_threshold_edge_remains_added_and_dropped",
-        ),
-        # A stronger edge is irrelevant when forcing it loses cardinality.
-        pytest.param(
-            [
-                {
-                    "utility_id": "A",
-                    "external_org": "Owner X",
-                    "utility_type": "Telecom",
-                    "station_from": "100+00",
-                },
-                {
-                    "utility_id": "A",
-                    "external_org": "Owner X",
-                    "utility_type": "Pipeline",
-                },
-            ],
-            [
-                {
-                    "utility_id": "A",
-                    "external_org": "Owner X",
-                    "utility_type": "Telco",
-                },
-                {
-                    "external_org": "Owner X",
-                    "utility_type": "Telecom",
-                    "station_from": "101+00",
-                },
-            ],
-            [("changed", (1,), (2,)), ("changed", (2,), (1,))],
-            None,
-            id="infeasible_stronger_displaced_pair_does_not_override_assignment",
-        ),
-    ],
+    _ROW_CORRESPONDENCE_CASES,
 )
 def test_row_correspondence(
     predecessor_rows, successor_rows, expected, matcher_config
