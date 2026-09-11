@@ -159,11 +159,6 @@ class Coordination:
                     fact_type=fact_type,
                     value=value,
                     subject_key=subject(number),
-                    date_value=(
-                        datetime.fromisoformat(value).date()
-                        if fact_type == "committed_date"
-                        else None
-                    ),
                 )
                 revision = accept_baseline_fact(session, project, fact)
                 first = first or revision
@@ -210,7 +205,6 @@ class Coordination:
             fact_type="committed_date",
             value=value,
             subject_key=subject(number),
-            date_value=datetime.fromisoformat(value).date(),
         )
         if supported:
             support(self.session, self.project, fact, segment)
@@ -500,7 +494,6 @@ def _commitment(session: Session, project: Project) -> Coordination:
             fact_type="committed_date",
             value=Coordination.FROM_MINUTES,
             subject_key=subject(number),
-            date_value=datetime.fromisoformat(Coordination.FROM_MINUTES).date(),
         )
         support(session, project, fact, segment)
         values.append(

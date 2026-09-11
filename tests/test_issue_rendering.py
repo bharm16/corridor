@@ -518,11 +518,9 @@ def _baseline(session, project):
 
     source = _Source(session, project, "ucm-2026-08-01.xlsx")
     promised = source.capture(
-        fact_type="committed_date", value="2026-11-01", date_value=date(2026, 11, 1)
-    )
+        fact_type="committed_date", value="2026-11-01",)
     required = source.capture(
-        fact_type="need_date", value="2026-12-01", date_value=date(2026, 12, 1)
-    )
+        fact_type="need_date", value="2026-12-01",)
     owner = source.capture(fact_type="external_org", value="City Water")
     revision = _adopt(session, project, (promised, required, owner), "baseline")
     return source, revision
@@ -637,8 +635,7 @@ def test_a_change_since_the_previous_issue_names_both_accepted_values(
         baseline_revision=baseline,
     )
     moved = source.capture(
-        fact_type="committed_date", value="2026-12-15", date_value=date(2026, 12, 15)
-    )
+        fact_type="committed_date", value="2026-12-15",)
     outcome = _accept(
         session,
         project,
@@ -693,8 +690,7 @@ def test_a_decision_before_the_previous_issue_is_outside_this_window(
         baseline_revision=baseline,
     )
     early_fact = source.capture(
-        fact_type="committed_date", value="2026-11-20", date_value=date(2026, 11, 20)
-    )
+        fact_type="committed_date", value="2026-11-20",)
     first = _accept(
         session,
         project,
@@ -713,8 +709,7 @@ def test_a_decision_before_the_previous_issue_is_outside_this_window(
         baseline_revision=baseline,
     )
     late_fact = source.capture(
-        fact_type="need_date", value="2026-12-20", date_value=date(2026, 12, 20)
-    )
+        fact_type="need_date", value="2026-12-20",)
     second = _accept(
         session,
         project,
@@ -756,8 +751,7 @@ def test_a_missed_week_widens_the_window_rather_than_dropping_a_change(
         baseline_revision=baseline,
     )
     first_fact = source.capture(
-        fact_type="committed_date", value="2026-11-20", date_value=date(2026, 11, 20)
-    )
+        fact_type="committed_date", value="2026-11-20",)
     first = _accept(
         session,
         project,
@@ -776,8 +770,7 @@ def test_a_missed_week_widens_the_window_rather_than_dropping_a_change(
         baseline_revision=baseline,
     )
     second_fact = source.capture(
-        fact_type="need_date", value="2026-12-20", date_value=date(2026, 12, 20)
-    )
+        fact_type="need_date", value="2026-12-20",)
     second = _accept(
         session,
         project,
@@ -818,8 +811,7 @@ def test_a_prepared_reading_never_moves_the_comparison_baseline(session, project
         baseline_revision=baseline,
     )
     moved = source.capture(
-        fact_type="committed_date", value="2026-12-15", date_value=date(2026, 12, 15)
-    )
+        fact_type="committed_date", value="2026-12-15",)
     accepted = _accept(
         session,
         project,
@@ -988,8 +980,7 @@ def test_a_delta_raised_against_a_moved_accepted_value_reads_as_stale(
 ):
     source, baseline = _baseline(session, project)
     moved = source.capture(
-        fact_type="committed_date", value="2026-12-15", date_value=date(2026, 12, 15)
-    )
+        fact_type="committed_date", value="2026-12-15",)
     mover = _delta(
         session,
         project,
@@ -1084,8 +1075,7 @@ def test_an_overdue_promised_date_is_named_by_its_released_check(session, projec
 
     source = _Source(session, project, "ucm-overdue.xlsx")
     promised = source.capture(
-        fact_type="committed_date", value="2026-08-01", date_value=date(2026, 8, 1)
-    )
+        fact_type="committed_date", value="2026-08-01",)
     revision = _adopt(session, project, (promised,), "overdue-baseline")
     reading = _bind(session, project, revision)
     artifacts = read_issue_artifacts(session, reading)
@@ -1292,8 +1282,7 @@ def test_a_replaced_revision_goes_quiet_once_the_record_stands_on_the_successor(
     replaced = _Source(session, project, "letter-rev-a.xlsx")
     successor = _Source(session, project, "letter-rev-b.xlsx")
     promised = replaced.capture(
-        fact_type="committed_date", value="2026-11-01", date_value=date(2026, 11, 1)
-    )
+        fact_type="committed_date", value="2026-11-01",)
     baseline = _adopt(session, project, (promised,), "replacement-baseline")
     _supersede(session, replaced, successor, on=date(2026, 8, 15))
 
@@ -1309,8 +1298,7 @@ def test_a_replaced_revision_goes_quiet_once_the_record_stands_on_the_successor(
         baseline_revision=baseline,
     )
     moved = successor.capture(
-        fact_type="committed_date", value="2026-12-15", date_value=date(2026, 12, 15)
-    )
+        fact_type="committed_date", value="2026-12-15",)
     accepted = _accept(
         session,
         project,
@@ -1438,8 +1426,7 @@ def _moved_promise(session, project):
         baseline_revision=baseline,
     )
     moved = source.capture(
-        fact_type="committed_date", value="2026-12-15", date_value=date(2026, 12, 15)
-    )
+        fact_type="committed_date", value="2026-12-15",)
     accepted = _accept(
         session,
         project,
@@ -1761,7 +1748,6 @@ def test_a_value_without_class_complete_provenance_is_refused(session, project):
     promised = source.capture(
         fact_type="committed_date",
         value="2026-11-01",
-        date_value=date(2026, 11, 1),
         supported=False,
     )
     revision = _adopt(session, project, (promised,), "unsupported-baseline")
@@ -1871,8 +1857,7 @@ def test_the_structured_readings_carry_what_the_package_needs(session, project):
         baseline_revision=baseline,
     )
     moved = source.capture(
-        fact_type="committed_date", value="2026-12-15", date_value=date(2026, 12, 15)
-    )
+        fact_type="committed_date", value="2026-12-15",)
     accepted = _accept(
         session,
         project,

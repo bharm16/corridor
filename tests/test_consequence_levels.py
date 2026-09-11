@@ -215,7 +215,6 @@ class Issued:
                 fact_type=field_name,
                 value=value,
                 subject_key=subject(number),
-                date_value=datetime.fromisoformat(value).date(),
             )
             revision = accept_baseline_fact(session, project, fact)
             first = first or revision
@@ -277,7 +276,6 @@ class Issued:
                 fact_type=field_name,
                 value=now,
                 subject_key=subject(number),
-                date_value=datetime.fromisoformat(now).date(),
             )
             support(self.session, self.project, fact, segment)
             values.append(

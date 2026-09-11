@@ -953,8 +953,7 @@ def test_needs_coordination_records_a_plan_and_leaves_the_delta_open(
 ) -> None:
     rendition = _Rendition(session, project, "ucm-i.xlsx")
     incoming, segment = rendition.capture(
-        fact_type="committed_date", value="2026-11-02", date_value=date(2026, 11, 2)
-    )
+        fact_type="committed_date", value="2026-11-02",)
     evidence = _support(session, project, incoming, segment)
     delta = _delta(
         session,

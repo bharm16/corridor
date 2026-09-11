@@ -297,7 +297,6 @@ def open_delta(session, adopted):
         fact_type="committed_date",
         value="2026-06-01",
         subject_key=subject(3),
-        date_value=date(2026, 6, 1),
     )
     return append_deltas(
         session,
