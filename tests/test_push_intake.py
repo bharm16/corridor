@@ -22,12 +22,14 @@ from corridor.config import settings
 from corridor.connectors.pull_connector import SourceEnvelope, build_delivery_identity
 from corridor.models import (
     Dependency,
+    DocPage,
     Document,
     InboundMessage,
     InboundThread,
     Project,
     SourceDelivery,
     PushIntakeCredential,
+    SourceSegment,
 )
 from corridor.object_storage import content_store
 
@@ -873,3 +875,300 @@ def test_the_pushed_delivery_identity_is_derived_in_exactly_one_place(session):
         bare_key,
     )
     assert bare_row.external_identity == sha256(bare.body).hexdigest()
+
+
+# --- The delivery registers, the standing pass reads (#913) ----------------
+#
+# `/intake/inbound` used to render and parse every attachment inside its own
+# request. It now registers the message and its attachments `pending` and
+# commits, exactly as the product upload's confirmation does since #893, and
+# the standing project-processing pass reads them.
+#
+# These four need real committed transactions, because the question each asks
+# is about what survives a process that ended: a rollback-scoped session cannot
+# tell a committed handoff from an uncommitted one. They take the harness-owned
+# `runtime_database` and drive `process_project` itself, which is the same act
+# the Due Work runtime's project-processing handler performs; #893's own tests
+# already prove the runtime wrapper around it, and repeating that here would
+# prove the scheduler twice and this route not at all.
+
+
+def _committed_project_with_alias(factory, alias: str) -> int:
+    with factory() as setup:
+        project = Project(
+            slug=f"mail-{uuid4().hex[:8]}", name="Mail delivery", is_synthetic=True
+        )
+        setup.add(project)
+        setup.flush([project])
+        push_intake.register_push_credential(
+            setup,
+            customer="acme-utilities",
+            project=project,
+            channel="project_alias",
+            material=alias,
+        )
+        project_id = project.id
+        setup.commit()
+    return project_id
+
+
+def _mail_with_attachment(body: str, attachment: bytes, message_id: str) -> bytes:
+    message = EmailMessage()
+    message["From"] = "utility@example.test"
+    message["To"] = ALPHA_ALIAS
+    message["Message-ID"] = message_id
+    message.set_content(body)
+    message.add_attachment(
+        attachment, maintype="application", subtype="pdf", filename="letter.pdf"
+    )
+    return message.as_bytes()
+
+
+def _reads_nothing(document):
+    """A reader that proposes nothing: act 1 is what these tests are about."""
+
+    from corridor.pipeline import EXTRACTED_PROPOSALS, ExtractionRoute
+
+    return ExtractionRoute(
+        output=EXTRACTED_PROPOSALS,
+        effective_prompt_version="push_intake_v1",
+        schema_version="push_intake_shape_v1",
+        extract=lambda session, target: [],
+        model="none",
+        allow_unsealed_legacy=True,
+    )
+
+
+def _one_pass(factory, project_id):
+    from datetime import datetime, timezone
+
+    from corridor.project_processing import process_project
+
+    class _Clock:
+        def now(self):
+            return datetime(2026, 9, 11, 12, 0, tzinfo=timezone.utc)
+
+    return process_project(
+        factory,
+        project_id=project_id,
+        select_route=_reads_nothing,
+        clock=_Clock(),
+    )
+
+
+def _read_state(factory, project_id):
+    """Every document of this project, as (kind, parse status, page count).
+
+    Keyed on ``doc_type`` rather than the filename: a message's name is derived
+    from its subject and its digest, which is not what these tests are about.
+    """
+
+    with factory() as verify:
+        return sorted(
+            (document.doc_type, document.parse_status, document.pages)
+            for document in verify.scalars(
+                select(Document).where(Document.project_id == project_id)
+            )
+        )
+
+
+def test_a_mail_delivery_registers_and_the_standing_pass_reads_it(
+    runtime_database, tmp_path, monkeypatch
+):
+    """The whole handoff across a process exit, and the crash case with it.
+
+    The receiving process commits a message and an attachment nothing has read
+    and then ends. That committed `pending` state is the whole of what the next
+    worker selects on, so a crash between the commit and the parse loses no
+    job: the read is not held in the memory of the process that would have done
+    it. Both documents end read, with the pages the in-request parse used to
+    produce in the request.
+    """
+
+    monkeypatch.setattr(settings, "corpus_store", str(tmp_path / "store"))
+    monkeypatch.setattr(settings, "corpus_images", str(tmp_path / "images"))
+    factory = runtime_database.session_factory
+    project_id = _committed_project_with_alias(factory, ALPHA_ALIAS)
+
+    # The receiving process: register, commit, end.
+    with factory() as receiving:
+        push(
+            receiving,
+            ALPHA_ALIAS,
+            _mail_with_attachment(
+                "Letter attached.", pdf_bytes("Approval letter"), "<landed@example.test>"
+            ),
+            delivery_id="mta-landed",
+        )
+        receiving.commit()
+
+    # What the request left behind: registered, unread, no pages.
+    assert _read_state(factory, project_id) == [
+        ("email", "pending", 0),
+        ("other", "pending", 0),
+    ]
+    with factory() as verify:
+        assert (
+            verify.scalar(
+                select(func.count())
+                .select_from(DocPage)
+                .join(Document, Document.id == DocPage.document_id)
+                .where(Document.project_id == project_id)
+            )
+            == 0
+        )
+
+    # A later, separate process reads both.
+    result = _one_pass(factory, project_id)
+
+    assert result.parsed_document_count == 2
+    assert result.processing_failures == []
+    assert _read_state(factory, project_id) == [
+        ("email", "parsed", 1),
+        ("other", "parsed", 1),
+    ]
+    with factory() as verify:
+        assert (
+            verify.scalar(
+                select(func.count())
+                .select_from(SourceSegment)
+                .join(Document, Document.id == SourceSegment.document_id)
+                .where(Document.project_id == project_id)
+            )
+            > 0
+        )
+
+
+def test_a_retried_parse_reads_nothing_twice_and_captures_nothing_twice(
+    runtime_database, tmp_path, monkeypatch
+):
+    """At-least-once delivery of the pass, exactly-once capture of the read.
+
+    The runtime's contract is that an occurrence may run more than once, so the
+    read has to be safe to repeat. It is selected on the status the first read
+    committed away from, so the second pass finds nothing to read, and the
+    pages and the segments are the same rows rather than another set of them.
+    """
+
+    monkeypatch.setattr(settings, "corpus_store", str(tmp_path / "store"))
+    monkeypatch.setattr(settings, "corpus_images", str(tmp_path / "images"))
+    factory = runtime_database.session_factory
+    project_id = _committed_project_with_alias(factory, ALPHA_ALIAS)
+
+    with factory() as receiving:
+        push(
+            receiving,
+            ALPHA_ALIAS,
+            _mail_with_attachment(
+                "Letter attached.", pdf_bytes("Approval letter"), "<retried@example.test>"
+            ),
+            delivery_id="mta-retried",
+        )
+        receiving.commit()
+
+    def rows():
+        with factory() as verify:
+            documents = verify.scalars(
+                select(Document.id).where(Document.project_id == project_id)
+            ).all()
+            pages = verify.scalars(
+                select(DocPage.id).where(DocPage.document_id.in_(documents))
+            ).all()
+            segments = verify.scalars(
+                select(SourceSegment.id).where(
+                    SourceSegment.document_id.in_(documents)
+                )
+            ).all()
+            return sorted(pages), sorted(segments)
+
+    first = _one_pass(factory, project_id)
+    after_first = rows()
+    second = _one_pass(factory, project_id)
+
+    assert first.parsed_document_count == 2
+    assert second.parsed_document_count == 0
+    assert second.processing_failures == []
+    # The very same rows, not a second set of them.
+    assert rows() == after_first
+
+
+def test_nothing_is_visible_to_the_worker_before_the_receipt_commits(
+    runtime_database, tmp_path, monkeypatch
+):
+    """Work becomes visible when the receipt commits, and not before.
+
+    Two real connections, because that is the only way to ask the question: one
+    holds an uncommitted delivery, the other issues the worker's own selection
+    query. A transport that never got its 200 has handed off nothing.
+    """
+
+    monkeypatch.setattr(settings, "corpus_store", str(tmp_path / "store"))
+    monkeypatch.setattr(settings, "corpus_images", str(tmp_path / "images"))
+    factory = runtime_database.session_factory
+    project_id = _committed_project_with_alias(factory, ALPHA_ALIAS)
+
+    def pending_documents():
+        with factory() as worker:
+            return list(
+                worker.scalars(
+                    select(Document.id).where(
+                        Document.project_id == project_id,
+                        Document.parse_status == "pending",
+                    )
+                )
+            )
+
+    with factory() as receiving:
+        push(
+            receiving,
+            ALPHA_ALIAS,
+            _mail_with_attachment(
+                "Letter attached.",
+                pdf_bytes("Approval letter"),
+                "<invisible@example.test>",
+            ),
+            delivery_id="mta-invisible",
+        )
+        # Written, flushed, and invisible to anybody else.
+        assert pending_documents() == []
+        receiving.commit()
+
+    assert len(pending_documents()) == 2
+
+
+def test_a_rolled_back_receipt_hands_off_no_work(
+    runtime_database, tmp_path, monkeypatch
+):
+    """A receipt that rolls back leaves the standing pass nothing to find."""
+
+    monkeypatch.setattr(settings, "corpus_store", str(tmp_path / "store"))
+    monkeypatch.setattr(settings, "corpus_images", str(tmp_path / "images"))
+    factory = runtime_database.session_factory
+    project_id = _committed_project_with_alias(factory, ALPHA_ALIAS)
+
+    with factory() as aborting:
+        push(
+            aborting,
+            ALPHA_ALIAS,
+            _mail_with_attachment(
+                "Letter attached.",
+                pdf_bytes("Approval letter"),
+                "<aborted@example.test>",
+            ),
+            delivery_id="mta-aborted",
+        )
+        aborting.rollback()
+
+    result = _one_pass(factory, project_id)
+
+    assert result.parsed_document_count == 0
+    assert result.processing_failures == []
+    assert _read_state(factory, project_id) == []
+    with factory() as verify:
+        assert (
+            verify.scalar(
+                select(func.count()).select_from(InboundMessage)
+                .where(InboundMessage.project_id == project_id)
+            )
+            == 0
+        )
