@@ -204,3 +204,60 @@ def test_minutes_crash_retry_preserves_one_capture(runtime_database):
     with factory() as replay:
         assert capture_minutes(replay, replay.get(Document, document_id), client=MinutesClient()).id == capture_id
         assert len(replay.scalars(select(MinutesCapture).where(MinutesCapture.document_id == document_id)).all()) == 1
+
+
+def test_two_overlapping_workers_capture_one_minutes_reading(runtime_database):
+    """The same overlap #918 named, on the captured-reading route (#925).
+
+    An expired work lease is re-claimable under a worker that is still
+    running, and `extract_project` never re-checks a claim, so two live passes
+    can reach one minutes document. The sequential crash-retry above proves
+    resume; it cannot prove this, because neither worker has committed when
+    the other looks. The control being asserted is the pair inside
+    `capture_minutes`: `lock_project` serializes the two, and the
+    `(project_id, source_family, source_revision)` lookup is an identity taken
+    from the *source* -- the delivery's external identity and version, or the
+    document's registry id and sha256 -- rather than from the reading. So the
+    loser recognises the winner's capture whatever the reader returned, which
+    is the property a content digest over model output cannot offer.
+    """
+
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    from corridor.minutes_spine import capture_minutes
+    from corridor.models import Document, ExtractionRun, MinutesCapture
+
+    factory = runtime_database.session_factory
+    with factory() as setup:
+        project = adopted_project(setup)
+        document = minutes_document(setup, project, "Utility A: UC-1 work will finish in September 2026.")
+        document_id = document.id
+        setup.commit()
+
+    barrier = Barrier(2)
+    readings: list[str] = []
+
+    class CountedClient(MinutesClient):
+        def answer(self, call):
+            readings.append("read")
+            return super().answer(call)
+
+    def capture():
+        with factory() as session:
+            barrier.wait(timeout=10)
+            captured = capture_minutes(session, session.get(Document, document_id), client=CountedClient())
+            capture_id = captured.id
+            session.commit()
+            return capture_id
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        captured = list(pool.map(lambda _index: capture(), range(2)))
+
+    assert len(set(captured)) == 1, "the two workers committed separate captures"
+    assert len(readings) == 1, "the second worker paid for a reading the first had"
+    with factory() as verify:
+        assert len(verify.scalars(select(MinutesCapture).where(
+            MinutesCapture.document_id == document_id)).all()) == 1
+        assert len(verify.scalars(select(ExtractionRun).where(
+            ExtractionRun.document_id == document_id)).all()) == 1
