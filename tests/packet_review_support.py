@@ -11,6 +11,7 @@ Every time is supplied by the caller. Nothing here reads a clock.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from hashlib import sha256
 from uuid import uuid4
@@ -60,7 +61,8 @@ from corridor.proposed_deltas import (
 )
 from corridor.support_assessments import FactProposition, record_support_assessment
 from harness_support import adopt_baseline_fact, as_record_decision_role
-from source_capture_support import SHEET, Rendition
+from source_capture_support import SHEET
+from source_capture_support import Rendition as _CellRendition
 
 
 ADOPTER = HumanPrincipal("local:adopter")
@@ -73,6 +75,18 @@ def subject(row_number: int) -> str:
     """The Project Record subject key one adopted source row resolves to."""
 
     return f"{SHEET}!{row_number}"
+
+
+@dataclass
+class Rendition(_CellRendition):
+    """This screen's workbook rendition, whose captured cells sit in column C.
+
+    The column is the only thing that differs from the shared capture seam:
+    the screen prints the exact cell a value was read from, and these tests
+    read that printed location.
+    """
+
+    column: str = "C"
 
 
 def accept_baseline_fact(session: Session, project: Project, fact: Fact) -> int:
