@@ -163,6 +163,7 @@ from corridor.migrations.source_append_commands import (
     delta_deduplication,
     environment_binding,
     extractor_configuration,
+    follow_up_plan_closure,
     issue_profile,
     native_segments,
     operating_mode,
@@ -1509,6 +1510,15 @@ def upgrade() -> None:
     # names.
     source_revision_declaration.upgrade(op)
 
+    # --- #835 How a Follow-up Plan stops being an outside ask -------------
+    # After the source revision declaration and before the sibling
+    # transitions. It is the last block that may run here: its composite
+    # foreign key names `delta_follow_up_plans`, which `review_packets`
+    # creates, and its designation trigger is #839's function, which
+    # `coverage_preparation` creates -- so it follows both, and creates one
+    # relation nothing later in the revision names.
+    follow_up_plan_closure.upgrade(op)
+
     from corridor.migrations import email_spine
 
     email_spine.upgrade(op, APPEND_NATIVE_SOURCE_SEGMENTS, APPEND_FACT)
@@ -1568,9 +1578,14 @@ def downgrade() -> None:
     project_contacts.downgrade(op)
     email_spine.downgrade(op)
 
-    # --- #825 What a coordinator declared about one delivery --------------
+    # --- #835 How a Follow-up Plan stops being an outside ask -------------
     # First among the feature reversals, because the upgrade added it last,
-    # and before the delivery ledger its composite foreign key names unwinds.
+    # and before the plan relation its composite foreign key names unwinds.
+    follow_up_plan_closure.downgrade(op)
+
+    # --- #825 What a coordinator declared about one delivery --------------
+    # Next, because the upgrade added it second from the end, and before the
+    # delivery ledger its composite foreign key names unwinds.
     source_revision_declaration.downgrade(op)
 
     # --- #823 A product upload is a delivery, and its confirmation ---------

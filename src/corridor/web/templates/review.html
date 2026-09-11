@@ -230,6 +230,18 @@
       {%- endfor %}
     {% endcall %}
     {%- endif %}
+    {#- Why a change that had been deferred is back in front of the
+        coordinator (#835). It is not an Attention Reason and not a
+        consequence: it is the scheduling receipt's own account of what
+        released it, and it is printed only on a change that had one. #}
+    {%- if view.item.children|selectattr("return_sentence")|list %}
+    <h3>Back from a deferral</h3>
+    <ul>
+      {%- for child in view.item.children if child.return_sentence %}
+      <li>{{ child.subject_name }} &mdash; {{ child.field_name }}: {{ child.return_sentence }}.</li>
+      {%- endfor %}
+    </ul>
+    {%- endif %}
     {%- for child in view.item.children %}
       {%- for impact in child.impacts %}
       <p>Key dates: {{ impact.affected_key_dates|join(", ") }}.

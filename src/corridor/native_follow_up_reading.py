@@ -6,6 +6,15 @@ publication modules preserves that boundary and avoids importing the full
 constraint population into a review screen. Reversals, accepted revisions and
 an explicit review cutoff determine which questions may be shown.
 
+**When a plan stops standing, decided once (#835).**  Three rules retire a
+plan and all three live here: its Proposed Delta stopped being open, the one
+packet act that recorded it was undone, or a coordinator closed it —
+superseded by a corrected plan, or cancelled because no outside answer is
+needed.  ``project_workflow.outstanding_follow_up`` reads the same two
+subqueries, so the week and this reader cannot disagree about which asks still
+stand.  Before the closure relation existed a corrected plan was simply a
+second plan, and both were listed: two live outside asks for one question.
+
 **One shape, one name.** ``AcceptedFollowUpPlan`` is the only reading type for
 a retained Follow-up Plan, and it is defined here because this is the lowest
 module every renderer of one can import: the internal report, the issue
@@ -22,9 +31,9 @@ from typing import Any, Mapping, Sequence
 
 from sqlalchemy import select
 
-from corridor.models import (DeltaFollowUpPlan, ProposedDelta, DeltaRecordDecision,
-    DeltaSupersession, DeltaFollowUpPlanEvidence, SupportAssessmentSource,
-    DeltaReviewPacketChild, DeltaReviewPacketReversal)
+from corridor.models import (DeltaFollowUpPlan, DeltaFollowUpPlanClosure, ProposedDelta,
+    DeltaRecordDecision, DeltaSupersession, DeltaFollowUpPlanEvidence,
+    SupportAssessmentSource, DeltaReviewPacketChild, DeltaReviewPacketReversal)
 
 
 @dataclass(frozen=True)
@@ -86,6 +95,27 @@ def undone_follow_up_plan_ids(project_ids: Sequence[int], *, revision_id: int | 
     return query
 
 
+def closed_follow_up_plan_ids(project_ids: Sequence[int], *, as_of: datetime | None = None):
+    """The plans a closure retired, as a subquery (#835).
+
+    Beside ``undone_follow_up_plan_ids`` and for the same reason: "a plan that
+    was superseded or cancelled raises no ask" is one rule, and the two readers
+    that decide whether a plan is still waiting must not each write their own
+    join over the closure relation. A plan is closed once — the relation's own
+    unique constraint says so — so this is a plain membership test.
+
+    ``as_of`` bounds it for an as-of reading against the instant the
+    coordinator declared closing it; the current reading passes none, because
+    a closure that has happened has happened.
+    """
+
+    query = select(DeltaFollowUpPlanClosure.plan_id).where(
+        DeltaFollowUpPlanClosure.project_id.in_(tuple(project_ids)))
+    if as_of is not None:
+        query = query.where(DeltaFollowUpPlanClosure.closed_at <= as_of)
+    return query
+
+
 def plan_subject_identity(scope: Mapping[str, Any] | None, delta_subject: str) -> str:
     """The subject one plan affects: its own recorded scope, else its delta's."""
 
@@ -127,6 +157,11 @@ def read_adopted_follow_up_plans(session, project_id, revision_id, *, current, a
         query = query.where(DeltaFollowUpPlan.recorded_at <= as_of)
     query = query.where(~DeltaFollowUpPlan.id.in_(
         undone_follow_up_plan_ids((project_id,), revision_id=revision_id, as_of=as_of)))
+    # A superseded or cancelled plan is no longer an outside ask (#835). It is
+    # excluded here rather than by each caller, so the review screen, the issue
+    # report and the week cannot disagree about which plans still stand.
+    query = query.where(~DeltaFollowUpPlan.id.in_(
+        closed_follow_up_plan_ids((project_id,), as_of=as_of)))
     plans = tuple(session.execute(query.order_by(DeltaFollowUpPlan.id)))
     plan_ids = [plan.id for plan, _ in plans]
     evidence = {}

@@ -21,7 +21,15 @@ from those, so two readings of the same state land on the same section.
 guarantees each open Proposed Delta is actionable in exactly one item, and this
 module deliberately does not repeat that partition, re-offer a delta, or expose
 any outcome token. It reports *how much* is waiting and names the one surface
-that owns each act; the acts themselves stay where they already are. A
+that owns each act; the acts themselves stay where they already are.
+
+The one thing it now reports *individually* is deferred work (#835). That is
+not an exception to the rule above: ADR-0084 makes a deferral Work List
+scheduling rather than a disposition, so a deferred change has no decision
+waiting on this page and none is offered — only when it comes back, and the
+chance to move that date. Deciding it is still the review screen's, and the
+route behind the scheduling control refuses a change that is not already
+deferred so that this page can never start a deferral either. A
 follow-up need is listed with the words its Follow-up Plan recorded and no
 control at all, because nothing in this repository yet acts on a spine
 Follow-up Plan (#425).
@@ -85,7 +93,10 @@ from corridor.models import (
     Document,
     ProposedDelta,
 )
-from corridor.native_follow_up_reading import undone_follow_up_plan_ids
+from corridor.native_follow_up_reading import (
+    closed_follow_up_plan_ids,
+    undone_follow_up_plan_ids,
+)
 from corridor.packet_review import ItemReading, ReviewReading, read_review_items
 from corridor.presentation import field_label
 from corridor.release_preparation import PreparationStanding, preparation_standings
@@ -162,6 +173,36 @@ class FollowUpNeed:
 
 
 @dataclass(frozen=True, slots=True)
+class DeferredWork:
+    """One Proposed Delta held out of immediate work, and when it comes back.
+
+    ADR-0084 makes Defer scheduling: the delta is still open and still counted,
+    and the only thing that changed is when the coordinator wants to see it.
+    Before #835 this page printed how many there were and nothing else, so the
+    date a coordinator had recorded — and any wrong date they had recorded —
+    was reachable only through the record history or a database query.
+
+    Every value is the scheduling receipt's own. Nothing here is a status: the
+    reading decides what is deferred (#494), and this names it in the words the
+    project uses.
+    """
+
+    delta_id: int
+    subject_name: str
+    field_name: str
+    returns_at: date | None
+    wake_condition: str | None
+
+    @property
+    def return_sentence(self) -> str:
+        """When this comes back, in the terms the receipt actually recorded."""
+
+        if self.returns_at is not None:
+            return f"Comes back on {self.returns_at.isoformat()}"
+        return f"Comes back when {self.wake_condition}"
+
+
+@dataclass(frozen=True, slots=True)
 class ReadinessProblem:
     """One reason this project's next issue cannot yet be produced honestly.
 
@@ -207,6 +248,7 @@ class ProjectWorkflow:
     review: ReviewReading
     undecided: tuple[ItemReading, ...]
     follow_up: tuple[FollowUpNeed, ...]
+    deferred: tuple[DeferredWork, ...]
     readiness: tuple[ReadinessProblem, ...]
     sections: tuple[WorkflowSection, ...]
 
@@ -274,6 +316,7 @@ def read_project_workflow(
         for item in review.items
         if any(child.delta_id not in planned for child in item.children)
     )
+    deferred = deferred_work(session, project_id=project_id, review=review)
     readiness = issue_readiness(session, project_id=project_id, as_of=as_of)
     sections = (
         _review_section(review, undecided, planned),
@@ -288,8 +331,60 @@ def read_project_workflow(
         review=review,
         undecided=undecided,
         follow_up=follow_up,
+        deferred=deferred,
         readiness=readiness,
         sections=sections,
+    )
+
+
+def deferred_work(
+    session: Session, *, project_id: int, review: ReviewReading
+) -> tuple[DeferredWork, ...]:
+    """Every deferred Proposed Delta of this project, in the reading's order.
+
+    The reading decides which deltas are deferred and what each one's schedule
+    says (#494, ADR-0084); this only puts the customer's own words in front of
+    them, exactly as ``outstanding_follow_up`` does for a plan.
+    """
+
+    schedules = {
+        standing.delta_id: standing for standing in review.reading.deferred
+    }
+    if not schedules:
+        return ()
+    deltas = tuple(
+        session.scalars(
+            select(ProposedDelta).where(
+                ProposedDelta.project_id == project_id,
+                ProposedDelta.id.in_(tuple(schedules)),
+            )
+        ).all()
+    )
+    names = _subject_names(
+        session, (project_id,), {delta.target_subject_identity for delta in deltas}
+    )
+    by_id = {delta.id: delta for delta in deltas}
+    return tuple(
+        DeferredWork(
+            delta_id=standing.delta_id,
+            subject_name=names.get(
+                (project_id, delta.target_subject_identity),
+                delta.target_subject_identity,
+            ),
+            field_name=(
+                field_label(delta.target_field)
+                if delta.target_field
+                else "the whole record row"
+            ),
+            returns_at=(
+                standing.returns_at.date()
+                if standing.returns_at is not None
+                else None
+            ),
+            wake_condition=standing.wake_condition,
+        )
+        for standing in review.reading.deferred
+        if (delta := by_id.get(standing.delta_id)) is not None
     )
 
 
@@ -301,10 +396,12 @@ def outstanding_follow_up(
 ) -> tuple[FollowUpNeed, ...]:
     """Every Follow-up Plan whose question is still live, oldest first.
 
-    A plan leaves this reading for one of two reasons, neither of them a stored
-    status: the Proposed Delta it was raised on stopped being open, so the
-    question it named was settled or replaced; or the one packet act that
-    recorded it was undone, and an act that never stood raises no ask.
+    A plan leaves this reading for one of three reasons, none of them a stored
+    status on the plan: the Proposed Delta it was raised on stopped being open,
+    so the question it named was settled or replaced; the one packet act that
+    recorded it was undone, and an act that never stood raises no ask; or a
+    coordinator closed it, superseding it with a corrected plan or cancelling
+    it outright (#835).
     """
 
     return outstanding_follow_up_by_project(
@@ -339,6 +436,11 @@ def outstanding_follow_up_by_project(
     # same join written twice here and there is how two renderings of one plan
     # came to be able to disagree about a reversal.
     undone = undone_follow_up_plan_ids(project_ids)
+    # And the third rule that retires a plan (#835), decided in the same place
+    # for the same reason: a superseded or cancelled plan is no longer an
+    # outside ask, and a week that listed the plan a correction replaced would
+    # show two live asks for one question.
+    closed = closed_follow_up_plan_ids(project_ids)
     rows = session.execute(
         select(DeltaFollowUpPlan, ProposedDelta)
         .join(
@@ -350,6 +452,7 @@ def outstanding_follow_up_by_project(
             ProposedDelta.project_id == DeltaFollowUpPlan.project_id,
             DeltaFollowUpPlan.delta_id.in_(every_open),
             DeltaFollowUpPlan.id.not_in(undone),
+            DeltaFollowUpPlan.id.not_in(closed),
         )
         .order_by(DeltaFollowUpPlan.id)
     ).all()

@@ -6,7 +6,7 @@
 
   The page holds no *record-decision* control of its own. Every proposed change
   is actionable in exactly one item on the review screen (ADR-0085), so this
-  page links to that screen and offers nothing that resolves, defers, or plans;
+  page links to that screen and offers nothing that resolves or plans;
   a Follow-up Plan is printed in the words it recorded, with no control,
   because nothing acts on a spine Follow-up Plan yet (#425).
 
@@ -22,6 +22,13 @@
   commands read. What the section does print is which of the two this reader
   holds, from that same roster, so a person is not left to discover a refusal
   by pressing something.
+
+  It also carries Work List *scheduling* for a change that is already deferred
+  (#835). ADR-0084 settles that scheduling is not a disposition: the change
+  stays open, the project record is untouched, and no revision is written. A
+  change that is not already deferred is refused by the route, so the review
+  screen remains the only place a deferral can start and no change gains a
+  second control.
 
   The Follow-up section also renders #425's contact-ready follow-up bundles
   (#658). It consumes `read_follow_up_bundles` and restates none of its rules:
@@ -127,6 +134,25 @@
       Nothing is needed from you while that happens.
     </p>
   {% endcall %}
+  {%- elif plan_refusal %}
+  {% call ui.outcome("refused", "Nothing was recorded against this plan", focus) %}
+    <p>{{ plan_refusal }}</p>
+  {% endcall %}
+  {%- elif plan_closed %}
+  {% call ui.outcome("saved", "The follow-up is recorded against your name", focus) %}
+    <p>{{ plan_closed }}</p>
+  {% endcall %}
+  {%- elif schedule_refusal %}
+  {% call ui.outcome("refused", "Nothing was rescheduled", focus) %}
+    <p>{{ schedule_refusal }}</p>
+  {% endcall %}
+  {%- elif scheduled %}
+  {% call ui.outcome("saved", "The return date is recorded", focus) %}
+    <p>
+      {{ scheduled }} Nothing about this project record changed: what was
+      proposed is still open and still undecided.
+    </p>
+  {% endcall %}
   {%- elif approved %}
   {% call ui.outcome("saved", "Approved for sharing", focus) %}
     <p>
@@ -181,31 +207,135 @@
       <p><a href="/review/{{ project.slug }}">Open the review screen anyway</a></p>
       {%- endif %}
 
+      {#
+        Deferred work, with the date each one comes back on (#835, ADR-0084).
+
+        The two controls schedule; they decide nothing. A change listed here is
+        already open and already deferred, so moving its date or bringing it
+        back leaves the project record exactly as it was and writes no revision
+        — which is why neither button is worded as a decision and why the
+        review screen is still the only place a change can be decided or
+        deferred in the first place.
+      #}
+      {%- if workflow.deferred %}
+      <h3 id="deferred-work">Deferred until later</h3>
+      <p class="quiet">
+        These proposed changes are still open. Each one is out of the review
+        screen until the date below, and you can move that date or bring one
+        back now.
+      </p>
+      {%- for held in workflow.deferred %}
+      <section class="bundle" aria-labelledby="deferred-{{ held.delta_id }}-heading">
+        <h4 id="deferred-{{ held.delta_id }}-heading">{{ held.subject_name }} &mdash; {{ held.field_name }}</h4>
+        {{ ui.fact_list([("When it comes back", held.return_sentence)]) }}
+        <form method="post" action="/work/{{ project.slug }}/schedule">
+          {{ csrf_field() }}
+          <input type="hidden" name="delta_id" value="{{ held.delta_id }}">
+          {% call ui.field(
+               "deferred-" ~ held.delta_id ~ "-returns-on",
+               "A different date for this to come back on") %}
+          <input type="date" id="deferred-{{ held.delta_id }}-returns-on"
+                 name="returns_on"
+                 value="{{ held.returns_at.isoformat() if held.returns_at else '' }}">
+          {% endcall %}
+          {% call ui.field(
+               "deferred-" ~ held.delta_id ~ "-reason",
+               "Why you are changing this (optional)") %}
+          <input type="text" id="deferred-{{ held.delta_id }}-reason"
+                 name="scheduling_reason" value="">
+          {% endcall %}
+          {#- Deliberately not `sticky_actions`: that pins one item's actions
+              to the bottom of the viewport, which is right for the one item a
+              coordinator has opened and wrong for a list where every row would
+              pin its own bar over the last. Each button names its own act and
+              the section heading above names which change it acts on. #}
+          <p>
+            <button type="submit" name="scheduling" value="reschedule">
+              Change the date this comes back
+            </button>
+            <button type="submit" name="scheduling" value="open_now">
+              Bring this back now
+            </button>
+          </p>
+        </form>
+      </section>
+      {%- endfor %}
+      {%- endif %}
+
     {%- elif section.name == "follow_up" %}
+      {#
+        Each recorded Follow-up Plan, and the two things a coordinator may do
+        to one (#835). Correcting a plan records a new one and closes this as
+        superseded, so the week shows one ask rather than two; cancelling
+        records a structured reason and leaves the proposed change open, still
+        decided on the review screen. Neither writes a Project Record revision
+        and neither sends anything.
+      #}
       {%- if workflow.follow_up %}
-      {% call ui.record_table(
-           "What each recorded Follow-up Plan is waiting for",
-           ["What is in question", "Field", "The question the plan recorded",
-            "Who owes the answer", "Returns"]) %}
-        {%- for need in workflow.follow_up %}
-        <tr>
-          <th scope="row">{{ need.subject_name }}</th>
-          <td>{{ need.field_name }}</td>
-          <td>{{ need.open_question }}</td>
-          <td>{{ need.responsible if need.responsible else not_recorded }}</td>
-          <td>
-            {{ need.return_date if need.return_date else not_recorded }}
-            {%- if need.overdue(today=today) %}
-            {{ ui.state(state_label("attention", "past the date this plan named")) }}
-            {%- endif %}
-          </td>
-        </tr>
-        {%- endfor %}
-      {% endcall %}
+      {%- for need in workflow.follow_up %}
+      <section class="bundle" aria-labelledby="plan-{{ need.plan_id }}-heading">
+        <h3 id="plan-{{ need.plan_id }}-heading">{{ need.subject_name }} &mdash; {{ need.field_name }}</h3>
+        {{ ui.fact_list([
+             ("The question the plan recorded", need.open_question),
+             ("Who owes the answer", need.responsible if need.responsible else not_recorded),
+             ("Returns", need.return_date if need.return_date else not_recorded),
+           ]) }}
+        {%- if need.overdue(today=today) %}
+        <p>{{ ui.state(state_label("attention", "past the date this plan named")) }}</p>
+        {%- endif %}
+        <form method="post" action="/work/{{ project.slug }}/follow-up/close">
+          {{ csrf_field() }}
+          <input type="hidden" name="plan_id" value="{{ need.plan_id }}">
+          {% call ui.field(
+               "plan-" ~ need.plan_id ~ "-question",
+               "A corrected question, if this one is wrong") %}
+          <input type="text" id="plan-{{ need.plan_id }}-question"
+                 name="plan_question" value="{{ need.open_question }}">
+          {% endcall %}
+          {% call ui.field(
+               "plan-" ~ need.plan_id ~ "-organization",
+               "The organization that owes the answer") %}
+          <input type="text" id="plan-{{ need.plan_id }}-organization"
+                 name="plan_organization" value="{{ need.responsible }}">
+          {% endcall %}
+          {% call ui.field(
+               "plan-" ~ need.plan_id ~ "-return",
+               "The date the question returns") %}
+          <input type="date" id="plan-{{ need.plan_id }}-return"
+                 name="plan_return"
+                 value="{{ need.return_date.isoformat() if need.return_date else '' }}">
+          {% endcall %}
+          {% call ui.field(
+               "plan-" ~ need.plan_id ~ "-cancellation",
+               "If you are cancelling, why this is no longer an outside ask") %}
+          <select id="plan-{{ need.plan_id }}-cancellation" name="plan_cancellation_reason">
+            <option value="">Choose a reason</option>
+            {%- for value, words in cancellation_reasons %}
+            <option value="{{ value }}">{{ words }}</option>
+            {%- endfor %}
+          </select>
+          {% endcall %}
+          {% call ui.field(
+               "plan-" ~ need.plan_id ~ "-note",
+               "Anything else worth recording (optional)") %}
+          <input type="text" id="plan-{{ need.plan_id }}-note" name="plan_note" value="">
+          {% endcall %}
+          <p>
+            <button type="submit" name="plan_action" value="update">
+              Record this correction
+            </button>
+            <button type="submit" name="plan_action" value="cancel">
+              Cancel this follow-up
+            </button>
+          </p>
+        </form>
+      </section>
+      {%- endfor %}
       <p class="quiet">
         Each of these was recorded as a Follow-up Plan when a proposed change
-        was answered Needs coordination. Contacting anyone from here is not
-        built yet, so nothing on this page sends, closes, or reassigns one.
+        was answered Needs coordination. Correcting or cancelling one is
+        recorded against your name; nothing on this page sends anything, so a
+        message still goes out from wherever you send mail.
       </p>
       {%- endif %}
 
