@@ -137,7 +137,7 @@ def test_a_write_no_retired_helper_watched_is_seen(session, project):
     """The whole argument for the card, as a contrast.
 
     A Work Decision is one project's coordination decision -- who owns the
-    subject and what happens next. Not one of the seven retired helpers
+    subject and what happens next. Not one of the eight retired helpers
     counted it, so a refused act that recorded one would have left every
     one of them green.
     """
