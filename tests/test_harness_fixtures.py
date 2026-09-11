@@ -23,7 +23,11 @@ from harness_support import adopt_baseline_facts, as_role, move_accepted_value
 
 from corridor import access
 from corridor.db import capability_engine
-from corridor.db_roles import DATABASE_ROLE_NAMES, RECORD_DECISION_ROLE
+from corridor.db_roles import (
+    DATABASE_ROLE_NAMES,
+    RECORD_DECISION_ROLE,
+    WORKER_CAPABILITY_LOGIN,
+)
 from corridor.fact_decisions import record_human_fact_decision
 from corridor.models import (
     ActiveExtractionRun,
@@ -147,6 +151,34 @@ def test_the_role_is_returned_even_when_the_body_raises(session):
         with as_role(session, RECORD_DECISION_ROLE):
             assert session.scalar(text("select current_user")) == RECORD_DECISION_ROLE
             raise RuntimeError("body failed")
+    assert session.scalar(text("select current_user")) == before
+
+
+def test_a_borrow_inside_a_borrow_hands_back_the_role_it_was_given(session):
+    """A nested borrow returns the caller's principal, not the session user.
+
+    ``reset role`` returns to the session user, which is the schema owner
+    here, so an inner borrow used to hand the outer body the owner. The Source
+    Fact capture seam performs exactly that inner borrow inside a test that is
+    already holding the record-decision role, and every assertion made after
+    it was then made by a principal the test never chose.
+    """
+    before = session.scalar(text("select current_user"))
+    with as_role(session, RECORD_DECISION_ROLE):
+        with as_role(session, WORKER_CAPABILITY_LOGIN):
+            assert session.scalar(text("select current_user")) == WORKER_CAPABILITY_LOGIN
+        assert session.scalar(text("select current_user")) == RECORD_DECISION_ROLE
+    assert session.scalar(text("select current_user")) == before
+
+
+def test_a_nested_borrow_hands_the_role_back_even_when_its_body_raises(session):
+    """The same promise for the failure the seam exists for."""
+    before = session.scalar(text("select current_user"))
+    with as_role(session, RECORD_DECISION_ROLE):
+        with pytest.raises(RuntimeError, match="body failed"):
+            with as_role(session, WORKER_CAPABILITY_LOGIN):
+                raise RuntimeError("body failed")
+        assert session.scalar(text("select current_user")) == RECORD_DECISION_ROLE
     assert session.scalar(text("select current_user")) == before
 
 

@@ -9,7 +9,7 @@ rest of the transaction, so the *next* write in the same test was silently
 performed by the wrong principal and the assertion it was making no longer
 meant what it said.
 
-``as_role`` is that pair with the reset in a ``finally``. It began as
+``as_role`` is that pair with the restore in a ``finally``. It began as
 ``as_record_decision_role`` and covered one of the four roles a test borrows,
 so eight modules kept writing the pair by hand for the other three and one of
 them grew a third copy of the helper with no reset at all. One context manager
@@ -36,6 +36,7 @@ from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError, InvalidRequestError
 from sqlalchemy.orm import Session
 
 from corridor.db_roles import RECORD_DECISION_ROLE
@@ -44,23 +45,46 @@ if TYPE_CHECKING:
     from corridor.models import Fact, Project
 
 
+# What ``current_setting('role')`` answers when no role has been borrowed.
+NO_ROLE = "none"
+
+
 @contextmanager
 def as_role(session: Session, role: str) -> Iterator[Session]:
-    """Borrow ``role`` for this transaction, and give it back however the body ends.
+    """Borrow ``role`` for this transaction, and give back whatever was in force.
 
-    ``reset role`` runs in a ``finally``, so a raising body cannot leave the
-    wrong principal in force. A body that aborts the transaction rather than
-    raising in Python has to hold its failing statement in a
-    ``session.begin_nested()`` savepoint, as every refusal walk in this suite
-    already does: PostgreSQL runs nothing at all in a failed transaction, so
-    the reset needs the savepoint's rollback to have happened first.
+    The restore runs in a ``finally``, so a raising body cannot leave the wrong
+    principal set. What it puts back is the principal the caller was holding,
+    read before the borrow, rather than ``reset role``: a borrow inside another
+    borrow used to hand the caller the session user -- the schema owner in this
+    harness -- so every assertion the outer body made after an inner capture
+    was made by a principal it never chose. ``reset role`` is still the
+    restore when nothing was borrowed, because that is what was in force.
+
+    A body that aborts the transaction rather than raising in Python has to
+    hold its failing statement in a ``session.begin_nested()`` savepoint, as
+    every refusal walk in this suite already does: PostgreSQL runs nothing at
+    all in a failed transaction, so the restore needs the savepoint's rollback
+    to have happened first. Without one there is no safe fallback to reach for
+    -- ``reset role`` would be refused by that transaction too -- and the
+    enclosing rollback discards the borrowed role with everything else, so the
+    refusal the caller has to see is raised rather than replaced.
     """
 
+    previous = session.scalar(text("select current_setting('role')"))
     session.execute(text(f'set local role "{role}"'))
     try:
         yield session
     finally:
-        session.execute(text("reset role"))
+        restore = (
+            "reset role"
+            if previous in (None, NO_ROLE)
+            else f'set local role "{previous}"'
+        )
+        try:
+            session.execute(text(restore))
+        except (DBAPIError, InvalidRequestError):
+            pass
 
 
 def accepted_revision(
