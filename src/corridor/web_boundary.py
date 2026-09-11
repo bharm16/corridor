@@ -72,6 +72,18 @@ an instrumented run of the route tests, keyed on the ``FROM``/``JOIN``/
 in flight, with the legacy-project cases excluded from ``/work/{slug}``.  It
 is a *record* of what was observed, so the live proof is still the real-login
 test that drives these routes as ``corridor_web`` itself.
+
+#824 admitted the deterministic intake path -- upload, preview, confirmation,
+the source register and the Review source link -- and recorded its relations
+the same way, from an instrumented run of both the workbook and the PDF case,
+the refusal and the quarantine.  That reading is what found the six relations
+this change had to partition rather than assume: confirmation registers *and
+parses* the file inside the request, so the pages, the token layers, the
+render derivatives and the Class B receipts a parse writes are the
+confirmation's relations too, and the register derives its honest processing
+outcome from the extraction runs and the quarantine.  None of the six carries
+a ``project_id``, except ``processing_artifacts``; the other five are
+partitioned through the ``documents`` row each of them names.
 """
 
 from __future__ import annotations
@@ -390,6 +402,118 @@ PILOT_ROUTES: dict[tuple[str, str], PilotRoute] = {
                 "project_roster_entries",
                 "release_packages",
                 "release_package_artifacts",
+            }
+        ),
+    ),
+    # --- #824 The deterministic intake path ------------------------------
+    #
+    # A coordinator opens Source history from the Work or Record page, hands
+    # Corridor one file, reads what registering it would record, confirms it,
+    # and follows a Review row back to the source it came from. Every one of
+    # those routes existed and none was listed, so an enforcing deployment
+    # answered 404 to links its own enabled pages printed.
+    #
+    # What stays outside is the optional model-assisted draft — the draft
+    # configuration, the draft request and the draft read-back. They spend
+    # model budget under their own declared authority and submitting a UCM
+    # needs none of them, so the pilot does not serve them and the preview
+    # page does not offer a control this deployment would refuse.
+    ("GET", "/projects/{slug}/sources/upload"): PilotRoute(
+        why=(
+            "#349 the upload fallback's form (ADR-0058). Authorization: an "
+            "authenticated person holding this project's coordination "
+            "designation, proved by `_project` before the page is drawn; it "
+            "reads the registry and the roster and nothing else"
+        ),
+        relations=frozenset(
+            {
+                "project_roster_entries",
+                "projects",
+            }
+        ),
+    ),
+    ("POST", "/projects/{slug}/sources/upload"): PilotRoute(
+        why=(
+            "#349, #823 takes delivery of the bytes and draws the read-only "
+            "preview. Authorization: the same coordination designation, and "
+            "the delivery it appends names the authenticated person as the "
+            "transport's own authentication. It asks after the optional "
+            "model-assisted draft only where the deployment serves that "
+            "route, so on an enforcing one it never reads "
+            "`source_intake_draft_configurations` -- which this boundary "
+            "revokes"
+        ),
+        relations=frozenset(
+            {
+                "customer_environment_binding",
+                "documents",
+                "project_roster_entries",
+                "projects",
+                "source_deliveries",
+            }
+        ),
+    ),
+    ("POST", "/projects/{slug}/sources/confirm"): PilotRoute(
+        why=(
+            "#349, #823 registers the previewed source and records the one "
+            "attributable confirmation. Authorization: the same coordination "
+            "designation, re-proved against the delivery, these bytes and "
+            "this project before anything is written. It parses the file in "
+            "the request, so the page family a parse writes is here too"
+        ),
+        relations=frozenset(
+            {
+                "audit_log",
+                "customer_environment_binding",
+                "doc_pages",
+                "document_quarantines",
+                "documents",
+                "page_render_derivatives",
+                "processing_artifacts",
+                "project_roster_entries",
+                "projects",
+                "source_deliveries",
+                "source_delivery_confirmations",
+                "source_segments",
+                "token_layers",
+            }
+        ),
+    ),
+    ("GET", "/projects/{slug}/sources"): PilotRoute(
+        why=(
+            "#349 the source register: every document confirmed through "
+            "product intake and its honest processing outcome. "
+            "Authorization: the same coordination designation. The outcome "
+            "is derived from the extraction runs and the quarantine rather "
+            "than stored, which is why both are read here"
+        ),
+        relations=frozenset(
+            {
+                "audit_log",
+                "document_quarantines",
+                "documents",
+                "extraction_runs",
+                "project_roster_entries",
+                "projects",
+            }
+        ),
+    ),
+    ("GET", "/review/{slug}/source"): PilotRoute(
+        why=(
+            "#528 the source link the authorized packet reading already "
+            "offered. Authorization: an active member of this project; no "
+            "designation, because the reading it follows needs none. No URL "
+            "comes from the query -- the retained child and its immutable "
+            "baseline source row are resolved inside the project partition, "
+            "and an off-partition id answers the same 404 a missing one does"
+        ),
+        relations=frozenset(
+            {
+                "customer_environment_binding",
+                "project_baseline_source_rows",
+                "project_roster_entries",
+                "projects",
+                "proposed_deltas",
             }
         ),
     ),

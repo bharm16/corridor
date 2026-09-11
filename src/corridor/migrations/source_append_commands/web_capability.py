@@ -16,12 +16,13 @@ owner's, and the schema owner bypasses row-level security. The suite would
 have stayed green while the product stopped working.
 
 So this block draws the boundary where the product is instead.
-`corridor.web_boundary` names the fourteen routes the live pilot serves and
-the relations each of them was observed to reach. Four of those relations
-were unpartitioned and are partitioned here; every other unpartitioned
-relation is taken away from `corridor_web` entirely. A route that quietly
-starts reading one now fails loudly rather than returning another
-customer's rows.
+`corridor.web_boundary` names the routes the live pilot serves and the
+relations each of them was observed to reach; it holds twenty-one of them
+since #824 admitted the deterministic intake path. The relations an enabled
+route reads and the partition did not cover are partitioned here; every other
+unpartitioned relation is taken away from `corridor_web` entirely. A route
+that quietly starts reading one now fails loudly rather than returning
+another customer's rows.
 
 **Why these four, and why `documents` only now.** `documents` and
 `source_deliveries` are read by every project surface and by the source
@@ -58,17 +59,46 @@ from corridor.migrations.source_append_commands.project_partition import (
 # reached is inserted through the same boundary — so denying them would take
 # back an authority this ticket has no business taking. Both carry a
 # `project_id`, so they get the partition instead and keep their grants.
-WEB_PARTITIONED_TABLES = (
+# `processing_artifacts` joined them with #824: confirming one uploaded PDF
+# registers its Class B receipts, and that relation carries a `project_id` too.
+WEB_PARTITIONED_BY_PROJECT_COLUMN = (
     "connector_checkpoint_advances",
     "documents",
     "external_report_artifacts",
     "external_report_releases",
+    "processing_artifacts",
     "push_intake_credentials",
     "source_deliveries",
 )
 
+# The children of one `documents` row (#824). Confirming an upload writes the
+# first four and the source register reads the last two, so the intake path
+# cannot be admitted while `corridor_web` holds nothing on them. None carries a
+# `project_id`, and #680 read that as "a partition policy has nothing to test".
+# A policy tests an expression, and the expression here is the parent each row
+# already names: `documents` is partitioned above, so the question "is this
+# page's document in the caller's partition" is one the database can answer.
+# Written as `exists (...)` rather than `in (...)` so a row whose parent has
+# been deleted is refused rather than admitted by a null.
+WEB_PARTITIONED_BY_DOCUMENT = (
+    "doc_pages",
+    "document_quarantines",
+    "extraction_runs",
+    "page_render_derivatives",
+    "token_layers",
+)
+
+# What `tests/test_architecture.py` compares against the boundary's protected
+# set: both families, because both are partitioned rather than revoked.
+WEB_PARTITIONED_TABLES = (
+    WEB_PARTITIONED_BY_PROJECT_COLUMN + WEB_PARTITIONED_BY_DOCUMENT
+)
+
 _WEB_PARTITIONED_TABLES_SQL = ", ".join(
-    f"'{table}'" for table in WEB_PARTITIONED_TABLES
+    f"'{table}'" for table in WEB_PARTITIONED_BY_PROJECT_COLUMN
+)
+_WEB_DOCUMENT_CHILD_TABLES_SQL = ", ".join(
+    f"'{table}'" for table in WEB_PARTITIONED_BY_DOCUMENT
 )
 
 WEB_PARTITION_POLICIES = f"""
@@ -108,6 +138,62 @@ declare
     v_table text;
 begin
     foreach v_table in array array[{_WEB_PARTITIONED_TABLES_SQL}] loop
+        execute format(
+            'drop policy if exists %I on public.%I',
+            'p_' || v_table || '_project_partition', v_table
+        );
+        execute format(
+            'drop policy if exists %I on public.%I',
+            'p_' || v_table || '_unpartitioned', v_table
+        );
+        execute format(
+            'alter table public.%I disable row level security', v_table
+        );
+    end loop;
+end $$;
+"""
+
+WEB_DOCUMENT_CHILD_PARTITION_POLICIES = f"""
+do $$
+declare
+    v_roles text;
+    v_table text;
+begin
+    select string_agg(quote_ident(rolname), ', ' order by rolname)
+      into v_roles
+      from pg_roles
+     where rolname in ({_UNPARTITIONED_ROLES_SQL});
+    foreach v_table in array array[{_WEB_DOCUMENT_CHILD_TABLES_SQL}] loop
+        execute format(
+            'alter table public.%I enable row level security', v_table
+        );
+        execute format(
+            'create policy %I on public.%I for all to corridor_web '
+            'using (exists (select 1 from public.documents d '
+            '  where d.id = public.%I.document_id '
+            '    and d.project_id = any(public.current_project_partition()))) '
+            'with check (exists (select 1 from public.documents d '
+            '  where d.id = public.%I.document_id '
+            '    and d.project_id = any(public.current_project_partition())))',
+            'p_' || v_table || '_project_partition', v_table, v_table, v_table
+        );
+        if v_roles is not null then
+            execute format(
+                'create policy %I on public.%I for all to %s '
+                'using (true) with check (true)',
+                'p_' || v_table || '_unpartitioned', v_table, v_roles
+            );
+        end if;
+    end loop;
+end $$;
+"""
+
+WEB_DOCUMENT_CHILD_PARTITION_POLICIES_DOWN = f"""
+do $$
+declare
+    v_table text;
+begin
+    foreach v_table in array array[{_WEB_DOCUMENT_CHILD_TABLES_SQL}] loop
         execute format(
             'drop policy if exists %I on public.%I',
             'p_' || v_table || '_project_partition', v_table
@@ -175,11 +261,9 @@ WEB_DENIED_DEFAULT_PRIVILEGES = (
     "dependency_event_timings",
     "dependency_evidence_sufficiencies",
     "discovered_references",
-    "doc_pages",
     "document_notification_attempts",
     "document_notification_dispatches",
     "document_notifications",
-    "document_quarantines",
     "document_rendition_derivations",
     "documentation_field_confirmations",
     "due_action_notification_attempts",
@@ -207,7 +291,6 @@ WEB_DENIED_DEFAULT_PRIVILEGES = (
     "extraction_failure_diagnosis_requests",
     "extraction_measurement_case_states",
     "extraction_run_candidates",
-    "extraction_runs",
     "follow_up_plan_receipts",
     "follow_up_plan_reversals",
     "inbound_messages",
@@ -222,11 +305,9 @@ WEB_DENIED_DEFAULT_PRIVILEGES = (
     "milestones",
     "organization_identity_receipts",
     "page_processing_failures",
-    "page_render_derivatives",
     "policy_activations",
     "policy_approvals",
     "policy_runs",
-    "processing_artifacts",
     "production_run_explanation_configurations",
     "production_run_explanation_requests",
     "project_check_configurations",
@@ -259,7 +340,6 @@ WEB_DENIED_DEFAULT_PRIVILEGES = (
     "subject_candidate_suggestions",
     "subject_resolution_attempts",
     "subject_resolution_candidates",
-    "token_layers",
     "unreadable_cell_reading_profiles",
     "unreadable_cell_reading_runs",
     "unreadable_cell_reading_steps",
@@ -368,6 +448,7 @@ def upgrade(op) -> None:
     # is both partitioned and denied would be a contradiction the next
     # statement raises rather than a silent state.
     op.execute(WEB_PARTITION_POLICIES)
+    op.execute(WEB_DOCUMENT_CHILD_PARTITION_POLICIES)
     op.execute(WEB_CAPABILITY_REVOKE)
 
 
@@ -378,4 +459,5 @@ def downgrade(op) -> None:
     # readable again and still partitioned against a partition no caller
     # declared.
     op.execute(WEB_CAPABILITY_RESTORE)
+    op.execute(WEB_DOCUMENT_CHILD_PARTITION_POLICIES_DOWN)
     op.execute(WEB_PARTITION_POLICIES_DOWN)

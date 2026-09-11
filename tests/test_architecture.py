@@ -3741,6 +3741,46 @@ def test_every_frontend_receipt_route_is_a_route_the_application_serves():
     )
 
 
+def test_the_model_assisted_intake_drafts_stay_outside_the_pilot_manifest():
+    """#824 admitted the deterministic intake path and only that.
+
+    The three draft routes spend model budget under their own declared
+    authority, and submitting a UCM needs none of them: upload, preview,
+    confirm and the register are the whole path. Admitting one of them would
+    also put the live pilot back on `source_intake_draft_configurations`, a
+    relation the boundary revokes -- which is why the preview page asks
+    whether this deployment serves the draft route before offering its
+    control, rather than asking only whether a configuration exists.
+
+    Written as an assertion because "we left it out" is not visible in a list
+    of what was put in.
+    """
+
+    from starlette.routing import Route
+
+    from corridor import web_boundary
+    from corridor.web.app import app
+
+    drafts = {
+        ("POST", "/projects/{slug}/sources/draft-configuration"),
+        ("POST", "/projects/{slug}/sources/draft"),
+        ("GET", "/projects/{slug}/sources/drafts/{public_id}"),
+    }
+    served = {
+        (method, route.path)
+        for route in app.routes
+        if isinstance(route, Route)
+        for method in (route.methods or ())
+    }
+
+    assert drafts <= served, (
+        "these are the model-assisted intake draft routes; if one was renamed "
+        "or removed, say so here rather than leaving the rule pointed at "
+        "nothing"
+    )
+    assert drafts & set(web_boundary.PILOT_ROUTES) == set()
+
+
 def test_no_enabled_pilot_route_reads_a_relation_the_boundary_revokes():
     """The two halves of the boundary, compared to each other.
 

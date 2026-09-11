@@ -69,6 +69,9 @@ from corridor.web.app import (
     get_web_capability,
 )
 
+from browser_session_support import form_fields, submit_form
+from later_revision_support import BASELINE_ROWS, workbook_bytes
+
 OPERATOR = HumanPrincipal("local:operations")
 LEAVER = HumanPrincipal("local:leaver")
 
@@ -1566,8 +1569,30 @@ PILOT_PARTITIONED_RELATIONS = (
     "documents",
     "external_report_artifacts",
     "external_report_releases",
+    "processing_artifacts",
     "source_deliveries",
 )
+
+# #824's second family, and the reason it is a second one: these carry no
+# `project_id` of their own. Each row belongs to exactly one `documents` row,
+# `documents` is partitioned above, so the policy asks the parent instead --
+# "is the document this page belongs to in the caller's partition". The
+# assertions below are the same two the family above gets, written against
+# each relation's own key because there is no project column to select.
+PILOT_DOCUMENT_CHILD_RELATIONS = (
+    "doc_pages",
+    "document_quarantines",
+    "extraction_runs",
+    "page_render_derivatives",
+    "token_layers",
+)
+
+#: The column that names one row of each, because one of the five is keyed by
+#: the document it belongs to rather than by a surrogate of its own.
+PILOT_DOCUMENT_CHILD_KEYS = {
+    relation: "document_id" if relation == "document_quarantines" else "id"
+    for relation in PILOT_DOCUMENT_CHILD_RELATIONS
+}
 
 # Every table privilege PostgreSQL can grant. A capability denied SELECT and
 # left holding INSERT is not denied the relation, which is why the assertion
@@ -1664,6 +1689,76 @@ def _seed_pilot_partitioned_rows(owner, project_id: int, slug: str) -> dict[str,
     ids["documents"] = owner.execute(
         text("select id from documents where project_id = :project_id"),
         {"project_id": project_id},
+    ).scalar_one()
+    ids["processing_artifacts"] = owner.execute(
+        text(
+            "insert into processing_artifacts ("
+            "project_id, kind, storage_path, content_sha256, terminal_at, "
+            "retention_class"
+            ") values (:project_id, 'raw_ocr', cast(:slug as text), "
+            "cast(:digest as varchar(64)), :moment, 'class_b')"
+            " returning id"
+        ),
+        {
+            "project_id": project_id,
+            "slug": slug,
+            "digest": sha256(slug.encode("utf-8")).hexdigest(),
+            "moment": _MOMENT,
+        },
+    ).scalar_one()
+    # #824's document children, one row each, named after the project whose
+    # document they hang off. Nothing here carries a `project_id`: that is the
+    # point, and the partition has to reach it through `documents`.
+    document = ids["documents"]
+    digest = sha256(slug.encode("utf-8")).hexdigest()
+    ids["doc_pages"] = owner.execute(
+        text(
+            "insert into doc_pages (document_id, page_no, text) "
+            "values (:document_id, 1, cast(:slug as text)) returning id"
+        ),
+        {"document_id": document, "slug": slug},
+    ).scalar_one()
+    ids["document_quarantines"] = owner.execute(
+        text(
+            "insert into document_quarantines (document_id, reason) "
+            "values (:document_id, cast(:slug as text)) returning document_id"
+        ),
+        {"document_id": document, "slug": slug},
+    ).scalar_one()
+    ids["extraction_runs"] = owner.execute(
+        text(
+            "insert into extraction_runs ("
+            "document_id, prompt_version, candidate_count, outcome"
+            ") values (:document_id, 'partition_fixture_v1', 0, 'unreadable')"
+            " returning id"
+        ),
+        {"document_id": document},
+    ).scalar_one()
+    ids["page_render_derivatives"] = owner.execute(
+        text(
+            "insert into page_render_derivatives ("
+            "document_id, page_number, derivative_key, profile_name, "
+            "profile_id, source_sha256, artifact_path, artifact_sha256, "
+            "artifact_bytes, manifest_json"
+            ") values (:document_id, 1, cast(:slug as varchar(64)), "
+            "'review', cast(:slug as varchar(64)), "
+            "cast(:digest as varchar(64)), cast(:slug as text), "
+            "cast(:digest as varchar(64)), 1, '{}'::jsonb) returning id"
+        ),
+        {"document_id": document, "slug": slug, "digest": digest},
+    ).scalar_one()
+    ids["token_layers"] = owner.execute(
+        text(
+            "insert into token_layers ("
+            "document_id, page_no, origin, layer_key, source_sha256, "
+            "engine_json, token_count, quality_json, artifact_path, "
+            "artifact_sha256, artifact_bytes"
+            ") values (:document_id, 1, 'native', "
+            "cast(:slug as varchar(64)), cast(:digest as varchar(64)), "
+            "'{}'::jsonb, 0, '{}'::jsonb, cast(:slug as text), "
+            "cast(:digest as varchar(64)), 1) returning id"
+        ),
+        {"document_id": document, "slug": slug, "digest": digest},
     ).scalar_one()
     return ids
 
@@ -1793,6 +1888,73 @@ def test_the_newly_partitioned_relations_read_nothing_without_a_partition(
         assert access.current_project_partition(web) is None
         for relation in PILOT_PARTITIONED_RELATIONS:
             assert web.execute(text(f"select id from {relation}")).scalars().all() == []
+
+
+def test_a_naked_select_on_a_document_child_reads_one_project(
+    their_pilot_rows, two_projects, web_connection
+):
+    """#824's parent-join family: a page belongs to whoever owns its document.
+
+    These five carry no `project_id`, and #680 read that as a reason a policy
+    could not be written. It is not: the policy tests the parent each row
+    already names, so a careless `select * from doc_pages` answers with the
+    caller's project and nobody else's.
+    """
+
+    ours, _theirs = two_projects
+    with OrmSession(bind=web_connection) as web:
+        access.open_project_partition(
+            web, principal_subject=LEAVER.subject, project_id=ours
+        )
+        seen = {
+            relation: web.execute(
+                text(
+                    f"select d.project_id from {relation} child "
+                    "join documents d on d.id = child.document_id"
+                )
+            ).scalars().all()
+            for relation in PILOT_DOCUMENT_CHILD_RELATIONS
+        }
+
+    assert seen == {relation: [ours] for relation in PILOT_DOCUMENT_CHILD_RELATIONS}
+
+
+def test_a_direct_id_lookup_on_a_document_child_is_empty(
+    their_pilot_rows, two_projects, web_connection
+):
+    """The same ids, asked for one at a time, which is how a partition is bypassed."""
+
+    ours, _theirs = two_projects
+    with OrmSession(bind=web_connection) as web:
+        access.open_project_partition(
+            web, principal_subject=LEAVER.subject, project_id=ours
+        )
+        reached = {
+            relation: web.execute(
+                text(
+                    f"select {PILOT_DOCUMENT_CHILD_KEYS[relation]} "
+                    f"from {relation} "
+                    f"where {PILOT_DOCUMENT_CHILD_KEYS[relation]} = :id"
+                ),
+                {"id": their_pilot_rows[relation]},
+            ).scalars().all()
+            for relation in PILOT_DOCUMENT_CHILD_RELATIONS
+        }
+
+    assert reached == {relation: [] for relation in PILOT_DOCUMENT_CHILD_RELATIONS}
+
+
+def test_a_document_child_reads_nothing_without_a_partition(
+    their_pilot_rows, web_connection
+):
+    """Fail closed: no declared partition is the empty partition, here too."""
+
+    with OrmSession(bind=web_connection) as web:
+        assert access.current_project_partition(web) is None
+        for relation in PILOT_DOCUMENT_CHILD_RELATIONS:
+            assert web.execute(
+                text(f"select document_id from {relation}")
+            ).scalars().all() == []
 
 
 def test_the_boundary_leaves_the_machine_capability_whole(runtime_database):
@@ -2454,6 +2616,196 @@ def test_every_enabled_pilot_reading_serves_as_the_real_web_login(
         "/review/ours": 200,
     }
     assert _revoked_relations_touched(statements_in_flight) == []
+
+
+# --- #824 The deterministic intake path, as the real web login ------------
+#
+# The routes above are readings. Two of the five admitted here write, and the
+# confirmation registers *and parses* the file inside the request, so between
+# them they reach six relations #680 had revoked. Proving them as
+# `corridor_web` is the only way to know the parent-join policies answer the
+# way the page needs: the schema owner bypasses row-level security, so every
+# other test of this path would pass with no policy at all.
+
+
+@pytest.fixture
+def staged_store(monkeypatch, tmp_path):
+    """The content-addressed store, pointed somewhere this test may write."""
+
+    monkeypatch.setattr(settings, "corpus_store", str(tmp_path / "files"))
+    monkeypatch.setattr(settings, "corpus_images", str(tmp_path / "images"))
+
+
+@pytest.fixture
+def uploaded_workbook(tmp_path) -> bytes:
+    """The customer's own UCM workbook, in the published form's column order.
+
+    One row: confirming parses the file inside the request, and what this
+    proves is which relations that parse reaches, not how many rows it reads.
+    """
+
+    return workbook_bytes(tmp_path / "ucm.xlsx", BASELINE_ROWS[:1])
+
+
+def test_the_admitted_intake_path_serves_as_the_real_web_login(
+    two_projects,
+    their_pilot_rows,
+    live_pilot_client,
+    boundary_enabled,
+    staged_store,
+    uploaded_workbook,
+    statements_in_flight,
+):
+    """Upload, preview, confirm, register -- walked as `corridor_web` itself.
+
+    The other project holds a committed row in every relation these routes
+    touch, so a policy that filtered nothing would show it. Each request
+    carries the forgery token the page printed rather than one composed here,
+    which is what makes this a walk of the screens rather than of the handlers.
+    """
+
+    ours, _theirs = two_projects
+    statements_in_flight.clear()
+
+    form = live_pilot_client.get("/projects/ours/sources/upload")
+    assert form.status_code == 200, form.text[:400]
+
+    preview = live_pilot_client.post(
+        "/projects/ours/sources/upload",
+        # The hidden fields are the page's -- the forgery token among them.
+        # `doc_type` is the one value this form asks a person for, so it is
+        # the one value the test supplies.
+        data={**form_fields(form.text, "/sources/upload"), "doc_type": "matrix"},
+        files={"upload": ("ucm.xlsx", uploaded_workbook, "application/octet-stream")},
+    )
+    assert preview.status_code == 200, preview.text[:400]
+
+    confirmation = form_fields(preview.text, "/sources/confirm")
+    assert confirmation is not None, preview.text[:400]
+    confirmed = submit_form(
+        live_pilot_client, "/projects/ours/sources/confirm", confirmation
+    )
+    assert confirmed.status_code == 303, confirmed.text[:400]
+    assert confirmed.headers["location"] == "/projects/ours/sources"
+
+    register = live_pilot_client.get("/projects/ours/sources")
+    assert register.status_code == 200, register.text[:400]
+    assert "ucm.xlsx" in register.text
+    assert "theirs.xlsx" not in register.text
+
+    assert _revoked_relations_touched(statements_in_flight) == []
+    # The point of the walk, said as an assertion: the relations #824
+    # partitioned were actually reached, so a passing run is evidence the
+    # policies answer rather than evidence the routes avoided them.
+    assert {"doc_pages", "extraction_runs", "document_quarantines"} <= {
+        relation
+        for statement in statements_in_flight
+        for relation in ("doc_pages", "extraction_runs", "document_quarantines")
+        if re.search(rf"\b{relation}\b", statement)
+    }
+
+
+def test_the_admitted_intake_path_refuses_the_other_project(
+    two_projects,
+    their_pilot_rows,
+    live_pilot_client,
+    boundary_enabled,
+    staged_store,
+    uploaded_workbook,
+    statements_in_flight,
+):
+    """The same login, the same routes, the project it is not a member of.
+
+    A non-member is answered exactly as a missing project is, so nothing here
+    distinguishes "no such project" from "not yours" -- and no request reaches
+    a relation the boundary revoked on its way to saying so.
+    """
+
+    # The token this person legitimately holds, taken off their own project's
+    # page: the request being refused is a member of one project reaching for
+    # another, not an unauthenticated one.
+    own = live_pilot_client.get("/projects/ours/sources/upload")
+    assert own.status_code == 200
+    carried = form_fields(own.text, "/sources/upload") or {}
+
+    statements_in_flight.clear()
+    refused = {
+        "upload form": live_pilot_client.get(
+            "/projects/theirs/sources/upload", follow_redirects=False
+        ),
+        "register": live_pilot_client.get(
+            "/projects/theirs/sources", follow_redirects=False
+        ),
+        "preview": live_pilot_client.post(
+            "/projects/theirs/sources/upload",
+            data={**carried, "doc_type": "matrix"},
+            files={
+                "upload": (
+                    "ucm.xlsx", uploaded_workbook, "application/octet-stream"
+                )
+            },
+            follow_redirects=False,
+        ),
+        "source link": live_pilot_client.get(
+            "/review/theirs/source",
+            params={
+                "item": "source_revision:ucm@1:record_cleanup",
+                "delta_id": 1,
+                "source_row_id": 1,
+                "role": "source_url",
+            },
+            follow_redirects=False,
+        ),
+    }
+
+    assert {name: answer.status_code for name, answer in refused.items()} == {
+        "upload form": 404,
+        "register": 404,
+        "preview": 404,
+        "source link": 404,
+    }
+    assert _revoked_relations_touched(statements_in_flight) == []
+
+
+def test_the_review_source_link_resolves_its_ids_as_the_real_web_login(
+    two_projects,
+    their_pilot_rows,
+    live_pilot_client,
+    boundary_enabled,
+    statements_in_flight,
+):
+    """The admitted redirect runs its own reads, and answers a controlled 404.
+
+    No URL comes from the query: the route resolves the retained child and the
+    immutable baseline source row itself, inside the partition `_project`
+    declared. This fixture holds neither row, so what it proves is the half
+    only the real login can prove -- that the reads *ran*, on relations the
+    revoke left standing, and that a pair of ids resolving to nothing answers
+    the route's own sentence rather than PostgreSQL's. The redirect itself is
+    proved on the rendered screen in `tests/test_packet_review_screen.py`, and
+    the cross-project refusal is the test above.
+    """
+
+    statements_in_flight.clear()
+    answered = live_pilot_client.get(
+        "/review/ours/source",
+        params={
+            "item": "source_revision:ucm@1:record_cleanup",
+            "delta_id": 1,
+            "source_row_id": 1,
+            "role": "source_url",
+        },
+        follow_redirects=False,
+    )
+
+    assert answered.status_code == 404
+    assert answered.json() == {"detail": "no such source link in this reading"}
+    assert _revoked_relations_touched(statements_in_flight) == []
+    assert [
+        statement
+        for statement in statements_in_flight
+        if re.search(r"\bproposed_deltas\b", statement)
+    ], "the route answered without reading the relation it resolves ids in"
 
 
 def test_a_route_outside_the_boundary_is_refused_rather_than_half_served(
