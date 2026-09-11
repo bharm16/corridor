@@ -30,19 +30,15 @@ from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from corridor.consequence_levels import AFFECTS_ISSUE, LEVEL_HEADINGS
 from corridor.analytics import EventFamily, capture_events
 from corridor.issue_content import NO_ISSUE_PROFILE
 from corridor.models import (
-    DeltaDisposition,
-    DeltaFollowUpPlan,
-    DeltaRecordDecision,
     DeltaReviewPacketReceipt,
     Project,
-    ProjectRecordRevision,
 )
 from corridor.operating_mode import adopt_project_baseline
 from corridor.packet_review import (
@@ -74,6 +70,7 @@ from corridor.web.app import (
 )
 
 from access_support import seed_membership
+from record_counts import nothing_written
 from packet_review_support import (
     Rendition,
     accept_baseline_fact,
@@ -332,23 +329,6 @@ def _plan_every_child(session: Session, project: Project) -> int:
     return len(item.children)
 
 
-def _spine_counts(session: Session, project: Project) -> tuple[int, ...]:
-    """Every row family this page could conceivably be accused of writing."""
-
-    return tuple(
-        session.scalar(
-            select(func.count()).select_from(model).where(model.project_id == project.id)
-        )
-        for model in (
-            ProjectRecordRevision,
-            DeltaRecordDecision,
-            DeltaDisposition,
-            DeltaFollowUpPlan,
-            DeltaReviewPacketReceipt,
-        )
-    )
-
-
 # --- where a project opens -------------------------------------------------
 
 
@@ -526,13 +506,12 @@ def test_opening_and_moving_between_sections_records_nothing(
     """Leaving a section is not an act; only the explicit decisions are."""
 
     _cross_source(session, project)
-    before = _spine_counts(session, project)
 
-    for _ in range(3):
-        assert client.get(f"/work/{project.slug}").status_code == 200
-
-    session.expire_all()
-    assert _spine_counts(session, project) == before
+    # The page view appends a `product_proving_frontend_request` receipt, which
+    # is a server-observed request rather than a decision about the project.
+    with nothing_written(session, project.id, apart_from={"audit_log"}):
+        for _ in range(3):
+            assert client.get(f"/work/{project.slug}").status_code == 200
 
 
 def test_the_reading_is_derived_and_repeats_itself(session, project):

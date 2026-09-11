@@ -39,12 +39,9 @@ from corridor.db import engine
 from corridor.object_storage import LocalFilesystemStore
 from corridor.models import (
     BLOCKED,
-    DeltaDisposition,
     Document,
     ProjectRosterEntry,
     DeltaFollowUpPlan,
-    DeltaRecordDecision,
-    DeltaReviewPacketReceipt,
     Project,
     ProjectRecordRevision,
     ReleasePreparationAttempt,
@@ -103,6 +100,7 @@ from corridor.web.app import (
 
 from access_support import request_scoped, seed_membership
 from coverage_support import declare_coverage
+from record_counts import nothing_written
 from later_revision_support import BASELINE_ROWS, adopt, workbook_bytes
 from packet_review_support import Rendition, append_deltas, modify, subject, support
 # The candidate fixtures come from #533's own test module for the same reason
@@ -547,25 +545,6 @@ def _mixed(session: Session, tmp_path, store) -> dict[str, Project]:
         "partly_planned": _partly_planned(session),
         "quiet": _quiet(session),
     }
-
-
-def _spine_counts(session: Session, project: Project) -> tuple[int, ...]:
-    """Every row family this page could conceivably be accused of writing."""
-
-    return tuple(
-        session.scalar(
-            select(func.count())
-            .select_from(model)
-            .where(model.project_id == project.id)
-        )
-        for model in (
-            ProjectRecordRevision,
-            DeltaRecordDecision,
-            DeltaDisposition,
-            DeltaFollowUpPlan,
-            DeltaReviewPacketReceipt,
-        )
-    )
 
 
 # --- who is shown, and who is not ------------------------------------------
@@ -1381,19 +1360,14 @@ def test_reading_the_portfolio_records_nothing_about_any_project(session, client
     """Looking at a project is not an act on it."""
 
     projects = _mixed(session, tmp_path, store)
-    before = {
-        name: _spine_counts(session, project)
-        for name, project in projects.items()
-    }
 
-    for _ in range(3):
-        assert client.get("/portfolio").status_code == 200
-
-    session.expire_all()
-    assert {
-        name: _spine_counts(session, project)
-        for name, project in projects.items()
-    } == before
+    with nothing_written(
+        session,
+        *(project.id for project in projects.values()),
+        apart_from={"audit_log"},
+    ):
+        for _ in range(3):
+            assert client.get("/portfolio").status_code == 200
 
 
 def test_the_reading_is_derived_and_repeats_itself(session, tmp_path, store):

@@ -35,7 +35,7 @@ as the test created.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Container, Iterator
 from contextlib import contextmanager
 
 from sqlalchemy import bindparam, func, select
@@ -73,13 +73,22 @@ def project_record_counts(session: Session, project_id: int) -> dict[str, int]:
 
 
 @contextmanager
-def nothing_written(session: Session, *project_ids: int) -> Iterator[None]:
+def nothing_written(
+    session: Session, *project_ids: int, apart_from: Container[str] = ()
+) -> Iterator[None]:
     """Prove the act performed inside wrote no row of these projects' records.
 
     Name every project the test created whose record the act could reach: a
     refusal that cites a second project is refused precisely because it
     would have written somewhere, and reading only one of the two would not
     see where.
+
+    ``apart_from`` names the tables the act does write on purpose -- a page
+    view appends a ``product_proving_frontend_request`` receipt to
+    ``audit_log``, and that is a request observation rather than a change to
+    the record. It is an exception a caller states, not a set a caller
+    chooses: the other two hundred tables stay guarded, which is what the
+    private helpers this replaces could not say.
 
     The reading is taken in a ``finally``, because the act under test is a
     refusal and half the call sites raise out of the body on purpose. A
@@ -103,6 +112,6 @@ def nothing_written(session: Session, *project_ids: int) -> Iterator[None]:
             changed += [
                 f"project {project_id} {table} {was} -> {after[table]}"
                 for table, was in counts.items()
-                if was != after[table]
+                if was != after[table] and table not in apart_from
             ]
         assert not changed, "the act wrote to the record: " + ", ".join(sorted(changed))

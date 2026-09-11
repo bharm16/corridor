@@ -244,6 +244,43 @@ def test_a_second_project_is_only_read_when_it_is_named(session, project):
             session.flush()
 
 
+def test_a_named_exception_excuses_only_the_table_it_names(session, project):
+    """`apart_from` is an exception stated, not a set chosen.
+
+    A page view records a request receipt; it does not decide anything. The
+    test that tolerates the receipt still watches the other two hundred
+    tables, which is the difference from a helper that watched five.
+    """
+
+    dependency = _dependency(session, project)
+
+    with nothing_written(session, project.id, apart_from={"documents"}):
+        session.add(
+            Document(
+                project_id=project.id,
+                sha256="1" * 64,
+                filename="excused.pdf",
+                doc_type="matrix",
+                parse_status="parsed",
+                pages=1,
+            )
+        )
+        session.flush()
+
+    with pytest.raises(AssertionError, match="work_decisions 0 -> 1"):
+        with nothing_written(session, project.id, apart_from={"documents"}):
+            session.add(
+                WorkDecision(
+                    dependency_id=dependency.id,
+                    decision_type="assign_internal_owner",
+                    field="internal_owner",
+                    after_value="Dana Fields",
+                    recorded_by="local:test",
+                )
+            )
+            session.flush()
+
+
 def test_a_reading_with_no_project_is_refused(session):
     with pytest.raises(TypeError, match="at least one project"):
         with nothing_written(session):
