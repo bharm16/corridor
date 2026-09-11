@@ -1809,23 +1809,75 @@ def _chromatic_classes(markup: str) -> set[str]:
     return painted
 
 
+def _composed_templates() -> dict[Path, frozenset[Path]]:
+    """Every template each template renders: its includes, imports and extends.
+
+    Read from Jinja's own parse rather than from the text, because a template
+    that names another one in a comment does not render it and a template that
+    reaches the primitives through a partial does.
+    """
+    import jinja2
+
+    environment = jinja2.Environment(autoescape=True)
+    composition: dict[Path, frozenset[Path]] = {}
+    for path in sorted(TEMPLATE_ROOT.glob("*.html")):
+        composed: set[Path] = set()
+        for node in environment.parse(path.read_text(encoding="utf-8")).find_all(
+            (jinja2.nodes.Include, jinja2.nodes.Import, jinja2.nodes.FromImport,
+             jinja2.nodes.Extends)
+        ):
+            if isinstance(node.template, jinja2.nodes.Const):
+                composed.add(TEMPLATE_ROOT / str(node.template.value))
+        composition[path] = frozenset(composed)
+    return composition
+
+
 def _shared_templates() -> tuple[Path, ...]:
-    shared = [PRIMITIVES_TEMPLATE]
-    shared.extend(
-        path
-        for path in sorted(TEMPLATE_ROOT.glob("*.html"))
-        if path != PRIMITIVES_TEMPLATE
-        and PRIMITIVES_TEMPLATE.name in path.read_text(encoding="utf-8")
-    )
-    return tuple(shared)
+    """The primitives, every page that renders them, and every partial in those.
+
+    Membership used to be "this file's own text contains `_primitives.html`",
+    which is not the same set as "the markup a guarded page sends": it covered
+    10 of 36 templates, and the two partials composed into the guarded
+    `queue.html` were never read even though their markup reaches the same
+    screen. Composition decides it now, so a page cannot leave the rule by
+    moving its import into a partial, and a partial cannot escape it by never
+    naming the primitives itself.
+    """
+    composition = _composed_templates()
+
+    def renders(path: Path) -> frozenset[Path]:
+        """Every template this one renders, directly or through a partial."""
+        seen: set[Path] = set()
+        frontier = [path]
+        while frontier:
+            for composed in composition.get(frontier.pop(), frozenset()):
+                if composed not in seen:
+                    seen.add(composed)
+                    frontier.append(composed)
+        return frozenset(seen)
+
+    shared = {PRIMITIVES_TEMPLATE}
+    for path in composition:
+        composed = renders(path)
+        if PRIMITIVES_TEMPLATE in composed:
+            shared |= {path, *composed}
+    return tuple(sorted(shared))
 
 
 def test_shared_templates_exist_and_include_the_first_consumer():
-    """The check is worthless if it silently covers nothing."""
+    """The check is worthless if it silently covers nothing.
+
+    Its reach is the point: `ledger.html` renders the primitives directly, and
+    `_evidence.html` and `_coordinate.html` reach the same screen by being
+    composed into `queue.html`, which does.
+    """
     names = {path.name for path in _shared_templates()}
 
     assert PRIMITIVES_TEMPLATE.name in names
     assert "ledger.html" in names
+    assert {"_evidence.html", "_coordinate.html"} <= names, (
+        "a partial rendered inside a guarded page is markup that page sends"
+    )
 
 
 def test_no_shared_template_conveys_state_by_colour_alone():
