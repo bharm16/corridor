@@ -4,6 +4,8 @@ domain: human-work
 scope: current product
 amends:
   - ADR-0035
+amended_by:
+  - ADR-0100
 migration: the four primary decisions, the dated Defer receipt, the one atomic packet transaction that commits them, the derived reading that keys the packets and partitions every open delta exactly once, the shared accessible primitives, the source-revision review screen, and the cross-source coordination screen exist (#519, #526, #494, #559, #527, #528); all three packet keys are produced by `delta-partition-v2`, which also splits materially different actions and names an identity contradiction as one; the three visible consequence levels are derived from the per-project configured issue content and its executable customer policy (#640, #641), and are absent with a stated configuration problem rather than guessed where that configuration cannot be executed.
 ---
 
