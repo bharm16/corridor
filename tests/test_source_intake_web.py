@@ -145,12 +145,16 @@ def test_confirm_registers_and_lists_the_upload(client, session, project, store)
     ).first()
     assert document is not None
     assert document.doc_type == "matrix"
-    assert document.parse_status == "parsed"
+    # The request registered the source and did not read it (#893): rendering
+    # and parsing belong to the standing pass, and `pending` is the state that
+    # pass selects on.
+    assert document.parse_status == "pending"
+    assert document.pages == 0
 
     listing = client.get(f"/projects/{project.slug}/sources")
     assert listing.status_code == 200
     assert "matrix.pdf" in listing.text
-    assert "Pending" in listing.text
+    assert "Pending — waiting for the processing pass" in listing.text
 
 
 def test_the_register_shows_a_refused_delivery_and_the_owner_of_it(

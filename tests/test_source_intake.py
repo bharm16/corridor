@@ -40,11 +40,14 @@ from corridor.models import (
     ExternalOrg,
     ExtractionRun,
     Project,
+    SourceSegment,
 )
 from corridor.pipeline import EXTRACTED_PROPOSALS, ExtractionRoute
 from corridor.principals import HumanPrincipal
+import corridor.project_processing as project_processing
 from corridor.project_processing import process_project, summarize_pass
 from corridor.record_inclusion import record_inclusion_pending
+import corridor.source_register as source_register
 import corridor.source_intake as source_intake
 from corridor.source_intake import (
     IntakeConflict,
@@ -266,6 +269,57 @@ def test_confirm_registers_the_document_and_binds_the_actor(session, project, st
     assert entry.entity_type == audit.DOCUMENT
     assert entry.entity_id == document.id
     assert entry.human_principal == PRINCIPAL.subject
+
+
+def test_confirm_can_register_without_reading_the_file(session, project, store):
+    """#893: the act a person waits on registers; the standing pass reads.
+
+    ``pending`` is not a new state -- it is the one a Document has had between
+    registration and its read all along, and the one the source register
+    already prints as waiting for the processing pass. What is new is that it
+    survives the commit, so this asserts what a confirmed-but-unread source
+    looks like on disk: no pages, no rendered derivatives, and no segments a
+    read would have appended.
+    """
+
+    staged = validate_and_stage(_matrix_pdf(), "deferred.pdf")
+    preview = preview_intake(session, project, staged, "matrix")
+
+    result = confirm_intake(
+        session,
+        project=project,
+        sha256=preview.sha256,
+        filename=preview.filename,
+        doc_type=preview.doc_type,
+        binding_fingerprint=preview.binding_fingerprint,
+        principal=PRINCIPAL,
+        parse=False,
+    )
+
+    document = session.get(Document, result.document_id)
+    assert document.parse_status == "pending"
+    assert document.pages == 0
+    assert (
+        session.scalar(
+            select(func.count())
+            .select_from(DocPage)
+            .where(DocPage.document_id == document.id)
+        )
+        == 0
+    )
+    assert (
+        session.scalar(
+            select(func.count())
+            .select_from(SourceSegment)
+            .where(SourceSegment.document_id == document.id)
+        )
+        == 0
+    )
+    # The attributable confirmation is written either way: what was deferred is
+    # the reading, never the act.
+    entry = session.get(AuditLog, result.audit_id)
+    assert entry.action == audit.CONFIRM_SOURCE_INTAKE
+    assert entry.entity_id == document.id
 
 
 def test_confirm_does_not_bump_the_record_inclusion_watermark(session, project, store):
@@ -555,53 +609,107 @@ def _declare_processing(factory, project_id, now):
     return schedule_id
 
 
-def test_committed_upload_is_processed_by_the_standing_pass(
-    runtime_database, tmp_path, monkeypatch
-):
-    _stage_store(tmp_path, monkeypatch)
-    factory = runtime_database.session_factory
-    now = datetime(2026, 8, 29, 7, 0, tzinfo=timezone.utc)
-
-    # One process: an ordinary person uploads and confirms a matrix. It commits.
-    with factory() as uploading:
+def _project_with_org(factory, prefix: str) -> int:
+    with factory() as setup:
         project = Project(
-            slug=f"durable-{uuid4().hex[:8]}", name="Durable", is_synthetic=True
+            slug=f"{prefix}-{uuid4().hex[:8]}", name=prefix.title(), is_synthetic=True
         )
-        uploading.add(project)
-        uploading.flush([project])
+        setup.add(project)
+        setup.flush([project])
         project_id = project.id
-        uploading.add(ExternalOrg(name="Tejas Pipeline Co", aliases=[]))
-        uploading.flush()
-        staged = validate_and_stage(_matrix_pdf(), "committed.pdf")
-        preview = preview_intake(uploading, project, staged, "matrix")
-        confirm_intake(
-            uploading,
-            project=project,
-            sha256=preview.sha256,
-            filename=preview.filename,
-            doc_type=preview.doc_type,
-            binding_fingerprint=preview.binding_fingerprint,
-            principal=PRINCIPAL,
-        )
-        uploading.commit()
+        setup.add(ExternalOrg(name="Tejas Pipeline Co", aliases=[]))
+        setup.commit()
+    return project_id
 
-    _declare_processing(factory, project_id, now)
-    select_route, calls = _scripted_route({"committed.pdf": "FOC1-1"})
 
-    # A later, separate process (the standing worker) picks it up and extracts it.
+def _confirm_upload(session, project_id: int, filename: str, body: bytes | None = None):
+    """The web confirmation's own act: register, do not read (#893)."""
+
+    project = session.get(Project, project_id)
+    staged = validate_and_stage(_matrix_pdf() if body is None else body, filename)
+    preview = preview_intake(session, project, staged, "matrix")
+    return confirm_intake(
+        session,
+        project=project,
+        sha256=preview.sha256,
+        filename=preview.filename,
+        doc_type=preview.doc_type,
+        binding_fingerprint=preview.binding_fingerprint,
+        principal=PRINCIPAL,
+        parse=False,
+    )
+
+
+def _run_one_pass(factory, project_id, select_route, now):
     with factory() as ticking:
         enqueue_due_work(ticking, now=now)
         ticking.commit()
-    result = run_due_work_once(
+    return run_due_work_once(
         factory,
         clock=_Clock(now),
         owner="runtime:processing-worker",
         registry=_registry(select_route),
     )
 
+
+def _document_state(factory, project_id) -> tuple[str, int, int, int]:
+    """Parse status, page count, ``doc_pages`` rows and ``source_segments`` rows."""
+
+    with factory() as verify:
+        document = verify.scalars(
+            select(Document).where(Document.project_id == project_id)
+        ).one()
+        pages = verify.scalar(
+            select(func.count())
+            .select_from(DocPage)
+            .where(DocPage.document_id == document.id)
+        )
+        segments = verify.scalar(
+            select(func.count())
+            .select_from(SourceSegment)
+            .where(SourceSegment.document_id == document.id)
+        )
+        return document.parse_status, document.pages, int(pages), int(segments)
+
+
+def test_committed_upload_is_processed_by_the_standing_pass(
+    runtime_database, tmp_path, monkeypatch
+):
+    """The whole handoff, across a process exit: confirm here, read and extract there.
+
+    This is also the crash-between-confirmation-and-parse case (#893). The
+    confirming process commits a Document nothing has read and then ends; the
+    durable state it left is what the next worker selects on, so the read is
+    not lost with the process that would have done it.
+    """
+
+    _stage_store(tmp_path, monkeypatch)
+    factory = runtime_database.session_factory
+    now = datetime(2026, 8, 29, 7, 0, tzinfo=timezone.utc)
+    project_id = _project_with_org(factory, "durable")
+
+    # One process: an ordinary person uploads and confirms a matrix. It commits.
+    with factory() as uploading:
+        _confirm_upload(uploading, project_id, "committed.pdf")
+        uploading.commit()
+
+    # What the person's request left behind: registered, unread, and nothing
+    # the reader would have written.
+    assert _document_state(factory, project_id) == ("pending", 0, 0, 0)
+
+    _declare_processing(factory, project_id, now)
+    select_route, calls = _scripted_route({"committed.pdf": "FOC1-1"})
+
+    # A later, separate process (the standing worker) reads it and extracts it.
+    result = _run_one_pass(factory, project_id, select_route, now)
+
     assert result is not None
     assert result.execution_outcome == "completed"
+    assert result.handler_result["parsed"] == 1
     assert calls["count"] == 1
+    status, pages, doc_pages, segments = _document_state(factory, project_id)
+    assert status == "parsed"
+    assert pages == 1 and doc_pages == 1 and segments > 0
     with factory() as verify:
         outcome = verify.scalar(
             select(ExtractionRun.outcome)
@@ -619,52 +727,215 @@ def test_committed_upload_is_processed_by_the_standing_pass(
         assert "FOC1-1" in refs
 
 
+def test_a_second_pass_re_reads_nothing_and_captures_nothing_twice(
+    runtime_database, tmp_path, monkeypatch
+):
+    """At-least-once delivery, exactly-once capture (#893).
+
+    The runtime's contract is that an occurrence may run more than once, so the
+    read has to be safe to repeat. It is selected on a status the first read
+    committed away from, so the second pass finds nothing to read and the
+    pages, the segments and the Extraction Run are the same rows, not another
+    set of them.
+    """
+
+    _stage_store(tmp_path, monkeypatch)
+    factory = runtime_database.session_factory
+    first_at = datetime(2026, 8, 29, 7, 0, tzinfo=timezone.utc)
+    second_at = datetime(2026, 8, 29, 8, 0, tzinfo=timezone.utc)
+    project_id = _project_with_org(factory, "retried")
+
+    with factory() as uploading:
+        _confirm_upload(uploading, project_id, "retried.pdf")
+        uploading.commit()
+    _declare_processing(factory, project_id, first_at)
+    select_route, calls = _scripted_route({"retried.pdf": "FOC1-1"})
+
+    first = _run_one_pass(factory, project_id, select_route, first_at)
+    after_first = _document_state(factory, project_id)
+    second = _run_one_pass(factory, project_id, select_route, second_at)
+
+    assert first.execution_outcome == "completed"
+    assert second.execution_outcome == "completed"
+    assert first.handler_result["parsed"] == 1
+    assert second.handler_result["parsed"] == 0
+    # One reading, one extraction, whatever the runtime delivered.
+    assert calls["count"] == 1
+    assert _document_state(factory, project_id) == after_first
+    with factory() as verify:
+        assert (
+            verify.scalar(
+                select(func.count())
+                .select_from(ExtractionRun)
+                .join(Document, Document.id == ExtractionRun.document_id)
+                .where(Document.project_id == project_id)
+            )
+            == 1
+        )
+        assert (
+            verify.scalar(
+                select(func.count())
+                .select_from(Dependency)
+                .where(Dependency.project_id == project_id)
+            )
+            == 1
+        )
+
+
+def test_a_crash_during_the_read_leaves_the_document_for_the_next_pass(
+    runtime_database, tmp_path, monkeypatch
+):
+    """A read that does not commit is a read that did not happen (#893).
+
+    The worker is killed mid-read — modelled by the read raising after its
+    transaction has begun. Nothing half-read may survive, and the document must
+    still be selected by the next pass rather than sitting `pending` for ever
+    or being written twice when the read finally succeeds.
+    """
+
+    _stage_store(tmp_path, monkeypatch)
+    factory = runtime_database.session_factory
+    first_at = datetime(2026, 8, 29, 7, 0, tzinfo=timezone.utc)
+    second_at = datetime(2026, 8, 29, 8, 0, tzinfo=timezone.utc)
+    project_id = _project_with_org(factory, "crashed")
+
+    with factory() as uploading:
+        _confirm_upload(uploading, project_id, "crashed.pdf")
+        uploading.commit()
+    _declare_processing(factory, project_id, first_at)
+    select_route, calls = _scripted_route({"crashed.pdf": "FOC1-1"})
+
+    honest = project_processing.parse_registered_document
+
+    def crash_after_writing(session, *, document, images_dir):
+        # Write the pages the real read would have written, then die: a rollback
+        # that only undoes a no-op proves nothing.
+        honest(session, document=document, images_dir=images_dir)
+        raise RuntimeError("worker killed mid-read")
+
+    monkeypatch.setattr(
+        project_processing, "parse_registered_document", crash_after_writing
+    )
+    crashed = _run_one_pass(factory, project_id, select_route, first_at)
+
+    # Nothing of the lost read survived, and the document is still the one the
+    # next pass selects.
+    assert _document_state(factory, project_id) == ("pending", 0, 0, 0)
+    assert calls["count"] == 0
+    assert crashed.handler_result["health"] == "processing_attention_required"
+
+    monkeypatch.setattr(project_processing, "parse_registered_document", honest)
+    recovered = _run_one_pass(factory, project_id, select_route, second_at)
+
+    assert recovered.execution_outcome == "completed"
+    assert recovered.handler_result["parsed"] == 1
+    status, pages, doc_pages, segments = _document_state(factory, project_id)
+    assert status == "parsed"
+    assert pages == 1 and doc_pages == 1 and segments > 0
+    assert calls["count"] == 1
+
+
+def test_an_unreadable_source_fails_visibly_instead_of_waiting_for_ever(
+    runtime_database, tmp_path, monkeypatch
+):
+    """The pass must not select the same unreadable source every hour (#893).
+
+    A read the reader cannot complete ends `failed`, which is the state the
+    bounded attributable re-parse owns and this selection does not. The register
+    prints it as a read failure rather than as waiting, so a source nobody can
+    read is somebody's to act on rather than a row that never changes.
+    """
+
+    _stage_store(tmp_path, monkeypatch)
+    factory = runtime_database.session_factory
+    now = datetime(2026, 8, 29, 7, 0, tzinfo=timezone.utc)
+    project_id = _project_with_org(factory, "unreadable")
+
+    with factory() as uploading:
+        confirmation = _confirm_upload(uploading, project_id, "unreadable.pdf")
+        document_id = confirmation.document_id
+        sha256 = confirmation.sha256
+        uploading.commit()
+
+    # The store loses the bytes between the confirmation and the read.
+    staged = source_intake._resolve_staged(sha256)
+    staged.unlink()
+
+    _declare_processing(factory, project_id, now)
+    select_route, calls = _scripted_route({"unreadable.pdf": "FOC1-1"})
+    result = _run_one_pass(factory, project_id, select_route, now)
+
+    assert result.handler_result["parsed"] == 0
+    assert result.handler_result["health"] == "processing_attention_required"
+    assert calls["count"] == 0
+    with factory() as verify:
+        assert verify.get(Document, document_id).parse_status == "failed"
+        register = source_register.read_source_register(
+            verify, project_id=project_id
+        )
+        assert [row.state for row in register.rows] == ["parse_failed"]
+        assert register.rows[0].state_words == (
+            "Failed to parse — the file could not be read"
+        )
+
+
+def test_nothing_is_visible_to_another_connection_before_the_confirm_commits(
+    runtime_database, tmp_path, monkeypatch
+):
+    """Work becomes visible when the confirmation commits, and not before (#893).
+
+    Two real connections, because that is the only way to ask the question: one
+    holds an uncommitted confirmation, the other is the worker's own selection
+    query. Before the commit the worker sees no document to read; after it, it
+    sees exactly one.
+    """
+
+    _stage_store(tmp_path, monkeypatch)
+    factory = runtime_database.session_factory
+    project_id = _project_with_org(factory, "uncommitted")
+
+    def pending_documents() -> list[int]:
+        with factory() as worker:
+            return list(
+                worker.scalars(
+                    select(Document.id).where(
+                        Document.project_id == project_id,
+                        Document.parse_status == "pending",
+                    )
+                )
+            )
+
+    with factory() as uploading:
+        _confirm_upload(uploading, project_id, "uncommitted.pdf")
+        # Written, flushed, and invisible to anybody else.
+        assert pending_documents() == []
+        uploading.commit()
+
+    assert len(pending_documents()) == 1
+
+
 def test_a_rolled_back_upload_hands_off_no_work(
     runtime_database, tmp_path, monkeypatch
 ):
     _stage_store(tmp_path, monkeypatch)
     factory = runtime_database.session_factory
     now = datetime(2026, 8, 29, 9, 0, tzinfo=timezone.utc)
-
-    with factory() as setup:
-        project = Project(
-            slug=f"rollback-{uuid4().hex[:8]}", name="Rollback", is_synthetic=True
-        )
-        setup.add(project)
-        setup.flush([project])
-        project_id = project.id
-        setup.commit()
+    project_id = _project_with_org(factory, "rollback")
 
     # Stage bytes (content-addressed, harmless) then confirm and ROLL BACK.
     with factory() as aborting:
-        project = aborting.get(Project, project_id)
-        staged = validate_and_stage(_matrix_pdf(), "aborted.pdf")
-        preview = preview_intake(aborting, project, staged, "matrix")
-        confirm_intake(
-            aborting,
-            project=project,
-            sha256=preview.sha256,
-            filename=preview.filename,
-            doc_type=preview.doc_type,
-            binding_fingerprint=preview.binding_fingerprint,
-            principal=PRINCIPAL,
-        )
+        _confirm_upload(aborting, project_id, "aborted.pdf")
         aborting.rollback()
 
     _declare_processing(factory, project_id, now)
     select_route, calls = _scripted_route({"aborted.pdf": "FOC1-1"})
-
-    with factory() as ticking:
-        enqueue_due_work(ticking, now=now)
-        ticking.commit()
-    run_due_work_once(
-        factory,
-        clock=_Clock(now),
-        owner="runtime:processing-worker",
-        registry=_registry(select_route),
-    )
+    result = _run_one_pass(factory, project_id, select_route, now)
 
     assert calls["count"] == 0
+    # Nothing to read either: a rolled-back confirmation hands off no read and
+    # no extraction (#893).
+    assert result.handler_result["parsed"] == 0
+    assert result.handler_result["health"] == "healthy"
     with factory() as verify:
         assert (
             verify.scalar(

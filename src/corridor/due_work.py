@@ -1709,6 +1709,11 @@ def _validate_handler_result(contract: HandlerContract, result: dict[str, Any]) 
             "observed_at",
             "health",
             "eligible_document_count",
+            # `parsed` joined the receipt with #893: the pass reads the
+            # documents a confirmation registered without reading, and a
+            # source no extractor takes would otherwise be read with nothing
+            # on the receipt to say so.
+            "parsed",
             "extracted",
             "skipped",
             "failed",

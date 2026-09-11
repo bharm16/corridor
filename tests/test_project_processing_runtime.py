@@ -233,7 +233,7 @@ def test_effectful_handler_processes_a_project_to_a_completed_receipt(
     assert result is not None
     assert result.execution_outcome == "completed"
     assert result.handler_key == HANDLER_PROJECT_PROCESSING
-    assert result.handler_result["schema_version"] == "project-processing-result-v1"
+    assert result.handler_result["schema_version"] == "project-processing-result-v2"
     assert result.handler_result["admitted"] == 2
     assert result.handler_result["reconciled"] is True
     assert result.safe_next_step == "none"

@@ -459,6 +459,34 @@ def test_coverage_and_rendering_problems_are_issue_readiness_not_decisions(
     assert body.index("permit-2026-09.pdf") > readiness_at
 
 
+def test_a_source_waiting_for_the_processing_pass_is_not_reported_as_unreadable(
+    session, project
+):
+    """#893 made "confirmed and not read yet" outlive the request that wrote it.
+
+    Both states leave the issue's coverage incomplete, so both are readiness
+    problems. What must not be the same is the sentence: telling a coordinator
+    that Corridor Operations has to read this source again is asking for action
+    on work Corridor has simply not got to, and the screen exists to stop
+    exactly that kind of dead end (#840).
+    """
+
+    adopted = Adopted(session, project).accepted(CONFLICT)
+    waiting = adopted.rendition("confirmed-2026-09.pdf")
+    waiting.document.parse_status = "pending"
+    session.flush()
+    adopted.adopt()
+
+    workflow = read_project_workflow(session, project_id=project.id, as_of=NOW)
+    problem = next(
+        item for item in workflow.readiness if item.code == UNREAD_SOURCE
+    )
+
+    assert "waiting for the processing pass" in problem.sentence
+    assert "could not be read" not in problem.sentence
+    assert "nobody has to start it" in problem.next_action
+
+
 def test_every_readiness_problem_names_who_puts_it_right_and_what_happens_next(
     session, project, client
 ):

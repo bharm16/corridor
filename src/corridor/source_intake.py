@@ -13,13 +13,23 @@ a document without an internal filesystem path or a command, *see what registeri
 it would do*, and only then commit that registration attributably (ADR-0035,
 ADR-0039). Composing the pieces that already exist is the whole design:
 
-- ``ingest_document`` registers and parses one file; it is idempotent on identical
-  bytes and never overwrites an earlier file (``corridor.ingest``).
-- Extraction of a registered document is the standing gate-7 project-processing
-  pass's job (``process_project`` driven by the shared Due Work runtime, #342). A
-  committed, parsed, eligible Document is therefore *already* handed off: the next
-  scheduled pass extracts it, a crash between commit and that pass cannot lose it,
-  and a rolled-back confirm leaves nothing for the pass to find. This module does
+- ``ingest_document`` registers one file, and reads it or not as the caller
+  says; it is idempotent on identical bytes and never overwrites an earlier
+  file (``corridor.ingest``).
+- Reading an uploaded file — rendering its pages, extracting its text, writing
+  its pages and segments — and extracting from it are both the standing gate-7
+  project-processing pass's job (``process_project`` driven by the shared Due
+  Work runtime, #342, #893). A committed, eligible Document is therefore
+  *already* handed off: the next scheduled pass reads it and extracts it, a
+  crash between commit and that pass cannot lose it, and a rolled-back confirm
+  leaves nothing for the pass to find. Reading used to happen on the way in,
+  which made the upload confirmation an unbounded request-local pipeline — 19
+  seconds measured for a forty-page PDF — and is what #349's own acceptance
+  refuses. What the handoff rests on did not change, only which state it
+  starts from: ``pending`` rather than ``parsed``. The three structured-capture
+  callers of ``confirm_intake`` still read on the way in, because each binds
+  the Facts it captures to that read's own Source Segments in one transaction;
+  none of them is a request a person waits on. This module does
   **not** bump the Record Inclusion watermark — that producer is a completed
   Extraction Run (``corridor.record_inclusion``), and marking an unextracted upload
   pending would append idle Policy Runs the shared runtime is built to avoid.
@@ -629,6 +639,7 @@ def confirm_intake(
     principal: HumanPrincipal,
     images_dir: Path | str | None = None,
     source_delivery_id: int | None = None,
+    parse: bool = True,
 ) -> IntakeConfirmation:
     """Bind the exact previewed source to the acting person and register it.
 
@@ -643,10 +654,29 @@ def confirm_intake(
       registration; identical bytes never silently become a second document or a
       rendition.
 
-    Otherwise registers and parses the one bounded file through ``ingest_document``
+    Otherwise registers the one bounded file through ``ingest_document``
     (idempotent on identical bytes, never overwriting an earlier file) and records
     one attributable confirmation in the append-only audit log. It never touches
     supersession, organization identity, sequencing, or release.
+
+    ``parse=False`` registers without *reading*: the Document is left
+    ``pending`` and the rendering, reading and page writing belong to the
+    standing pass (#893). That is what the web upload confirmation passes,
+    because the act a person is waiting on is the confirmation, and holding
+    their request open while Corridor renders forty pages — 19 seconds
+    measured — made it the unbounded request-local pipeline #349's own
+    acceptance refuses. What makes deferring safe is the same property this module
+    was already built on, one state earlier than before: the pass selects a
+    registered document by its ``pending`` status, so a crash between this
+    commit and that pass cannot lose the work, a retry cannot duplicate it,
+    and a rolled-back confirm still leaves the pass nothing to find.
+
+    The default stays ``True`` for the three structured-capture callers —
+    Adopt Baseline, a later workbook revision, and a key-date table export.
+    None of them is a request somebody waits on, and each binds the Facts it
+    captures to the ``source_segments`` rows that read produces, in this same
+    transaction: deferring the read there would be capturing a Fact whose
+    support does not exist yet, which #519 refuses outright.
 
     ``source_delivery_id`` is the ledger row of the delivery these exact bytes
     arrived on (#687). An ordinary upload now holds one, because
@@ -730,6 +760,7 @@ def confirm_intake(
         filename=filename,
         expected_sha256=sha256,
         source_delivery_id=source_delivery_id,
+        parse=parse,
     )
     created = existing is None
     # The admission itself, bound to the delivery rather than only to the

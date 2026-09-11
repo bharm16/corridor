@@ -1,8 +1,9 @@
 """One bounded, restart-safe pass that takes a project's landed documents
-through extraction and Record Inclusion.
+through reading, extraction and Record Inclusion.
 
-Extraction and Record Inclusion already exist as separate primitives
-(``extract_project``, ``load_project``). What did not exist was one public entry
+Reading, extraction and Record Inclusion already exist as separate primitives
+(``parse_registered_document``, ``extract_project``, ``load_project``). What did
+not exist was one public entry
 point that runs them together for a registered project under production timing,
 survives a restart between the extraction commit and the load, and never
 re-pays for work already on the record. Feature-owned schedulers were rejected
@@ -10,19 +11,31 @@ re-pays for work already on the record. Feature-owned schedulers were rejected
 the same operator recovery command, so it takes a ``session_factory`` and owns
 its own transactions rather than assuming an ambient one.
 
-The pass is three acts, each in its own transaction so a crash between them is
+The pass is four acts, each in its own transaction so a crash between them is
 recoverable and idempotent:
 
-1. Scope: load the project (refuse an unknown one before any model work) and
+1. Read: render and parse every registered document whose bytes nothing has
+   read yet, one transaction each. A registration is now allowed to commit
+   without a read — ``source_intake.confirm_intake`` does exactly that, so a
+   person confirming an upload is not held open while forty pages render
+   (#893) — and this is what makes that safe rather than a permanent pending
+   state. Selection is the document's own ``pending`` status, so a crash
+   before or during a read leaves the document selected for the next pass and
+   a read that committed is never repeated. It covers every registered
+   document and not only the extractable ones, because a source no extractor
+   reads still has pages and segments a citation is replayed against, and a
+   kind this act skipped would wait for a reader that never came.
+2. Scope: load the project (refuse an unknown one before any model work) and
    select the eligible extractable documents. Held (quarantined), superseded
-   (sealed), unparsed, and permanently unreadable documents are excluded here,
+   (sealed), unread, unreadable, and permanently unreadable documents are
+   excluded here,
    before the model runs, and reported rather than silently retried (ADR-0034).
-2. Extraction: drive ``extract_project`` per eligible document. Each document's
+3. Extraction: drive ``extract_project`` per eligible document. Each document's
    proposals and its terminal Extraction Run commit together; a completed run
    is skipped without re-reading; a failed document does not stop its siblings.
    Every completed run dirties the durable Record Inclusion watermark in its own
    commit (see ``record_inclusion``).
-3. Reconcile: run the watermark-gated Record Inclusion. It loads when the
+4. Reconcile: run the watermark-gated Record Inclusion. It loads when the
    project is pending — including the case where every extraction was skipped
    but a prior crash left the watermark dirty — and is a no-op that appends no
    Policy Runs when the project is clean (ADR-0029, #342).
@@ -38,6 +51,7 @@ from sqlalchemy.orm import Session
 
 from corridor import operations_repair
 from corridor.admission import LoadResult, reconcile_record_inclusion
+from corridor.config import settings
 from corridor.extract_project import (
     Outcome,
     RouteSelector,
@@ -45,6 +59,7 @@ from corridor.extract_project import (
     extractable_document,
 )
 from corridor.extraction_runs import completed_document_ids
+from corridor.ingest import parse_registered_document
 from corridor.models import Document, DocumentQuarantine, ExtractionRun, Project
 
 
@@ -74,6 +89,9 @@ class ProcessingPassResult:
     from a skipped, failed, unreadable, or quarantined one without re-deriving
     it from row counts. ``excluded`` names the eligible-but-held-out documents by
     reason. ``reconciled`` and ``load`` describe the Record Inclusion pass.
+    ``parsed_document_count`` is how many documents this pass read for the
+    first time, which is the one number that says a confirmed upload was
+    picked up rather than left waiting (#893).
     """
 
     project_id: int
@@ -83,6 +101,7 @@ class ProcessingPassResult:
     processing_failures: list[str]
     reconciled: bool
     load: LoadResult | None
+    parsed_document_count: int = 0
 
     def _count(self, status: str) -> int:
         return sum(1 for outcome in self.outcomes if outcome.status == status)
@@ -140,6 +159,14 @@ def process_project(
     model requests inside extraction.
     """
 
+    # Read what nobody has read, before the scope is taken, so a document
+    # confirmed since the last pass becomes eligible in this one rather than
+    # waiting a whole cadence for a second (#893). An unknown project selects
+    # no documents, so this spends nothing before the refusal below.
+    parsed_document_count, parse_failures = _parse_landed_documents(
+        session_factory, project_id
+    )
+
     with session_factory() as session:
         project = session.get(Project, project_id)
         if project is None:
@@ -150,7 +177,7 @@ def process_project(
         eligible_shas = [document.sha256 for document in eligible]
 
         outcomes: list[Outcome] = []
-        processing_failures: list[str] = []
+        processing_failures: list[str] = list(parse_failures)
         for sha256 in eligible_shas:
             try:
                 outcomes.extend(
@@ -184,7 +211,65 @@ def process_project(
         processing_failures=processing_failures,
         reconciled=reconcile.did_load,
         load=reconcile.load,
+        parsed_document_count=parsed_document_count,
     )
+
+
+def _parse_landed_documents(
+    session_factory, project_id: int
+) -> tuple[int, list[str]]:
+    """Read every registered document of this project nothing has read yet.
+
+    One transaction per document, because that is what makes a crash cheap and
+    a retry honest: a read that commits carries its pages, its segments and the
+    status flip together, and a read that does not commit leaves the document
+    exactly as it was — ``pending``, and selected again by the next pass. The
+    status is what is selected on, so a committed read is never repeated and a
+    lost one is never dropped.
+
+    A document the reader cannot use ends ``failed`` rather than ``pending``,
+    which takes it out of this selection and hands it to the bounded,
+    attributable re-parse (``location_discovery.recover_document_parse``)
+    rather than to a pass that would fail on it every hour for ever. That
+    failure is this pass's own, so it is reported as a processing failure and
+    not as a held-out steady state.
+    """
+
+    images_dir = settings.corpus_images
+    with session_factory() as scoping:
+        pending = scoping.scalars(
+            select(Document.id)
+            .where(
+                Document.project_id == project_id,
+                Document.parse_status == "pending",
+            )
+            .order_by(Document.id)
+        ).all()
+
+    parsed = 0
+    failures: list[str] = []
+    for document_id in pending:
+        with session_factory() as reading:
+            try:
+                with reading.begin():
+                    document = reading.get(Document, document_id)
+                    if document is None or document.parse_status != "pending":
+                        # Another worker read it between the selection and
+                        # here. Its commit is the one that counts.
+                        continue
+                    sha256 = document.sha256
+                    if parse_registered_document(
+                        reading, document=document, images_dir=images_dir
+                    ):
+                        parsed += 1
+                    else:
+                        failures.append(f"{sha256}: parse failed")
+            except Exception as exc:  # noqa: BLE001 — one document must not sink its siblings
+                # The transaction is already rolled back by the failing
+                # ``begin`` block, so the document is still ``pending`` and
+                # the next pass takes it again.
+                failures.append(f"document {document_id}: {type(exc).__name__}: {exc}")
+    return parsed, failures
 
 
 def _eligible_documents(
@@ -194,9 +279,18 @@ def _eligible_documents(
 
     Excludes, before any model work: superseded documents (a sealed input can
     never regain actionable proposals), quarantined documents (a held input is
-    deliberately unread), documents whose parse did not succeed, and documents
-    whose only terminal reading is a permanent unreadable/no-matrix outcome.
-    Each exclusion is counted by reason for honest reporting.
+    deliberately unread), documents whose parse failed, documents nothing has
+    read yet, and documents whose only terminal reading is a permanent
+    unreadable/no-matrix outcome. Each exclusion is counted by reason for
+    honest reporting.
+
+    ``failed_parse`` and ``awaiting_parse`` are counted apart because they are
+    owed to different people (#893). A failed parse waits for the bounded,
+    attributable re-parse; an unread document waits for nothing at all — the
+    read act at the top of this pass takes it, and one still counted here was
+    confirmed after that act ran or could not be read this time round. Counting
+    the second as the first would report a source that needs somebody as a
+    source that needs nobody.
 
     The last of those four is the one a repair lifts (#842). A repair receipt
     names the newest reading this source had when it was made, and the source
@@ -244,6 +338,7 @@ def _eligible_documents(
         "superseded": 0,
         "held_quarantined": 0,
         "failed_parse": 0,
+        "awaiting_parse": 0,
         "unreadable_permanent": 0,
     }
     for document in documents:
@@ -253,8 +348,10 @@ def _eligible_documents(
             excluded["superseded"] += 1
         elif document.id in quarantined:
             excluded["held_quarantined"] += 1
-        elif document.parse_status != "parsed":
+        elif document.parse_status == "failed":
             excluded["failed_parse"] += 1
+        elif document.parse_status != "parsed":
+            excluded["awaiting_parse"] += 1
         elif (
             document.id in permanently_failed
             and document.id not in completed
@@ -286,22 +383,25 @@ def summarize_pass(
         + result.quarantined
         + len(result.processing_failures)
     )
-    # Held-out documents (quarantined, superseded, unparsed) are a reported
+    # Held-out documents (quarantined, superseded, already-failed) are a reported
     # steady state, not a failure of this pass, so they do not flip the verdict —
     # only this pass's own processing failures do. Their count rides on the
-    # receipt for an operator who wants it.
+    # receipt for an operator who wants it. A document *this* pass could not
+    # read is on the other side of that line: it is in
+    # ``result.processing_failures`` above, so it does flip the verdict (#893).
     health = (
         "healthy"
         if processing_failures == 0
         else "processing_attention_required"
     )
     return {
-        "schema_version": "project-processing-result-v1",
+        "schema_version": "project-processing-result-v2",
         "project_id": result.project_id,
         "configuration_version": configuration_version,
         "observed_at": observed_at.isoformat(),
         "health": health,
         "eligible_document_count": result.eligible_document_count,
+        "parsed": result.parsed_document_count,
         "extracted": result.extracted,
         "skipped": result.skipped,
         "failed": result.failed,

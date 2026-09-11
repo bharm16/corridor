@@ -404,7 +404,7 @@ def test_held_superseded_and_unparsed_documents_are_excluded_before_model_work(
     project_id = _project(factory)
     _matrix(factory, project_id, "good.pdf", doc_date=date(2025, 1, 1))
     quarantined = _matrix(factory, project_id, "seq.pdf", doc_date=date(2025, 1, 2))
-    _matrix(factory, project_id, "unparsed.pdf", parse_status="pending",
+    _matrix(factory, project_id, "unreadable.pdf", parse_status="failed",
             doc_date=date(2025, 1, 3))
     with factory() as hold:
         hold.add(DocumentQuarantine(document_id=quarantined, reason="sequencing"))
@@ -435,6 +435,52 @@ def test_held_superseded_and_unparsed_documents_are_excluded_before_model_work(
     assert receipt["held_out"] == 2
     with factory() as verify:
         assert _dependencies(verify, project_id) == {"PL1"}
+
+
+def test_a_document_the_read_act_could_not_reach_is_counted_apart_from_a_failure(
+    runtime_database, monkeypatch
+):
+    """`awaiting_parse` is not `failed_parse`, and the receipt must not blur them (#893).
+
+    A read that raises leaves the document exactly as it was -- `pending`, and
+    selected by the next pass. Counting it as a failed parse would hand it to
+    the bounded attributable re-parse, which refuses a document whose parse
+    never ran; counting it as held-out would report a source that needs a
+    retry as a steady state. It is neither: it is this pass's own failure, and
+    it is still waiting.
+    """
+
+    import corridor.project_processing as project_processing
+
+    factory = runtime_database.session_factory
+    project_id = _project(factory)
+    _matrix(factory, project_id, "good.pdf", doc_date=date(2025, 1, 1))
+    waiting = _matrix(
+        factory, project_id, "waiting.pdf", parse_status="pending",
+        doc_date=date(2025, 1, 2),
+    )
+
+    def killed(session, *, document, images_dir):
+        raise RuntimeError("worker killed mid-read")
+
+    monkeypatch.setattr(project_processing, "parse_registered_document", killed)
+    result = process_project(
+        factory,
+        project_id=project_id,
+        select_route=ScriptedRoute({"good.pdf": ["PL1"]}),
+        clock=ControlledClock(NOW),
+    )
+
+    assert result.parsed_document_count == 0
+    assert result.excluded["awaiting_parse"] == 1
+    assert result.excluded["failed_parse"] == 0
+    assert any("waiting" in failure or "RuntimeError" in failure
+               for failure in result.processing_failures)
+    with factory() as verify:
+        assert verify.get(Document, waiting).parse_status == "pending"
+    receipt = summarize_pass(result, configuration_version="v", observed_at=NOW)
+    assert receipt["health"] == "processing_attention_required"
+    assert receipt["parsed"] == 0
 
 
 def test_an_unknown_project_is_refused_before_any_model_work(runtime_database):

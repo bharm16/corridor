@@ -8431,6 +8431,13 @@ def source_confirm(
     answers a person actually gave arrive through the form; the family and the
     mapping are resolved here again from what the project registered, for the
     same reason the binding fingerprint is recomputed rather than trusted.
+
+    ``parse=False`` is what makes this a request rather than a pipeline (#893).
+    It registers the source and hands the rendering and reading to the standing
+    project-processing pass, which selects exactly the ``pending`` state this
+    commit leaves behind. Reading the file here took 19 seconds for a
+    forty-page PDF and wrote four relations the human web capability has no
+    other reason to hold.
     """
     project = _project(session, slug, principal, designation=access.COORDINATION)
     staged = _staged_confirmed_source(sha256, filename)
@@ -8448,6 +8455,7 @@ def source_confirm(
         binding_fingerprint=binding_fingerprint,
         principal=principal,
         source_delivery_id=source_delivery_id,
+        parse=False,
     )
     if (
         revision is not None

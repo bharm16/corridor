@@ -77,13 +77,23 @@ test that drives these routes as ``corridor_web`` itself.
 the source register and the Review source link -- and recorded its relations
 the same way, from an instrumented run of both the workbook and the PDF case,
 the refusal and the quarantine.  That reading is what found the six relations
-this change had to partition rather than assume: confirmation registers *and
-parses* the file inside the request, so the pages, the token layers, the
-render derivatives and the Class B receipts a parse writes are the
+this change had to partition rather than assume: confirmation registered *and
+parsed* the file inside the request, so the pages, the token layers, the
+render derivatives and the Class B receipts a parse writes were the
 confirmation's relations too, and the register derives its honest processing
 outcome from the extraction runs and the quarantine.  None of the six carries
 a ``project_id``, except ``processing_artifacts``; the other five are
 partitioned through the ``documents`` row each of them names.
+
+#893 removed the reason four of those six were the confirmation's relations at
+all.  The read left the request for the standing project-processing pass, and
+a fresh instrumented walk of the intake path names no ``doc_pages``, no
+``token_layers``, no ``page_render_derivatives``, no ``processing_artifacts``
+and no ``source_segments``.  The partition stays on all of them -- a relation
+does not stop belonging to one project because one route stopped writing it --
+but the writes go, through ``WRITE_DENIED_RELATIONS`` below.  That is the one
+revoke in this boundary aimed at a privilege rather than a relation, and the
+reason it is narrower is written there.
 """
 
 from __future__ import annotations
@@ -475,18 +485,23 @@ PILOT_ROUTES: dict[tuple[str, str], PilotRoute] = {
             "#349, #823 registers the previewed source and records the one "
             "attributable confirmation. Authorization: the same coordination "
             "designation, re-proved against the delivery, these bytes and "
-            "this project before anything is written. It parses the file in "
-            "the request, so the page family a parse writes is here too"
+            "this project before anything is written. #824 measured it also "
+            "*reading* the file here -- 19 seconds for a forty-page PDF -- so "
+            "the page family a read writes was recorded as this route's too. "
+            "#893 moved that read to the standing project-processing pass, "
+            "and this set is the instrumented walk of the route after it: no "
+            "`doc_pages`, no `token_layers`, no `page_render_derivatives`, no "
+            "`processing_artifacts` and no `source_segments`. "
+            "`document_quarantines` stays because a `schedule` upload is "
+            "registered deliberately unread (#149) in the request that "
+            "registers it"
         ),
         relations=frozenset(
             {
                 "audit_log",
                 "customer_environment_binding",
-                "doc_pages",
                 "document_quarantines",
                 "documents",
-                "page_render_derivatives",
-                "processing_artifacts",
                 "project_roster_entries",
                 "projects",
                 "project_baseline_adoptions",
@@ -495,8 +510,6 @@ PILOT_ROUTES: dict[tuple[str, str], PilotRoute] = {
                 "source_deliveries",
                 "source_delivery_confirmations",
                 "source_revision_declarations",
-                "source_segments",
-                "token_layers",
             }
         ),
     ),
@@ -901,6 +914,34 @@ PROTECTED_RELATIONS: frozenset[str] = frozenset(
 # listed a second time: one list of holes, and the boundary is that the web
 # capability holds no privilege on any of them.
 DENIED_RELATIONS: frozenset[str] = frozenset(access.NOT_YET_PARTITIONED_RELATIONS)
+
+# The narrower revoke, and the only one in this boundary that takes a
+# privilege rather than a relation (#893).
+#
+# #824 partitioned these four and left the schema owner's default grant --
+# select, insert, update and delete -- standing on all of them, because the
+# confirmation route *wrote* every one: it rendered and parsed the uploaded
+# file inside the web request. #893 moved that read to the standing pass, so
+# the route writes none of them and the recorded set above no longer names
+# them. What that leaves is a human web capability that may still insert a
+# page's text, update a Class B receipt or delete a token layer on its own
+# project's sources -- privileges nothing asks for, on exactly the rows a
+# citation is later replayed against. Row-level security answers *whose* rows
+# a capability reaches; it does not answer what a capability should be able to
+# do to them, and #492 already drew that second line for the source tables.
+#
+# The reading stays. Each is partitioned, a human review surface reads a page
+# and a render, and taking SELECT from these four alone would state a rule
+# this boundary does not hold about the ninety-odd other partitioned relations
+# no enabled route reads.
+WRITE_DENIED_RELATIONS: frozenset[str] = frozenset(
+    {
+        "doc_pages",
+        "page_render_derivatives",
+        "processing_artifacts",
+        "token_layers",
+    }
+)
 
 
 # --- #693 Nothing is readable by decision of nobody ------------------------

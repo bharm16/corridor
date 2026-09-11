@@ -431,10 +431,20 @@ def _delivery_line(
                 detail = "received, and no processing receipt records it being read"
         elif document.parse_status == "parsed":
             state, detail = COVERAGE_READ, "received and processed"
-        else:
+        elif document.parse_status == "failed":
             state, detail = (
                 COVERAGE_FAILED,
-                f"received, and processing failed ({document.parse_status})",
+                "received, and the file could not be read",
+            )
+        else:
+            # Registered and not read yet: the confirmation commits without
+            # reading the file and the standing pass reads it (#893). Not read
+            # is not the same as unreadable, and this line is the same sentence
+            # the source register prints for the same document, because a
+            # coverage line and a register row report one record.
+            state, detail = (
+                COVERAGE_FAILED,
+                "received, and waiting for the processing pass",
             )
     else:
         state = COVERAGE_FAILED
@@ -471,11 +481,12 @@ def _document_line(document: Document, *, requirement: str) -> CoverageLine:
 
     if document.parse_status == "parsed":
         state, detail = COVERAGE_READ, "read in full"
+    elif document.parse_status == "failed":
+        state, detail = COVERAGE_FAILED, "delivered and could not be read"
     else:
-        state, detail = (
-            COVERAGE_FAILED,
-            f"delivered and could not be read ({document.parse_status})",
-        )
+        # Same distinction as the delivery line above (#893): a source the
+        # standing pass has not reached is not a source that failed.
+        state, detail = COVERAGE_FAILED, "delivered, and waiting for the processing pass"
     return CoverageLine(
         source_key=f"document:{int(document.id)}",
         source_name=document.filename,

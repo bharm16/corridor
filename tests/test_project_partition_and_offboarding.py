@@ -1806,6 +1806,81 @@ def test_the_live_pilot_login_holds_no_privilege_on_a_denied_relation(
     )
 
 
+def test_the_web_capability_reads_the_parse_output_and_can_no_longer_write_it(
+    runtime_database,
+):
+    """#893's narrower revoke, asked of PostgreSQL rather than of the list.
+
+    #824 left the schema owner's default select/insert/update/delete standing
+    on these four because the confirmation route rendered and parsed the
+    uploaded file inside the web request and therefore wrote every one of them.
+    The read is the standing pass's now, so the writes go and the reading
+    stays: a human review surface still shows a page and a render, and the
+    partition still decides whose.
+    """
+
+    with runtime_database.session_factory() as owner:
+        held = {
+            (relation, privilege)
+            for relation, privilege in owner.execute(
+                text(
+                    "select c.relname, p from pg_class c "
+                    "join pg_namespace n on n.oid = c.relnamespace, "
+                    "unnest(cast(:privileges as text[])) p "
+                    "where n.nspname = 'public' and c.relkind = 'r' "
+                    "and c.relname = any(cast(:relations as text[])) "
+                    "and has_table_privilege('corridor_web', c.oid, p) "
+                    "order by c.relname, p"
+                ),
+                {
+                    "privileges": list(_TABLE_PRIVILEGES),
+                    "relations": sorted(web_boundary.WRITE_DENIED_RELATIONS),
+                },
+            ).all()
+        }
+
+    assert held == {
+        (relation, "SELECT") for relation in web_boundary.WRITE_DENIED_RELATIONS
+    }, (
+        "the human web capability should hold exactly SELECT on the relations "
+        "the parse used to write in the request, and nothing else"
+    )
+
+
+def test_the_web_capability_cannot_write_a_page_even_inside_its_own_partition(
+    their_pilot_rows, two_projects, web_connection
+):
+    """The privilege, not the policy, is what refuses it (#893).
+
+    Row-level security would have let this insert through: the document named
+    is the caller's own, so the partition predicate is satisfied. Refusing it
+    is the grant's doing, which is the whole point -- "these are my project's
+    rows" was never a reason a web request should be able to rewrite the text
+    a citation is replayed against.
+    """
+
+    ours, _theirs = two_projects
+    with OrmSession(bind=web_connection) as web:
+        access.open_project_partition(
+            web, principal_subject=LEAVER.subject, project_id=ours
+        )
+        document_id = web.execute(
+            text("select id from documents where project_id = :ours"), {"ours": ours}
+        ).scalar_one()
+        savepoint = web_connection.begin_nested()
+        with pytest.raises(ProgrammingError) as refused:
+            web.execute(
+                text(
+                    "insert into doc_pages (document_id, page_no, text) "
+                    "values (:document_id, 99, 'rewritten')"
+                ),
+                {"document_id": document_id},
+            )
+        savepoint.rollback()
+
+    assert "permission denied" in str(refused.value).lower()
+
+
 def test_a_naked_select_on_every_denied_relation_is_refused(
     two_projects, web_connection
 ):
@@ -2696,13 +2771,24 @@ def test_the_admitted_intake_path_serves_as_the_real_web_login(
     assert _revoked_relations_touched(statements_in_flight) == []
     # The point of the walk, said as an assertion: the relations #824
     # partitioned were actually reached, so a passing run is evidence the
-    # policies answer rather than evidence the routes avoided them.
-    assert {"doc_pages", "extraction_runs", "document_quarantines"} <= {
+    # policies answer rather than evidence the routes avoided them. `doc_pages`
+    # left this list with #893 -- the confirmation stopped reading the file in
+    # the request, so the pages are the standing pass's writes now, and the
+    # register is what still reaches the run and the quarantine.
+    assert {"extraction_runs", "document_quarantines"} <= {
         relation
         for statement in statements_in_flight
-        for relation in ("doc_pages", "extraction_runs", "document_quarantines")
+        for relation in ("extraction_runs", "document_quarantines")
         if re.search(rf"\b{relation}\b", statement)
     }
+    # And the other half of that change, measured the same way: this walk
+    # names none of the four relations the parse used to write here.
+    assert [
+        relation
+        for statement in statements_in_flight
+        for relation in sorted(web_boundary.WRITE_DENIED_RELATIONS)
+        if re.search(rf"\b{relation}\b", statement)
+    ] == []
 
 
 def test_the_admitted_intake_path_refuses_the_other_project(
