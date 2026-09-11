@@ -14,6 +14,23 @@ ADR-0102 names that deployment task. Its ``--as-of`` is therefore optional and
 defaults to now, so a scheduled invocation needs no per-run argument, while an
 operator reproducing a past pass can still pin the moment it measures from.
 
+**A stated period is when a row becomes eligible for deletion, and this command
+is what removes it.** The two are separate terms and neither may be quoted as
+the other. Whatever interval invokes ``expire-sign-in-records`` is an
+additional lag on top of the period, so under the daily schedule ADR-0102
+specifies an eligible row goes within a further 24 hours. A hold, a failed run
+or a gap the next run has to catch up on lengthens that lag without changing
+the period, and each is reported here rather than folded into the number: a
+hold prints ``"outcome": "refused"`` at exit status zero, a failure exits
+non-zero with its traceback, and a scheduled window with no printed receipt at
+all is how a run that never happened shows up.
+
+**``hold`` says what it won, and no more.** It prints its acknowledgement only
+after taking the ordering boundary ADR-0102 specifies, so ``"status":
+"active"`` means every deletion batch beginning after this command commits is
+refused. It does not mean a batch already running stopped, and it does not mean
+rows such a batch removed come back; nothing recovers a deleted row.
+
 Every command prints its payload, and the sign-in pass returns one whether it
 deleted, refused or found nothing due. That printed line is the run record: an
 idle pass writes no domain audit event, so the scheduled job's own log is what
@@ -61,7 +78,9 @@ def _parser() -> argparse.ArgumentParser:
     execute = commands.add_parser("execute", help="execute one exact dry-run")
     execute.add_argument("manifest_id", type=int)
     execute.add_argument("--expected-sha256", required=True)
-    hold = commands.add_parser("hold", help="suspend every project deletion path")
+    hold = commands.add_parser(
+        "hold", help="suspend every deletion batch that begins after this commits"
+    )
     hold.add_argument("project_id", type=int)
     hold.add_argument("--reason", required=True)
     lift = commands.add_parser("lift", help="lift one attributable hold")
