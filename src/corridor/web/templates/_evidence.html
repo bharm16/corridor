@@ -13,8 +13,12 @@
     ·
     {%- if ev.page and ev.page.text_source == 'cells' %} sheet {{ ev.page_no }}
     {%- else %} page {{ ev.page_no }}{% endif %}
-    {%- if ev.page and ev.page.text_source == 'ocr' %} · <span style="color:var(--bad)">read by OCR</span>{% endif %}
-    {%- if ev.page and ev.page.text_source == 'cells' %} · <span style="color:var(--ok)">read from cells</span>{% endif %}
+    {#- How the page's text was obtained, in the primitives' own state
+        vocabulary rather than in two inline colours of this file's own. The
+        words carry the meaning and the pill reinforces it; `queue.html`
+        renders `ui.styles()`, which is where these classes are defined. -#}
+    {%- if ev.page and ev.page.text_source == 'ocr' %} · <span class="state state-attention">read by OCR</span>{% endif %}
+    {%- if ev.page and ev.page.text_source == 'cells' %} · <span class="state state-settled">read from cells</span>{% endif %}
   </div>
   <span class="muted">{{ label('cited_passage') }}</span>
   <div class="quote">{{ ev.quote }}</div>

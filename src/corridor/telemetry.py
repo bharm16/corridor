@@ -162,12 +162,6 @@ def new_correlation_id() -> str:
     return uuid4().hex
 
 
-def current_correlation() -> dict[str, Any]:
-    """The identifiers every line emitted right here will carry."""
-
-    return dict(_correlation.get())
-
-
 @contextmanager
 def correlation_scope(**fields: Any) -> Iterator[dict[str, Any]]:
     """Bind identifiers onto every line logged inside this scope, then unbind them."""

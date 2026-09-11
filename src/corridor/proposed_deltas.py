@@ -81,10 +81,6 @@ class ApparentRemovalRefused(RuntimeError):
     """Raised when an apparent removal is proposed without a complete sealed source."""
 
 
-class StaleAcceptedRevisionRefused(RuntimeError):
-    """Raised when a delta is proposed against a stale accepted baseline."""
-
-
 @dataclass(frozen=True)
 class ExistingSubjectTarget:
     """Target for a modification or removal of an accepted subject."""

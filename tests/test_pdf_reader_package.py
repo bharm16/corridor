@@ -22,7 +22,13 @@ import tomllib
 
 import pytest
 from test_architecture import PYMUPDF_PACKAGES, TESSERACT_PACKAGES
-from source_scan_support import python_files, read_python, source_scan_cache  # noqa: F401
+from source_scan_support import (  # noqa: F401
+    imported_names,
+    importers_of,
+    python_files,
+    read_python,
+    source_scan_cache,
+)
 
 from corridor_pdf_reader import provenance
 
@@ -97,16 +103,6 @@ def test_the_loop_log_only_grows():
 
     assert entry.appended
     assert provenance.git_blob_sha1(data[: entry.size]) == entry.blob_sha1
-
-
-def _imported_names(path: Path) -> set[str]:
-    names: set[str] = set()
-    for node in read_python(path).nodes:
-        if isinstance(node, ast.Import):
-            names.update(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            names.add(node.module)
-    return names
 
 
 # Every permitted importer in the product source tree, with its actual role.
@@ -198,17 +194,17 @@ def test_no_production_module_imports_the_reader_package():
     listed module that no longer imports the package.
     """
 
-    offenders = []
+    offenders = [
+        str(path.relative_to(REPO_ROOT))
+        for path in importers_of("corridor_pdf_reader", PRODUCTION_ROOTS)
+    ]
     for root in PRODUCTION_ROOTS:
         for path in python_files(root):
-            names = _imported_names(path)
-            if any(name == "corridor_pdf_reader" or name.startswith("corridor_pdf_reader.") for name in names):
-                offenders.append(str(path.relative_to(REPO_ROOT)))
             source = path.read_text(encoding="utf-8")
             if "import_module(" in source and "corridor_pdf_reader" in source:
                 offenders.append(f"{path.relative_to(REPO_ROOT)} (dynamic import)")
 
-    assert offenders == sorted(PRODUCTION_IMPORTERS)
+    assert sorted(offenders) == sorted(PRODUCTION_IMPORTERS)
 
 
 def test_the_package_never_imports_pymupdf_or_tesseract():
@@ -218,7 +214,7 @@ def test_the_package_never_imports_pymupdf_or_tesseract():
     forbidden = set(PYMUPDF_PACKAGES) | set(TESSERACT_PACKAGES)
     offenders = []
     for path in python_files(PACKAGE_ROOT):
-        names = {name.split(".")[0] for name in _imported_names(path)}
+        names = {name.split(".")[0] for name, _ in imported_names(path)}
         if names & forbidden:
             offenders.append(str(path.relative_to(REPO_ROOT)))
 

@@ -29,7 +29,13 @@ from typing import Any
 import pytest
 import yaml
 
-from source_scan_support import python_files, read_python, source_scan_cache  # noqa: F401
+from source_scan_support import (  # noqa: F401
+    imported_names,
+    importers_of,
+    python_files,
+    read_python,
+    source_scan_cache,
+)
 
 from corridor_pdf_reader import provenance
 from corridor_pdf_reader.textract import remap as imported_remap
@@ -829,22 +835,36 @@ def _python_files(root: Path):
         yield path
 
 
+def _reader_modules(path: Path) -> tuple[str, ...]:
+    """Every name one file imports that resolves to a module of the reader package.
+
+    The shared scanner offers each imported name as a submodule candidate,
+    because `from pkg import module` and `from pkg import symbol` are the same
+    syntax. The package on disk settles which is which, and a symbol's own
+    module is always in the list beside it, so nothing reaching the rung is
+    dropped by resolving.
+    """
+    package = PACKAGE_ROOT.parent
+    return tuple(
+        name
+        for name, _ in imported_names(path)
+        if (package / Path(*name.split("."))).is_dir()
+        or (package / Path(*name.split(".")).with_suffix(".py")).exists()
+    )
+
+
 def _network_module_imports(path: Path) -> list[str]:
     """Import statements that reach the imported client, transport, harness driver or semantics runner."""
-    found = []
-    for node in read_python(path).nodes:
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                if alias.name == "corridor_pdf_reader.textract" or any(alias.name.startswith(f"corridor_pdf_reader.textract.{name}") for name in NETWORK_MODULES):
-                    found.append(alias.name)
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            if node.module == "corridor_pdf_reader" and any(alias.name == "textract" for alias in node.names):
-                found.append("corridor_pdf_reader.textract")
-            if node.module == "corridor_pdf_reader.textract":
-                found.extend(f"{node.module}.{alias.name}" for alias in node.names if alias.name in NETWORK_MODULES)
-            for name in NETWORK_MODULES:
-                if node.module == f"corridor_pdf_reader.textract.{name}" or node.module.startswith(f"corridor_pdf_reader.textract.{name}."):
-                    found.append(node.module)
+    found = [
+        name
+        for name in _reader_modules(path)
+        if name == "corridor_pdf_reader.textract"
+        or any(
+            name == f"corridor_pdf_reader.textract.{module}"
+            or name.startswith(f"corridor_pdf_reader.textract.{module}.")
+            for module in NETWORK_MODULES
+        )
+    ]
     source = path.read_text(encoding="utf-8")
     if "import_module(" in source and "corridor_pdf_reader.textract" in source:
         found.append("dynamic import")
@@ -935,36 +955,38 @@ def _permitted(relative: str, name: str) -> bool:
 
 
 def test_only_the_named_caller_imports_the_adapter_and_no_production_module_the_rung():
+    """The shared scanner knows the import forms; this rule knows only who may spend.
+
+    It used to collect `node.module` alone for a `from ... import ...`, so
+    `from corridor_pdf_reader import textract_adapter` in any of the twelve
+    modules `tests/test_pdf_reader_package.py` already lists reached the
+    adapter with both guards green (#548's lesson, relearned).
+    """
     offenders = []
+    for tree in TEXTRACT_TREES:
+        for path, names in importers_of(tree, PRODUCTION_ROOTS).items():
+            if path == Path(__file__).resolve():
+                continue
+            relative = str(path.relative_to(REPO_ROOT))
+            if any(not _permitted(relative, name) for name, _ in names):
+                offenders.append(relative)
     for root in PRODUCTION_ROOTS:
         for path in _python_files(root):
-            relative = str(path.relative_to(REPO_ROOT))
             source = path.read_text(encoding="utf-8")
-            for node in read_python(path).nodes:
-                names = []
-                if isinstance(node, ast.Import):
-                    names = [alias.name for alias in node.names]
-                elif isinstance(node, ast.ImportFrom) and node.module:
-                    names = [node.module]
-                if any(_reaches_textract(name) and not _permitted(relative, name) for name in names):
-                    offenders.append(relative)
-                    break
             if "import_module(" in source and any(tree in source for tree in TEXTRACT_TREES):
-                offenders.append(f"{relative} (dynamic import)")
+                offenders.append(f"{path.relative_to(REPO_ROOT)} (dynamic import)")
 
-    assert offenders == []
+    assert sorted(set(offenders)) == []
 
 
 def test_the_named_caller_reaches_the_adapter_and_not_the_rung():
     """The allowlist is exact in both directions: the caller takes the boundary, not what it wraps."""
-    imported = set()
-    for relative in ADAPTER_CALLERS:
-        path = REPO_ROOT / relative
-        for node in read_python(path).nodes:
-            if isinstance(node, ast.Import):
-                imported.update(alias.name for alias in node.names if _reaches_textract(alias.name))
-            elif isinstance(node, ast.ImportFrom) and node.module and _reaches_textract(node.module):
-                imported.add(node.module)
+    imported = {
+        name
+        for relative in ADAPTER_CALLERS
+        for name in _reader_modules(REPO_ROOT / relative)
+        if _reaches_textract(name)
+    }
 
     assert imported == {
         "corridor_pdf_reader.textract_adapter.assignment",

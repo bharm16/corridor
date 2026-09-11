@@ -10,17 +10,33 @@ from collections import defaultdict
 from pathlib import Path
 
 from corridor.migrations import policy
-from source_scan_support import python_files, read_python, source_scan_cache  # noqa: F401
+from ratchet_support import assert_ratchet
+from source_scan_support import (  # noqa: F401
+    callers_of,
+    imported_names,
+    mentions_of,
+    python_files,
+    read_python,
+    source_scan_cache,
+)
 
 
 REPO_ROOT = Path(__file__).parents[1]
 SOURCE_ROOT = REPO_ROOT / "src" / "corridor"
+TEST_ROOT = REPO_ROOT / "tests"
 
 
-def _module_paths() -> tuple[Path, ...]:
+def _module_paths(root: Path | None = None) -> tuple[Path, ...]:
+    """Every module of one scanned tree. The source tree unless asked otherwise.
+
+    The test tree is the larger of the two and was never scanned by anything
+    here, so the rules that are about module shape rather than about the
+    Project Record read it too (#548's lesson, applied to the guards' own
+    tree).
+    """
     return tuple(
         path
-        for path in python_files(SOURCE_ROOT)
+        for path in python_files(root if root is not None else SOURCE_ROOT)
         if path.name != "__init__.py" and "migrations" not in path.parts
     )
 
@@ -55,36 +71,12 @@ def _module_name(path: Path) -> str:
     return ".".join(path.relative_to(SOURCE_ROOT).with_suffix("").parts)
 
 
-# Every absolute import form that names a Corridor module. Three forms reach
-# one, and the guards below used to see only the first: `from corridor.x import
-# y`, `from corridor import x` (104 sites, and the form that hides most of the
-# graph), and `import corridor.x`. `from corridor.pkg import module` names a
-# module too, so each imported name is offered as a submodule candidate and the
-# module table decides. Relative imports do not occur in this tree and are
-# skipped rather than guessed at.
-def _imported_module_names(nodes: tuple[ast.AST, ...]) -> tuple[tuple[str, int], ...]:
-    """(dotted module candidate, line) for every absolute import in one file."""
-    names: list[tuple[str, int]] = []
-    for node in nodes:
-        if isinstance(node, ast.ImportFrom):
-            if node.level or not node.module:
-                continue
-            names.append((node.module, node.lineno))
-            names.extend(
-                (f"{node.module}.{imported.name}", node.lineno)
-                for imported in node.names
-            )
-        elif isinstance(node, ast.Import):
-            names.extend((alias.name, node.lineno) for alias in node.names)
-    return tuple(names)
-
-
 def _corridor_import_edges() -> dict[tuple[str, str], tuple[int, ...]]:
     """Every import edge between two source modules, with the lines that make it."""
     paths = {_module_name(path): path for path in _module_paths()}
     edges: dict[tuple[str, str], set[int]] = {}
     for name, path in paths.items():
-        for imported, lineno in _imported_module_names(read_python(path).nodes):
+        for imported, lineno in imported_names(path):
             if not imported.startswith("corridor."):
                 continue
             dependency = imported.removeprefix("corridor.")
@@ -175,6 +167,139 @@ def test_no_module_silently_replaces_a_top_level_interface_name():
     assert duplicates == {}
 
 
+# --- Public symbols nothing reaches (#548 ratchet shape) ---------------------
+#
+# The fifty-one rules in this file police the import graph, the legacy-table
+# census, the engine scan, template colour, audit actions, value-copying and
+# web-readable relations and ADR frontmatter. None of them could see a public
+# function or class in `src/corridor` that the repository never writes again.
+# There were twelve.
+#
+# A registered web route is reached by its decorator rather than by its name,
+# and a schema family's relations are re-exported by name in
+# `corridor.models.__init__`, so neither needs an entry below; the rule sees
+# both without an exemption. Everything else with no second mention is a
+# public interface awaiting a caller, and says so here with a reason and a
+# ticket, or is deleted.
+#
+# Three symbols were deleted rather than listed when this rule was written:
+# `proposed_deltas.StaleAcceptedRevisionRefused` (an exception never raised),
+# `telemetry.current_correlation` (`dict(_correlation.get())`, which the two
+# real readers already inline) and `release_authorization.receipt_identity`
+# (one undocumented `sha256` line).
+REGISTERED_BY_DECORATOR = frozenset(
+    {"app.get", "app.post", "app.exception_handler"}
+)
+AWAITING_CALLER = {
+    "build_native_report": (
+        "report.py:512 -- the retained accepted-record entry point of the "
+        "internal Report, kept as one delegation to `build_report` while "
+        "ADR-0086/ADR-0091 move the customer's Coordination Report to "
+        "`issue_rendering.render_weekly_report` (ADR-0081 stage 3)"
+    ),
+    "configure_release_preparation": (
+        "due_work.py:788 -- one of fourteen one-line handler configurations, "
+        "the only one with neither a caller nor a test; audit card A7 removes "
+        "it, and this entry is the placeholder until that lane lands"
+    ),
+    "due_action_inbox": (
+        "notifications.py:1557 -- the recipient's own due-action inbox read, "
+        "scoped to one member and one project; the screen that renders it is "
+        "unbuilt, and the operations delivery view beside it is the half that "
+        "has a caller"
+    ),
+    "eligible_scan_pages": (
+        "unreadable_cells.py:246 -- the pages an unreadable-cell profile "
+        "would read; #739's scanned route selects its own pages, so this "
+        "profile-scoped reader waits for the profile to be wired"
+    ),
+    "follow_up_plans_for_delta": (
+        "review_packets.py:995 -- every Follow-up Plan on one Proposed "
+        "Delta, in the order they were made; ADR-0081's released "
+        "class-specific projection policies are what will read it"
+    ),
+    "pending_record_inclusion_project_ids": (
+        "record_inclusion.py:70 -- the recovery drain's list of projects "
+        "with unreconciled Record Inclusion work; the drain itself is unbuilt"
+    ),
+    "pending_revision_reconciliation_project_ids": (
+        "revision_reconciliation_request.py:52 -- the same recovery drain, "
+        "for unreconciled revision work; retire both entries together"
+    ),
+    "publish_frontend_pass_bundle": (
+        "product_proving_frontend_capture.py:616 -- seals one observed "
+        "frontend pass before its database is restored; the capture command "
+        "that would call it is not wired into Product Proving yet"
+    ),
+    "replace_local_database_with_verified_clone": (
+        "product_proving_database.py:1258 -- the staged/validated/finalized "
+        "swap composed into one act, including the post-swap fingerprint and "
+        "migration-head checks the three exported steps do not carry; callers "
+        "run the steps themselves today"
+    ),
+}
+
+
+def _route_decorated(node: ast.AST) -> bool:
+    """True for a handler the web application registers by decorating it."""
+
+    return any(
+        ast.unparse(decorator.func if isinstance(decorator, ast.Call) else decorator)
+        in REGISTERED_BY_DECORATOR
+        for decorator in getattr(node, "decorator_list", ())
+    )
+
+
+def _public_definitions() -> dict[str, tuple[Path, int]]:
+    """Every public module-level function and class the source tree declares."""
+
+    definitions: dict[str, tuple[Path, int]] = {}
+    for path in _module_paths():
+        for node in _tree(path).body:
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                continue
+            if node.name.startswith("_") or _route_decorated(node):
+                continue
+            definitions[node.name] = (path, node.lineno)
+    return definitions
+
+
+def test_every_public_symbol_is_written_somewhere_other_than_its_definition():
+    """A public interface no line of this repository ever names again is dead.
+
+    The weaker of the two questions `source_scan_support` answers: a name in a
+    docstring, in an `__all__`, or inside the source of a probe a test runs is
+    not a caller, but it is the repository writing the name. Failing here
+    means nothing anywhere writes it at all, so the remedy is to delete the
+    symbol -- or, when it is a seam whose caller is genuinely still to come,
+    to say so above with a reason and a ticket, the way `PRODUCTION_IMPORTERS`
+    and `CYCLE_EDGE_ALLOWLIST` do. The list may fall and may never rise.
+    """
+
+    definitions = _public_definitions()
+    written = mentions_of(
+        set(definitions),
+        (REPO_ROOT / "src", REPO_ROOT / "tests", REPO_ROOT / "scripts", REPO_ROOT / "workers"),
+    )
+    guard = Path(__file__).resolve()
+    unwritten = {}
+    for name, (path, lineno) in definitions.items():
+        elsewhere = {
+            site: tuple(line for line in lines if (site, line) != (path, lineno))
+            for site, lines in written[name].items()
+            if site != guard  # the table below is a record, not a reference
+        }
+        if not any(elsewhere.values()):
+            unwritten[name] = f"{path.relative_to(REPO_ROOT)}:{lineno}"
+
+    assert sorted(unwritten) == sorted(AWAITING_CALLER), (
+        "a public symbol nothing else in the repository names: delete it, or "
+        "record it in AWAITING_CALLER with a reason and a ticket:\n"
+        + "\n".join(f"{name} at {site}" for name, site in sorted(unwritten.items()))
+    )
+    assert all(AWAITING_CALLER.values()), "an entry without a reason is not a decision"
+
+
 def test_source_modules_do_not_import_another_module_private_implementation():
     """Every import form, so `from corridor import _x` cannot slip past.
 
@@ -187,7 +312,7 @@ def test_source_modules_do_not_import_another_module_private_implementation():
     for path in _module_paths():
         package = _module_name(path).rpartition(".")[0]
         own = f"corridor.{package}." if package else None
-        for imported, lineno in _imported_module_names(read_python(path).nodes):
+        for imported, lineno in imported_names(path):
             if not imported.startswith("corridor."):
                 continue
             if not imported.split(".")[-1].startswith("_"):
@@ -197,6 +322,84 @@ def test_source_modules_do_not_import_another_module_private_implementation():
             private_imports.append(f"{path.name}:{lineno} imports {imported}")
 
     assert sorted(set(private_imports)) == []
+
+
+# The same rule in the test tree, where it is not clean yet. Five modules
+# share one collector's fixtures by reaching into each other -- reading
+# `test_native_citation_coverage.py` means opening two other test modules --
+# and the repository already has the seam that ends it: fifteen `*_support.py`
+# modules in `tests/`, which a test may reach freely. These pairs are what is
+# outstanding, each `(importer, imported private name)` rather than a line
+# number so that an unrelated edit above one does not move it. It may fall and
+# may never rise: move the fixture to a support module and delete the line.
+TEST_PRIVATE_IMPORTS = frozenset({
+    ("test_matrix_retirement_e2e.py", "test_native_provider_boundary._body"),
+    ("test_matrix_retirement_e2e.py", "test_native_provider_boundary._experiment"),
+    ("test_matrix_retirement_e2e.py", "test_native_provider_boundary._request"),
+    ("test_native_citation_coverage.py", "test_native_accepted_readers._follow_up_plan"),
+    ("test_native_follow_up_reading.py", "test_issue_rendering._baseline"),
+    ("test_native_follow_up_reading.py", "test_issue_rendering._delta"),
+    ("test_native_follow_up_reading.py", "test_issue_rendering._plan"),
+    ("test_native_pipeline.py", "test_native_matrix._document"),
+    ("test_native_reader_coverage.py", "test_native_accepted_readers._adopt_native_workbook"),
+    ("test_native_release_coverage.py", "test_native_accepted_readers._adopt_native_workbook"),
+    ("test_native_work_list_coverage.py", "test_native_accepted_readers._follow_up_plan"),
+    ("test_pilot_measurement_receipts.py", "test_packet_review_screen._revision"),
+    ("test_pipeline.py", "test_native_matrix._document"),
+    ("test_pipeline.py", "test_native_pipeline._client"),
+    ("test_pipeline.py", "test_native_pipeline._plan"),
+    ("test_pipeline.py", "test_native_pipeline._scope"),
+    ("test_pipeline.py", "test_native_provider_boundary._experiment"),
+    ("test_pipeline.py", "test_native_provider_boundary._request"),
+    ("test_pipeline_qualification_cli.py", "test_native_pipeline._document"),
+    ("test_pipeline_qualification_cli.py", "test_native_pipeline._gate_fixture"),
+    ("test_pipeline_qualification_cli.py", "test_native_pipeline._qualify"),
+    ("test_pipeline_qualification_cli.py", "test_native_pipeline._scope"),
+    ("test_pipeline_render_identity.py", "test_native_pipeline_geometry._author_page"),
+    ("test_pipeline_render_identity.py", "test_native_pipeline_geometry._colour_deskew_profile"),
+    ("test_pipeline_selection.py", "test_native_matrix._document"),
+    ("test_pipeline_selection.py", "test_native_pipeline._client"),
+    ("test_pipeline_selection.py", "test_native_pipeline._gate_fixture"),
+    ("test_pipeline_selection.py", "test_native_pipeline._plan"),
+    ("test_pipeline_selection.py", "test_native_pipeline._qualify"),
+    ("test_pipeline_selection.py", "test_native_pipeline._scope"),
+    ("test_pipeline_selection_guards.py", "test_native_pipeline._acceptance_fixture"),
+    ("test_pipeline_selection_guards.py", "test_native_pipeline._gate_fixture"),
+    ("test_pipeline_selection_guards.py", "test_native_pipeline._qualify"),
+    ("test_project_portfolio.py", "test_project_workflow._cross_source"),
+    ("test_project_portfolio.py", "test_project_workflow._plan_every_child"),
+    ("test_project_portfolio.py", "test_project_workflow._project"),
+    ("test_project_portfolio.py", "test_release_authorization._replace_output_template"),
+    ("test_release_preparation.py", "test_release_candidate._preparation"),
+    ("test_release_preparation.py", "test_release_candidate._prepare"),
+})
+
+
+def test_test_modules_do_not_import_another_test_modules_private_implementation():
+    """A test module may reach its own fixtures, not another one's internals.
+
+    The same rule the source tree already passes, on the tree that is larger
+    than it. A shared fixture belongs in the `*_support.py` family, which is
+    importable by anyone; a private name in a sibling `test_` module is a
+    dependency between two test modules that neither declares.
+    """
+    modules = {path.stem for path in _module_paths(TEST_ROOT)}
+    private_imports = {
+        (path.name, imported)
+        for path in _module_paths(TEST_ROOT)
+        for imported, _ in imported_names(path)
+        for owner, leaf in [imported.rpartition(".")[::2]]
+        if leaf.startswith("_")
+        and owner.startswith("test_")
+        and owner in modules
+        and owner != path.stem
+    }
+
+    assert_ratchet(
+        "tests/test_architecture.py:TEST_PRIVATE_IMPORTS",
+        measured=private_imports,
+        recorded=set(TEST_PRIVATE_IMPORTS),
+    )
 
 
 def test_the_schema_package_imports_and_reexports_every_family_it_declares():
@@ -354,29 +557,6 @@ CYCLE_EDGE_ALLOWLIST: tuple[tuple[str, str, str], ...] = (
 )
 
 
-def test_the_import_scanner_sees_every_form_of_dependency():
-    """The graph is only as honest as the scanner behind it (#548 shape).
-
-    `from corridor import x` is how most of this codebase imports a sibling,
-    and a scanner that only understood `from corridor.x import y` reported an
-    acyclic graph that was not one.
-    """
-
-    cases = {
-        "from corridor.exceptions import review\n": {"corridor.exceptions", "corridor.exceptions.review"},
-        "from corridor import disputes, notifications\n": {"corridor", "corridor.disputes", "corridor.notifications"},
-        "import corridor.work_decisions\n": {"corridor.work_decisions"},
-        "from corridor.web import app\n": {"corridor.web", "corridor.web.app"},
-        "from . import sibling\n": set(),
-        "import httpx\n": {"httpx"},
-    }
-
-    assert {
-        source: {name for name, _ in _imported_module_names(tuple(ast.walk(ast.parse(source))))}
-        for source in cases
-    } == cases
-
-
 def test_source_module_dependencies_are_acyclic():
     """Acyclic once the declared cycle edges are set aside, and only those.
 
@@ -420,11 +600,14 @@ def test_source_module_dependencies_are_acyclic():
 
 
 def test_the_declared_cycle_edges_are_exactly_the_cycles_that_exist():
-    """The ratchet, exact in both directions.
+    """The ratchet, exact in both directions and against the merge base.
 
     An import that closes a new cycle fails here rather than hiding inside a
     component that was already tangled, and an edge that stops closing one has
-    to leave the list, so the list can only shrink and only honestly.
+    to leave the list. `assert_ratchet` is what makes "the list can only
+    shrink" a rule rather than a claim: editing the allowlist in the same
+    commit no longer buys the edge, because the merge base still records the
+    list without it.
     """
 
     edges = [(source, target) for source, target, _ in CYCLE_EDGE_ALLOWLIST]
@@ -476,6 +659,13 @@ def test_the_declared_cycle_edges_are_exactly_the_cycles_that_exist():
 
     assert problems == {}
 
+    assert_ratchet(
+        "tests/test_architecture.py:CYCLE_EDGE_ALLOWLIST",
+        measured=found,
+        recorded=declared,
+        as_measured=lambda listed: {(source, target) for source, target, _ in listed},
+    )
+
 
 # The modules between a Source Segment and a Source Fact value, and the
 # record-decision boundary above them (#446). None may reach a model client,
@@ -502,7 +692,7 @@ def _internal_dependencies() -> dict[str, set[str]]:
     dependencies = _module_dependencies()
     for path in _module_paths():
         name = _module_name(path)
-        for imported, _ in _imported_module_names(read_python(path).nodes):
+        for imported, _ in imported_names(path):
             package = imported.split(".")[0]
             if package in MODEL_CLIENT_PACKAGES:
                 dependencies[name].add(f"<{package}>")
@@ -1033,6 +1223,11 @@ def test_the_legacy_table_consumer_list_may_fall_and_may_never_rise():
     consuming one has to be deleted from the list, so a repaired reader cannot
     pay for a new consumer somewhere else. Stage 4 exits when every tuple is
     empty.
+
+    The list has risen before -- 160 to 162 in one commit -- because equality
+    against a constant the same commit may edit cannot see direction.
+    `assert_ratchet` reads the list back out of the merge base and names the
+    consumer that joined.
     """
 
     listed = {name: tuple(sorted(modules)) for name, modules in LEGACY_TABLE_CONSUMERS.items()}
@@ -1060,6 +1255,16 @@ def test_the_legacy_table_consumer_list_may_fall_and_may_never_rise():
             )
 
     assert problems == {}
+
+    pairs = lambda listed: {
+        (name, module) for name, modules in listed.items() for module in modules
+    }
+    assert_ratchet(
+        "tests/test_architecture.py:LEGACY_TABLE_CONSUMERS",
+        measured={(name, module) for name in listed for module in found[name]},
+        recorded=pairs(listed),
+        as_measured=pairs,
+    )
 
 
 def test_every_frozen_relation_is_declared_in_the_legacy_family_and_nowhere_else():
@@ -1101,7 +1306,7 @@ def test_no_module_outside_the_schema_package_imports_the_legacy_family():
     for path in _module_paths():
         if _declares_the_schema(path):
             continue
-        for imported, lineno in _imported_module_names(read_python(path).nodes):
+        for imported, lineno in imported_names(path):
             if imported == "corridor.models.legacy":
                 importers.append(f"{_module_name(path)}:{lineno}")
 
@@ -1604,23 +1809,75 @@ def _chromatic_classes(markup: str) -> set[str]:
     return painted
 
 
+def _composed_templates() -> dict[Path, frozenset[Path]]:
+    """Every template each template renders: its includes, imports and extends.
+
+    Read from Jinja's own parse rather than from the text, because a template
+    that names another one in a comment does not render it and a template that
+    reaches the primitives through a partial does.
+    """
+    import jinja2
+
+    environment = jinja2.Environment(autoescape=True)
+    composition: dict[Path, frozenset[Path]] = {}
+    for path in sorted(TEMPLATE_ROOT.glob("*.html")):
+        composed: set[Path] = set()
+        for node in environment.parse(path.read_text(encoding="utf-8")).find_all(
+            (jinja2.nodes.Include, jinja2.nodes.Import, jinja2.nodes.FromImport,
+             jinja2.nodes.Extends)
+        ):
+            if isinstance(node.template, jinja2.nodes.Const):
+                composed.add(TEMPLATE_ROOT / str(node.template.value))
+        composition[path] = frozenset(composed)
+    return composition
+
+
 def _shared_templates() -> tuple[Path, ...]:
-    shared = [PRIMITIVES_TEMPLATE]
-    shared.extend(
-        path
-        for path in sorted(TEMPLATE_ROOT.glob("*.html"))
-        if path != PRIMITIVES_TEMPLATE
-        and PRIMITIVES_TEMPLATE.name in path.read_text(encoding="utf-8")
-    )
-    return tuple(shared)
+    """The primitives, every page that renders them, and every partial in those.
+
+    Membership used to be "this file's own text contains `_primitives.html`",
+    which is not the same set as "the markup a guarded page sends": it covered
+    10 of 36 templates, and the two partials composed into the guarded
+    `queue.html` were never read even though their markup reaches the same
+    screen. Composition decides it now, so a page cannot leave the rule by
+    moving its import into a partial, and a partial cannot escape it by never
+    naming the primitives itself.
+    """
+    composition = _composed_templates()
+
+    def renders(path: Path) -> frozenset[Path]:
+        """Every template this one renders, directly or through a partial."""
+        seen: set[Path] = set()
+        frontier = [path]
+        while frontier:
+            for composed in composition.get(frontier.pop(), frozenset()):
+                if composed not in seen:
+                    seen.add(composed)
+                    frontier.append(composed)
+        return frozenset(seen)
+
+    shared = {PRIMITIVES_TEMPLATE}
+    for path in composition:
+        composed = renders(path)
+        if PRIMITIVES_TEMPLATE in composed:
+            shared |= {path, *composed}
+    return tuple(sorted(shared))
 
 
 def test_shared_templates_exist_and_include_the_first_consumer():
-    """The check is worthless if it silently covers nothing."""
+    """The check is worthless if it silently covers nothing.
+
+    Its reach is the point: `ledger.html` renders the primitives directly, and
+    `_evidence.html` and `_coordinate.html` reach the same screen by being
+    composed into `queue.html`, which does.
+    """
     names = {path.name for path in _shared_templates()}
 
     assert PRIMITIVES_TEMPLATE.name in names
     assert "ledger.html" in names
+    assert {"_evidence.html", "_coordinate.html"} <= names, (
+        "a partial rendered inside a guarded page is markup that page sends"
+    )
 
 
 def test_no_shared_template_conveys_state_by_colour_alone():
@@ -2053,7 +2310,9 @@ def test_the_uncovered_list_may_fall_and_may_never_rise():
     Naming a hole is how it gets closed, not a place to put the next one. A
     change that partitions a relation lowers the ceiling and holds the gain; a
     change that adds a project-scoped relation cannot pay for it by widening
-    the list.
+    the list -- and cannot pay for it by raising the ceiling in the same
+    commit either, because `assert_ratchet` reads the ceiling recorded at the
+    merge base.
     """
 
     from corridor import access
@@ -2068,6 +2327,11 @@ def test_the_uncovered_list_may_fall_and_may_never_rise():
     assert outstanding >= access.NOT_YET_PARTITIONED_CEILING, (
         f"the list is down to {outstanding}; lower "
         "NOT_YET_PARTITIONED_CEILING in corridor.access to hold the gain"
+    )
+    assert_ratchet(
+        "src/corridor/access.py:NOT_YET_PARTITIONED_CEILING",
+        measured=outstanding,
+        recorded=access.NOT_YET_PARTITIONED_CEILING,
     )
 
 
@@ -2310,16 +2574,10 @@ def test_the_unconfirmed_reading_append_has_exactly_its_production_caller():
     class, reviewed as one.
     """
 
-    callers: set[str] = set()
-    for path in _module_paths():
-        if path.name == "scanned_reading.py":
-            continue
-        for node in read_python(path).nodes:
-            if not isinstance(node, ast.Call):
-                continue
-            callee = node.func
-            name = callee.attr if isinstance(callee, ast.Attribute) else getattr(callee, "id", None)
-            if name == "record_unconfirmed_readings":
-                callers.add(path.name)
+    sites = callers_of({"record_unconfirmed_readings"}, (SOURCE_ROOT,))
 
-    assert callers == {"ingest.py"}
+    assert {
+        path.name
+        for path in sites["record_unconfirmed_readings"]
+        if path.name != "scanned_reading.py"
+    } == {"ingest.py"}
