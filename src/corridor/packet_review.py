@@ -472,6 +472,11 @@ class ChildReading:
     incoming_fact_id: int | None = None
     support_assessment_ids: tuple[int, ...] = ()
     not_ready_reason: str | None = None
+    #: Which decision on this change the coordinator is being offered (#948):
+    #: zero until one has been made and undone. The form carries it back so a
+    #: submission says what it was composed against rather than picking up
+    #: whatever is current when it arrives.
+    decision_generation: int = 0
     # Whether this child is in the coordinator's current selection. A child
     # that Apply would refuse starts unselected, so the batch's primary action
     # never names work it cannot do.
@@ -1230,6 +1235,7 @@ def _child(
         source_revision=delta.source_revision,
         band=standing.band,
         attention_reasons=standing.attention_reasons,
+        decision_generation=standing.decision_generation,
         customer_artifacts=_artifacts_for(delta.target_field, artifacts),
         source=_source_reference(capture),
         external_links=_external_links(row),
@@ -1593,6 +1599,7 @@ def packet_request(
     principal: HumanPrincipal,
     decided_at: datetime,
     delta_ids: Sequence[int],
+    observed_generations: Mapping[int, int] | None = None,
     deferred_until: datetime | None = None,
     deferral_reason: str | None = None,
 ) -> ReviewPacketRequest:
@@ -1619,11 +1626,18 @@ def packet_request(
     if outcome == DEFER and deferred_until is None:
         raise ReviewScreenRefused("a Defer records the date the item returns")
 
+    # What the *form* was rendered against, not what this reading says now: a
+    # form composed before a decision was made and undone must not become valid
+    # again because the values returned to what they were (#948). A caller that
+    # supplies none is saying the change had been decided no times, which is
+    # what every change nobody has decided carries.
+    observed = dict(observed_generations or {})
     children = tuple(
         PacketChildRequest(
             delta_id=child.delta_id,
             outcome=outcome,
             observed_source_revision=child.source_revision,
+            observed_decision_generation=observed.get(child.delta_id, 0),
             record_effects=(
                 _apply_effects(child) if outcome == APPLY else ()
             ),
@@ -1671,6 +1685,8 @@ class FocusedAnswer:
 
     delta_id: int
     outcome: str
+    #: Which decision on this change the form was rendered against (#948).
+    observed_generation: int = 0
     question: str | None = None
     responsible_principal: str | None = None
     responsible_organization: str | None = None
@@ -1788,6 +1804,7 @@ def _focused_child(
             delta_id=child.delta_id,
             outcome=APPLY,
             observed_source_revision=child.source_revision,
+            observed_decision_generation=answer.observed_generation,
             record_effects=_apply_effects(child),
             support_assessment_ids=child.support_assessment_ids,
             contradiction=item.grouping_key_kind == COORDINATION_QUESTION,
@@ -1819,6 +1836,7 @@ def _focused_child(
             delta_id=child.delta_id,
             outcome=EDIT_AND_APPLY,
             observed_source_revision=child.source_revision,
+            observed_decision_generation=answer.observed_generation,
             edit_basis=CapturedSupport(fact_id=chosen.incoming_fact_id),
             support_assessment_ids=chosen.support_assessment_ids,
             effective_value=chosen.incoming_value,
@@ -1878,6 +1896,7 @@ def _focused_child(
         delta_id=child.delta_id,
         outcome=KEEP_CURRENT,
         observed_source_revision=child.source_revision,
+        observed_decision_generation=answer.observed_generation,
         contradiction=item.grouping_key_kind == COORDINATION_QUESTION,
     )
 

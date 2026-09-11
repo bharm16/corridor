@@ -16,7 +16,10 @@ question is answered from append-only identifiers.
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from datetime import datetime, timezone
+from threading import Barrier
 from uuid import uuid4
 
 import pytest
@@ -57,7 +60,12 @@ from corridor.models import (
     ProposedDelta,
     SourceSegment,
 )
+from corridor.native_follow_up_reading import undone_follow_up_plan_ids
 from corridor.principals import HumanPrincipal
+from corridor.review_packet_reading import (
+    read_open_deltas,
+    resolved_delta_ids_by_project,
+)
 from corridor.proposed_deltas import (
     ExistingSubjectTarget,
     ProposedDeltaValues,
@@ -1143,9 +1151,11 @@ def test_undo_reverses_the_complete_packet_when_no_later_act_depends_on_it(
     assert receipt.revision_id == saved.revision_id
     assert len(packet_children(session, receipt.id)) == 2
     assert packet_reversal(session, receipt.id).id == undone.reversal_id
-    # And the deferred child is back in immediate work.
+    # And both children are back: the deferred one in immediate work, and the
+    # applied one as the question it was before the decision (#948, ADR-0035).
     assert live_delta_status(session, deferred.id) == "open"
     assert session.get(DeltaDeferral, saved.children[1].deferral_id) is not None
+    assert live_delta_status(session, applied.id) == "open"
 
 
 def test_undo_of_a_deferral_only_packet_writes_no_revision(
@@ -1482,3 +1492,760 @@ def test_a_recorded_packet_act_is_never_updated_or_deleted(
         session.get(DeltaReviewPacketReceipt, saved.receipt_id).grouping_key
         == SOURCE_REVISION
     )
+
+
+# --- Undo returns the question, and the question can be decided (#948) -----
+
+
+def _second_apply(
+    session: Session,
+    project: Project,
+    delta: ProposedDelta,
+    fact: Fact,
+    support,
+    *,
+    observed_accepted_revision_id: int | None = None,
+    generation: int = 1,
+):
+    """A whole second guided Save on the delta an Undo returned to Review."""
+
+    return resolve_review_packet(
+        session,
+        _packet(
+            project,
+            (
+                _apply_child(
+                    delta,
+                    fact,
+                    support,
+                    observed_decision_generation=generation,
+                ),
+            ),
+            principal=BOB,
+            observed_accepted_revision_id=observed_accepted_revision_id,
+        ),
+    )
+
+
+def test_undo_returns_the_applied_question_and_a_second_decision_lands(
+    session: Session, project: Project
+) -> None:
+    """#948, and the half of it that is not a reading change.
+
+    ADR-0035 says Undo "returns the Extracted Proposal", and a screen that
+    reoffers a proposal whose next Save is structurally impossible has not
+    returned it. So this walks the whole way round: apply, undo, watch the
+    question come back to the standing set Review counts its offer from, and
+    then *decide it again* and watch that decision reach the accepted record.
+
+    The first decision is untouched throughout. It is still the same row,
+    saying what it said, in generation 0; the successor took generation 1.
+    """
+
+    rendition = _rendition(session, project, "ucm-undo-a.xlsx")
+    accepted, _ = rendition.capture(fact_type="station_from", value="1149+00")
+    baseline = _adopt(session, project, accepted, f"adopt-{project.id}")
+    incoming, segment = rendition.capture(fact_type="station_from", value="1200+00")
+    support = _support(session, project, incoming, segment)
+    delta = _delta(session, project, field="station_from", baseline_revision=baseline)
+
+    saved = resolve_review_packet(
+        session,
+        _packet(
+            project,
+            (_apply_child(delta, incoming, support),),
+            observed_accepted_revision_id=baseline,
+        ),
+    )
+    assert saved.status == SAVED
+    first = session.get(DeltaDisposition, saved.children[0].disposition_id)
+    recorded = (first.id, first.disposition, first.decided_at, first.generation)
+    assert first.generation == 0
+    assert live_delta_status(session, delta.id) == "resolved"
+
+    undone = reverse_review_packet(
+        session,
+        project_id=project.id,
+        receipt_id=saved.receipt_id,
+        principal=BOB,
+        reversed_at=DECIDED_AT,
+        idempotency_key=f"undo:{uuid4().hex[:10]}",
+    )
+    assert undone.status == REVERSED
+
+    # The question is back: both the clockless authority every write guard
+    # consults and the standing set Review counts its offer from say so.
+    assert live_delta_status(session, delta.id) == "open"
+    assert delta.id not in resolved_delta_ids_by_project(session, (project.id,))[
+        project.id
+    ]
+    assert delta.id in read_open_deltas(
+        session, project_id=project.id, as_of=RETURNS_AT
+    ).actionable_delta_ids
+
+    # And it can actually be answered. This is the requirement the reading
+    # change alone cannot meet: the unique index, the Python pre-check and
+    # five plpgsql guards all had to agree that a successor decision is lawful.
+    again = _second_apply(
+        session,
+        project,
+        delta,
+        incoming,
+        support,
+        observed_accepted_revision_id=undone.revision_id,
+    )
+    assert again.status == SAVED, again
+    assert live_delta_status(session, delta.id) == "resolved"
+    assert delta.id in resolved_delta_ids_by_project(session, (project.id,))[project.id]
+
+    # The second decision moved the accepted record, by its own revision.
+    effective = session.scalars(
+        select(FactDecision).where(
+            FactDecision.project_id == project.id,
+            FactDecision.fact_type == "station_from",
+            FactDecision.superseded_by.is_(None),
+        )
+    ).all()
+    assert [row.fact_id for row in effective] == [incoming.id]
+    assert effective[0].revision_id == again.revision_id
+
+    # Nothing was deleted and nothing was rewritten: two decisions stand in
+    # history, the first exactly as it was recorded, in its own generation.
+    history = session.scalars(
+        select(DeltaDisposition)
+        .where(DeltaDisposition.delta_id == delta.id)
+        .order_by(DeltaDisposition.generation)
+    ).all()
+    assert [row.generation for row in history] == [0, 1]
+    session.expire(first)
+    assert (
+        first.id,
+        first.disposition,
+        first.decided_at,
+        first.generation,
+    ) == recorded
+    assert history[1].decided_by_principal == BOB.subject
+
+
+def test_undo_of_a_keep_current_returns_the_question_it_had_rejected(
+    session: Session, project: Project
+) -> None:
+    """The second row of #948's table.
+
+    Keep current is the customer saying the accepted value stands. Undoing it
+    withdraws that answer, so the difference the source proposed is a question
+    again -- and one they may answer the other way, which is what the second
+    Save here proves.
+    """
+
+    rendition = _rendition(session, project, "ucm-undo-b.xlsx")
+    accepted, _ = rendition.capture(fact_type="station_from", value="1149+00")
+    baseline = _adopt(session, project, accepted, f"adopt-{project.id}")
+    incoming, segment = rendition.capture(fact_type="station_from", value="1200+00")
+    support = _support(session, project, incoming, segment)
+    delta = _delta(session, project, field="station_from", baseline_revision=baseline)
+
+    saved = resolve_review_packet(
+        session,
+        _packet(
+            project,
+            (
+                PacketChildRequest(
+                    delta_id=delta.id,
+                    outcome=KEEP_CURRENT,
+                    observed_source_revision=delta.source_revision,
+                ),
+            ),
+            observed_accepted_revision_id=baseline,
+        ),
+    )
+    assert saved.status == SAVED
+    assert live_delta_status(session, delta.id) == "resolved"
+
+    undone = reverse_review_packet(
+        session,
+        project_id=project.id,
+        receipt_id=saved.receipt_id,
+        principal=BOB,
+        reversed_at=DECIDED_AT,
+        idempotency_key=f"undo:{uuid4().hex[:10]}",
+    )
+
+    assert undone.status == REVERSED
+    assert live_delta_status(session, delta.id) == "open"
+    # The rejection no longer settles it, and the other answer is available.
+    again = _second_apply(
+        session,
+        project,
+        delta,
+        incoming,
+        support,
+        observed_accepted_revision_id=undone.revision_id or baseline,
+    )
+    assert again.status == SAVED, again
+    assert [
+        row.disposition
+        for row in session.scalars(
+            select(DeltaDisposition)
+            .where(DeltaDisposition.delta_id == delta.id)
+            .order_by(DeltaDisposition.generation)
+        ).all()
+    ] == ["reject", "accept"]
+
+
+def test_undo_of_a_needs_coordination_child_leaves_the_question_actionable(
+    session: Session, project: Project
+) -> None:
+    """The third row of #948's table.
+
+    A Follow-up Plan never settled the change -- it recorded that someone owes
+    an answer -- so undoing the act undoes the plan and the unresolved question
+    stays exactly what it was: actionable, and decidable now without waiting
+    for the ask the coordinator withdrew.
+    """
+
+    rendition = _rendition(session, project, "ucm-undo-c.xlsx")
+    accepted, _ = rendition.capture(fact_type="station_from", value="1149+00")
+    baseline = _adopt(session, project, accepted, f"adopt-{project.id}")
+    incoming, segment = rendition.capture(fact_type="station_from", value="1200+00")
+    support = _support(session, project, incoming, segment)
+    delta = _delta(session, project, field="station_from", baseline_revision=baseline)
+
+    saved = resolve_review_packet(
+        session,
+        _packet(
+            project,
+            (
+                PacketChildRequest(
+                    delta_id=delta.id,
+                    outcome=NEEDS_COORDINATION,
+                    observed_source_revision=delta.source_revision,
+                    coordination=CoordinationRequest(
+                        question="Which station does the utility stand behind?",
+                        responsible_organization="City Water",
+                        return_date=RETURNS_AT,
+                        affected_scope={"subject": SUBJECT, "field": "station_from"},
+                        evidence_support_assessment_ids=(support.id,),
+                    ),
+                ),
+            ),
+            observed_accepted_revision_id=baseline,
+        ),
+    )
+    assert saved.status == SAVED
+    plan_id = saved.children[0].follow_up_plan_id
+    assert live_delta_status(session, delta.id) == "open"
+
+    undone = reverse_review_packet(
+        session,
+        project_id=project.id,
+        receipt_id=saved.receipt_id,
+        principal=BOB,
+        reversed_at=DECIDED_AT,
+        idempotency_key=f"undo:{uuid4().hex[:10]}",
+    )
+
+    assert undone.status == REVERSED
+    # The plan is no longer in force, and it is still in history.
+    assert session.scalars(undone_follow_up_plan_ids((project.id,))).all() == [plan_id]
+    assert session.get(DeltaFollowUpPlan, plan_id) is not None
+    # The question was never settled and is still answerable -- as its *first*
+    # decision. An undone plan is not a decision that was undone, so it opens
+    # no new generation and a Save composed against generation 0 is the right
+    # one (#948).
+    assert live_delta_status(session, delta.id) == "open"
+    again = _second_apply(
+        session,
+        project,
+        delta,
+        incoming,
+        support,
+        observed_accepted_revision_id=undone.revision_id or baseline,
+        generation=0,
+    )
+    assert again.status == SAVED, again
+    assert (
+        session.get(DeltaDisposition, again.children[0].disposition_id).generation == 0
+    )
+
+
+def test_an_undone_later_decision_no_longer_blocks_the_earlier_undo(
+    session: Session, project: Project
+) -> None:
+    """The fifth row of #948's table, read forwards and then backwards.
+
+    Undo never cascades: a packet that left a change open refuses to be undone
+    once someone has decided that change. The rule is about a decision that
+    *stands*, though, so when the later decision is itself undone the earlier
+    act becomes undoable again -- without which one withdrawn decision would
+    freeze every act before it for good.
+    """
+
+    rendition = _rendition(session, project, "ucm-undo-d.xlsx")
+    accepted, _ = rendition.capture(fact_type="station_from", value="1149+00")
+    baseline = _adopt(session, project, accepted, f"adopt-{project.id}")
+    incoming, segment = rendition.capture(fact_type="station_from", value="1200+00")
+    support = _support(session, project, incoming, segment)
+    delta = _delta(session, project, field="station_from", baseline_revision=baseline)
+
+    scheduled = resolve_review_packet(
+        session,
+        _packet(
+            project,
+            (_defer_child(delta),),
+            observed_accepted_revision_id=baseline,
+        ),
+    )
+    assert scheduled.status == SAVED, scheduled.refusals
+    # A released deferral is not a reversed decision either: this is still the
+    # delta's first semantic decision, in generation 0 (#948).
+    decided = _second_apply(
+        session,
+        project,
+        delta,
+        incoming,
+        support,
+        observed_accepted_revision_id=baseline,
+        generation=0,
+    )
+    assert decided.status == SAVED, decided.refusals
+
+    refused = reverse_review_packet(
+        session,
+        project_id=project.id,
+        receipt_id=scheduled.receipt_id,
+        principal=BOB,
+        reversed_at=DECIDED_AT,
+        idempotency_key=f"undo:{uuid4().hex[:10]}",
+    )
+    assert refused.status == REFUSED
+    assert refused.refusal.reason == "later_act_depends"
+
+    # Undo the decision that depended on it, and the earlier act is free.
+    assert (
+        reverse_review_packet(
+            session,
+            project_id=project.id,
+            receipt_id=decided.receipt_id,
+            principal=BOB,
+            reversed_at=DECIDED_AT,
+            idempotency_key=f"undo:{uuid4().hex[:10]}",
+        ).status
+        == REVERSED
+    )
+    released = reverse_review_packet(
+        session,
+        project_id=project.id,
+        receipt_id=scheduled.receipt_id,
+        principal=BOB,
+        reversed_at=DECIDED_AT,
+        idempotency_key=f"undo:{uuid4().hex[:10]}",
+    )
+
+    assert released.status == REVERSED
+    assert live_delta_status(session, delta.id) == "open"
+
+
+def test_undo_does_not_revive_a_proposal_a_newer_source_version_superseded(
+    session: Session, project: Project
+) -> None:
+    """The sixth row of #948's table, on the supersession half.
+
+    Undo returns a question that is still applicable. A change a newer source
+    version replaced is not one of those: reviving it would put a comparison
+    against a withdrawn revision back in front of the coordinator. The
+    supersession is the applicable terminal reason and it survives the Undo.
+    """
+
+    delta = _delta(session, project)
+    replacement = _delta(session, project, source_revision="rev-2")
+    saved = resolve_review_packet(session, _packet(project, (_defer_child(delta),)))
+    assert saved.status == SAVED
+    record_delta_supersession(
+        session,
+        project_id=project.id,
+        prior_delta_id=delta.id,
+        superseding_delta_id=replacement.id,
+    )
+    assert live_delta_status(session, delta.id) == "superseded"
+
+    undone = reverse_review_packet(
+        session,
+        project_id=project.id,
+        receipt_id=saved.receipt_id,
+        principal=BOB,
+        reversed_at=DECIDED_AT,
+        idempotency_key=f"undo:{uuid4().hex[:10]}",
+    )
+
+    assert undone.status == REVERSED
+    assert live_delta_status(session, delta.id) == "superseded"
+    assert delta.id not in read_open_deltas(
+        session, project_id=project.id, as_of=RETURNS_AT
+    ).actionable_delta_ids
+
+
+def _accepted_fact_id(session: Session, project: Project, field: str) -> int | None:
+    """The capture the accepted record stands on, read straight off it."""
+
+    rows = session.scalars(
+        select(FactDecision).where(
+            FactDecision.project_id == project.id,
+            FactDecision.fact_type == field,
+            FactDecision.superseded_by.is_(None),
+        )
+    ).all()
+    included = [row for row in rows if row.disposition != "do_not_add"]
+    assert len(included) <= 1, [row.id for row in included]
+    return included[0].fact_id if included else None
+
+
+def test_a_change_can_be_decided_undone_and_decided_again_the_other_way(
+    session: Session, project: Project
+) -> None:
+    """Apply, Undo, Apply, Undo, Keep current -- the whole sequence (#948).
+
+    Each generation is the database's own: it is assigned under the terminal
+    lock from the decisions already reversed, never taken from the caller, and
+    the caller only says which one it composed its submission against. What is
+    checked between the steps is the accepted value itself rather than a count
+    of revisions, because "the record went back" is a statement about what it
+    holds.
+    """
+
+    rendition = _rendition(session, project, "ucm-undo-e.xlsx")
+    accepted, _ = rendition.capture(fact_type="station_from", value="1149+00")
+    baseline = _adopt(session, project, accepted, f"adopt-{project.id}")
+    incoming, segment = rendition.capture(fact_type="station_from", value="1200+00")
+    support = _support(session, project, incoming, segment)
+    delta = _delta(session, project, field="station_from", baseline_revision=baseline)
+    assert _accepted_fact_id(session, project, "station_from") == accepted.id
+
+    first = resolve_review_packet(
+        session,
+        _packet(
+            project,
+            (_apply_child(delta, incoming, support),),
+            observed_accepted_revision_id=baseline,
+        ),
+    )
+    assert first.status == SAVED, first.refusals
+    assert _accepted_fact_id(session, project, "station_from") == incoming.id
+
+    first_undo = reverse_review_packet(
+        session,
+        project_id=project.id,
+        receipt_id=first.receipt_id,
+        principal=BOB,
+        reversed_at=DECIDED_AT,
+        idempotency_key=f"undo:{uuid4().hex[:10]}",
+    )
+    assert first_undo.status == REVERSED
+    assert _accepted_fact_id(session, project, "station_from") == accepted.id
+    assert live_delta_status(session, delta.id) == "open"
+
+    second = _second_apply(
+        session,
+        project,
+        delta,
+        incoming,
+        support,
+        observed_accepted_revision_id=first_undo.revision_id,
+        generation=1,
+    )
+    assert second.status == SAVED, second.refusals
+    assert _accepted_fact_id(session, project, "station_from") == incoming.id
+
+    second_undo = reverse_review_packet(
+        session,
+        project_id=project.id,
+        receipt_id=second.receipt_id,
+        principal=BOB,
+        reversed_at=DECIDED_AT,
+        idempotency_key=f"undo:{uuid4().hex[:10]}",
+    )
+    assert second_undo.status == REVERSED
+    assert _accepted_fact_id(session, project, "station_from") == accepted.id
+    assert live_delta_status(session, delta.id) == "open"
+
+    kept = resolve_review_packet(
+        session,
+        _packet(
+            project,
+            (
+                PacketChildRequest(
+                    delta_id=delta.id,
+                    outcome=KEEP_CURRENT,
+                    observed_source_revision=delta.source_revision,
+                    observed_decision_generation=2,
+                ),
+            ),
+            principal=BOB,
+            observed_accepted_revision_id=second_undo.revision_id,
+        ),
+    )
+
+    assert kept.status == SAVED, kept.refusals
+    assert live_delta_status(session, delta.id) == "resolved"
+    assert _accepted_fact_id(session, project, "station_from") == accepted.id
+    # Three decisions, in three generations, none of them rewritten and none
+    # of them deleted -- and only the last one in force.
+    history = session.scalars(
+        select(DeltaDisposition)
+        .where(DeltaDisposition.delta_id == delta.id)
+        .order_by(DeltaDisposition.generation)
+    ).all()
+    assert [(row.generation, row.disposition) for row in history] == [
+        (0, "accept"),
+        (1, "accept"),
+        (2, "reject"),
+    ]
+    assert delta.id in resolved_delta_ids_by_project(session, (project.id,))[project.id]
+
+
+def test_a_save_composed_before_the_decision_was_undone_is_refused(
+    session: Session, project: Project
+) -> None:
+    """#948's stale form, which the returned values would otherwise hide.
+
+    A page rendered while the change was undecided names generation 0. If it is
+    submitted after someone else has decided the change and undone it, every
+    value on it reads correct again -- the accepted record is back where it
+    was -- and only the history has moved. The command assigns the generation
+    itself under the terminal lock, so it is the one that says no.
+    """
+
+    rendition = _rendition(session, project, "ucm-undo-f.xlsx")
+    accepted, _ = rendition.capture(fact_type="station_from", value="1149+00")
+    baseline = _adopt(session, project, accepted, f"adopt-{project.id}")
+    incoming, segment = rendition.capture(fact_type="station_from", value="1200+00")
+    support = _support(session, project, incoming, segment)
+    delta = _delta(session, project, field="station_from", baseline_revision=baseline)
+
+    saved = resolve_review_packet(
+        session,
+        _packet(
+            project,
+            (_apply_child(delta, incoming, support),),
+            observed_accepted_revision_id=baseline,
+        ),
+    )
+    assert saved.status == SAVED
+    undone = reverse_review_packet(
+        session,
+        project_id=project.id,
+        receipt_id=saved.receipt_id,
+        principal=BOB,
+        reversed_at=DECIDED_AT,
+        idempotency_key=f"undo:{uuid4().hex[:10]}",
+    )
+    assert undone.status == REVERSED
+    assert _accepted_fact_id(session, project, "station_from") == accepted.id
+
+    with nothing_written(session, project.id):
+        stale = _second_apply(
+            session,
+            project,
+            delta,
+            incoming,
+            support,
+            observed_accepted_revision_id=undone.revision_id,
+            generation=0,
+        )
+
+    assert stale.status == REFUSED
+    assert stale.refusals[0].reason == "stale_decision_generation"
+    assert live_delta_status(session, delta.id) == "open"
+    # And the page opened again saves, because it names what stands now.
+    assert (
+        _second_apply(
+            session,
+            project,
+            delta,
+            incoming,
+            support,
+            observed_accepted_revision_id=undone.revision_id,
+            generation=1,
+        ).status
+        == SAVED
+    )
+
+
+def test_a_generation_the_caller_invents_cannot_step_over_a_standing_decision(
+    session: Session, project: Project
+) -> None:
+    """The browser cannot choose a generation to get past an effective decision.
+
+    ``unique (delta_id, generation)`` on its own would admit a second
+    unreversed decision in a generation nobody had reached. The generation is
+    assigned by the command under the terminal lock and the standing decision
+    is refused first, so a caller naming generation 1 while generation 0 still
+    stands is told the change is resolved rather than given a new slot (#948).
+    """
+
+    rendition = _rendition(session, project, "ucm-undo-g.xlsx")
+    accepted, _ = rendition.capture(fact_type="station_from", value="1149+00")
+    baseline = _adopt(session, project, accepted, f"adopt-{project.id}")
+    incoming, segment = rendition.capture(fact_type="station_from", value="1200+00")
+    support = _support(session, project, incoming, segment)
+    delta = _delta(session, project, field="station_from", baseline_revision=baseline)
+    assert (
+        resolve_review_packet(
+            session,
+            _packet(
+                project,
+                (_apply_child(delta, incoming, support),),
+                observed_accepted_revision_id=baseline,
+            ),
+        ).status
+        == SAVED
+    )
+
+    with nothing_written(session, project.id):
+        invented = _second_apply(
+            session,
+            project,
+            delta,
+            incoming,
+            support,
+            observed_accepted_revision_id=baseline,
+            generation=1,
+        )
+
+    assert invented.status == REFUSED
+    assert invented.refusals[0].reason == "already_resolved"
+    assert [
+        row.generation
+        for row in session.scalars(
+            select(DeltaDisposition).where(DeltaDisposition.delta_id == delta.id)
+        ).all()
+    ] == [0]
+
+
+
+@dataclass(frozen=True)
+class _Returned:
+    """One committed project whose only change was decided and then undone."""
+
+    project_id: int
+    delta_id: int
+    fact_id: int
+    support_id: int
+    source_revision: str
+    revision_id: int
+
+
+def _seed_returned_question(factory) -> _Returned:
+    """Apply one change and undo it, committed, so the question is back."""
+
+    with factory() as seeding:
+        project = Project(
+            slug=f"project-{uuid4().hex[:8]}", name="Project", is_synthetic=True
+        )
+        seeding.add(project)
+        seeding.flush()
+        rendition = _rendition(seeding, project, f"ucm-{uuid4().hex[:6]}.xlsx")
+        accepted, _ = rendition.capture(fact_type="station_from", value="1149+00")
+        baseline = _adopt(seeding, project, accepted, f"adopt-{project.id}")
+        incoming, segment = rendition.capture(
+            fact_type="station_from", value="1200+00"
+        )
+        assessment = _support(seeding, project, incoming, segment)
+        delta = _delta(
+            seeding, project, field="station_from", baseline_revision=baseline
+        )
+        saved = resolve_review_packet(
+            seeding,
+            _packet(
+                project,
+                (_apply_child(delta, incoming, assessment),),
+                observed_accepted_revision_id=baseline,
+            ),
+        )
+        assert saved.status == SAVED, saved.refusals
+        undone = reverse_review_packet(
+            seeding,
+            project_id=project.id,
+            receipt_id=saved.receipt_id,
+            principal=BOB,
+            reversed_at=DECIDED_AT,
+            idempotency_key=f"undo:{uuid4().hex[:10]}",
+        )
+        assert undone.status == REVERSED
+        seeding.commit()
+        return _Returned(
+            project_id=int(project.id),
+            delta_id=int(delta.id),
+            fact_id=int(incoming.id),
+            support_id=int(assessment.id),
+            source_revision=delta.source_revision,
+            revision_id=int(undone.revision_id),
+        )
+
+
+@pytest.mark.slow
+def test_two_coordinators_answering_the_returned_question_leave_one_decision(
+    runtime_database,
+) -> None:
+    """The successor decision is still one decision (#948).
+
+    Two coordinators open the question an Undo returned and both save. The
+    generation is assigned inside the command, under the advisory lock every
+    terminal writer takes, so the two serialise: one writes generation 1 and
+    the other is refused by name. Nothing here can be proved by a
+    rollback-scoped test -- neither transaction sees the other's uncommitted
+    rows -- so it uses the harness's own isolated database.
+    """
+
+    factory = runtime_database.session_factory
+    for _ in range(4):
+        seeded = _seed_returned_question(factory)
+        both_ready = Barrier(2, timeout=30)
+
+        def answer() -> object:
+            with factory() as deciding:
+                deciding.execute(select(func.txid_current()))
+                both_ready.wait()
+                outcome = resolve_delta(
+                    deciding,
+                    ChildDecisionRequest(
+                        project_id=seeded.project_id,
+                        delta_id=seeded.delta_id,
+                        action=ACCEPT,
+                        principal=ALICE,
+                        decided_at=DECIDED_AT,
+                        idempotency_key=f"apply:{uuid4().hex[:10]}",
+                        observed_accepted_revision_id=seeded.revision_id,
+                        observed_decision_generation=1,
+                        record_effects=(RecordEffect(fact_id=seeded.fact_id),),
+                        support_assessment_ids=(seeded.support_id,),
+                    ),
+                )
+                if outcome.status == RESOLVED:
+                    deciding.commit()
+                else:
+                    deciding.rollback()
+                return outcome
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            both = [pool.submit(answer), pool.submit(answer)]
+            outcomes = [one.result() for one in both]
+
+        with factory() as verify:
+            generations = [
+                row.generation
+                for row in verify.scalars(
+                    select(DeltaDisposition)
+                    .where(DeltaDisposition.delta_id == seeded.delta_id)
+                    .order_by(DeltaDisposition.generation)
+                ).all()
+            ]
+            assert generations == [0, 1], generations
+            assert live_delta_status(verify, seeded.delta_id) == "resolved"
+
+        assert sorted(one.status for one in outcomes) == [REFUSED, RESOLVED]
+        (refused,) = [one for one in outcomes if one.status == REFUSED]
+        assert refused.refusal.reason in {
+            "already_resolved",
+            "stale_decision_generation",
+        }, refused.refusal

@@ -194,7 +194,14 @@ class DeltaDisposition(Base):
 
     __tablename__ = "delta_dispositions"
     __table_args__ = (
-        UniqueConstraint("delta_id", name="uq_delta_dispositions_delta"),
+        # One decision per generation, so a successor decision takes a new
+        # slot and the row it follows is never deleted or written to (#948,
+        # ADR-0035).  `proposed_delta_effective_disposition` says which
+        # generation is in force: the highest one no packet reversal names.
+        UniqueConstraint(
+            "delta_id", "generation", name="uq_delta_dispositions_generation"
+        ),
+        CheckConstraint("generation >= 0", name="ck_delta_dispositions_generation"),
         ForeignKeyConstraint(
             ["project_id", "delta_id"],
             ["proposed_deltas.project_id", "proposed_deltas.id"],
@@ -213,6 +220,8 @@ class DeltaDisposition(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
     delta_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    #: Which decision on this delta this row is, counting from zero.
+    generation: Mapped[int] = mapped_column(Integer, server_default=text("0"))
     disposition: Mapped[str] = mapped_column(String(32))
     decided_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     decided_by_principal: Mapped[str | None] = mapped_column(String(128))
@@ -334,7 +343,10 @@ class DeltaRecordDecision(Base):
         UniqueConstraint(
             "disposition_id", name="uq_delta_record_decisions_disposition"
         ),
-        UniqueConstraint("delta_id", name="uq_delta_record_decisions_delta"),
+        # No per-delta unique: an Undo returns the question to Review and the
+        # customer may decide it again, so one delta may carry a successor
+        # decision (#948).  One decision per disposition still bounds this
+        # relation, and the disposition's generation bounds how many.
         UniqueConstraint(
             "project_id", "idempotency_key", name="uq_delta_record_decisions_key"
         ),

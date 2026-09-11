@@ -1451,7 +1451,13 @@ def test_one_bounded_read_produces_the_whole_portfolio(session, tmp_path, store)
     # three that already read dispositions, supersessions and deferrals, and
     # again batched over the whole portfolio rather than asked per project --
     # which is what the equality above proves.
-    assert large <= 22, large
+    # It rose by one more when Undo learned to return the question it settled
+    # (#948): one statement for every project's undone decisions, which answers
+    # two things at once -- which decision on a change the next one is, and
+    # which revisions only put a decision back and therefore did not move the
+    # value under a comparison. Batched over the whole portfolio like its four
+    # siblings, which is again what the equality above proves.
+    assert large <= 23, large
 
 
 # --- how it reads ----------------------------------------------------------

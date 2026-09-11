@@ -117,6 +117,7 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass, field, fields, replace
 from datetime import date, datetime
+from types import MappingProxyType
 from typing import Any, Mapping, Sequence
 
 from sqlalchemy import func, select
@@ -131,6 +132,7 @@ from corridor.delta_resolution import (
     STALE,
     TIMING_FIELDS,
     ChildDecisionRequest,
+    reversed_disposition_ids,
 )
 from corridor.models import (
     DeltaCaptureCorrection,
@@ -417,6 +419,11 @@ class DeltaStanding:
     superseded_by_delta_id: int | None = None
     baseline_revision: int | None = None
     current_accepted_revision_id: int | None = None
+    #: Which decision on this delta the next one will be (#948). Zero until a
+    #: decision has been made and undone. It travels with the standing for the
+    #: reason `deferral_id` does: a submission names what it was composed
+    #: against rather than whatever is current at the moment of writing.
+    decision_generation: int = 0
     # The attributable commitment this delta came from, where its statement
     # declared its own Applies To scope.  Recorded on the standing so a
     # presentation can name a commitment's whole scope — including the
@@ -609,7 +616,13 @@ def _by_project(
 def resolved_delta_ids_by_project(
     session: Session, project_ids: Sequence[int]
 ) -> dict[int, set[int]]:
-    """Every delta a semantic disposition has already settled (#519)."""
+    """Every delta a semantic disposition still settles (#519, #948).
+
+    A decision the coordinator undid is retained history and settles nothing:
+    ADR-0035 returns the Extracted Proposal, so this set -- which is what
+    Review counts its offer from -- reads the reversal the same way
+    ``live_deferrals_by_project`` below reads it.
+    """
 
     ids, any_ids = _by_project(project_ids)
     found: dict[int, set[int]] = {project_id: set() for project_id in ids}
@@ -617,7 +630,8 @@ def resolved_delta_ids_by_project(
         return found
     for project_id, delta_id in session.execute(
         select(DeltaDisposition.project_id, DeltaDisposition.delta_id).where(
-            DeltaDisposition.project_id.in_(ids)
+            DeltaDisposition.project_id.in_(ids),
+            ~DeltaDisposition.id.in_(reversed_disposition_ids()),
         )
     ).all():
         found[int(project_id)].add(int(delta_id))
@@ -703,6 +717,76 @@ def live_deferrals_by_project(
         .order_by(DeltaDeferral.id)
     ).all():
         found[int(row.project_id)][int(row.delta_id)] = row
+    return found
+
+
+@dataclass(frozen=True)
+class UndoneDecisions:
+    """What a coordinator has already decided and taken back on one delta (#948).
+
+    Two facts, read in one statement because they are one join: the semantic
+    decisions this delta carried that have since been reversed.
+
+    ``generation`` is how many, and therefore which decision the next one is.
+    A submission declares the generation it was composed against so that a form
+    rendered before a decision was made and undone cannot become valid again
+    simply because the values returned to what they were; the command assigns
+    the generation itself, under the terminal lock, and refuses a mismatch.
+    A released deferral and a withdrawn Follow-up Plan are not counted: neither
+    resolved anything, so neither opens a generation.
+
+    ``compensating_revisions`` is the revisions those Undos appended. An Undo
+    restores the accepted value the decision had moved by appending a revision
+    rather than rewriting one, so the record stands on a *newer* revision
+    holding the *same* value -- and ``is_stale``, which reads revision order as
+    a proxy for "the value moved", would call the returned question stale and
+    park it out of Review. Anything else that moved the value afterwards is a
+    higher revision than the compensation and still makes the delta stale.
+    """
+
+    generation: int = 0
+    compensating_revisions: frozenset[int] = frozenset()
+
+
+def undone_decisions_by_project(
+    session: Session, project_ids: Sequence[int]
+) -> dict[int, dict[int, UndoneDecisions]]:
+    """Each delta whose own decision an Undo took back, and what that leaves."""
+
+    ids, any_ids = _by_project(project_ids)
+    found: dict[int, dict[int, UndoneDecisions]] = {
+        project_id: {} for project_id in ids
+    }
+    if not any_ids:
+        return found
+    for project_id, delta_id, revision_id in session.execute(
+        select(
+            DeltaReviewPacketChild.project_id,
+            DeltaReviewPacketChild.delta_id,
+            DeltaReviewPacketReversal.revision_id,
+        )
+        .join(
+            DeltaReviewPacketReversal,
+            DeltaReviewPacketReversal.receipt_id == DeltaReviewPacketChild.receipt_id,
+        )
+        .where(
+            DeltaReviewPacketChild.project_id.in_(ids),
+            # One row per reversed semantic decision: a child names at most one
+            # decision, and a reversal names one receipt, so counting these
+            # rows counts the decisions this delta has had taken back.
+            DeltaReviewPacketChild.decision_id.is_not(None),
+        )
+    ).all():
+        by_delta = found[int(project_id)]
+        standing = by_delta.get(int(delta_id), UndoneDecisions())
+        by_delta[int(delta_id)] = UndoneDecisions(
+            generation=standing.generation + 1,
+            compensating_revisions=(
+                standing.compensating_revisions
+                if revision_id is None
+                else standing.compensating_revisions | {int(revision_id)}
+            ),
+        )
     return found
 
 
@@ -819,6 +903,7 @@ def standing_sets(
     capture_corrected: set[int] = frozenset(),
     schedules: Mapping[int, DeltaDeferral],
     standing: Mapping[tuple[str, str], int],
+    undone: Mapping[int, UndoneDecisions] = MappingProxyType({}),
     as_of: datetime,
 ) -> DeltaStandingSets:
     """Place every delta of one project, from rows already read.
@@ -843,7 +928,9 @@ def standing_sets(
         and delta.id not in capture_corrected
     ]
     stale_ids = frozenset(
-        delta.id for delta in open_rows if is_stale(delta, standing)
+        delta.id
+        for delta in open_rows
+        if is_stale(delta, standing, undone=undone)
     )
     live_rows = [delta for delta in open_rows if delta.id not in stale_ids]
 
@@ -906,20 +993,31 @@ def recorded_baseline_revision(recorded: str | None) -> int | None:
 
 
 def is_stale(
-    delta: ProposedDelta, standing: Mapping[tuple[str, str], int]
+    delta: ProposedDelta,
+    standing: Mapping[tuple[str, str], int],
+    *,
+    undone: Mapping[int, UndoneDecisions] = MappingProxyType({}),
 ) -> bool:
     """Whether the accepted value this delta was compared against has moved.
 
     A delta that never recorded which revision it compared against cannot be
     proved stale, so it is not called stale; the decision command's own
     stale-revision refusal still stands behind the reading.
+
+    ``undone`` names the revisions that only put this delta's own decision back
+    (#948). The record stands on one of them holding the value the comparison
+    was made against, so nothing moved under it and the returned question is
+    offered rather than parked. A revision that moved the value afterwards is
+    higher than the compensation and is read here as it always was.
     """
 
     baseline = recorded_baseline_revision(delta.accepted_baseline_revision)
     if baseline is None or delta.target_field is None:
         return False
     current = standing.get((delta.target_subject_identity, delta.target_field))
-    return current is not None and current > baseline
+    if current is None or current <= baseline:
+        return False
+    return current not in undone.get(delta.id, UndoneDecisions()).compensating_revisions
 
 
 # --- consequence -----------------------------------------------------------
@@ -1020,6 +1118,7 @@ def read_open_deltas(
     capture_corrected = _capture_corrected_ids(session, project_id)
     schedules = _live_deferrals(session, project_id)
     standing = standing_accepted_revisions(session, project_id=project_id)
+    undone = undone_decisions_by_project(session, (project_id,))[project_id]
 
     sets = standing_sets(
         deltas,
@@ -1028,6 +1127,7 @@ def read_open_deltas(
         capture_corrected=capture_corrected,
         schedules=schedules,
         standing=standing,
+        undone=undone,
         as_of=as_of,
     )
     stale_ids = sets.stale_ids
@@ -1059,6 +1159,7 @@ def read_open_deltas(
 
     standings: list[DeltaStanding] = []
     for delta in deltas:
+        generation = undone.get(delta.id, UndoneDecisions()).generation
         if delta.id in resolved:
             standings.append(DeltaStanding(delta_id=delta.id, standing=RESOLVED))
         elif delta.id in superseded_by:
@@ -1111,6 +1212,7 @@ def read_open_deltas(
                     item_key=item_of[delta.id],
                     commitment_key=commitments.get(delta.id),
                     returned=returned.get(delta.id),
+                    decision_generation=generation,
                 )
             )
 

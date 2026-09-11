@@ -108,7 +108,9 @@ begin
     values(p_project,p_document,p_run,p_family,p_revision,p_digest,p_accepted,p_output) returning id into result;
     for prior in select d.* from proposed_deltas d where d.project_id=p_project and d.source_family=family_hash
         and not(d.id=any(current_delta_ids))
-        and not exists(select 1 from delta_dispositions where delta_id=d.id)
+        -- Undone decisions settle nothing, so their deltas are open
+        -- questions a newer revision supersedes (#948, ADR-0035).
+        and public.proposed_delta_effective_disposition(d.id) is null
         and not exists(select 1 from delta_supersessions where prior_delta_id=d.id)
         -- Retired because its capture was corrected: already out of the
         -- actionable set, with its own explanation (ADR-0101).

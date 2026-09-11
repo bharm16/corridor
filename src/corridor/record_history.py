@@ -98,6 +98,7 @@ from corridor.support_history import (
 )
 from corridor.outgoing_requests import RecordedRequest, read_correspondence
 from corridor import capture_correction_retirement
+from corridor.delta_resolution import effective_dispositions, reversed_disposition_ids
 from corridor.capture_correction_retirement import (
     RetirementReading,
     retirements_by_delta,
@@ -1044,22 +1045,24 @@ def _delta_history(
     if not deltas:
         return ()
     delta_ids = tuple(delta.id for delta in deltas)
-    dispositions = {
-        row.delta_id: row
-        for row in session.scalars(
-            select(DeltaDisposition).where(
-                DeltaDisposition.project_id == project_id,
-                DeltaDisposition.delta_id.in_(delta_ids),
-            )
-        )
-    }
+    # The decision in force, which after an Undo is not the same thing as the
+    # decision that was recorded (#948, ADR-0035). The undone act itself is
+    # still printed: `_packets` below carries its receipt and the instant it
+    # was reversed, so the history reads as "decided, then undone" rather than
+    # as a standing resolution the Work List disagrees with.
+    dispositions = effective_dispositions(session, delta_ids)
     decisions = {
         row.delta_id: row
         for row in session.scalars(
-            select(DeltaRecordDecision).where(
+            select(DeltaRecordDecision)
+            .where(
                 DeltaRecordDecision.project_id == project_id,
                 DeltaRecordDecision.delta_id.in_(delta_ids),
+                ~DeltaRecordDecision.disposition_id.in_(
+                    reversed_disposition_ids()
+                ),
             )
+            .order_by(DeltaRecordDecision.id)
         )
     }
     superseded = {

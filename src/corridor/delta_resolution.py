@@ -188,6 +188,33 @@ class ContradictoryDeltaStanding(RuntimeError):
         )
 
 
+class ContradictoryDeltaResolution(RuntimeError):
+    """One Proposed Delta carries more than one decision still in force (#948).
+
+    A resolution stays in history after an Undo, so a delta may carry several
+    dispositions -- but at most one of them is effective, because a new
+    generation is assigned by the command under the terminal lock only once the
+    decision before it has been reversed.  A generation the caller names buys
+    nothing: the standing decision is refused first.
+
+    It is raised for the reason ``ContradictoryDeltaStanding`` is raised, and it
+    is the reason this reading does not simply take the highest generation.
+    Ordering would answer, and the answer would hide the contradiction in the
+    place a reader trusts most.  What can produce it is an import, or a row
+    written outside the command by the one role the guard trigger admits.
+    """
+
+    def __init__(self, delta_id: int, generations: tuple[int, ...]) -> None:
+        self.delta_id = delta_id
+        self.generations = generations
+        super().__init__(
+            f"Proposed Delta {delta_id} carries {len(generations)} decisions "
+            f"still in force (generations {', '.join(str(one) for one in generations)}); "
+            "a delta has at most one, so this record contradicts itself and "
+            "the generation order must not be asked to settle it"
+        )
+
+
 class DeltaResolutionRefused(ValueError):
     """A caller cannot construct an attributable delta resolution at all."""
 
@@ -318,6 +345,12 @@ class ChildDecisionRequest:
     idempotency_key: str
     decided_at: datetime
     observed_accepted_revision_id: int | None = None
+    #: Which decision on this delta the submission was composed against (#948):
+    #: zero for a change nobody has decided, and one more for each decision
+    #: that has since been made and undone. The command assigns the generation
+    #: itself, under the terminal lock; this is what the caller believed, and a
+    #: mismatch is refused rather than silently made into a later act.
+    observed_decision_generation: int = 0
     record_effects: tuple[RecordEffect, ...] = ()
     support_assessment_ids: tuple[int, ...] = ()
     edit_basis: EditBasis | None = None
@@ -361,6 +394,7 @@ class ValidatedChildDecision:
     edit_basis: dict[str, Any] | None
     record_effects: tuple[dict[str, Any], ...]
     support_assessment_ids: tuple[int, ...]
+    observed_decision_generation: int = 0
 
 
 @dataclass(frozen=True)
@@ -465,6 +499,82 @@ def delta_effect_kind(delta: ProposedDelta, *, contradiction: bool = False) -> s
 # --- Reading the delta and its accepted context ---------------------------
 
 
+def reversed_disposition_ids(*, through_revision_id: int | None = None):
+    """Every disposition a packet Undo has taken out of force (#948, ADR-0035).
+
+    ADR-0035 says Undo "reverses every result of that guided Save and returns
+    the Extracted Proposal", and a resolution is one of those results.  The
+    disposition row is never deleted and never written to: the reversal is a
+    later row, and a reader that wants to know what is *in force* joins it,
+    exactly as the deferral branch below already does.  The chain is the one
+    the act itself wrote -- the disposition's authority binding, the packet
+    child that carried it, and the reversal of that child's receipt.
+
+    ``through_revision_id`` bounds it for an as-of reading: a reversal takes
+    effect in the compensating Project Record revision it opened, so a reading
+    frozen at an earlier revision still sees the decision standing.  A
+    deferral-only reversal opens no revision, and it can never name a
+    disposition, so nothing is lost by excluding it from a bounded reading.
+
+    A standalone resolution belongs to no packet, so no reversal can name it
+    and it stays in force -- which is what that command has always done.
+    """
+
+    query = (
+        select(DeltaRecordDecision.disposition_id)
+        .join(
+            DeltaReviewPacketChild,
+            DeltaReviewPacketChild.decision_id == DeltaRecordDecision.id,
+        )
+        .join(
+            DeltaReviewPacketReversal,
+            DeltaReviewPacketReversal.receipt_id == DeltaReviewPacketChild.receipt_id,
+        )
+    )
+    if through_revision_id is not None:
+        query = query.where(
+            DeltaReviewPacketReversal.revision_id <= through_revision_id
+        )
+    return query
+
+
+def effective_dispositions(
+    session: Session, delta_ids: Sequence[int]
+) -> dict[int, DeltaDisposition]:
+    """The one decision in force on each delta, refusing to choose between two.
+
+    The companion to ``reversed_disposition_ids`` for a reader that needs the
+    row rather than the membership: one delta, one effective disposition, and
+    a second is raised rather than resolved by taking the later generation
+    (#948).
+    """
+
+    ids = tuple(dict.fromkeys(int(value) for value in delta_ids))
+    if not ids:
+        return {}
+    found: dict[int, DeltaDisposition] = {}
+    contradicted: dict[int, list[int]] = {}
+    for row in session.scalars(
+        select(DeltaDisposition)
+        .where(
+            DeltaDisposition.delta_id.in_(ids),
+            ~DeltaDisposition.id.in_(reversed_disposition_ids()),
+        )
+        .order_by(DeltaDisposition.generation)
+    ).all():
+        delta_id = int(row.delta_id)
+        if delta_id in found:
+            contradicted.setdefault(
+                delta_id, [found[delta_id].generation]
+            ).append(row.generation)
+            continue
+        found[delta_id] = row
+    if contradicted:
+        delta_id, generations = sorted(contradicted.items())[0]
+        raise ContradictoryDeltaResolution(delta_id, tuple(generations))
+    return found
+
+
 def live_delta_status(session: Session, delta_id: int) -> str:
     """open, resolved, superseded, capture_corrected, or deferred, derived and never stored.
 
@@ -484,11 +594,21 @@ def live_delta_status(session: Session, delta_id: int) -> str:
     guards each command takes under it.
     """
 
-    resolved, superseded, corrected = session.execute(
+    standing, superseded, corrected = session.execute(
         select(
-            select(DeltaDisposition.id)
-            .where(DeltaDisposition.delta_id == delta_id)
-            .exists(),
+            # A count rather than an existence, so two decisions in force are
+            # seen rather than silently answered by whichever the order reaches
+            # first.  An undone decision is retained history and not a standing
+            # resolution: the question it settled is the customer's to answer
+            # again (#948, ADR-0035).  The same rule the deferral branch below
+            # applies, on the one branch it was never applied to.
+            select(func.count())
+            .select_from(DeltaDisposition)
+            .where(
+                DeltaDisposition.delta_id == delta_id,
+                ~DeltaDisposition.id.in_(reversed_disposition_ids()),
+            )
+            .scalar_subquery(),
             select(DeltaSupersession.id)
             .where(DeltaSupersession.prior_delta_id == delta_id)
             .exists(),
@@ -497,6 +617,22 @@ def live_delta_status(session: Session, delta_id: int) -> str:
             .exists(),
         )
     ).one()
+    if standing > 1:
+        raise ContradictoryDeltaResolution(
+            int(delta_id),
+            tuple(
+                int(value)
+                for value in session.scalars(
+                    select(DeltaDisposition.generation)
+                    .where(
+                        DeltaDisposition.delta_id == delta_id,
+                        ~DeltaDisposition.id.in_(reversed_disposition_ids()),
+                    )
+                    .order_by(DeltaDisposition.generation)
+                ).all()
+            ),
+        )
+    resolved = bool(standing)
     # All three are read before any is returned, deliberately.  Reading them
     # in precedence order and returning the first would make the order the
     # thing that decides what a contradictory record means, which is exactly
@@ -705,6 +841,7 @@ def validate_child_decision(
         edit_basis=edit_payload,
         record_effects=tuple(effect.as_payload() for effect in record_effects),
         support_assessment_ids=support_ids,
+        observed_decision_generation=int(request.observed_decision_generation),
     )
 
 
@@ -1108,6 +1245,7 @@ def commit_child_decision(
                             ARRAY(BigInteger),
                         ),
                         revision_id,
+                        decision.observed_decision_generation,
                     )
                 )
             )

@@ -224,7 +224,23 @@ EXPECTED_SCHEMA_SHA256 = (
     # named. Five columns and a rewritten command on relations that already
     # exist, so the digest moves and neither count does. Recomputed against a
     # fresh disposable database with template reuse off.
-    "6809f0674ee506702d614fe2070b9d5c77743f2a75a569c6292f30337b1ab73d"
+    # #948 gives a resolved Proposed Delta a successor-decision contract, so
+    # that an Undo can return the question it settled and the customer can
+    # actually answer it again. `delta_dispositions` gains `generation` -- which
+    # decision on this delta this row is, counting from zero -- with a check
+    # that it is not negative, and `unique (delta_id)` becomes
+    # `unique (delta_id, generation)`; `delta_record_decisions` gives up its own
+    # `unique (delta_id)`, because one decision per disposition already bounds
+    # it. One new function, `proposed_delta_effective_disposition`, is the
+    # predicate every write guard and every reading asks instead of six copies:
+    # the decision no reversal names, raising rather than choosing when history
+    # holds two. `resolve_proposed_delta_decision` takes one more argument --
+    # the generation the submission was composed against -- assigns the
+    # generation itself under the terminal lock, and raises one more refusal.
+    # A column, two constraints, a function and a rewritten command on
+    # relations that already exist, so the digest moves and neither count does.
+    # Recomputed against a fresh disposable database with template reuse off.
+    "3a65ccedab1df5e05533f6718d31f054b466d450135c7653249ce5961cbf8415"
 )
 
 pytestmark = [pytest.mark.slow, pytest.mark.migration]

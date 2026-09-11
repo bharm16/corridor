@@ -53,6 +53,7 @@ from corridor.delta_refusals import REFUSAL_TOKEN, REVIEW_PACKET_TOKEN
 from corridor.delta_resolution import Refusal
 from corridor.follow_up_plan_lifecycle import ClosureRefusal
 from corridor.models import (
+    PACKET_SEMANTIC_OUTCOMES,
     DeltaReviewPacketChild,
     DeltaReviewPacketReceipt,
     ProposedDelta,
@@ -92,6 +93,10 @@ class PacketChildReading:
     field_name: str
     source: str
     outcome_words: str
+    #: #526's own token for what the coordinator chose, kept beside the words
+    #: so a reader can ask what kind of outcome this was without parsing
+    #: prose (#948).
+    outcome: str = ""
 
 
 @dataclass(frozen=True)
@@ -111,6 +116,22 @@ class PacketReceiptReading:
         """Whether a compensating act has already been recorded for this one."""
 
         return self.reversed_at is not None
+
+    @property
+    def settled_a_question(self) -> bool:
+        """Whether undoing this act returns a question to Review (#948).
+
+        ADR-0035's Undo "returns the Extracted Proposal", and the proposals it
+        returns are the ones a semantic outcome settled.  A Needs coordination
+        answer left its change open and a dated Defer put it away rather than
+        answering it, so neither comes *back* to Review and neither is told it
+        did: the scheduling act has its own words below, and an act that
+        settled nothing keeps the compensation sentence alone.
+        """
+
+        return any(
+            child.outcome in PACKET_SEMANTIC_OUTCOMES for child in self.children
+        )
 
 
 def read_packet_receipt(
@@ -175,6 +196,7 @@ def _child_reading(
             else child.observed_source_revision
         ),
         outcome_words=OUTCOME_RECORDED[child.outcome],
+        outcome=child.outcome,
     )
 
 

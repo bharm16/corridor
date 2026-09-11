@@ -72,6 +72,7 @@ RESOLVE_DELTA_REFUSAL_CODES = (
     "missing_wake_condition",
     "schedule_bound_to_other_content",
     "stale_accepted_revision",
+    "stale_decision_generation",
     "stale_schedule",
     "subject_mismatch",
     "superseded_delta",
@@ -106,7 +107,10 @@ create table public.delta_record_decisions (
     decided_at timestamp with time zone not null,
     recorded_at timestamp with time zone not null default now(),
     constraint uq_delta_record_decisions_disposition unique (disposition_id),
-    constraint uq_delta_record_decisions_delta unique (delta_id),
+    -- No `unique (delta_id)`: a delta may carry a successor decision once
+    -- an Undo has returned its question to Review (#948).  One decision
+    -- per disposition still bounds this relation, and
+    -- `uq_delta_dispositions_generation` bounds how many there may be.
     constraint uq_delta_record_decisions_key unique (project_id, idempotency_key),
     constraint uq_delta_record_decisions_project_id unique (project_id, id),
     constraint fk_delta_record_decisions_delta
@@ -288,7 +292,8 @@ create function public.resolve_proposed_delta_decision(
     p_edit_basis jsonb,
     p_record_effects jsonb,
     p_support_assessment_ids bigint[],
-    p_revision_id bigint
+    p_revision_id bigint,
+    p_observed_generation integer
 ) returns jsonb
     language plpgsql security definer
     set search_path to 'public'
@@ -304,6 +309,7 @@ create function public.resolve_proposed_delta_decision(
             live_revision bigint;
             support_id bigint;
             slot integer := 0;
+            v_generation integer;
             revision bigint;
             disposition_id bigint;
             decision_id bigint;
@@ -369,10 +375,42 @@ create function public.resolve_proposed_delta_decision(
             -- retirement serialises: one wins and the other reads the
             -- winner's row below.
             perform public.lock_proposed_delta_terminal(p_delta_id);
-            if exists (
-                select 1 from delta_dispositions where delta_id = p_delta_id
-            ) then
+            -- An effective disposition, not merely a row: a decision the
+            -- coordinator undid is retained history and settles nothing,
+            -- so the question it answered is answerable again (#948).
+            if public.proposed_delta_effective_disposition(p_delta_id)
+               is not null then
                 raise exception 'resolve_delta:already_resolved Proposed Delta % is already resolved; correct it with a later decision', p_delta_id
+                    using errcode='23514';
+            end if;
+            -- Which decision on this delta this one is, assigned here rather
+            -- than taken from the caller, under the terminal lock taken above
+            -- (#948).  It is the number of this delta's own semantic decisions
+            -- that have been reversed: a released deferral and a withdrawn
+            -- Follow-up Plan resolved nothing and advance nothing, and a
+            -- generation becomes available only once the decision before it
+            -- has actually been undone.  The guard above proved no decision
+            -- stands, so every earlier one is reversed and this is also the
+            -- number of rows `uq_delta_dispositions_generation` already holds.
+            select count(*) into v_generation
+              from delta_dispositions d
+             where d.delta_id = p_delta_id
+               and exists (
+                    select 1
+                      from delta_record_decisions earlier
+                      join delta_review_packet_children child
+                        on child.decision_id = earlier.id
+                      join delta_review_packet_reversals reversal
+                        on reversal.receipt_id = child.receipt_id
+                     where earlier.disposition_id = d.id
+               );
+            -- What the submission was composed against.  Without it a form
+            -- rendered before a decision was made and undone would become
+            -- valid again simply because the values returned to what they
+            -- were, and the coordinator would be answering a question whose
+            -- history has moved under them since they read it (#948).
+            if coalesce(p_observed_generation, 0) <> v_generation then
+                raise exception 'resolve_delta:stale_decision_generation this change has been decided and undone since you opened it; open it again and make the decision you want. Nothing was recorded'
                     using errcode='23514';
             end if;
             if exists (
@@ -521,12 +559,14 @@ create function public.resolve_proposed_delta_decision(
                 opened := true;
             end if;
 
+            -- The next slot, never the old row rewritten (#948).
             insert into delta_dispositions (
-                project_id, delta_id, disposition, decided_at,
+                project_id, delta_id, generation, disposition, decided_at,
                 decided_by_principal, decided_by_policy, rationale,
                 effective_value
             ) values (
-                p_project_id, p_delta_id, p_disposition, p_decided_at,
+                p_project_id, p_delta_id, v_generation,
+                p_disposition, p_decided_at,
                 p_principal, null, p_rationale, p_effective_value
             ) returning id into disposition_id;
 
@@ -594,7 +634,7 @@ create function public.resolve_proposed_delta_decision(
 RESOLVE_PROPOSED_DELTA_DECISION_SIGNATURE = (
     "(bigint, bigint, character varying, character varying, character varying, "
     "character varying, character varying, bigint, timestamp with time zone, "
-    "jsonb, text, jsonb, jsonb, bigint[], bigint)"
+    "jsonb, text, jsonb, jsonb, bigint[], bigint, integer)"
 )
 
 DEFER_PROPOSED_DELTA = """
@@ -635,9 +675,11 @@ create function public.defer_proposed_delta(
                     using errcode='23514';
             end if;
             perform public.lock_proposed_delta_terminal(p_delta_id);
-            if exists (
-                select 1 from delta_dispositions where delta_id = p_delta_id
-            ) then
+            -- An effective disposition, not merely a row: a decision the
+            -- coordinator undid is retained history and settles nothing,
+            -- so the question it answered is answerable again (#948).
+            if public.proposed_delta_effective_disposition(p_delta_id)
+               is not null then
                 raise exception 'resolve_delta:already_resolved Proposed Delta % is resolved and no longer schedulable', p_delta_id
                     using errcode='23514';
             end if;

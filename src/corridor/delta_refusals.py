@@ -157,6 +157,11 @@ REFUSAL_VOCABULARY: tuple[RefusalCode, ...] = (
     ),
     RefusalCode("schedule_bound_to_other_content", REFUSED, DATABASE_ONLY),
     RefusalCode("stale_accepted_revision", STALE, BOTH),
+    # Which decision on this delta the submission was composed against (#948).
+    # The pre-check must not anticipate it: the generation is assigned by the
+    # command under the terminal lock, and a Python guess taken before that
+    # lock is a race rather than an answer.
+    RefusalCode("stale_decision_generation", STALE, DATABASE_ONLY),
     RefusalCode("stale_schedule", REFUSED, DATABASE_ONLY),
     RefusalCode(
         "subject_mismatch",

@@ -457,6 +457,7 @@ DECLARED_VOCABULARY: tuple[tuple[str, str, str], ...] = (
     ("organization_change_kind_required", REFUSED, PYTHON_PRECHECK),
     ("schedule_bound_to_other_content", REFUSED, DATABASE_ONLY),
     ("stale_accepted_revision", STALE, BOTH),
+    ("stale_decision_generation", STALE, DATABASE_ONLY),
     ("stale_schedule", REFUSED, DATABASE_ONLY),
     ("subject_mismatch", REFUSED, BOTH),
     ("superseded_delta", REFUSED, BOTH),

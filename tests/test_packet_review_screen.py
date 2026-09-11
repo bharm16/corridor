@@ -1430,3 +1430,121 @@ def test_a_member_without_the_coordination_designation_cannot_undo(
     assert reading.status_code == 200
     assert refused.status_code == 403
     assert packet_reversal(session, receipt_id) is None
+
+
+def _generation_fields(body: str) -> list[str]:
+    """Every ``child_generation`` the rendered batch form carries (#948)."""
+
+    return re.findall(r'name="child_generation"\s+value="([^"]+)"', body)
+
+
+def test_the_returned_question_is_offered_again_and_can_be_decided_there(
+    session: Session, project: Project, client
+):
+    """#948 end to end on the coordinator's own screen.
+
+    ADR-0035 returns the Extracted Proposal, and a screen that reoffers a
+    proposal whose next Save is structurally impossible has not returned it. So
+    this decides through the form, undoes through the form, finds the change
+    offered again, and decides it again through the form -- and reads the page
+    that says so in the approved words.
+    """
+
+    _revision(session, project, changes=2)
+    key = _batch_key(session, project)
+    ids = _delta_ids(session, project)
+    saved = client.post(
+        f"/review/{project.slug}",
+        data={
+            "item_key": key,
+            "outcome": "apply",
+            "child": [str(value) for value in ids],
+            "child_generation": [f"{value}:0" for value in ids],
+        },
+    )
+    url, receipt_id = _receipt_link(saved)
+    session.expire_all()
+    assert read_review_items(session, project_id=project.id, as_of=NOW).items == ()
+
+    undone = client.post(f"{url}/undo")
+    session.expire_all()
+
+    assert undone.status_code == 200
+    assert "This decision was undone" in undone.text
+    assert "The change is back in Review." in undone.text
+    # Offered again, and the page says which decision the next one would be.
+    returned = read_review_items(session, project_id=project.id, as_of=NOW)
+    assert sorted(returned.reading.actionable_delta_ids) == sorted(ids)
+    opened = _open(client, project, _batch_key(session, project))
+    assert sorted(_generation_fields(opened.text)) == sorted(
+        f"{value}:1" for value in ids
+    )
+
+    again = client.post(
+        f"/review/{project.slug}",
+        data={
+            "item_key": _batch_key(session, project),
+            "outcome": "apply",
+            "child": [str(value) for value in ids],
+            "child_generation": [f"{value}:1" for value in ids],
+        },
+    )
+    session.expire_all()
+
+    _, second_receipt = _receipt_link(again)
+    assert second_receipt != receipt_id
+    assert [
+        row.generation
+        for row in session.scalars(
+            select(DeltaDisposition)
+            .where(DeltaDisposition.project_id == project.id)
+            .order_by(DeltaDisposition.delta_id, DeltaDisposition.generation)
+        ).all()
+    ] == [0, 1, 0, 1]
+
+
+def test_a_page_opened_before_the_undo_cannot_save_as_though_it_were_current(
+    session: Session, project: Project, client
+):
+    """The stale form #948 names, which the restored values would otherwise hide.
+
+    The page was rendered while nobody had decided these changes, so it carries
+    generation 0. By the time it is submitted the changes have been decided and
+    undone: every value on it reads correct again and only the history moved.
+    The command assigns the generation itself, so it is the one that refuses.
+    """
+
+    _revision(session, project, changes=2)
+    key = _batch_key(session, project)
+    ids = _delta_ids(session, project)
+    stale_form = {
+        "item_key": key,
+        "outcome": "apply",
+        "child": [str(value) for value in ids],
+        "child_generation": [f"{value}:0" for value in ids],
+    }
+    saved = client.post(f"/review/{project.slug}", data=dict(stale_form))
+    url, _ = _receipt_link(saved)
+    client.post(f"{url}/undo")
+    session.expire_all()
+    stale_form["item_key"] = _batch_key(session, project)
+
+    refused = client.post(f"/review/{project.slug}", data=stale_form)
+    session.expire_all()
+
+    assert refused.status_code == 409, refused.text[:600]
+    assert "decided and undone since you opened it" in refused.text
+    # Nothing was recorded: the questions are still the coordinator's to answer.
+    assert [
+        row.generation
+        for row in session.scalars(
+            select(DeltaDisposition).where(
+                DeltaDisposition.project_id == project.id
+            )
+        ).all()
+    ] == [0, 0]
+    assert sorted(
+        read_review_items(
+            session, project_id=project.id, as_of=NOW
+        ).reading.actionable_delta_ids
+    ) == sorted(ids)
