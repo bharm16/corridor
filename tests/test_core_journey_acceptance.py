@@ -53,16 +53,19 @@ identity, the session, or both, and all four are fixed:
    long as the request that made it, and ``tests/test_architecture.py`` fails
    if a web surface declares a partition and does not keep it (#935, #936).
 
-**What the walk found and did not fix.** A project configured with the
-standing schedules a deployment configures has *two* producers of Proposed
-Deltas over one delivery, and both run: the later-revision comparison, which
-names the registered source family, and ``delta_generation``'s own pass, whose
-``_lineage`` falls back to ``document:N`` because the Document carries no
-registry identity. So this revision's three changed rows arrive as six
-proposals in two Delta Groups over the same document and the same source
-revision, and every conflict below reads as "two retained sources disagree"
-when one file arrived. The steps are written on what the product shows rather
-than around it, which is why they open an item expecting more than one child.
+**What the walk found, and what fixing it changed here.** The first run of
+this file also found that a project configured with these standing schedules
+had *two* producers of Proposed Deltas over one delivery, and both ran: the
+later-revision comparison, which names the registered source family, and
+``delta_generation``'s own pass, which named the document. So this revision's
+three changed rows arrived as six proposals in two Delta Groups over the same
+document and the same source revision, and every conflict below read as "two
+retained sources disagree" when one file had arrived. That is fixed (#937):
+the generic pass leaves a delivery somebody declared a source revision for to
+the producer that owns it. The Review steps below therefore decide one batched
+item of three changes rather than three manufactured disagreements of two, and
+they say which Utility Conflict each one means rather than taking whichever
+item or child came first.
 
 **How to read a run.** The report prints one sentence per step. ``-rP`` is what
 shows it on a passing run -- xdist keeps a worker's output to itself otherwise
@@ -80,7 +83,7 @@ import html
 import os
 from pathlib import Path
 import re
-from typing import Any
+from typing import Any, Sequence
 from urllib.parse import parse_qs, urlsplit
 from uuid import uuid4
 
@@ -218,6 +221,18 @@ LATER_ROWS = [
     [*BASELINE_ROWS[2][:3], "8 in", *BASELINE_ROWS[2][4:]],
     FOURTH_CONFLICT,
 ]
+
+#: The three conflicts whose size that revision changes, named as Review names
+#: them on the one item that holds all three (#937). A step says which conflict
+#: it means, because "the first change listed" moves whenever an earlier step
+#: decides one, and because the correction steps below turn on the values a
+#: particular row holds: `DATED_CONFLICT` is the one whose accepted size the
+#: sheet still states a row further down, so re-reading it establishes no
+#: change, and `REREAD_CONFLICT` is the one whose corrected reading is a size
+#: the record has never held.
+APPLIED_CONFLICT = "Utility Conflicts!3"
+DATED_CONFLICT = "Utility Conflicts!4"
+REREAD_CONFLICT = "Utility Conflicts!5"
 
 #: And next cycle's, so the second reporting cycle reads a revision rather
 #: than the same bytes twice.
@@ -457,52 +472,99 @@ def open_the_item(journey: Journey, index: int = 0) -> str:
 
 
 _OPTION = re.compile(r'<option value="(?P<value>[^"]*)"')
+_DECISION_FORM = re.compile(
+    r'<form[^>]*method="post"[^>]*action="[^"]*"[^>]*>(?P<body>.*?)</form>', re.S
+)
+_CHOICE = re.compile(
+    r'<input[^>]*type="checkbox"[^>]*name="child"[^>]*value="(?P<id>[^"]*)"'
+    r'[^>]*>\s*(?P<text>.*?)\s*</label>',
+    re.S,
+)
 
 
-def answer_fields(body: str, *, defer_all: bool = False) -> dict[str, object]:
-    """The answers form as a browser would submit it.
+def decision_form(body: str) -> str:
+    """The form an opened item decides its changes on.
 
-    Every control on this form repeats once per child, so the answers travel
-    as lists rather than as single values: a payload carrying one of each
-    would save one answer where the page asked for two, and the route pairs
-    them by position. What a person chooses is chosen here from the options
-    the page printed -- apply for the first change, and a dated return for the
-    second, which is the deferral a later step proves survives a correction.
+    Found by the control it carries rather than by its action, because the
+    page posts its decision and searches its passages at the same address and
+    only the decision form offers an outcome to press.
     """
 
-    form = form_fields(body, "/answers")
-    assert form is not None, "the opened item renders no answers form"
-    deltas = re.findall(r'name="answer_delta" value="([^"]*)"', body)
-    offered = [
-        _OPTION.findall(one)
-        for one in re.findall(
-            r'<select[^>]*name="answer_outcome"[^>]*>(.*?)</select>', body, re.S
-        )
-    ]
-    assert deltas and len(deltas) == len(offered), (
-        "the answers form asks about a different number of changes than it "
-        "offers outcomes for"
+    for match in _DECISION_FORM.finditer(body):
+        if 'name="outcome"' in match.group("body"):
+            return match.group("body")
+    raise AssertionError(
+        "the opened item renders no form a coordinator could decide it on"
     )
-    outcomes = [
-        "defer" if defer_all or index else "apply" for index in range(len(deltas))
+
+
+def offered_changes(body: str) -> list[tuple[str, str]]:
+    """Every change this item offers to decide, and what it says about each.
+
+    The page prints each change's subject and its before and after beside its
+    own checkbox, so a step below chooses the change it means by what the
+    coordinator would read rather than by where it happens to sit.
+    """
+
+    return [
+        (found.group("id"), " ".join(prose(found.group("text")).split()))
+        for found in _CHOICE.finditer(decision_form(body))
     ]
-    for outcome, choices in zip(outcomes, offered):
-        assert outcome in choices, (
-            f"the page does not offer {outcome!r} for this change"
-        )
+
+
+def the_change_for(body: str, subject: str) -> str:
+    """The change this item offers for one Utility Conflict, by its own name."""
+
+    for delta_id, text in offered_changes(body):
+        if text.startswith(subject):
+            return delta_id
+    raise AssertionError(
+        f"this item offers no change for {subject}; it offers "
+        f"{[text for _, text in offered_changes(body)]}"
+    )
+
+
+def decision_hidden_fields(body: str) -> dict[str, str]:
+    """What the decision form carries without a person typing it."""
+
+    fields = {
+        name: html.unescape(value)
+        for name, value in _REPEATED.findall(decision_form(body))
+    }
+    assert auth.CSRF_FIELD in fields and "item_key" in fields, (
+        "the decision form carries no token or no item to decide"
+    )
+    return fields
+
+
+def decision_fields(
+    body: str, *, decide: Sequence[str], outcome: str, defer_until: str = ""
+) -> dict[str, object]:
+    """That form as a browser would submit it, deciding the named changes.
+
+    A batch carries one outcome for everything ticked, which is the whole
+    shape of the control: a coordinator selects the changes this answer is
+    for and presses the answer. The rest stay open, which the page says in as
+    many words, and this is why a step that applies one change and dates
+    another submits twice rather than posting a mapping.
+    """
+
+    form = decision_form(body)
+    fields = decision_hidden_fields(body)
+    offered = {delta_id for delta_id, _ in offered_changes(body)}
+    assert set(decide) <= offered, (
+        f"this step decides {sorted(set(decide) - offered)}, which the item "
+        f"does not offer; it offers {sorted(offered)}"
+    )
+    assert f'name="outcome" value="{outcome}"' in form, (
+        f"the page does not offer {outcome!r} for these changes"
+    )
     return {
-        auth.CSRF_FIELD: form[auth.CSRF_FIELD],
-        "item_key": form["item_key"],
-        "answer_delta": deltas,
-        "answer_outcome": outcomes,
-        "answer_source": [""] * len(deltas),
-        "answer_question": [""] * len(deltas),
-        "answer_person": [""] * len(deltas),
-        "answer_organization": [""] * len(deltas),
-        "answer_return": [
-            RETURN_DATE.isoformat() if outcome == "defer" else ""
-            for outcome in outcomes
-        ],
+        auth.CSRF_FIELD: fields[auth.CSRF_FIELD],
+        "item_key": fields["item_key"],
+        "child": list(decide),
+        "outcome": outcome,
+        "defer_until": defer_until,
     }
 
 
@@ -802,19 +864,27 @@ def step_inspect_exact_source_context(journey: Journey) -> None:
 def step_review_routine_changes(journey: Journey) -> None:
     """Answer the changes this revision proposed, on the item that holds them.
 
-    The page offers "Save the answers for these sources" rather than a bare
-    Apply: two retained sources answer the same field differently, so the
-    disagreement is the decision (ADR-0082). The answers are therefore chosen
-    per child from the options the page itself printed, which is also why this
-    step cannot post a mapping -- every control repeats once per child, in
-    document order.
+    One delivery is one source revision, so its compatible changes arrive as
+    one item offering Apply, Keep current and Defer over the changes a
+    coordinator ticks (#937). This applies one of them and leaves the other
+    two open, because the steps below are about a change still waiting: a page
+    that decided everything here would have nothing left to correct or to
+    date.
     """
 
     opened = open_the_item(journey)
-    answers = answer_fields(opened)
-    assert answers, "the opened item offers no answer to save"
+    assert len(offered_changes(opened)) == 3, (
+        "one delivery changed three rows and this item does not hold three "
+        f"changes: {offered_changes(opened)}"
+    )
     saved = journey.client.post(
-        f"/review/{journey.slug}/answers", data=answers, follow_redirects=False
+        f"/review/{journey.slug}",
+        data=decision_fields(
+            opened,
+            decide=[the_change_for(opened, APPLIED_CONFLICT)],
+            outcome="apply",
+        ),
+        follow_redirects=False,
     )
     assert saved.status_code in (200, 201), saved.text
     receipt = re.search(
@@ -838,7 +908,7 @@ _PASSAGE_OPTION = re.compile(
 def ordered_deltas(body: str) -> list[str]:
     """The changes this item holds, in the order the page prints them."""
 
-    return re.findall(r'name="answer_delta" value="([^"]*)"', body)
+    return [delta_id for delta_id, _ in offered_changes(body)]
 
 
 def correction_form_for(body: str, delta_id: str) -> dict[str, str] | None:
@@ -901,8 +971,7 @@ def find_the_passage(
 
 
 def report_the_extraction_error(
-    journey: Journey, *, delta_id: str, words: str, interpretation: str,
-    item: int = 0,
+    journey: Journey, *, delta_id: str, words: str, interpretation: str
 ) -> int:
     """Say that one capture was read from the wrong passage of its source.
 
@@ -911,8 +980,8 @@ def report_the_extraction_error(
     act on is the number the coordinator was shown.
     """
 
-    opened = open_the_item(journey, item)
-    item_key = form_fields(opened, "/answers")["item_key"]
+    opened = open_the_item(journey)
+    item_key = decision_hidden_fields(opened)["item_key"]
     searched, passage_id = find_the_passage(
         journey, item_key=item_key, delta_id=delta_id, words=words
     )
@@ -982,17 +1051,13 @@ def step_report_an_extraction_error(journey: Journey) -> None:
         "there is no way to say a capture is wrong at the source, so a wrong "
         "extraction can only be worked around"
     )
-    # The conflict this item is about is the one whose accepted size the sheet
+    # The conflict this is about is the one whose accepted size the sheet
     # still states, one row down from where it was read.
-    dated = ordered_deltas(opened)
-    assert dated, (
-        "the item the coordinator dated holds no change they could report an "
-        "extraction error against"
-    )
-    journey.carried["dated_deltas"] = dated
+    dated = the_change_for(opened, DATED_CONFLICT)
+    journey.carried["dated_delta"] = dated
     journey.carried["no_change_report"] = report_the_extraction_error(
         journey,
-        delta_id=dated[0],
+        delta_id=dated,
         words="8 in",
         interpretation=(
             "the size column on this sheet is a row out: this conflict's size "
@@ -1063,13 +1128,10 @@ def step_a_corrected_capture_that_still_differs_replaces_the_proposal(
 
     # The next conflict down, where the same fault puts the real size on a row
     # whose value the record has never held.
-    next_item = open_the_item(journey, index=1)
-    changes = ordered_deltas(next_item)
-    assert changes, "the second item Review lists holds no change to correct"
+    opened = open_the_item(journey)
     report = report_the_extraction_error(
         journey,
-        item=1,
-        delta_id=changes[0],
+        delta_id=the_change_for(opened, REREAD_CONFLICT),
         words="6 in",
         interpretation=(
             "the size column on this sheet is a row out: this conflict's size "
@@ -1103,7 +1165,7 @@ def step_a_corrected_capture_that_still_differs_replaces_the_proposal(
     assert outcome.replacement_delta_id is not None, (
         "a corrected reading that still differs raised no corrected proposal"
     )
-    corrected = open_the_item(journey, index=1)
+    corrected = open_the_item(journey)
     assert str(outcome.replacement_delta_id) in ordered_deltas(corrected), (
         "the corrected proposal is not a change this item offers to answer, "
         "so nobody can decide what the corrected reading established"
@@ -1127,14 +1189,20 @@ def step_a_deferred_proposal_is_retired_by_a_corrected_capture(
     change left Review rather than instead of it (ADR-0101).
     """
 
-    deferred = journey.carried["dated_deltas"][0]
+    deferred = journey.carried["dated_delta"]
     opened = open_the_item(journey)
     assert deferred in ordered_deltas(opened), (
         "the change this step dates is not one this item still holds"
     )
-    answers = answer_fields(opened, defer_all=True)
     saved = journey.client.post(
-        f"/review/{journey.slug}/answers", data=answers, follow_redirects=False
+        f"/review/{journey.slug}",
+        data=decision_fields(
+            opened,
+            decide=[deferred],
+            outcome="defer",
+            defer_until=RETURN_DATE.isoformat(),
+        ),
+        follow_redirects=False,
     )
     assert saved.status_code in (200, 201), saved.text
     # A packet of dated Defers writes no Project Record revision, and the

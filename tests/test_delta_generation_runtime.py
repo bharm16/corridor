@@ -23,10 +23,13 @@ from corridor.delta_generation import (
     COMPARISON_RULE_VERSION,
     execute_delta_generation,
 )
+from corridor.config import settings
 from corridor.due_work import (
     HANDLER_DELTA_GENERATION,
+    HANDLER_PROJECT_PROCESSING,
     DeltaGenerationDeclaration,
     DueWorkRefusal,
+    ProjectProcessingDeclaration,
     claim_due_work,
     configure_due_work,
     due_work_status,
@@ -36,6 +39,7 @@ from corridor.due_work import (
 from corridor.fact_decisions import include_structured_cell_fact_by_policy
 from corridor.models import (
     Candidate,
+    DeltaGroup,
     Dependency,
     Document,
     ExtractedProposal,
@@ -46,9 +50,23 @@ from corridor.models import (
     ProjectRecordRevision,
     ProposedDelta,
 )
+from corridor.review_packet_reading import (
+    KEY_CONTRADICTED_IDENTITY,
+    KEY_CONTRADICTED_VALUE,
+    KEY_SOURCE_REVISION_BATCH,
+    read_open_deltas,
+)
+from corridor.source_revision_declaration import COMPLETE_ENUMERATION
 from source_capture_support import Rendition
 from corridor.operating_mode import ADOPTED_BASELINE, adopt_project_baseline
 from clock_support import ControlledClock
+from later_revision_support import (
+    BASELINE_ROWS,
+    HEADINGS,
+    adopt,
+    register_delivered_revision,
+    workbook_bytes,
+)
 
 
 ACCEPTED_STATION = "1149+00"
@@ -414,3 +432,187 @@ def test_gate7_refuses_a_nonzero_model_budget_without_writing_a_schedule(
             configure_due_work(
                 setup, replace(base, comparison_rule_version="!!"), now=now
             )
+
+
+# --- one delivery, one lineage (#937) --------------------------------------
+
+# The three baseline rows this revision changes, one field each, so a delivery
+# whose changes are compared twice is visible as six proposals rather than
+# three.
+REVISED_FIELDS = (("Size", "18 in"), ("Material", "Ductile Iron"), ("Utility Type", "Gas"))
+
+# The cutoff the Review reading is taken against. Declared, never read from a
+# clock, like every other cutoff in this suite.
+REVIEW_AS_OF = datetime(2026, 9, 3, 12, 0, tzinfo=timezone.utc)
+
+
+def _revised(rows):
+    """One baseline, with a different single cell changed on each of three rows."""
+
+    copied = [list(row) for row in rows]
+    for index, (column, value) in enumerate(REVISED_FIELDS):
+        copied[index][HEADINGS.index(column)] = value
+    return copied
+
+
+def _adopted_project_with_a_later_revision(factory, now, tmp_path):
+    """An adopted project, a declared later revision, and both standing passes.
+
+    Configured through the same ``configure_due_work`` a deployment configures
+    them through, and both of them: the defect this fixture exists for is only
+    reachable when the ordinary processing pass and the generic delta pass are
+    both standing, which is what a provisioned project has.
+    """
+
+    with factory() as setup:
+        project = Project(
+            slug=f"one-lineage-{uuid4().hex[:8]}",
+            name="One delivery, one lineage",
+            is_synthetic=True,
+        )
+        setup.add(project)
+        setup.flush([project])
+        adopt(
+            setup, project, workbook_bytes(tmp_path / "a.xlsx", BASELINE_ROWS), tmp_path
+        )
+        document, _reading = register_delivered_revision(
+            setup,
+            project,
+            workbook_bytes(tmp_path / "b.xlsx", _revised(BASELINE_ROWS)),
+            tmp_path,
+            completeness=COMPLETE_ENUMERATION,
+        )
+        starts_at = now.replace(minute=0, second=0, microsecond=0)
+        for declaration in (
+            ProjectProcessingDeclaration.released_hourly(
+                project_id=project.id,
+                configuration_version="project-processing-v1",
+                extractor_identity="corridor.extract_project",
+                starts_at=starts_at,
+            ),
+            DeltaGenerationDeclaration.released_hourly(
+                project_id=project.id,
+                configuration_version="delta-generation-v1",
+                comparison_rule_version=COMPARISON_RULE_VERSION,
+                starts_at=starts_at,
+            ),
+        ):
+            configure_due_work(setup, declaration, now=now)
+        ids = (int(project.id), int(document.id))
+        setup.commit()
+    return ids
+
+
+def _work_everything_due(factory, now):
+    """Every occurrence the deployed worker would claim, until none is left."""
+
+    results = {}
+    for _ in range(12):
+        with factory() as ticking:
+            with ticking.begin():
+                enqueue_due_work(ticking, now=now)
+        result = run_due_work_once(
+            factory, clock=ControlledClock(now), owner="runtime:one-lineage"
+        )
+        if result is None:
+            return results
+        assert result.execution_outcome == "completed", (
+            f"{result.handler_key} did not complete: {result.error_code}"
+        )
+        results[result.handler_key] = result
+    raise AssertionError("the runtime never ran out of due work")
+
+
+def test_a_delivered_revision_is_compared_by_the_one_producer_that_owns_it(
+    runtime_database, tmp_path, monkeypatch
+):
+    """One file's changes arrive as one Delta Group under one lineage (#937).
+
+    A delivery of the project's registered source has a dedicated producer:
+    ``later_revision`` reads it under the registered mapping and appends its
+    differences in the same transaction.  This pass used to sweep the Facts
+    that capture had just written and compare them a second time under a
+    lineage of its own, so three changed rows arrived as six proposals in two
+    groups over one document and one source revision.
+    """
+
+    monkeypatch.setattr(settings, "corpus_store", str(tmp_path / "files"))
+    monkeypatch.setattr(settings, "corpus_images", str(tmp_path / "images"))
+    factory = runtime_database.session_factory
+    now = datetime(2026, 9, 3, 7, 0, tzinfo=timezone.utc)
+    project_id, document_id = _adopted_project_with_a_later_revision(
+        factory, now, tmp_path
+    )
+
+    worked = _work_everything_due(factory, now)
+
+    assert HANDLER_PROJECT_PROCESSING in worked, (
+        "the registered revision was never read, so nothing below is a "
+        "statement about what two producers do with one delivery"
+    )
+    # The generic pass ran and declined this delivery, rather than never
+    # having been given the chance to double it.
+    generic = worked[HANDLER_DELTA_GENERATION].handler_result
+    assert generic["groups_created"] == 0
+    assert generic["deltas_created"] == 0
+
+    with factory() as verify:
+        groups = verify.scalars(
+            select(DeltaGroup).where(DeltaGroup.project_id == project_id)
+        ).all()
+        deltas = _deltas(verify, project_id)
+        assert [
+            (group.source_family, group.document_id) for group in groups
+        ] == [("ucm_workbook:ucm-published-column-headings", document_id)], (
+            "one delivery of one registered source opened more than one Delta "
+            "Group over the same document and the same revision"
+        )
+        assert len(deltas) == len(REVISED_FIELDS)
+        assert {delta.group_id for delta in deltas} == {groups[0].id}
+        assert {
+            (delta.source_family, delta.source_revision) for delta in deltas
+        } == {(groups[0].source_family, groups[0].source_revision)}
+
+
+def test_one_delivery_never_reads_as_two_sources_disagreeing(
+    runtime_database, tmp_path, monkeypatch
+):
+    """What the coordinator is told, which is the point of the ticket (#937).
+
+    ``review_packet_reading`` keys an item as a disagreement when two lineages
+    answer one subject and field differently, so a second producer over one
+    delivery does not merely leave a duplicate row behind: it asks a person to
+    settle a Source Discrepancy that their data does not contain.  This asserts
+    the sentence the reading prints, because a row count can be right while the
+    sentence is still wrong.
+    """
+
+    monkeypatch.setattr(settings, "corpus_store", str(tmp_path / "files"))
+    monkeypatch.setattr(settings, "corpus_images", str(tmp_path / "images"))
+    factory = runtime_database.session_factory
+    now = datetime(2026, 9, 3, 7, 0, tzinfo=timezone.utc)
+    project_id, _document_id = _adopted_project_with_a_later_revision(
+        factory, now, tmp_path
+    )
+
+    _work_everything_due(factory, now)
+
+    with factory() as verify:
+        reading = read_open_deltas(
+            verify, project_id=project_id, as_of=REVIEW_AS_OF
+        )
+        assert [item.key_reason for item in reading.items] == [
+            KEY_SOURCE_REVISION_BATCH
+        ], [item.key_sentence for item in reading.items]
+        (item,) = reading.items
+        assert item.key_sentence == (
+            "one authoritative source revision proposed these changes together "
+            "and they fail the same way, so they are decided together"
+        )
+        assert len(item.delta_ids) == len(REVISED_FIELDS)
+        assert KEY_CONTRADICTED_VALUE not in {
+            item.key_reason for item in reading.items
+        }
+        assert KEY_CONTRADICTED_IDENTITY not in {
+            item.key_reason for item in reading.items
+        }
