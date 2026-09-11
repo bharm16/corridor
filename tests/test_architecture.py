@@ -1606,9 +1606,6 @@ COUNTS_ONE_FAMILY_ACROSS_AN_ACT_THAT_WRITES = {
     ),
 }
 
-_COUNTS_ROWS = "select_from"
-
-
 def _row_count_subjects(node: ast.AST) -> list[str]:
     """Every model or table named in a `select(func.count()).select_from(X)`."""
 
@@ -1616,7 +1613,7 @@ def _row_count_subjects(node: ast.AST) -> list[str]:
         ast.unparse(argument)
         for call in ast.walk(node)
         if isinstance(call, ast.Call)
-        and getattr(call.func, "attr", None) == _COUNTS_ROWS
+        and getattr(call.func, "attr", None) == "select_from"
         for argument in call.args
     ]
 
