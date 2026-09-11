@@ -952,7 +952,12 @@ def test_a_replaced_output_template_asks_the_section_for_a_fresh_candidate(
     )
     session.expire_all()
 
-    view = issue_view(session, project_id=adopted.project.id, as_of=NOW)
+    view = issue_view(
+        session,
+        project_id=adopted.project.id,
+        as_of=NOW,
+        principal_subject=COORDINATOR.subject,
+    )
     assert view.state == NOT_AUTHORIZABLE
     assert view.may_authorize is False
     assert "the output template this project renders through was replaced" in (
