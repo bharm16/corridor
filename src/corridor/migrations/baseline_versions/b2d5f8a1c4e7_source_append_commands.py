@@ -185,6 +185,7 @@ from corridor.migrations.source_append_commands import (
     resolve_delta,
     review_packets,
     scanned_observations,
+    source_authorization,
     source_revision_declaration,
     spend_authorization,
     unified_delivery,
@@ -1539,6 +1540,15 @@ def upgrade() -> None:
     # the revision names them.
     onboarding_authorization.upgrade(op)
 
+    # --- #886 The authorized source bindings a project takes delivery on --
+    # After the onboarding authorization, and last of the feature blocks: its
+    # two relations are scoped by `project_partition`'s
+    # `current_project_partition`, and the channels and configurations a
+    # recorded binding names are the delivery ledger's, which `unified_delivery`
+    # and `product_upload_delivery` establish above. Nothing later in the
+    # revision names them.
+    source_authorization.upgrade(op)
+
     from corridor.migrations import email_spine
 
     email_spine.upgrade(op, APPEND_NATIVE_SOURCE_SEGMENTS, APPEND_FACT)
@@ -1598,8 +1608,13 @@ def downgrade() -> None:
     project_contacts.downgrade(op)
     email_spine.downgrade(op)
 
-    # --- #827 The limited onboarding authorization ADR-0099 decides -------
+    # --- #886 The authorized source bindings a project takes delivery on --
     # First among the feature reversals, because the upgrade added it last,
+    # and before the partition function its two policies name unwinds.
+    source_authorization.downgrade(op)
+
+    # --- #827 The limited onboarding authorization ADR-0099 decides -------
+    # Next, because the upgrade added it second from the end,
     # and before the operating mode, the designation proof and the partition
     # function its relations and commands name unwind.
     onboarding_authorization.downgrade(op)

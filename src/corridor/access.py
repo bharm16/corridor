@@ -927,6 +927,12 @@ PARTITIONED_RELATIONS: frozenset[str] = frozenset(
         "project_onboarding_grant_events",
         "project_onboarding_previews",
         "project_onboarding_acts",
+        # #886 The versioned set of source bindings this project may be
+        # delivered on, and the bindings themselves. One customer's own
+        # authorization, keyed by project, so it answers #531's partition the
+        # way the deliveries it admits do.
+        "project_source_authorizations",
+        "project_source_authorization_bindings",
         "connector_checkpoint_advances",
         "delta_decision_supports",
         "delta_deferrals",

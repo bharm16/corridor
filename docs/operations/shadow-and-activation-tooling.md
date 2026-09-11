@@ -58,9 +58,22 @@ updates/deletion are refused, and downgrade refuses while custody remains.
 
 ## Activation evidence
 
-`ActivationConfiguration` binds environment, customer, project, source/ingress,
+`ActivationConfiguration` binds environment, customer, project, the recorded
+source authorization the deployment processes under, ingress,
 region, code/database/image revisions, governance/security/disposition revisions,
-web role and exact route-manifest digest. Evidence artifacts have fixed digests,
+web role and exact route-manifest digest. The source half is three values --
+`source_authorization_identity`, `source_authorization_version` and
+`source_authorization_sha256` -- naming one version of the project's authorized
+source bindings, which is recorded in the customer database by the operations
+capability through `record_project_source_authorization` and whose digest is
+read back from that record rather than computed by the operator. It replaced a
+single channel and configuration pair, which could name one channel and so
+refused a valid product upload on a deployment activated for a project alias
+(#886). Every channel a project takes delivery on, manual upload included, is
+authorized by name there or the delivery is refused; recording a higher version
+withdraws or widens the set, and a deployment activated against the version it
+replaced stops taking new deliveries until a new activation revision names the
+current one. Evidence artifacts have fixed digests,
 observation times, exact configuration identity and successful outcomes. Missing,
 failed, changed or future-dated evidence writes no activation. Every selected
 customer image requires the #766 built-image audit, including a deterministic
