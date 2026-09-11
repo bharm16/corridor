@@ -255,6 +255,12 @@ def test_a_caller_owned_template_is_copied_without_migrating_another(monkeypatch
         "_copy_migrated_template",
         lambda _engine, template, name, **_kwargs: copied.append((template, name)),
     )
+    reclaimed = []
+    monkeypatch.setattr(
+        acceptance_database,
+        "reclaim_abandoned_database_copies",
+        lambda _connection, label: reclaimed.append(label),
+    )
     monkeypatch.setattr(
         acceptance_database,
         "read_migration_head",
@@ -275,6 +281,9 @@ def test_a_caller_owned_template_is_copied_without_migrating_another(monkeypatch
         assert provisioned.name == database_name
 
     assert copied == [("corridor_pytest_101_deadbeef_tmpl", database_name)]
+    # Reclaiming this label's abandoned copies belongs to provisioning, not to
+    # building a template: a caller who brings one must not lose it.
+    assert reclaimed == [DATABASE_LABEL]
 
 
 def test_a_caller_owned_template_refuses_a_revision_it_cannot_prove(monkeypatch):

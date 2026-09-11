@@ -202,6 +202,13 @@ def provision_disposable_postgres(
                 label=label,
                 migration_revision=migration_revision,
             )
+        elif template_name is not None:
+            # Reclaiming this label's abandoned copies is on the way to
+            # building a template, not part of building one. A caller who
+            # brings a template skips that path and would otherwise leave
+            # every copy a killed run abandoned for the sweeper to find.
+            with admin_engine.connect() as connection:
+                reclaim_abandoned_database_copies(connection, label)
         if template_name is None:
             with admin_engine.connect() as connection:
                 connection.execute(text(f'create database "{database_name}"'))
