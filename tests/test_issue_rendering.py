@@ -76,7 +76,7 @@ from corridor.proposed_deltas import (
     create_proposed_delta_group,
     record_delta_deferral,
 )
-from harness_support import as_record_decision_role
+from harness_support import adopt_baseline_facts
 from delta_supersession_support import record_delta_supersession
 from corridor.review_packets import (
     NEEDS_COORDINATION,
@@ -263,41 +263,8 @@ def _alerts(artifacts):
 def _adopt(session: Session, project: Project, facts, key: str) -> int:
     """One adopted baseline, written as the record-decision role (#509 writes this)."""
 
-    # Read every identifier before the role changes: the record-decision role
-    # cannot select `projects`, so a lazy refresh under it fails.
     project_id = project.id
-    decisions = [
-        {
-            "project_id": project_id,
-            "fact_id": fact.id,
-            "subject_key": fact.subject_key,
-            "fact_type": fact.fact_type,
-        }
-        for fact in facts
-    ]
-    with as_record_decision_role(session):
-        revision_id = int(
-            session.scalar(
-                text(
-                    "insert into project_record_revisions ("
-                    "project_id, command_type, human_principal, idempotency_key"
-                    ") values (:project_id, 'adopt_baseline', 'local:adopter', :key)"
-                    " returning id"
-                ),
-                {"project_id": project_id, "key": key},
-            )
-        )
-        for decision in decisions:
-            session.execute(
-                text(
-                    "insert into fact_decisions ("
-                    "project_id, fact_id, subject_key, fact_type, revision_id, disposition"
-                    ") values (:project_id, :fact_id, :subject_key, :fact_type,"
-                    " :revision_id, 'include')"
-                ),
-                {**decision, "revision_id": revision_id},
-            )
-    session.expire_all()
+    revision_id = adopt_baseline_facts(session, project, *facts, key=key)
     adopt_project_baseline(
         session,
         project_id=project_id,
@@ -585,35 +552,7 @@ def test_binding_refuses_a_legacy_project(session, project):
 
     source = _Source(session, project, "ucm-legacy.xlsx")
     fact = source.capture(fact_type="external_org", value="City Water")
-    # Read the identifiers before the role changes; see _adopt.
-    project_id = project.id
-    decision = {
-        "project_id": project_id,
-        "fact_id": fact.id,
-        "subject_key": fact.subject_key,
-        "fact_type": fact.fact_type,
-    }
-    with as_record_decision_role(session):
-        revision = int(
-            session.scalar(
-                text(
-                    "insert into project_record_revisions ("
-                    "project_id, command_type, human_principal, idempotency_key"
-                    ") values (:project_id, 'adopt_baseline', 'local:adopter', 'legacy')"
-                    " returning id"
-                ),
-                {"project_id": project_id},
-            )
-        )
-        session.execute(
-            text(
-                "insert into fact_decisions ("
-                "project_id, fact_id, subject_key, fact_type, revision_id, disposition"
-                ") values (:project_id, :fact_id, :subject_key, :fact_type,"
-                " :revision_id, 'include')"
-            ),
-            {**decision, "revision_id": revision},
-        )
+    revision = adopt_baseline_facts(session, project, fact, key="legacy")
 
     with pytest.raises(MixedIssueInputs) as refused:
         _bind(session, project, revision)

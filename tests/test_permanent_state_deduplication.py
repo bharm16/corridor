@@ -37,6 +37,7 @@ from corridor.proposed_deltas import (
 from corridor import push_intake
 from corridor.db_roles import RECORD_DECISION_ROLE
 from corridor.source_append import SegmentValues, append_fact, append_source_segments
+from harness_support import as_role
 
 
 DECISION_ROLE = RECORD_DECISION_ROLE
@@ -49,12 +50,6 @@ WORDS = "Equistar will submit the exhibit."
 def isolated_store(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "corpus_store", str(tmp_path / "store"))
     return tmp_path / "store"
-
-
-def _as_decision_role(session) -> None:
-    """Write as the role that owns accepted authority, not as the owner."""
-
-    session.execute(text(f"set local role {DECISION_ROLE}"))
 
 
 def _minutes(session, project, name="minutes.pdf") -> Document:
@@ -337,22 +332,24 @@ def test_a_second_deferral_of_one_scheduling_act_is_refused(session, project):
     # The identifiers are read before the role changes: the decision role
     # holds no read on `projects`, so an ORM refresh under it would fail for
     # the wrong reason.
-    _as_decision_role(session)
-    with pytest.raises(IntegrityError, match="uq_delta_deferrals_occurrence"):
-        session.execute(
-            text(
-                "insert into delta_deferrals (project_id, delta_id, deferred_at, "
-                "  deferred_until, wake_condition, scheduled_by_principal, reason) "
-                "values (:project_id, :delta_id, :deferred_at, :deferred_until, "
-                "  null, 'local:coordinator', 'a retry that slipped the command')"
-            ),
-            {
-                "project_id": project_id,
-                "delta_id": delta_id,
-                "deferred_at": DEFERRED_AT,
-                "deferred_until": DEFERRED_UNTIL,
-            },
-        )
+    with as_role(session, DECISION_ROLE):
+        with pytest.raises(
+            IntegrityError, match="uq_delta_deferrals_occurrence"
+        ), session.begin_nested():
+            session.execute(
+                text(
+                    "insert into delta_deferrals (project_id, delta_id, deferred_at, "
+                    "  deferred_until, wake_condition, scheduled_by_principal, reason) "
+                    "values (:project_id, :delta_id, :deferred_at, :deferred_until, "
+                    "  null, 'local:coordinator', 'a retry that slipped the command')"
+                ),
+                {
+                    "project_id": project_id,
+                    "delta_id": delta_id,
+                    "deferred_at": DEFERRED_AT,
+                    "deferred_until": DEFERRED_UNTIL,
+                },
+            )
 
 
 def test_one_revision_cannot_decide_one_fact_twice(session, project):
@@ -366,51 +363,51 @@ def test_one_revision_cannot_decide_one_fact_twice(session, project):
 
     fact = _wording_fact(session, project)
     session.flush()
-    _as_decision_role(session)
-    revision_id = session.scalar(
-        text(
-            "insert into project_record_revisions (project_id, command_type, "
-            "  human_principal, released_policy, idempotency_key) "
-            "values (:project_id, 'record_human_fact_decision', 'local:coordinator', "
-            "  null, :key) returning id"
-        ),
-        {"project_id": project.id, "key": f"decide:{fact.id}"},
-    )
-    successor_id = session.scalar(text("select nextval('fact_decisions_id_seq')"))
-    session.execute(
-        text(
-            "insert into fact_decisions (project_id, fact_id, subject_key, "
-            "  fact_type, revision_id, disposition, superseded_by) "
-            "values (:project_id, :fact_id, :subject_key, :fact_type, "
-            "  :revision_id, 'include', :successor_id)"
-        ),
-        {
-            "project_id": project.id,
-            "fact_id": fact.id,
-            "subject_key": fact.subject_key,
-            "fact_type": fact.fact_type,
-            "revision_id": revision_id,
-            "successor_id": successor_id,
-        },
-    )
-
-    with pytest.raises(IntegrityError, match="uq_fact_decisions_revision_fact"):
+    with as_role(session, DECISION_ROLE):
+        revision_id = session.scalar(
+            text(
+                "insert into project_record_revisions (project_id, command_type, "
+                "  human_principal, released_policy, idempotency_key) "
+                "values (:project_id, 'record_human_fact_decision', 'local:coordinator', "
+                "  null, :key) returning id"
+            ),
+            {"project_id": project.id, "key": f"decide:{fact.id}"},
+        )
+        successor_id = session.scalar(text("select nextval('fact_decisions_id_seq')"))
         session.execute(
             text(
-                "insert into fact_decisions (id, project_id, fact_id, subject_key, "
+                "insert into fact_decisions (project_id, fact_id, subject_key, "
                 "  fact_type, revision_id, disposition, superseded_by) "
-                "values (:successor_id, :project_id, :fact_id, :subject_key, "
-                "  :fact_type, :revision_id, 'include', null)"
+                "values (:project_id, :fact_id, :subject_key, :fact_type, "
+                "  :revision_id, 'include', :successor_id)"
             ),
             {
-                "successor_id": successor_id,
                 "project_id": project.id,
                 "fact_id": fact.id,
                 "subject_key": fact.subject_key,
                 "fact_type": fact.fact_type,
                 "revision_id": revision_id,
+                "successor_id": successor_id,
             },
         )
+
+        with pytest.raises(IntegrityError, match="uq_fact_decisions_revision_fact"), session.begin_nested():
+            session.execute(
+                text(
+                    "insert into fact_decisions (id, project_id, fact_id, subject_key, "
+                    "  fact_type, revision_id, disposition, superseded_by) "
+                    "values (:successor_id, :project_id, :fact_id, :subject_key, "
+                    "  :fact_type, :revision_id, 'include', null)"
+                ),
+                {
+                    "successor_id": successor_id,
+                    "project_id": project.id,
+                    "fact_id": fact.id,
+                    "subject_key": fact.subject_key,
+                    "fact_type": fact.fact_type,
+                    "revision_id": revision_id,
+                },
+            )
 
 
 # --- Project Record revisions ----------------------------------------------
@@ -451,18 +448,18 @@ def test_a_project_record_revision_cannot_carry_a_blank_idempotency_key(
     carrying it would collide on a key that identifies nothing.
     """
 
-    _as_decision_role(session)
-    with pytest.raises(
-        IntegrityError, match="ck_project_record_revisions_idempotency_key"
-    ):
-        session.execute(
-            text(
-                "insert into project_record_revisions (project_id, command_type, "
-                "  human_principal, released_policy, idempotency_key) "
-                "values (:project_id, 'resolve_delta', 'local:coordinator', null, '')"
-            ),
-            {"project_id": project.id},
-        )
+    with as_role(session, DECISION_ROLE):
+        with pytest.raises(
+            IntegrityError, match="ck_project_record_revisions_idempotency_key"
+        ), session.begin_nested():
+            session.execute(
+                text(
+                    "insert into project_record_revisions (project_id, command_type, "
+                    "  human_principal, released_policy, idempotency_key) "
+                    "values (:project_id, 'resolve_delta', 'local:coordinator', null, '')"
+                ),
+                {"project_id": project.id},
+            )
 
 
 # --- Connector deliveries --------------------------------------------------

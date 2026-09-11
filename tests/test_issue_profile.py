@@ -18,6 +18,7 @@ from sqlalchemy.exc import DBAPIError
 from corridor.access import COORDINATION, EXTERNAL_RELEASE, enroll_member
 from corridor.baseline_adoption import FormatIdentity, effective_baseline_formats
 from corridor.config import settings
+from corridor.db_roles import RECORD_DECISION_ROLE
 from corridor.issue_profile import (
     ArtifactEntry,
     CoverageRequirement,
@@ -34,7 +35,7 @@ from corridor.issue_profile import (
 from corridor.models import IssueProfile, Project
 from corridor.principals import HumanPrincipal
 
-from harness_support import as_record_decision_role
+from harness_support import as_role
 from later_revision_support import BASELINE_ROWS, adopt, workbook_bytes
 
 
@@ -602,7 +603,7 @@ def _writer_refused(session, pattern: str, statement: str, **params):
     leaves a usable transaction to reset it in.
     """
 
-    with as_record_decision_role(session):
+    with as_role(session, RECORD_DECISION_ROLE):
         with pytest.raises(DBAPIError, match=pattern):
             with session.begin_nested():
                 session.execute(text(statement), params)

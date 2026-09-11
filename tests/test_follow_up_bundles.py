@@ -88,12 +88,12 @@ from corridor.review_packets import (
 )
 
 from access_support import seed_membership
+from harness_support import move_accepted_value
 from packet_review_support import (
     Rendition,
     accept_baseline_fact,
     append_deltas,
     modify,
-    move_accepted_value,
     register_baseline,
     register_source_row,
     subject,

@@ -5,8 +5,10 @@ from datetime import timedelta
 import pytest
 from sqlalchemy import select
 
+from corridor.db_roles import WORKER_CAPABILITY_LOGIN
 from corridor.models import Fact, FactSource, MinutesCapture, StatedByPerson
 from corridor.minutes_spine import capture_minutes, MinutesCaptureRefused
+from harness_support import as_role
 from minutes_fixture_support import MinutesClient, adopted_project, minutes_document
 from test_minutes_spine import store, accept_statement  # noqa: F401
 
@@ -62,7 +64,6 @@ def test_person_attribution_is_unique_and_exact_not_the_models_choice(session):
 
 
 def test_public_capture_and_normal_dispatch_share_delivery_identity(session):
-    from sqlalchemy import text
     from corridor.pipeline import extract_any
     from corridor.push_intake import PushCredential, PushPayload, accept_delivery, bind_credential, register_push_credential
     from corridor.storage import stored_file
@@ -75,12 +76,12 @@ def test_public_capture_and_normal_dispatch_share_delivery_identity(session):
                                                            transport_delivery_id="meeting-directory/item-1"))
     document.source_delivery_id = delivery.delivery_id
     session.flush()
-    session.execute(text("set local role corridor_worker"))
-    session.expire_all()
-    captured = capture_minutes(session, document, client=MinutesClient())
-    assert captured.source_family == delivery.envelope.external_identity
-    assert list(extract_any(session, document, client=MinutesClient())) == []
-    assert session.scalars(select(MinutesCapture).where(MinutesCapture.document_id == document.id)).all() == [captured]
+    with as_role(session, WORKER_CAPABILITY_LOGIN):
+        session.expire_all()
+        captured = capture_minutes(session, document, client=MinutesClient())
+        assert captured.source_family == delivery.envelope.external_identity
+        assert list(extract_any(session, document, client=MinutesClient())) == []
+        assert session.scalars(select(MinutesCapture).where(MinutesCapture.document_id == document.id)).all() == [captured]
 
 
 def test_injected_authority_and_foreign_references_cannot_write_facts(session):

@@ -22,6 +22,7 @@ from sqlalchemy import func, select
 
 from corridor import audit
 from corridor.config import settings
+from corridor.db_roles import WORKER_CAPABILITY_LOGIN
 from corridor.delta_resolution import (
     ACCEPT,
     RESOLVED,
@@ -57,6 +58,7 @@ from corridor.models import (
     SupportAssessment,
 )
 
+from harness_support import as_role
 from key_date_table_support import (
     KEY_DATE_ROWS,
     UCM_HEADINGS,
@@ -599,9 +601,9 @@ def test_impact_refuses_cross_project_conflicting_results_and_raw_mutation(
             derivation=replace(impact.derivation, affected_constraint_ids=("invented",)))
     with pytest.raises(DBAPIError, match="immutable source append"), session.begin_nested():
         session.execute(text("update proposed_delta_impact_derivations set rule='rewritten' where project_id=:p"), {"p": adopted.id})
-    with pytest.raises(DBAPIError, match="permission denied"), session.begin_nested():
-        session.execute(text("set local role corridor_worker"))
-        session.execute(text("delete from proposed_delta_impact_derivations where project_id=:p"), {"p": adopted.id})
+    with as_role(session, WORKER_CAPABILITY_LOGIN):
+        with pytest.raises(DBAPIError, match="permission denied"), session.begin_nested():
+            session.execute(text("delete from proposed_delta_impact_derivations where project_id=:p"), {"p": adopted.id})
 
 
 def test_the_impact_derivation_is_retained_with_the_act_that_produced_it(

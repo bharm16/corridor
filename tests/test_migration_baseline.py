@@ -22,6 +22,7 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.exc import DBAPIError
 
 from corridor.config import settings
+from corridor.db_roles import RECORD_DECISION_ROLE
 from corridor.facts import _fact_digest, _statement_timing_structured
 from corridor.m8_acceptance_database import provision_disposable_postgres
 from corridor.materializer import (
@@ -42,6 +43,7 @@ from alembic.script import ScriptDirectory
 from corridor.migrations import policy
 from corridor.product_proving_database import fingerprint_database_url
 from corridor.report_release import retrieve_released_external_report
+from harness_support import as_role
 from ratchet_support import assert_ratchet
 
 
@@ -1641,19 +1643,18 @@ def _seed_identified_fact(session, *, slug: str, digest: str | None) -> dict:
     )
     # A revision is written only by the role that owns accepted authority; a
     # guard trigger refuses every other writer, this seed included.
-    session.execute(text("set local role corridor_fact_decision_writer"))
-    revision_id = session.scalar(
-        text(
-            "insert into project_record_revisions ("
-            "project_id, command_type, human_principal, released_policy, "
-            "idempotency_key"
-            ") values ("
-            ":project_id, 'record_human_fact_decision', 'local:coordinator', "
-            "null, :key) returning id"
-        ),
-        {"project_id": project_id, "key": f"decide:{fact_id}"},
-    )
-    session.execute(text("reset role"))
+    with as_role(session, RECORD_DECISION_ROLE):
+        revision_id = session.scalar(
+            text(
+                "insert into project_record_revisions ("
+                "project_id, command_type, human_principal, released_policy, "
+                "idempotency_key"
+                ") values ("
+                ":project_id, 'record_human_fact_decision', 'local:coordinator', "
+                "null, :key) returning id"
+            ),
+            {"project_id": project_id, "key": f"decide:{fact_id}"},
+        )
     return {
         "project_id": project_id,
         "document_id": document_id,

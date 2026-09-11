@@ -21,7 +21,6 @@ from hashlib import sha256
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import text
 
 from corridor.due_work import (
     HANDLER_REPORT_PREPARATION,
@@ -56,7 +55,7 @@ from corridor.proposed_deltas import (
 )
 from corridor.support_assessments import FactProposition, record_support_assessment
 from corridor.report_preparation import execute_report_preparation
-from harness_support import as_record_decision_role
+from harness_support import accepted_revision
 
 
 class ControlledClock:
@@ -186,26 +185,6 @@ def _reject(session, project_id: int, delta, at):
     return outcome
 
 
-def _accepted_revision(session, project_id: int, key: str) -> int:
-    """One Project Record revision, written as the record-decision role.
-
-    The Adopt Baseline importer that will write this in production is #509; the
-    reading only needs the revision its counts are stated against to exist.
-    """
-
-    with as_record_decision_role(session):
-        revision_id = session.scalar(
-            text(
-                "insert into project_record_revisions ("
-                "project_id, command_type, human_principal, idempotency_key"
-                ") values (:project_id, 'adopt_baseline', 'local:adopter', :key)"
-                " returning id"
-            ),
-            {"project_id": project_id, "key": key},
-        )
-    return int(revision_id)
-
-
 def _delta(session, project_id, subject, value, revision):
     (delta,) = create_proposed_delta_group(
         session,
@@ -237,7 +216,7 @@ def _seed_project(factory, now, *, with_revision=True):
         setup.add(project)
         setup.flush([project])
         revision = (
-            _accepted_revision(setup, project.id, f"adopt-{project.id}")
+            accepted_revision(setup, project.id, key=f"adopt-{project.id}")
             if with_revision
             else 0
         )

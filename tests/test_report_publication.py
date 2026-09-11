@@ -22,7 +22,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import DBAPIError, IntegrityError
 
-from harness_support import as_record_decision_role
+from harness_support import accepted_revision
 from access_support import seed_membership
 from corridor.config import settings
 from corridor.db import Session, engine
@@ -44,7 +44,6 @@ from corridor.models import (
     ExternalReportArtifact,
     ExternalReportRelease,
     Project,
-    ProjectRecordRevision,
     ReleasePackage,
     ReportRun,
     ScheduledReportPublication,
@@ -755,16 +754,13 @@ def _seed_accepted_revision(session, project_id: int, key: str) -> int:
     """
 
     session.flush()
-    with as_record_decision_role(session):
-        revision = ProjectRecordRevision(
-            project_id=project_id,
-            command_type="record_verbal_statement",
-            human_principal="local:publication-reviewer",
-            idempotency_key=key,
-        )
-        session.add(revision)
-        session.flush()
-    return revision.id
+    return accepted_revision(
+        session,
+        project_id,
+        command_type="record_verbal_statement",
+        principal="local:publication-reviewer",
+        key=key,
+    )
 
 
 def test_a_retained_reading_names_the_accepted_revision_it_stands_on(

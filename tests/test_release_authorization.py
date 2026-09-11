@@ -32,6 +32,7 @@ from corridor import access
 from corridor.access import COORDINATION, EXTERNAL_RELEASE, enroll_member
 from corridor.analytics import AnalyticsBinding, EventFamily, capture_events
 from corridor.config import settings
+from corridor.db_roles import RECORD_DECISION_ROLE
 from corridor.issue_profile import UPDATED_UCM
 from corridor.issue_rendering import NO_PRIOR_COMPARISON_STATEMENT
 from corridor.models import (
@@ -97,7 +98,7 @@ from corridor.release_candidate import (
     render_candidate_artifacts,
 )
 
-from harness_support import as_record_decision_role
+from harness_support import accepted_revision, as_role
 from coverage_support import declare_coverage
 from later_revision_support import BASELINE_ROWS, adopt, workbook_bytes
 from packet_review_support import (
@@ -1585,30 +1586,16 @@ def test_a_withdrawn_designation_takes_effect_on_the_next_authorization(
 
 
 def _later_revision(session, adopted, key: str) -> int:
-    """One more accepted revision, so the candidate's is no longer the newest.
+    """One more accepted revision, so the candidate's is no longer the newest."""
 
-    Written through the record-decision role, because PostgreSQL refuses a
-    Project Record revision from anybody else — the same door
-    ``packet_review_support.move_accepted_value`` uses.
-    """
-
-    project_id = adopted.project.id
     session.flush()
-    with as_record_decision_role(session):
-        revision_id = session.scalar(
-            text(
-                "insert into project_record_revisions ("
-                "project_id, command_type, human_principal, idempotency_key"
-                ") values (:project, 'resolve_delta', :who, :key) returning id"
-            ),
-            {
-                "project": project_id,
-                "who": COORDINATOR.subject,
-                "key": f"{key}:{uuid4().hex[:8]}",
-            },
-        )
-    session.expire_all()
-    return int(revision_id)
+    return accepted_revision(
+        session,
+        adopted.project.id,
+        command_type="resolve_delta",
+        principal=COORDINATOR.subject,
+        key=f"{key}:{uuid4().hex[:8]}",
+    )
 
 
 def _replace_output_template(session, adopted) -> int:
@@ -1616,7 +1603,7 @@ def _replace_output_template(session, adopted) -> int:
 
     project_id = adopted.project.id
     session.flush()
-    with as_record_decision_role(session):
+    with as_role(session, RECORD_DECISION_ROLE):
         # The same order the adoption command uses: claim the successor's id,
         # retire the predecessor against it, then insert. The unique index on the
         # effective registration is not deferrable, so the other order fails.

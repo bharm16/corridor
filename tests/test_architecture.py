@@ -904,6 +904,129 @@ def test_no_application_module_constructs_an_accepted_authority_row():
     assert constructors == []
 
 
+# The test tree's own copy of the rule above. `tests/harness_support.py` is the
+# one module that writes an accepted-authority row directly, and every entry
+# here is a module that still does so for itself. The list may fall and may
+# never rise (`assert_ratchet`); each entry is one module writing one relation:
+#
+#   - the relation's own refusal walk, whose subject *is* the raw statement:
+#     `test_baseline_adoption`, `test_database_authority`, `test_delta_resolution`,
+#     `test_fact_decisions`, `test_permanent_state_deduplication`,
+#     `test_operating_mode`, `test_review_packets`;
+#   - `test_migration_baseline`, which seeds pre-migration rows on a disposable
+#     database so a migration has something to transform;
+#   - `test_project_partition_and_offboarding`, which writes as the schema owner
+#     with the record guards disabled, to give a deployment-wide sweep a row in
+#     every relation it must reach;
+#   - the Adopt Baseline *registration* family -- baseline sources, rows,
+#     formats and manifests -- in `packet_review_support` and
+#     `test_release_authorization`. These are a further act nobody has lifted
+#     yet, not one of the two `harness_support` already owns.
+TEST_ACCEPTED_AUTHORITY_WRITES = frozenset({
+    ("packet_review_support.py", "project_baseline_format_manifests"),
+    ("packet_review_support.py", "project_baseline_formats"),
+    ("packet_review_support.py", "project_baseline_source_rows"),
+    ("packet_review_support.py", "project_baseline_sources"),
+    ("test_baseline_adoption.py", "project_baseline_format_manifests"),
+    ("test_baseline_adoption.py", "project_baseline_sources"),
+    ("test_database_authority.py", "delta_record_decisions"),
+    ("test_database_authority.py", "fact_decisions"),
+    ("test_delta_resolution.py", "delta_record_decisions"),
+    ("test_fact_decisions.py", "fact_decisions"),
+    ("test_fact_decisions.py", "project_record_revisions"),
+    ("test_migration_baseline.py", "project_baseline_format_manifests"),
+    ("test_migration_baseline.py", "project_baseline_formats"),
+    ("test_migration_baseline.py", "project_record_revisions"),
+    ("test_operating_mode.py", "project_baseline_adoptions"),
+    ("test_permanent_state_deduplication.py", "delta_deferrals"),
+    ("test_permanent_state_deduplication.py", "fact_decisions"),
+    ("test_permanent_state_deduplication.py", "project_record_revisions"),
+    ("test_project_partition_and_offboarding.py", "fact_decisions"),
+    ("test_project_partition_and_offboarding.py", "project_record_revisions"),
+    ("test_release_authorization.py", "project_baseline_formats"),
+    ("test_review_packets.py", "delta_review_packet_receipts"),
+})
+
+
+def _accepted_authority_tables() -> dict[str, str]:
+    """Each accepted-authority relation, by the name a module constructs it as.
+
+    Read off the declarations rather than retyped, so renaming a relation
+    cannot leave the scan below matching a table that no longer exists.
+    """
+    import importlib
+
+    models = importlib.import_module("corridor.models")
+    return {
+        name: getattr(models, name).__tablename__
+        for name in sorted(ACCEPTED_AUTHORITY_MODELS)
+    }
+
+
+def _docstrings(source) -> set[ast.Constant]:
+    """Every docstring node, which describes a statement rather than running one."""
+    holders = (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+    return {
+        node.body[0].value
+        for node in source.nodes
+        if isinstance(node, holders)
+        and node.body
+        and isinstance(node.body[0], ast.Expr)
+        and isinstance(node.body[0].value, ast.Constant)
+        and isinstance(node.body[0].value.value, str)
+    }
+
+
+def test_a_test_module_writes_an_accepted_authority_row_only_through_the_harness():
+    """The rule above, on the tree that was writing around it.
+
+    `tests/` held sixteen hand-written inserts into `project_record_revisions`
+    and `fact_decisions` across nine modules -- each one a copy of a
+    record-decision command's SQL that nothing failed when the command changed,
+    and one of them (`tests/packet_review_support.py`) said so in a comment.
+    They live in `harness_support` now, behind the acts they were setting up,
+    and this holds that gain: a module may write these relations raw only where
+    the raw statement is what it is proving.
+
+    The ORM door is scanned beside the SQL one, because a fixture that binds
+    the schema owner can reach the relation either way.
+    """
+    tables = _accepted_authority_tables()
+    relations = "|".join(sorted(set(tables.values()), key=len, reverse=True))
+    pattern = re.compile(
+        r"(?:insert\s+into|update|delete\s+from)\s+(?:only\s+)?\"?(" + relations + r")\b",
+        re.IGNORECASE,
+    )
+    found: set[tuple[str, str]] = set()
+    for path in _module_paths(TEST_ROOT):
+        if path.name in ("harness_support.py", "test_architecture.py"):
+            continue
+        source = read_python(path)
+        described = _docstrings(source)
+        for node in source.nodes:
+            if (
+                isinstance(node, ast.Constant)
+                and isinstance(node.value, str)
+                and node not in described
+            ):
+                found.update(
+                    (path.name, table.lower()) for table in pattern.findall(node.value)
+                )
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id in tables
+            ):
+                found.add((path.name, tables[node.func.id]))
+
+    assert_ratchet(
+        "tests/test_architecture.py:TEST_ACCEPTED_AUTHORITY_WRITES",
+        measured=found,
+        recorded=TEST_ACCEPTED_AUTHORITY_WRITES,
+        as_measured=lambda listed: {tuple(entry) for entry in listed},
+    )
+
+
 def test_model_output_schemas_carry_references_not_values():
     """A strict model output holds ids, enumerations, and dispositions only (#446).
 

@@ -20,6 +20,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from corridor.baseline_adoption import FormatIdentity, effective_baseline_formats
+from corridor.db_roles import RECORD_DECISION_ROLE
 from corridor.field_mapping_manifest import (
     ONE_VALUE_PER_COLUMN,
     FieldMappingManifest,
@@ -63,7 +64,7 @@ from corridor.proposed_deltas import (
     create_proposed_delta_group,
 )
 from corridor.support_assessments import FactProposition, record_support_assessment
-from harness_support import adopt_baseline_fact, as_record_decision_role
+from harness_support import adopt_baseline_facts, as_role
 
 
 ADOPTER = HumanPrincipal("local:adopter")
@@ -175,7 +176,7 @@ class Rendition:
 def accept_baseline_fact(session: Session, project: Project, fact: Fact) -> int:
     """One accepted decision for a subject and field, at its own revision."""
 
-    return adopt_baseline_fact(session, project, fact)
+    return adopt_baseline_facts(session, project, fact)
 
 
 def register_source_row(
@@ -202,7 +203,7 @@ def register_source_row(
         "source_url": source_url,
     }
     session.flush()
-    with as_record_decision_role(session):
+    with as_role(session, RECORD_DECISION_ROLE):
         row_id = session.scalar(
             text(
                 "insert into project_baseline_source_rows ("
@@ -244,7 +245,7 @@ def register_baseline(
         "idempotency_key": f"adopt:{uuid4().hex[:10]}",
     }
     session.flush()
-    with as_record_decision_role(session):
+    with as_role(session, RECORD_DECISION_ROLE):
         baseline_id = session.scalar(
             text(
                 "insert into project_baseline_sources ("
@@ -280,7 +281,7 @@ def register_output_template(
         "idempotency_key": f"format:{uuid4().hex[:10]}",
     }
     session.flush()
-    with as_record_decision_role(session):
+    with as_role(session, RECORD_DECISION_ROLE):
         format_id = session.scalar(
             text(
                 "insert into project_baseline_formats ("
@@ -343,7 +344,7 @@ def register_field_mapping(
         "idempotency_key": f"mapping:{uuid4().hex[:10]}",
     }
     session.flush()
-    with as_record_decision_role(session):
+    with as_role(session, RECORD_DECISION_ROLE):
         format_id = session.scalar(
             text(
                 "insert into project_baseline_formats ("
@@ -519,65 +520,6 @@ def new_subject(
             f"revision:{baseline_revision}" if baseline_revision is not None else None
         ),
     )
-
-
-def move_accepted_value(
-    session: Session, project: Project, fact: Fact
-) -> int:
-    """Supersede the standing decision for this subject and field with a newer one.
-
-    The accepted record moving under a coordinator mid-review is the exact
-    condition #519 refuses on, so a test needs to reproduce it honestly: one
-    later revision, one new effective decision, and the predecessor marked
-    superseded rather than replaced.
-    """
-
-    values = {
-        "project_id": project.id,
-        "fact_id": fact.id,
-        "subject_key": fact.subject_key,
-        "fact_type": fact.fact_type,
-    }
-    session.flush()
-    with as_record_decision_role(session):
-        session.execute(text("set constraints all deferred"))
-        revision_id = session.scalar(
-            text(
-                "insert into project_record_revisions ("
-                "project_id, command_type, human_principal, idempotency_key"
-                ") values (:project_id, 'resolve_delta', 'local:corrector', :key)"
-                " returning id"
-            ),
-            {"project_id": project.id, "key": f"move:{uuid4().hex[:12]}"},
-        )
-        predecessor = session.scalar(
-            text(
-                "select max(id) from fact_decisions where project_id = :project_id"
-                " and subject_key = :subject_key and fact_type = :fact_type"
-                " and superseded_by is null"
-            ),
-            values,
-        )
-        # The same order the authorized command uses: claim the successor's id,
-        # retire the predecessor against it, then insert. The partial unique index
-        # on the effective decision is not deferrable, so the other order fails.
-        successor = int(session.scalar(text("select nextval('fact_decisions_id_seq')")))
-        if predecessor is not None:
-            session.execute(
-                text("update fact_decisions set superseded_by = :successor where id = :id"),
-                {"successor": successor, "id": int(predecessor)},
-            )
-        session.execute(
-            text(
-                "insert into fact_decisions ("
-                "id, project_id, fact_id, subject_key, fact_type, revision_id,"
-                " disposition) values (:id, :project_id, :fact_id, :subject_key,"
-                " :fact_type, :revision_id, 'include')"
-            ),
-            {**values, "id": successor, "revision_id": revision_id},
-        )
-    session.expire_all()
-    return int(revision_id)
 
 
 def record_statement(

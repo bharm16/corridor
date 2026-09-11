@@ -15,6 +15,7 @@ from corridor.field_mapping_manifest import DEMO_EXTERNAL_REFERENCES, MappingDec
 from corridor.models import Project, ProposedDelta
 from corridor.native_provider_boundary import CustomerAuthorization
 from corridor.shadow_processing import ShadowRefused, provision_shadow_project, run_shadow_ucm, verify_runtime
+from harness_support import as_role
 from later_revision_support import BASELINE_ROWS, CUSTOMER, PRINCIPAL, adopt, deliver, workbook_bytes
 
 NOW = datetime(2026, 9, 9, tzinfo=timezone.utc)
@@ -256,9 +257,8 @@ def test_shadow_runtime_rechecks_authority_reachable_through_set_role(shadow, gr
             assert worker.scalar(text(privilege), {"oid": command_oid}) is False
             assert worker.scalar(text("select pg_has_role(current_user,:role,'SET')"), {"role": intermediary}) is True
             assert worker.scalar(text("select pg_has_role(current_user,:role,'SET')"), {"role": authority}) is False
-            worker.execute(text(f'set role "{intermediary}"'))
-            assert worker.scalar(text(privilege), {"oid": command_oid}) is True
-            worker.execute(text("reset role"))
+            with as_role(worker, intermediary):
+                assert worker.scalar(text(privilege), {"oid": command_oid}) is True
             with pytest.raises(ShadowRefused, match="accepted-record or release authority"):
                 verify_runtime(worker, project_id=project_id, customer=CUSTOMER, environment="synthetic-shadow")
         with database.session_factory.begin() as owner:
