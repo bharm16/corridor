@@ -249,6 +249,7 @@ COMPOSED_UPGRADE = (
     "product_upload_delivery",
     "source_revision_declaration",
     "follow_up_plan_closure",
+    "capture_correction",
     # The sibling transitions this revision has always carried at the end, and
     # the PUBLIC sweep that runs last of all because it reads the catalog every
     # block above has finished writing.
@@ -273,6 +274,7 @@ COMPOSED_DOWNGRADE = (
     "minutes_spine",
     "project_contacts",
     "email_spine",
+    "capture_correction",
     "follow_up_plan_closure",
     "source_revision_declaration",
     "product_upload_delivery",
