@@ -31,13 +31,61 @@ INSTALLERS = (
 
 CREDENTIAL_ACTION = "aws-actions/configure-aws-credentials"
 
+# Every workflow in the repository, so a new one is covered the day it lands
+# rather than the day someone remembers to add it to a list. GitHub reads both
+# suffixes; collecting only one would leave the same silent hole as a job-name
+# list. An empty list would parametrize the credential guard into nothing, so
+# it fails collection rather than reporting a sweep it never ran.
+WORKFLOW_FILES = sorted(
+    path.name for path in WORKFLOWS.iterdir() if path.suffix in (".yml", ".yaml")
+)
+assert WORKFLOW_FILES, f"no workflows found under {WORKFLOWS}"
+
+
+def _workflow(name: str) -> dict:
+    return yaml.safe_load((WORKFLOWS / name).read_text())
+
 
 def _jobs(name: str) -> dict:
-    return yaml.safe_load((WORKFLOWS / name).read_text())["jobs"]
+    return _workflow(name)["jobs"]
 
 
 def _step_text(step: dict) -> str:
     return " ".join(str(step.get(key, "")) for key in ("uses", "run", "name"))
+
+
+def _is_main_guarded(job: dict) -> bool:
+    """Whether the job's own `if` restricts it to `refs/heads/main`.
+
+    The two tests that care about credentials read the guard through this one
+    function, so they cannot come to disagree about what counts as guarded.
+    """
+    return "refs/heads/main" in str(job.get("if", ""))
+
+
+def _declared_permissions(workflow: dict, job: dict):
+    """The `GITHUB_TOKEN` scopes this repository declares for a job.
+
+    A job without a block of its own inherits the workflow's top-level block.
+    With neither -- `full-suite.yml` is the case in point -- the job takes the
+    repository's default, which is a GitHub setting rather than anything here.
+    That default cannot grant `id-token: write`: the scope is `write|none` and
+    is granted only where a `permissions` block names it. So an absent block
+    cannot hide the thing the rule below forbids, and the rule does not demand
+    one. Least privilege for the *other* scopes is a separate question that
+    reading this repository cannot settle either way.
+    """
+    if "permissions" in job:
+        return job["permissions"]
+    return workflow.get("permissions", {})
+
+
+def _grants_id_token(permissions) -> bool:
+    # `permissions:` may be the string `read-all` or `write-all` instead of a
+    # mapping, and `write-all` grants every scope, `id-token` among them.
+    if isinstance(permissions, str):
+        return permissions == "write-all"
+    return bool((permissions or {}).get("id-token"))
 
 
 @pytest.mark.parametrize(
@@ -90,15 +138,39 @@ def test_every_credentialed_job_installs_before_it_authenticates(workflow):
         )
 
 
-def test_the_pull_request_jobs_never_authenticate():
-    """`plan` and `image` create nothing and must hold no id-token."""
-    for job_name, job in _jobs("infra-deploy.yml").items():
-        if job_name not in ("plan", "image"):
+@pytest.mark.parametrize("workflow", WORKFLOW_FILES)
+def test_no_unguarded_job_holds_an_aws_credential_or_the_token_to_get_one(workflow):
+    """A job an unreviewed ref can run must not be able to reach AWS.
+
+    This replaces a test that named `plan` and `image` in `infra-deploy.yml`.
+    Both jobs had moved -- `image` to `full-suite.yml`, the pull-request work to
+    `release-gate.yml` -- leaving `diff` and `deploy` as that file's only jobs,
+    so the loop body never executed and the test passed by asserting nothing.
+    A guard written against a list of job names goes vacuous the moment the
+    jobs are renamed, and says nothing at all about a job added later.
+
+    So the rule is a property of every job in every workflow instead: without a
+    `refs/heads/main` guard, a job may neither run
+    `configure-aws-credentials` nor hold `id-token`. The credential half is the
+    contrapositive of `test_no_credentialed_job_runs_from_an_unreviewed_ref`,
+    which covers only the two dispatch workflows; sweeping every file extends
+    it to the three it never opens. The `id-token` half is new to this test:
+    nothing else notices a job that holds the OIDC token but reaches AWS
+    through something other than the pinned action.
+    """
+    document = _workflow(workflow)
+    for job_name, job in (document.get("jobs") or {}).items():
+        if _is_main_guarded(job):
             continue
-        permissions = job.get("permissions") or {}
-        assert "id-token" not in permissions, job_name
+        assert not _grants_id_token(_declared_permissions(document, job)), (
+            f"{workflow}:{job_name} holds id-token without a main-only guard, "
+            "so an unreviewed branch's YAML can mint an AWS session"
+        )
         for step in job.get("steps") or []:
-            assert CREDENTIAL_ACTION not in str(step.get("uses", "")), job_name
+            assert CREDENTIAL_ACTION not in str(step.get("uses", "")), (
+                f"{workflow}:{job_name} configures AWS credentials without a "
+                "main-only guard"
+            )
 
 
 def test_both_dispatch_jobs_pass_every_required_context():
@@ -184,8 +256,7 @@ def test_no_credentialed_job_runs_from_an_unreviewed_ref(workflow):
             CREDENTIAL_ACTION in str(step.get("uses", "")) for step in steps
         ):
             continue
-        condition = str(job.get("if", ""))
-        assert "refs/heads/main" in condition, (
+        assert _is_main_guarded(job), (
             f"{workflow}:{job_name} assumes an AWS role without a main-only "
             "guard, so an unreviewed branch's YAML can use it"
         )

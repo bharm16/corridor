@@ -43,8 +43,20 @@ def _app_context() -> dict:
     return json.loads(CDK_JSON.read_text())["context"]
 
 
-def _build(**overrides):
-    """Build all stacks; preserve the existing four-item fixture interface."""
+def _build(**overrides) -> dict[str, Template]:
+    """Synthesize every stack, keyed by name.
+
+    Returns a template per stack rather than a tuple. The previous four-item
+    tuple built the control-plane stack and then dropped it from the return
+    value, so `test_bootstrap_policies`'s generic boundary sweeps -- the ones
+    that exist because a hand-written action comparison missed two real grants
+    -- ran against four of the five stacks. Nothing decided that; a discarded
+    tuple element did. Returning a mapping means a caller takes the stack it
+    wants by name and a sweep iterates whatever this builds, so a sixth stack
+    joins those sweeps the day it is added.
+
+    `**overrides` still reaches the application stack's keyword arguments only.
+    """
     app = cdk.App(context=_app_context())
     foundation = CorridorAccountFoundationStack(
         app, "F", env=ENV,
@@ -82,59 +94,23 @@ def _build(**overrides):
     )
     kwargs.update(overrides)
     application = CorridorApplicationStack(app, "A", env=ENV, **kwargs)
-    return foundation, network, data, application
+    return {
+        "foundation": Template.from_stack(foundation),
+        "network": Template.from_stack(network),
+        "control": Template.from_stack(control),
+        "data": Template.from_stack(data),
+        "application": Template.from_stack(application),
+    }
 
 
 @pytest.fixture(scope="module")
 def stacks():
-    app = cdk.App(context={**_app_context(), "corridor:webDesiredCount": 0})
-    foundation = CorridorAccountFoundationStack(
-        app,
-        "F",
-        env=ENV,
-        github_repo="bharm16/corridor",
-        github_environment="nonproduction",
-    )
-    network = CorridorNetworkStack(app, "N", env=ENV)
-    control = CorridorControlPlaneStack(
-        app, "C", env=ENV, vpc=network.vpc,
-        database_security_group=network.control_db_sg,
-    )
-    data = CorridorDataStack(
-        app, "D", env=ENV, vpc=network.vpc, database_security_group=network.db_sg
-    )
-    application = CorridorApplicationStack(
-        app,
-        "A",
-        env=ENV,
-        vpc=network.vpc,
-        alb_security_group=network.alb_sg,
-        web_security_group=network.web_sg,
-        batch_security_group=network.batch_sg,
-        migration_security_group=network.migration_sg,
-        database=data.database,
-        artifact_bucket=data.artifact_bucket,
-        web_db_secret=data.web_db_secret,
-        worker_db_secret=data.worker_db_secret,
-        control_database=control.database,
-        control_operations_secret=control.operations_secret,
-        control_resolver_secret=control.resolver_secret,
-        customer_routing_secret=data.customer_routing_secret,
-        customer_id="synthetic-a", customer_environment_id="synthetic-nonproduction",
-        deployment_id="corridor-nonproduction", data_class="synthetic",
-        image_tag="0123456789abcdef0123456789abcdef01234567",
-        web_desired_count=0,
-        certificate_arn=DUMMY_CERT,
-        public_hostname="pilot.example.com",
-        sign_in_sender="no-reply@example.com",
-    )
-    return {
-        "foundation": Template.from_stack(foundation),
-        "network": Template.from_stack(network),
-        "data": Template.from_stack(data),
-        "control": Template.from_stack(control),
-        "application": Template.from_stack(application),
-    }
+    """The same five templates `_build` produces, synthesized once per module.
+
+    This used to repeat `_build`'s twenty keyword arguments forty lines below
+    it, so the two constructions could drift apart silently.
+    """
+    return _build()
 
 
 # --- cost -------------------------------------------------------------
@@ -184,8 +160,7 @@ def test_worker_service_runs_the_existing_supervisor_with_its_own_health_check(s
 def test_serving_requires_a_worker_and_the_worker_has_an_operational_alarm():
     with pytest.raises(ValueError, match="workerDesiredCount"):
         _build(web_desired_count=1, worker_desired_count=0)
-    _, _, _, application = _build(web_desired_count=1, worker_desired_count=1)
-    template = Template.from_stack(application)
+    template = _build(web_desired_count=1, worker_desired_count=1)["application"]
     template.resource_count_is("AWS::ECS::Service", 2)
     alarms = template.find_resources("AWS::CloudWatch::Alarm")
     worker_alarms = [value["Properties"] for key, value in alarms.items()
@@ -590,8 +565,7 @@ def test_serving_without_a_certificate_is_refused():
 def test_without_a_certificate_the_stack_synthesises_but_has_no_listener():
     """The network and data stacks still need to be deployable before a
     certificate exists. The service can exist at zero; it just has no way in."""
-    _, _, _, application = _build(certificate_arn="", web_desired_count=0)
-    template = Template.from_stack(application)
+    template = _build(certificate_arn="", web_desired_count=0)["application"]
 
     template.resource_count_is("AWS::ElasticLoadBalancingV2::Listener", 0)
     template.has_resource_properties("AWS::ECS::Service", {"DesiredCount": 0})
@@ -781,8 +755,7 @@ def test_the_database_master_login_is_the_schema_owner_the_baseline_expects():
     """
     import json
 
-    _, _, data, _ = _build()
-    template = Template.from_stack(data).to_json()["Resources"]
+    template = _build()["data"].to_json()["Resources"]
     secrets = [
         resource
         for resource in template.values()

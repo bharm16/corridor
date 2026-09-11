@@ -285,21 +285,19 @@ ECS_TASK_EXECUTION_MANAGED_ACTIONS = (
 
 
 def _synthesized_stacks():
-    """Import the stack fixtures lazily so this file stays runnable alone."""
+    """Import the stack fixtures lazily so this file stays runnable alone.
+
+    Whatever `_build` synthesizes is what the sweeps below read. Listing the
+    stacks here instead is how the control plane came to be exempt from them:
+    `_build` returned a four-item tuple that dropped it, and this copy of the
+    list never noticed.
+    """
     import sys
 
     sys.path.insert(0, str(pathlib.Path(__file__).parent))
     from test_stacks import _build
 
-    from aws_cdk.assertions import Template
-
-    foundation, network, data, application = _build()
-    return {
-        "foundation": Template.from_stack(foundation),
-        "network": Template.from_stack(network),
-        "data": Template.from_stack(data),
-        "application": Template.from_stack(application),
-    }
+    return _build()
 
 
 def _inline_actions(template) -> dict[str, set[str]]:
