@@ -13,7 +13,7 @@ from pathlib import Path
 import re
 
 from corridor.m8_acceptance_database import disposable_database_name
-from scripts.clean_test_databases import is_scratch_name, sweepable
+from scripts.clean_test_databases import is_scratch_name, owner_pid, sweepable
 from source_scan_support import python_files, read_python, source_scan_cache  # noqa: F401
 
 _ROOT = Path(__file__).resolve().parents[1]
@@ -22,6 +22,17 @@ _LABEL_SHAPE = re.compile(r"^[a-z0-9]+(?:_[a-z0-9]+)*$")
 
 
 PROTECTED = frozenset({"corridor"})
+
+
+def NOTHING_RUNNING(pid: int) -> bool:
+    """The process table a name-recognition test means: the minting run is gone.
+
+    Without it these read the machine's real process table, and a name whose
+    embedded pid happens to belong to some live process passes or fails by
+    accident -- which is how this file first failed after the owner rule landed.
+    """
+
+    return False
 
 
 def test_a_recognised_scratch_database_with_no_backend_is_swept():
@@ -184,8 +195,10 @@ def test_every_declared_label_mints_a_name_the_sweep_collects():
 
         assert len(name.encode()) <= 63, name
         assert is_scratch_name(name), name
-        assert sweepable({name: 0}, protected=PROTECTED) == [name]
-        assert sweepable({name: 1}, protected=PROTECTED) == []
+        assert sweepable({name: 0}, protected=PROTECTED, live=NOTHING_RUNNING) == [
+            name
+        ]
+        assert sweepable({name: 1}, protected=PROTECTED, live=NOTHING_RUNNING) == []
 
 
 def test_the_pytest_harness_databases_are_still_collected():
@@ -196,4 +209,80 @@ def test_the_pytest_harness_databases_are_still_collected():
         f"{HARNESS_PREFIX}20260909a_120000_tmpl",
     ):
         assert is_scratch_name(name), name
-        assert sweepable({name: 0}, protected=PROTECTED) == [name]
+        assert sweepable({name: 0}, protected=PROTECTED, live=NOTHING_RUNNING) == [
+            name
+        ]
+
+
+def _running(*pids: int):
+    """A process table naming exactly which minting runs are still alive."""
+
+    return lambda pid: pid in pids
+
+
+def test_a_live_runs_template_is_kept_even_with_no_backend_open():
+    """The defect this rule exists for: a template is cloned from, never held open.
+
+    A dry run on 2026-09-11 selected two concurrently running lanes' templates
+    because nothing was connected to either at the instant it looked. Since #856
+    the per-run template is what every isolated database clones, so dropping one
+    mid-run costs that run every clone it has not taken yet, not one database.
+    """
+
+    template = f"{HARNESS_PREFIX}44670_7c6aa182_tmpl"
+
+    assert sweepable({template: 0}, protected=PROTECTED, live=_running(44670)) == []
+    assert sweepable({template: 0}, protected=PROTECTED, live=_running(1)) == [template]
+
+
+def test_a_dead_owner_leaves_its_databases_eligible():
+    """The sweep still does its job; abandoned runs are what it collects."""
+
+    names = {
+        f"{HARNESS_PREFIX}44670_7c6aa182_tmpl": 0,
+        f"{HARNESS_PREFIX}44670_7c6aa182_gw0": 0,
+        disposable_database_name("baseline_activation"): 0,
+    }
+
+    assert sorted(sweepable(names, protected=PROTECTED, live=_running())) == sorted(
+        names
+    )
+
+
+def test_an_owner_this_process_cannot_ask_about_is_kept():
+    """Unverifiable ownership is kept, and the asymmetry is the point.
+
+    Keeping a dead run's database costs one stale database until the next sweep.
+    Dropping a live run's template costs that run the rest of its session.
+    """
+
+    def refuses(pid: int) -> bool:
+        raise PermissionError(pid)
+
+    template = f"{HARNESS_PREFIX}44670_7c6aa182_tmpl"
+
+    assert sweepable({template: 0}, protected=PROTECTED, live=refuses) == []
+
+
+def test_a_name_carrying_no_minting_process_falls_back_to_the_other_rules():
+    """A hand-made verification copy has no minting module, and is still swept."""
+
+    # A scratch name from before the minting namespace existed: recognised by the
+    # historical patterns, carrying no pid for the owner rule to read.
+    hand_made = "corridor_m8_acceptance_0e5b0adcb1d54d45a164e63baa8f3841"
+
+    assert owner_pid(hand_made) is None
+    assert sweepable({hand_made: 0}, protected=PROTECTED, live=_running()) == [hand_made]
+    # And an unrecognised name is still kept, by the rule that already did that.
+    assert sweepable(
+        {"corridor_pre_baseline_95da88f": 0}, protected=PROTECTED, live=_running()
+    ) == []
+
+
+def test_the_owner_is_read_from_the_name_by_whichever_module_minted_it():
+    """One pid reader per family, neither of them written twice."""
+
+    assert owner_pid(f"{HARNESS_PREFIX}44670_7c6aa182_tmpl") == 44670
+    assert owner_pid(f"{HARNESS_PREFIX}44670_7c6aa182") == 44670
+    assert owner_pid("corridor_disposable_baseline_activation_18413_7c6aa1826a05") == 18413
+    assert owner_pid("corridor") is None

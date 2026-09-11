@@ -14,6 +14,13 @@ is no sweep at all:
   named;
 - `postgres` and the PostgreSQL templates are never candidates;
 - a database with an open backend is never a candidate — something is using it;
+- a database whose name carries the process that minted it is never a candidate
+  while that process is still running, **even with no backend open**.  A
+  migrated template is cloned from, not connected to, so the backend rule alone
+  reports a live run's template as idle: a dry run on 2026-09-11 selected two
+  concurrently running lanes' templates for exactly that reason.  Since #856 the
+  per-run template is what every isolated database clones, so dropping one
+  mid-run takes out every later clone in that session rather than one database;
 - a name is a candidate only when it matches a known scratch pattern, so an
   unrecognised database is kept rather than guessed at.
 
@@ -24,6 +31,16 @@ workflow's databases are swept the day it is written. The hand-written patterns
 below stay because names produced *before* that namespace existed are still on
 disk, and because a hand-made verification copy has no minting module at all.
 They are history, not the place to add a new harness.
+
+The owner rule reads the pid already in the name and asks
+`corridor.m8_acceptance_database.process_is_running`, the same liveness check
+`reclaim_abandoned_database_copies` uses, rather than parsing pids a second way.
+It is only meaningful where this process can see that pid: same host, same
+process namespace.  It does not protect a database minted inside a container or
+on another machine whose name merely contains a number, and nothing here should
+be read as claiming it does.  A name carrying no pid at all — a hand-made
+verification copy has no minting module — falls back to the rules above, which
+is the archaeology this exists to prevent.
 
 Age is deliberately *not* a rule.  A database directory's modification time
 tracks the last checkpoint that touched it, not when it was created, so on a
@@ -41,6 +58,7 @@ from __future__ import annotations
 import argparse
 import re
 import sys
+from collections.abc import Callable
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import URL, make_url
@@ -96,14 +114,22 @@ def is_scratch_name(name: str) -> bool:
 
 
 def sweepable(
-    candidates: dict[str, int], *, protected: frozenset[str]
+    candidates: dict[str, int],
+    *,
+    protected: frozenset[str],
+    live: Callable[[int], bool] | None = None,
 ) -> list[str]:
     """The databases to drop, from `{name: open backend count}`.
 
     Kept deliberately pure so the rules can be tested without a server: the
     protection that matters is which names are excluded, not how they were
-    listed.
+    listed.  `live` answers whether a pid is still running, and is injected for
+    the same reason — a test states the process table it means rather than the
+    one the machine happens to have.
     """
+
+    if live is None:
+        from corridor.m8_acceptance_database import process_is_running as live
 
     return sorted(
         name
@@ -112,7 +138,51 @@ def sweepable(
         and name not in NEVER_SWEEP
         and backends == 0
         and is_scratch_name(name)
+        and not _owner_still_running(name, live)
     )
+
+
+def _owner_still_running(name: str, live: Callable[[int], bool]) -> bool:
+    """Whether the process that minted this name is still running.
+
+    A pid this process cannot ask about is treated as running.  The asymmetry is
+    deliberate: keeping a dead run's database costs one stale database until the
+    next sweep, and dropping a live run's template costs that run every clone it
+    has not taken yet.
+    """
+
+    pid = owner_pid(name)
+    if pid is None:
+        return False
+    try:
+        return live(pid)
+    except OSError:
+        return True
+
+
+# `corridor_pytest_<pid>_<hex>` and everything the harness derives from it.
+# The disposable namespace has its own predicate in the minting module; this
+# covers the run the pytest harness mints for itself.
+_RUN_OWNED = re.compile(r"^corridor_pytest_(?P<pid>[1-9][0-9]*)_[0-9a-f]{8}(?:_.+)?$")
+
+
+def owner_pid(name: str) -> int | None:
+    """The process that minted this name, or `None` when the name carries none.
+
+    Both families put the minting pid in the name, so neither needs a registry:
+    the disposable namespace is read by the module that mints it, and the
+    harness run is read here.  A name that carries no pid is not unowned, only
+    unattributable — it falls through to the other rules rather than being kept
+    forever.
+    """
+
+    from corridor.m8_acceptance_database import disposable_database_owner_pid
+
+    minted = disposable_database_owner_pid(name)
+    if minted is not None:
+        return minted
+    match = _RUN_OWNED.fullmatch(str(name))
+    return int(match.group("pid")) if match else None
 
 
 def _candidates(engine) -> dict[str, int]:
@@ -155,6 +225,7 @@ def main(argv: list[str] | None = None) -> int:
     arguments = parser.parse_args(argv)
 
     from corridor.config import settings
+    from corridor.m8_acceptance_database import process_is_running
 
     configured: URL = make_url(settings.database_url)
     protected = frozenset({configured.database or "corridor", *arguments.keep})
@@ -167,11 +238,14 @@ def main(argv: list[str] | None = None) -> int:
         kept = sorted(set(candidates) - set(doomed) - NEVER_SWEEP)
 
         for name in kept:
+            owner = owner_pid(name)
             reason = (
                 "protected"
                 if name in protected
                 else "in use"
                 if candidates[name]
+                else f"owner still running (pid {owner})"
+                if owner is not None and _owner_still_running(name, process_is_running)
                 else "unrecognised name"
             )
             print(f"keep  {name}  ({reason})")
@@ -179,7 +253,23 @@ def main(argv: list[str] | None = None) -> int:
             if not arguments.apply:
                 print(f"would drop  {name}")
                 continue
+            # Eligibility is rechecked here, against the server as it is now:
+            # selection ran before the first drop, and a run that started in
+            # between owns a template this loop would otherwise already be
+            # committed to dropping.
+            if _owner_still_running(name, process_is_running):
+                print(f"keep  {name}  (owner started since selection)")
+                continue
             with admin.connect() as connection:
+                still_used = connection.execute(
+                    text(
+                        "select count(*) from pg_stat_activity where datname = :name"
+                    ),
+                    {"name": name},
+                ).scalar_one()
+                if still_used:
+                    print(f"keep  {name}  (in use since selection)")
+                    continue
                 connection.execute(
                     text(
                         "select pg_terminate_backend(pid) from pg_stat_activity"
