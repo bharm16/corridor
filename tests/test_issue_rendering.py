@@ -912,7 +912,7 @@ def test_a_delta_raised_against_a_moved_accepted_value_reads_as_stale(
 # is what it says about the accepted record, which a correction may not move.
 _DISCLOSURE_OPENINGS = (
     "Some proposed changes are not changes to the project record",
-    "Nothing is waiting:",
+    "No unaccepted proposed changes",
 )
 
 
@@ -1098,9 +1098,11 @@ def test_the_empty_disclosure_claims_a_decision_for_neither_history(
     wording is what a coordinator is told in Review, not what a customer's
     issue says.
 
-    **The wording is proposed, not approved.**  "Nothing is waiting: this
-    issue has no proposed change to report." is mine; the first half is the
-    surviving half of the sentence that shipped.
+    **The wording (#958).**  "No unaccepted proposed changes are included in
+    this issue." says only what this section knows -- that the unaccepted
+    proposed changes this reading returns are none -- not that nothing at all
+    is waiting, which an outstanding Follow-up Plan or processing problem this
+    section never sees could contradict.
     """
 
     def summary(bound):
@@ -1177,7 +1179,7 @@ def test_the_empty_disclosure_claims_a_decision_for_neither_history(
     # sentence for both.
     assert _disclosure(retired_paragraphs) == _disclosure(decided_paragraphs)
     assert _disclosure(retired_paragraphs) == (
-        "Nothing is waiting: this issue has no proposed change to report."
+        "No unaccepted proposed changes are included in this issue."
     )
     for paragraph in (retired_paragraphs, decided_paragraphs):
         assert "has been decided" not in _disclosure(paragraph)

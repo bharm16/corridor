@@ -1933,9 +1933,13 @@ def _unaccepted_paragraph(reading: ChangeSummaryReading) -> str:
         # was true of the first two and false of the others -- a retirement is
         # precisely not a decision: nobody deferred it, nobody kept the current
         # value, and no newer revision replaced it (ADR-0101). So the claim
-        # about what became of anything is gone and the half that survives is
-        # the half that was always true, which is also the half a reader needs:
-        # nothing is waiting on them (#955).
+        # about what became of anything is gone, and what survives is the
+        # narrowest thing true of all four that this section actually knows:
+        # it includes no unaccepted proposed change. Not "nothing is waiting"
+        # -- an outstanding Follow-up Plan or a processing problem is not this
+        # section's to see -- and not that the issue holds no accepted change;
+        # only that the unaccepted proposals this reading returns are none
+        # (#955, #958).
         #
         # Saying *why* it is empty was the alternative, and it is refused
         # twice over. ADR-0101 took the retired proposal out of this
@@ -1944,7 +1948,7 @@ def _unaccepted_paragraph(reading: ChangeSummaryReading) -> str:
         # the record history, not what a customer's issue says; naming the
         # retirement here would put it back into the disclosure through the
         # one paragraph that is left when it is the only thing that happened.
-        return "Nothing is waiting: this issue has no proposed change to report."
+        return "No unaccepted proposed changes are included in this issue."
     parts = [
         f"{_things(count)} {_state_words(state, count)}"
         for state, count in sorted(counted.items())
