@@ -40,7 +40,7 @@ from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, event as sa_event, select, text
+from sqlalchemy import create_engine, event as sa_event, func, select, text, update
 from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.exc import DBAPIError, ProgrammingError
 from sqlalchemy.orm import Session as OrmSession
@@ -820,6 +820,74 @@ def test_a_kept_declaration_is_taken_up_again_after_the_request_commits(
             row.exact_text for row in web.scalars(select(SourceSegment)).all()
         ] == ["ours-UC-1"]
         assert access.current_project_partition(web) == (ours,)
+        web.rollback()
+
+
+def test_a_kept_declaration_does_not_excuse_a_caller_changing_scope(
+    member_of_both, pooled_web_engine
+):
+    """#662's rule is untouched by the keeper, which is the point of it.
+
+    The keeper takes a scope up again on the transaction its own commit
+    started. What it must never do is make a *caller's* second, different
+    declaration look like something already permitted -- so the refusal is
+    asserted here with the keeper holding a scope, not only without one.
+    """
+
+    ours, theirs = member_of_both
+    with OrmSession(bind=pooled_web_engine) as web:
+        access.open_project_partition(
+            web, principal_subject=LEAVER.subject, project_id=ours
+        )
+        access.keep_partition_declared(web)
+        web.commit()
+        assert access.current_project_partition(web) == (ours,)
+
+        with pytest.raises(access.PartitionScopeConflict):
+            access.open_project_partition(
+                web, principal_subject=LEAVER.subject, project_id=theirs
+            )
+
+        assert access.current_project_partition(web) == (ours,)
+        web.rollback()
+
+
+def test_a_kept_declaration_the_roster_no_longer_allows_is_given_up(
+    runtime_database, two_projects, pooled_web_engine
+):
+    """Withdrawn between the commit and the next read, and refused -- quietly.
+
+    The re-declaration proves the roster entry again, which is what makes the
+    keeper safe; a person offboarded mid-request must not be carried. But the
+    refusal happens inside an event handler no caller can catch, so it has to
+    leave the transaction usable and the partition empty -- which is exactly
+    what an offboarded person should read -- rather than escape as an
+    unhandled privilege error.
+    """
+
+    ours, _theirs = two_projects
+    with OrmSession(bind=pooled_web_engine) as web:
+        access.open_project_partition(
+            web, principal_subject=LEAVER.subject, project_id=ours
+        )
+        access.keep_partition_declared(web)
+        web.commit()
+
+        with runtime_database.session_factory.begin() as operations:
+            operations.execute(
+                update(ProjectRosterEntry)
+                .where(
+                    ProjectRosterEntry.project_id == ours,
+                    ProjectRosterEntry.principal_subject == LEAVER.subject,
+                )
+                .values(active=False)
+            )
+
+        assert web.scalars(select(SourceSegment)).all() == []
+        assert access.current_project_partition(web) is None
+        # And the transaction is still the caller's to use: a refusal that
+        # poisoned it would fail here rather than answer.
+        assert web.scalar(select(func.count()).select_from(Project)) >= 2
         web.rollback()
 
 

@@ -99,6 +99,12 @@ def request_scoped(session):
         try:
             yield session
         finally:
+            # The scope this request declared ends with the request, and so
+            # does anything holding it open for one (``keep_partition_declared``
+            # follows a route's own commit into the rest of *its* request). The
+            # deployment gets this for nothing, because a session there is one
+            # request; here the session is shared, so the boundary says it.
+            access.forget_kept_partition(session)
             if session.in_transaction():
                 session.rollback()
             if boundary.is_active:

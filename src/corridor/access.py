@@ -2064,19 +2064,37 @@ def current_project_partition(session: Session) -> tuple[int, ...] | None:
 #
 # Fixing either call site leaves the next one to find.  So the declaration is
 # made to last as long as the thing it authorizes: the caller that declared a
-# partition for a request asks here to have it re-declared on every transaction
-# that session opens afterwards.  Nothing is remembered in the database and
-# nothing outlives the ``Session`` object, which the web layer creates per
-# request -- and every re-declaration runs the same command, which proves the
-# roster entry again, so a person offboarded mid-request is refused rather than
-# carried.
+# partition for a request asks here to have it re-declared on the transaction
+# its own commit started.  Nothing is remembered in the database and nothing
+# outlives the ``Session`` object -- and every re-declaration runs the same
+# command, which proves the roster entry again, so a person offboarded
+# mid-request is refused rather than carried.
+#
+# **A commit, and only a commit, is what the keeper follows.**  The first shape
+# of this took every transaction the session opened, and that is wrong in one
+# exact way: a *rollback* gives up the transaction's work, and this seam has
+# always said the partition goes with it.  Re-installing a scope after one
+# would carry an authorization past the unit of work that proved it, and it
+# also breaks a caller that legitimately declares a different scope next --
+# ``/portfolio`` reads the member-wide partition and then opening one project
+# from it declares that project.  Those are two units of work, and #662 refuses
+# two scopes inside *one*.  A keeper that echoed the first into the second's
+# transaction would turn a legitimate second declaration into a refusal, and
+# the caller cannot tell an echo from a scope it declared itself.  So the
+# keeper never produces one: it re-declares only where the same unit of work
+# continued through its own commit, and a rollback forgets what was kept.
+#
+# The rule the keeper must not weaken is #662's, and it does not: a caller that
+# declares scope A and then scope B in one transaction is refused exactly as it
+# was, whether or not the keeper is holding A.
 _KEPT_PARTITION = "corridor.kept_partition"
+_KEPT_PARTITION_ARMED = "corridor.kept_partition_armed"
 _KEPT_PARTITION_BUSY = "corridor.kept_partition_busy"
 _KEPT_PARTITION_LISTENING = "corridor.kept_partition_listening"
 
 
 def keep_partition_declared(session: Session) -> None:
-    """Re-declare this session's partition on every transaction it opens next.
+    """Take this session's partition up again on the transaction a commit starts.
 
     Call it after ``open_project_partition`` or
     ``open_member_project_partition`` when the caller's unit of work is wider
@@ -2084,36 +2102,103 @@ def keep_partition_declared(session: Session) -> None:
     reading.  It re-runs the same declaration command, so nothing is trusted
     across the commit that was not proved before it.
 
-    Declaring a different scope later replaces what is kept; the scope-change
-    rules are unchanged, because the replacement happens through the same
-    commands that refuse an illegitimate change.
+    Declaring a different scope later replaces what is kept, and a rollback
+    gives it up altogether.  The scope-change rules are unchanged: a caller
+    that declares a second, different scope inside one transaction meets #662's
+    refusal exactly as it did before.
+
+    What is kept lives on the ``Session``, and in the deployment a ``Session``
+    is one request.  A caller whose session outlives its unit of work says so
+    with ``forget_kept_partition``, because a scope kept past the work that
+    declared it is exactly the echo the next caller cannot tell from its own
+    declaration.
     """
 
     if session.info.get(_KEPT_PARTITION_LISTENING):
         return
     session.info[_KEPT_PARTITION_LISTENING] = True
+    event.listen(session, "after_commit", _arm_kept_partition)
+    event.listen(session, "after_soft_rollback", _forget_after_soft_rollback)
+    event.listen(session, "after_rollback", _forget_kept_partition)
     event.listen(session, "after_begin", _redeclare_kept_partition)
 
 
+def forget_kept_partition(session: Session) -> None:
+    """Stop keeping this session's partition: the work that declared it is over.
+
+    A ``Session`` that is one request needs no such call -- it is discarded
+    with the request.  One that is reused across units of work does: what the
+    previous unit declared must not be taken up again inside the next one's
+    transaction, where the caller's own declaration would meet it and be
+    refused as an in-transaction scope change it never made.
+    """
+
+    _forget_kept_partition(session)
+
+
 def _remember_partition(session: Session, declaration) -> None:
-    """Record what ``keep_partition_declared`` would re-declare."""
+    """Record what ``keep_partition_declared`` would take up again."""
 
     session.info[_KEPT_PARTITION] = declaration
 
 
+def _arm_kept_partition(session: Session) -> None:
+    """This unit of work committed and may continue, so the scope may follow it."""
+
+    session.info[_KEPT_PARTITION_ARMED] = True
+
+
+def _forget_kept_partition(session: Session) -> None:
+    """A rollback gives up the work, and the partition goes with it."""
+
+    session.info.pop(_KEPT_PARTITION, None)
+    session.info.pop(_KEPT_PARTITION_ARMED, None)
+
+
+def _forget_after_soft_rollback(session: Session, previous_transaction) -> None:
+    """The same, for a rollback the driver did not have to perform.
+
+    A savepoint going back is not the unit of work going back -- every
+    recoverable refusal in this module is a savepoint -- so this only forgets
+    when nothing of the transaction is left.
+    """
+
+    if session.in_transaction():
+        return
+    _forget_kept_partition(session)
+
+
 def _redeclare_kept_partition(session: Session, transaction, connection) -> None:
-    """Re-declare the kept partition at the start of a new transaction.
+    """Take the kept partition up again at the start of the next transaction.
 
     Runs on ``connection`` rather than through the ``Session`` so it cannot
     re-enter this listener, and guards itself anyway: a savepoint opened while
     the declaration is in flight fires this event again.
+
+    It runs inside its own savepoint for the reason ``open_project_partition``
+    uses one: the command proves the roster entry by raising, and a statement
+    that errors poisons the transaction it is in.  A person whose membership
+    was withdrawn between the commit and here is refused -- and the refusal is
+    a partition this transaction does not hold, which reads as the empty one,
+    rather than an exception escaping an event handler no caller can catch.
+    Once refused, it stops being kept: the answer will not change by asking
+    again on every transaction that follows.
     """
 
-    declaration = session.info.get(_KEPT_PARTITION)
-    if declaration is None or session.info.get(_KEPT_PARTITION_BUSY):
+    if session.info.get(_KEPT_PARTITION_BUSY):
         return
+    declaration = session.info.get(_KEPT_PARTITION)
+    if declaration is None or not session.info.get(_KEPT_PARTITION_ARMED):
+        return
+    session.info[_KEPT_PARTITION_ARMED] = False
     session.info[_KEPT_PARTITION_BUSY] = True
+    attempt = connection.begin_nested()
     try:
         connection.execute(select(declaration))
+    except DBAPIError:
+        attempt.rollback()
+        session.info.pop(_KEPT_PARTITION, None)
+    else:
+        attempt.commit()
     finally:
         session.info[_KEPT_PARTITION_BUSY] = False
