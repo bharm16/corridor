@@ -106,11 +106,11 @@ WORK_LIST_REASON_CODES: tuple[str, ...] = (
 # processing — and the screen prints nothing for it, as it always has.
 _DESTINATION_NEXT_STEPS: dict[str, str] = {
     SOURCE_DISCREPANCY: (
-        "Resolve the source discrepancy below, or record Needs clarification "
-        "to keep it open."
+        "These sources disagree. Record your conclusion below, or record "
+        "Needs clarification to keep it open."
     ),
     DOCUMENTATION_REVIEW: (
-        "Review the documentation against the stated requirement below."
+        "Review the documents below against the stated requirement."
     ),
     FAILED_CITATION: (
         "Check the citation on the supporting documents below before it is used."

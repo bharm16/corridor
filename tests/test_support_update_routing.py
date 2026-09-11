@@ -295,17 +295,27 @@ def test_every_customer_destination_names_its_own_next_step():
 
     Each sentence lived only inside `dependency.html` and nothing asserted any
     of them, while this module already held the destination identifiers and the
-    plain project language of `explanation` beside them. These are the exact
-    words that screen rendered, moved unchanged; changing one is a terminology
-    decision (`docs/agents/domain.md`), not an edit to this test.
+    plain project language of `explanation` beside them. They arrived here as
+    the exact words that screen rendered, moved unchanged; changing one is a
+    terminology decision (`docs/agents/domain.md`), not an edit to this test.
+
+    Two of them were changed by that route, on the maintainer's ruling of
+    2026-09-11 (#862): both said an internal concept name to a customer where
+    `CONTEXT.md` already gives a customer label.  "Resolve the source
+    discrepancy" used two of them in four words -- *Source Discrepancy* for the
+    thing and *Discrepancy Resolution* for the act -- where the glossary gives
+    **Sources disagree** and **Record conclusion**; and the documentation
+    sentence asked about "the documentation" where the adopted question is
+    **Do these documents meet this requirement?**.  Neither replacement coins
+    anything: each substitutes a label `CONTEXT.md` already holds.
     """
 
     assert routing.destination_next_step(routing.SOURCE_DISCREPANCY) == (
-        "Resolve the source discrepancy below, or record Needs clarification "
-        "to keep it open."
+        "These sources disagree. Record your conclusion below, or record "
+        "Needs clarification to keep it open."
     )
     assert routing.destination_next_step(routing.DOCUMENTATION_REVIEW) == (
-        "Review the documentation against the stated requirement below."
+        "Review the documents below against the stated requirement."
     )
     assert routing.destination_next_step(routing.FAILED_CITATION) == (
         "Check the citation on the supporting documents below before it is used."

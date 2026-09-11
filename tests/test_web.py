@@ -5555,7 +5555,7 @@ def test_changed_support_shows_before_and_after_on_the_dependency_page(
     assert chain.successor.filename in detail.text
     assert "AT&amp;T Texas (SWBT)" in detail.text
     assert "AT&amp;T Metro (SWBT)" in detail.text
-    assert "Resolve the source discrepancy" in detail.text
+    assert "These sources disagree" in detail.text
 
 
 def test_documentation_needs_clarification_route_records_follow_up(
