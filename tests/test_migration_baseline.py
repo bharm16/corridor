@@ -105,7 +105,16 @@ EXPECTED_SCHEMA_SHA256 = (
     # `enforce_coordination_designation` trigger -- the same function, named at
     # its own principal column, rather than a second near-copy. Recomputed
     # against a fresh disposable database.
-    "ddb6174e5f4e46400098a9d1c8462cbdd13eb921e6ecffd891ff9933da49cf42"
+    # #837 finishes the accepted #652 correspondence contract. `outgoing_requests`
+    # loses `follow_up_plan_id` and `sent_bytes` and gains the storage key, the
+    # recorder, and its correction pair; `outgoing_request_plans` is the new
+    # relation that makes one request advance several Follow-up Plans (+1 table,
+    # +1 sequence); `outgoing_request_responses` loses its one-per-request unique
+    # and gains completeness, the four evidence columns with the check that makes
+    # them mutually exclusive, its own idempotency key and its correction pair.
+    # Both append commands change signature. Recomputed against a fresh
+    # disposable database.
+    "bff005a0827bf7bd086dc6a4c60c4f6baaaf07bd7e1f07715c46e9e3e4600bd0"
 )
 
 pytestmark = [pytest.mark.slow, pytest.mark.migration]

@@ -114,6 +114,12 @@ PARAMETER_VALUES = {
     "candidate_id": NO_SUCH_ID,
     "issue_number": NO_SUCH_ID,
     "artifact_type": "updated_ucm",
+    # #837: the row id of a retained outgoing request, whose exact sent content
+    # this route hands back. An id no row has, for the reason NO_SUCH_ID
+    # exists -- a stranger who is answered here has been answered about a
+    # request that does not exist, which is the only way to tell a refusal
+    # that is about membership from one that is about the lookup.
+    "request_id": NO_SUCH_ID,
 }
 
 

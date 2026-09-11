@@ -77,6 +77,8 @@ from corridor.models import (
 from corridor.operating_mode import adopt_project_baseline
 from corridor.outgoing_requests import (
     OutgoingRequestRefused,
+    read_correspondence,
+    read_sent_content,
     record_outgoing_request_response,
     retain_outgoing_request,
 )
@@ -794,28 +796,54 @@ def _retain(
     session: Session,
     project: Project,
     *,
-    plan_id: int,
+    plan_ids: tuple[int, ...],
     sent_on: date,
     expected_response_by: date,
     subject_keys: tuple[str, ...] = (subject(FIRST),),
     question: str = "Please confirm the relocation date for U-042.",
     idempotency_key: str | None = None,
-    sent_bytes: bytes | None = None,
-    content_sha256: str | None = None,
+    sent_content: bytes = b"Dear City Water, please confirm the date.",
+    sent_by_principal: str = "local:coordinator",
+    recorded_by_principal: str = "local:coordinator",
 ) -> OutgoingRequest:
     return retain_outgoing_request(
         session,
         project_id=project.id,
-        follow_up_plan_id=plan_id,
+        follow_up_plan_ids=plan_ids,
         external_organization=WATER,
         question=question,
         covered_subject_keys=subject_keys,
+        sent_content=sent_content,
         sent_on=sent_on,
-        sent_by_principal="local:coordinator",
+        sent_by_principal=sent_by_principal,
+        recorded_by_principal=recorded_by_principal,
         expected_response_by=expected_response_by,
         idempotency_key=idempotency_key or f"req:{uuid4().hex[:12]}",
-        sent_bytes=sent_bytes,
-        content_sha256=content_sha256,
+    )
+
+
+def _reply(
+    session: Session,
+    project: Project,
+    *,
+    request_id: int,
+    received_on: date,
+    completeness: str = "substantive",
+    idempotency_key: str | None = None,
+):
+    """One recorded observation, evidenced the way a telephone call is."""
+
+    return record_outgoing_request_response(
+        session,
+        project_id=project.id,
+        request_id=request_id,
+        received_on=received_on,
+        recorded_by_principal="local:coordinator",
+        completeness=completeness,
+        observation="City Water confirmed the date on the telephone.",
+        observed_by_principal="local:coordinator",
+        source_reference="telephone call, 11:20",
+        idempotency_key=idempotency_key or f"reply:{uuid4().hex[:12]}",
     )
 
 
@@ -845,15 +873,16 @@ def test_a_project_that_retained_no_request_reads_empty_and_fires_no_band(
     )
 
 
-def test_no_production_module_retains_an_outgoing_request_yet():
-    """The writer seam has no producer until #652's sending side lands.
+def test_the_only_production_writer_is_the_follow_up_section():
+    """The seam has exactly one producer, and it is the one #837 built.
 
-    ``outgoing_requests`` is a deliberate seam awaiting the sending side; the
-    only callers of its two commands are this module and the chase-screen
-    tests. This pin holds that absence exactly, the way the architecture
-    ratchets do: the first production caller deletes this test and the
-    matching paragraph of ``outgoing_requests``'s docstring in the same change,
-    so the seam gains a producer on purpose rather than by accident.
+    This replaces the pin that held the *absence* of a producer while #652's
+    retention had no caller. The absence was the thing worth guarding then; now
+    that a coordinator can record correspondence, the thing worth guarding is
+    that the recording happens on one surface. A second caller appearing
+    somewhere else is how two screens come to hold different opinions about
+    what was sent, so a new one is a deliberate edit here rather than an
+    accident.
     """
 
     from pathlib import Path
@@ -862,17 +891,18 @@ def test_no_production_module_retains_an_outgoing_request_yet():
 
     writers = {"retain_outgoing_request", "record_outgoing_request_response"}
     source_root = Path(__file__).parents[1] / "src" / "corridor"
-    callers = sorted(
-        f"{path.name}:{lineno} names {writer}"
+    callers = {
+        writer: sorted(path.name for path in sites)
         for writer, sites in callers_of(writers, (source_root,)).items()
-        for path, lines in sites.items()
-        if path.name != "outgoing_requests.py" and "migrations" not in path.parts
-        for lineno in lines
-    )
+        if sites
+    }
 
-    assert callers == [], (
-        "outgoing_requests has a production producer now; retire this pin and "
-        "the docstring paragraph that announces the absence"
+    assert callers == {
+        "retain_outgoing_request": ["app.py"],
+        "record_outgoing_request_response": ["app.py"],
+    }, (
+        "the retained-correspondence seam has a producer outside the follow-up "
+        "section; #837 put both acts on one surface on purpose"
     )
 
 
@@ -887,13 +917,21 @@ def test_a_retained_request_is_read_back_through_the_port_in_its_shape(
     row = _retain(
         session,
         project,
-        plan_id=plan_id,
+        plan_ids=(plan_id,),
         sent_on=date(2026, 8, 1),
         expected_response_by=date(2026, 8, 15),
-        sent_bytes=b"Dear City Water, please confirm the relocation date.",
+        sent_content=b"Dear City Water, please confirm the relocation date.",
     )
-    # Exact bytes were kept, so the digest still verifies against them.
-    assert row.digest_is_valid
+    # The content was retained, and the coordinator can be shown it rather
+    # than its digest.
+    assert row.content_sha256 == sha256(
+        b"Dear City Water, please confirm the relocation date."
+    ).hexdigest()
+    assert row.sent_content_key.endswith(f"{row.content_sha256}.txt")
+    assert (
+        read_sent_content(row)
+        == b"Dear City Water, please confirm the relocation date."
+    )
 
     (retained,) = read_retained_outgoing_requests(
         session, project_id=project.id, as_of=NOW
@@ -909,30 +947,82 @@ def test_a_retained_request_is_read_back_through_the_port_in_its_shape(
     assert retained.reference.identity == str(row.id)
 
 
-def test_a_digest_only_request_needs_no_retained_bytes(session, project):
-    """"Whoever sent it, by whatever means" may keep only the digest."""
+def test_a_request_without_its_content_is_refused(session, project):
+    """A digest cannot show a coordinator what was asked, so it is not enough.
+
+    The shipped shape allowed a request retained under its digest alone, for
+    the case where "whoever sent it, by whatever means" kept no bytes. #837
+    takes that back on the accepted contract's own words: the exact sent
+    content is retained through the storage interface *plus* its digest, and a
+    no-response finding a coordinator cannot read the message behind is the
+    thing this record exists to avoid.
+    """
 
     _cross_source(session, project)
     _plan_every_child(session, project, return_date=RETURNS_AT)
     plan_id = _first_plan_id(session, project)
-    digest = sha256(b"a letter Corridor never kept the bytes of").hexdigest()
+
+    with pytest.raises(OutgoingRequestRefused) as refused:
+        _retain(
+            session,
+            project,
+            plan_ids=(plan_id,),
+            sent_on=date(2026, 8, 1),
+            expected_response_by=date(2026, 8, 15),
+            sent_content=b"",
+        )
+
+    assert "exact content" in str(refused.value)
+
+
+def test_a_request_advances_every_plan_it_names(session, project):
+    """One communication, the several Follow-up Plans it actually covered.
+
+    The relation is the accepted contract's, and it is why a bundle cannot
+    imply that one email answered questions it never mentioned.
+    """
+
+    _cross_source(session, project)
+    _plan_every_child(session, project, return_date=RETURNS_AT)
+    plans = tuple(
+        session.scalars(
+            select(DeltaFollowUpPlan.id)
+            .where(DeltaFollowUpPlan.project_id == project.id)
+            .order_by(DeltaFollowUpPlan.id)
+        )
+    )
+    assert len(plans) >= 2, "this scenario needs a bundle carrying two plans"
 
     row = _retain(
         session,
         project,
-        plan_id=plan_id,
+        plan_ids=plans,
         sent_on=date(2026, 8, 1),
         expected_response_by=date(2026, 8, 15),
-        content_sha256=digest,
     )
 
-    assert row.sent_bytes is None
-    assert row.content_sha256 == digest
-    # With no bytes to compare, the digest stands on its own footing.
-    assert row.digest_is_valid
-    assert len(
-        read_retained_outgoing_requests(session, project_id=project.id, as_of=NOW)
-    ) == 1
+    (recorded,) = read_correspondence(
+        session, project_id=project.id, as_of=NOW
+    )
+    assert recorded.request_id == row.id
+    assert recorded.covered_plan_ids == plans
+
+
+def test_a_request_naming_a_plan_of_another_project_is_refused(session, project):
+    """The relation is project-scoped in PostgreSQL, not by a Python check."""
+
+    _cross_source(session, project)
+    _plan_every_child(session, project, return_date=RETURNS_AT)
+    plan_id = _first_plan_id(session, project)
+
+    with pytest.raises(OutgoingRequestRefused):
+        _retain(
+            session,
+            project,
+            plan_ids=(plan_id, plan_id + 10_000_000),
+            sent_on=date(2026, 8, 1),
+            expected_response_by=date(2026, 8, 15),
+        )
 
 
 def test_a_received_response_stops_the_silence_clock(session, project):
@@ -944,10 +1034,10 @@ def test_a_received_response_stops_the_silence_clock(session, project):
     row = _retain(
         session,
         project,
-        plan_id=plan_id,
+        plan_ids=(plan_id,),
         sent_on=date(2026, 8, 1),
         expected_response_by=date(2026, 8, 15),
-        sent_bytes=b"the request",
+        sent_content=b"the request",
     )
 
     # Before any response, the request is returned.
@@ -955,13 +1045,7 @@ def test_a_received_response_stops_the_silence_clock(session, project):
         read_retained_outgoing_requests(session, project_id=project.id, as_of=NOW)
     ) == 1
 
-    record_outgoing_request_response(
-        session,
-        project_id=project.id,
-        request_id=row.id,
-        received_on=date(2026, 8, 20),
-        recorded_by_principal="local:coordinator",
-    )
+    _reply(session, project, request_id=row.id, received_on=date(2026, 8, 20))
 
     # As of a cutoff after the reply, the clock is stopped and it is gone.
     assert (
@@ -989,10 +1073,10 @@ def test_a_retained_request_past_its_boundary_drives_the_band_through_the_port(
     _retain(
         session,
         project,
-        plan_id=plan_id,
+        plan_ids=(plan_id,),
         sent_on=date(2026, 8, 1),
         expected_response_by=date(2026, 8, 15),
-        sent_bytes=b"the request",
+        sent_content=b"the request",
     )
 
     reading = _read(session, project)
@@ -1018,18 +1102,12 @@ def test_a_recorded_response_removes_the_band_through_the_port(session, project)
     row = _retain(
         session,
         project,
-        plan_id=plan_id,
+        plan_ids=(plan_id,),
         sent_on=date(2026, 8, 1),
         expected_response_by=date(2026, 8, 15),
-        sent_bytes=b"the request",
+        sent_content=b"the request",
     )
-    record_outgoing_request_response(
-        session,
-        project_id=project.id,
-        request_id=row.id,
-        received_on=date(2026, 8, 20),
-        recorded_by_principal="local:coordinator",
-    )
+    _reply(session, project, request_id=row.id, received_on=date(2026, 8, 20))
 
     reading = _read(session, project)
 
@@ -1056,21 +1134,26 @@ def test_a_retained_request_is_written_only_through_the_command(session, project
             session.execute(
                 text(
                     "insert into outgoing_requests ("
-                    "project_id, follow_up_plan_id, external_organization, "
-                    "question, covered_subject_keys, content_sha256, sent_on, "
-                    "sent_by_principal, expected_response_by, idempotency_key"
+                    "project_id, external_organization, "
+                    "question, covered_subject_keys, content_sha256, "
+                    "sent_content_key, sent_on, sent_by_principal, "
+                    "recorded_by_principal, expected_response_by, "
+                    "idempotency_key"
                     ") values ("
-                    ":project_id, :plan_id, :org, :question, "
-                    "cast(:subjects as jsonb), :digest, :sent_on, :principal, "
-                    ":boundary, :key)"
+                    ":project_id, :org, :question, "
+                    "cast(:subjects as jsonb), :digest, :key_path, :sent_on, "
+                    ":principal, :principal, :boundary, :key)"
                 ),
                 {
                     "project_id": project.id,
-                    "plan_id": plan_id,
                     "org": WATER,
                     "question": "A request nobody may write raw.",
                     "subjects": '["' + subject(FIRST) + '"]',
                     "digest": sha256(b"raw").hexdigest(),
+                    "key_path": (
+                        f"{sha256(b'raw').hexdigest()[:2]}/"
+                        f"{sha256(b'raw').hexdigest()}.txt"
+                    ),
                     "sent_on": date(2026, 8, 1),
                     "principal": "local:coordinator",
                     "boundary": date(2026, 8, 15),
@@ -1083,10 +1166,10 @@ def test_a_retained_request_is_written_only_through_the_command(session, project
     row = _retain(
         session,
         project,
-        plan_id=plan_id,
+        plan_ids=(plan_id,),
         sent_on=date(2026, 8, 1),
         expected_response_by=date(2026, 8, 15),
-        sent_bytes=b"the request",
+        sent_content=b"the request",
     )
     assert session.get(OutgoingRequest, row.id) is not None
 
@@ -1101,19 +1184,19 @@ def test_a_replayed_retention_returns_the_row_it_already_wrote(session, project)
     first = _retain(
         session,
         project,
-        plan_id=plan_id,
+        plan_ids=(plan_id,),
         sent_on=date(2026, 8, 1),
         expected_response_by=date(2026, 8, 15),
-        sent_bytes=b"the request",
+        sent_content=b"the request",
         idempotency_key="letter-2026-08-01",
     )
     again = _retain(
         session,
         project,
-        plan_id=plan_id,
+        plan_ids=(plan_id,),
         sent_on=date(2026, 8, 1),
         expected_response_by=date(2026, 8, 15),
-        sent_bytes=b"the request",
+        sent_content=b"the request",
         idempotency_key="letter-2026-08-01",
     )
 
@@ -1124,22 +1207,33 @@ def test_a_replayed_retention_returns_the_row_it_already_wrote(session, project)
 
 
 def test_a_boundary_before_the_send_day_is_refused(session, project):
-    """Silence before the boundary is not a finding, and the boundary follows the send."""
+    """Silence before the boundary is not a finding, and the boundary follows the send.
+
+    PostgreSQL is what refuses it, and since #837 the refusal reaches the
+    caller as its own sentence rather than as a lost transaction: the command
+    runs inside a savepoint, so a week that was about to be re-rendered around
+    the refusal still can be.
+    """
 
     _cross_source(session, project)
     _plan_every_child(session, project, return_date=RETURNS_AT)
     plan_id = _first_plan_id(session, project)
 
-    with pytest.raises(DBAPIError):
-        with session.begin_nested():
-            _retain(
-                session,
-                project,
-                plan_id=plan_id,
-                sent_on=date(2026, 8, 15),
-                expected_response_by=date(2026, 8, 1),
-                sent_bytes=b"the request",
-            )
+    with pytest.raises(OutgoingRequestRefused) as refused:
+        _retain(
+            session,
+            project,
+            plan_ids=(plan_id,),
+            sent_on=date(2026, 8, 15),
+            expected_response_by=date(2026, 8, 1),
+            sent_content=b"the request",
+        )
+
+    assert "on or after the day the request went out" in str(refused.value)
+    # The session survived the refusal, which is the point of the savepoint.
+    assert read_retained_outgoing_requests(
+        session, project_id=project.id, as_of=NOW
+    ) == ()
 
 
 def test_a_retained_request_past_its_declared_boundary_is_a_no_response(

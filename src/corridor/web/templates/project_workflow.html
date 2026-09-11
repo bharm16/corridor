@@ -126,6 +126,14 @@
   {% call ui.outcome("refused", "This issue was not prepared, and nothing was recorded", focus) %}
     <p>{{ prepare_refusal }}</p>
   {% endcall %}
+  {%- elif correspondence_refusal %}
+  {% call ui.outcome("refused", "Nothing was recorded, and nothing was sent", focus) %}
+    <p>{{ correspondence_refusal }}</p>
+  {% endcall %}
+  {%- elif correspondence_recorded %}
+  {% call ui.outcome("saved", "Recorded", focus) %}
+    <p>{{ correspondence_recorded }}</p>
+  {% endcall %}
   {%- elif requested %}
   {% call ui.outcome("saved", "Coverage confirmed, and this issue is being prepared", focus) %}
     <p>
@@ -442,6 +450,211 @@
                     aria-describedby="{{ view.anchor }}-brief-hint"
                     aria-readonly="true" spellcheck="false">{{ view.brief }}</textarea>
         </div>
+
+        {#
+          What was sent, what came back, and the two acts that record them
+          (#837).
+
+          Corridor sends nothing. Every control here records something that
+          already happened somewhere else, which is why the send form asks for
+          the message rather than composing one and why there is no send
+          button on this page to find.
+
+          The third control is a link and not a form on purpose. A recorded
+          reply stops the no-response finding and settles nothing: the record
+          question this follow-up carries is answered on the review screen, and
+          offering a "settle it" button beside a recorded reply is exactly the
+          confusion the two facts are kept apart to prevent.
+
+          Plan update, cancellation, return-date change and early resume are
+          #835's and are deliberately absent here, so the two tickets do not
+          build competing controls over one plan.
+        #}
+        <h5 id="{{ view.anchor }}-correspondence-heading">What has been sent, and what came back</h5>
+        <p>{{ view.correspondence.summary }}</p>
+
+        {%- for record in view.correspondence.requests %}
+        <article class="correspondence" id="{{ view.anchor }}-request-{{ record.request.request_id }}">
+          <h6>
+            Recorded as sent on {{ record.request.sent_on }} to
+            {{ record.request.external_organization }}
+          </h6>
+          <p>{{ ui.state(record.state) }}</p>
+          {{ ui.fact_list([
+               ("What was asked", record.request.question),
+               ("Who sent it, and who recorded it", record.sender_sentence),
+               ("Which of this follow-up's plans it covered", record.coverage_sentence),
+               ("A reply was expected by", record.request.expected_response_by),
+               ("Utility Conflicts named in it", record.request.covered_subject_keys|join(", ")),
+             ]) }}
+          {%- if record.correction_sentence %}
+          <p>{{ record.correction_sentence }}</p>
+          {%- endif %}
+          <p>
+            <a href="/work/{{ project.slug }}/follow-up/sent/{{ record.request.request_id }}">Read the exact message that was sent</a>
+            &mdash; retained content, digest {{ record.request.content_sha256 }}.
+          </p>
+
+          {%- if record.replies %}
+          {% call ui.record_table(
+               "Everything recorded back against this request",
+               ["Day it came back", "What came back", "What it is linked to",
+                "Who recorded it"]) %}
+            {%- for reply in record.replies %}
+            <tr>
+              <th scope="row">{{ reply.response.received_on }}</th>
+              <td>
+                {{ ui.state(reply.state) }}
+                {%- if reply.correction_sentence %}
+                <p>{{ reply.correction_sentence }}</p>
+                {%- endif %}
+              </td>
+              <td>{{ reply.evidence_sentence }}</td>
+              <td>{{ reply.response.recorded_by_principal }}</td>
+            </tr>
+            {%- endfor %}
+          {% endcall %}
+          {%- endif %}
+
+          {#
+            Record response. It is offered against a request that still
+            stands, including one that already has an acknowledgement: the
+            substance that follows an acknowledgement is a second observation,
+            not an edit of the first. The same form corrects a mistaken
+            observation, by naming the one it corrects and saying why, so a
+            correction is an append and the original stays readable above.
+          #}
+          {%- if record.request.stands %}
+          <form method="post" action="/work/{{ project.slug }}/follow-up/response">
+            {{ csrf_field() }}
+            <input type="hidden" name="request_id" value="{{ record.request.request_id }}">
+            {% call ui.field(view.anchor ~ "-reply-" ~ record.request.request_id ~ "-received", "The day it came back", required=true) %}
+            <input type="date" id="{{ view.anchor }}-reply-{{ record.request.request_id }}-received"
+                   name="received_on" required>
+            {% endcall %}
+            {% call ui.field(view.anchor ~ "-reply-" ~ record.request.request_id ~ "-completeness", "What came back", "An acknowledgement, part of the answer, or the answer. Recording any of them stops the no-response finding; none of them settles the question.", required=true) %}
+            <select id="{{ view.anchor }}-reply-{{ record.request.request_id }}-completeness"
+                    name="completeness" required
+                    aria-describedby="{{ view.anchor }}-reply-{{ record.request.request_id }}-completeness-hint">
+              <option value="acknowledgement">They acknowledged, without answering yet</option>
+              <option value="partial">They answered part of the ask</option>
+              <option value="substantive">They answered the ask</option>
+            </select>
+            {% endcall %}
+            {% call ui.field(view.anchor ~ "-reply-" ~ record.request.request_id ~ "-kind", "What this reply is recorded from", "Corridor records what a reply was read from, never that one simply arrived.", required=true) %}
+            <select id="{{ view.anchor }}-reply-{{ record.request.request_id }}-kind"
+                    name="evidence_kind" required
+                    aria-describedby="{{ view.anchor }}-reply-{{ record.request.request_id }}-kind-hint">
+              <option value="document">A document that came in</option>
+              <option value="source_delivery">A delivery this project received</option>
+              <option value="source_segment">An exact passage inside a source</option>
+              <option value="manual_observation">Something a person was told, recorded under their name</option>
+            </select>
+            {% endcall %}
+            {% call ui.field(view.anchor ~ "-reply-" ~ record.request.request_id ~ "-evidence", "The number of that document, delivery or passage", "Leave this empty when you are recording something a person was told.") %}
+            <input type="text" id="{{ view.anchor }}-reply-{{ record.request.request_id }}-evidence"
+                   name="evidence_id" inputmode="numeric"
+                   aria-describedby="{{ view.anchor }}-reply-{{ record.request.request_id }}-evidence-hint">
+            {% endcall %}
+            {% call ui.field(view.anchor ~ "-reply-" ~ record.request.request_id ~ "-observation", "What the person was told") %}
+            <textarea id="{{ view.anchor }}-reply-{{ record.request.request_id }}-observation"
+                      name="observation" rows="3"></textarea>
+            {% endcall %}
+            {% call ui.field(view.anchor ~ "-reply-" ~ record.request.request_id ~ "-observed-by", "Who was told it") %}
+            <input type="text" id="{{ view.anchor }}-reply-{{ record.request.request_id }}-observed-by"
+                   name="observed_by">
+            {% endcall %}
+            {% call ui.field(view.anchor ~ "-reply-" ~ record.request.request_id ~ "-reference", "Where exactly this was read", "The page, the line, the call. Whatever somebody would go back to.", required=true) %}
+            <input type="text" id="{{ view.anchor }}-reply-{{ record.request.request_id }}-reference"
+                   name="source_reference" required
+                   aria-describedby="{{ view.anchor }}-reply-{{ record.request.request_id }}-reference-hint">
+            {% endcall %}
+            {%- if record.replies %}
+            {% call ui.field(view.anchor ~ "-reply-" ~ record.request.request_id ~ "-corrects", "This corrects a reply already recorded", "The number of the reply above. Nothing is overwritten: the original stays on this page.") %}
+            <input type="text" id="{{ view.anchor }}-reply-{{ record.request.request_id }}-corrects"
+                   name="corrects_response_id" inputmode="numeric"
+                   aria-describedby="{{ view.anchor }}-reply-{{ record.request.request_id }}-corrects-hint">
+            {% endcall %}
+            {% call ui.field(view.anchor ~ "-reply-" ~ record.request.request_id ~ "-correction-reason", "Why it is being corrected") %}
+            <input type="text" id="{{ view.anchor }}-reply-{{ record.request.request_id }}-correction-reason"
+                   name="correction_reason">
+            {% endcall %}
+            {%- endif %}
+            {% call ui.sticky_actions("Recording what came back") %}
+            <button type="submit">Record response</button>
+            {% endcall %}
+          </form>
+          {%- endif %}
+        </article>
+        {%- endfor %}
+
+        {#
+          Record sent. Every plan on this follow-up starts ticked, because one
+          message usually covers the whole follow-up; unticking is how a
+          coordinator records that this one covered only some of it, and the
+          request above then says so in as many words.
+        #}
+        {%- if view.correspondence.plan_choices %}
+        <form method="post" action="/work/{{ project.slug }}/follow-up/sent">
+          {{ csrf_field() }}
+          {%- for conflict in view.bundle.affected_conflicts %}
+          <input type="hidden" name="covered_subject_key" value="{{ conflict }}">
+          {%- endfor %}
+          <input type="hidden" name="external_organization" value="{{ view.bundle.recipient.organization }}">
+          <input type="hidden" name="responsible_role" value="{{ view.bundle.recipient.responsible_role }}">
+          <p class="field-hint" id="{{ view.anchor }}-sent-rule">
+            Corridor sends nothing and never has. Send from wherever you send,
+            then paste what you sent here so a later silence can be shown to be
+            one.
+          </p>
+          {{ ui.child_selection(
+               "follow_up_plan_id",
+               "Which of this follow-up's questions the message covered",
+               view.correspondence.plan_choices,
+               view.anchor ~ "-sent-rule") }}
+          {% call ui.field(view.anchor ~ "-sent-question", "The ask, as you put it", required=true) %}
+          <textarea id="{{ view.anchor }}-sent-question" name="question" rows="3"
+                    required>{{ view.bundle.ask_sentence }}</textarea>
+          {% endcall %}
+          {% call ui.field(view.anchor ~ "-sent-content", "The exact message you sent", "Paste it whole. This is what a coordinator is shown later when the question is why nobody replied.", required=true) %}
+          <textarea id="{{ view.anchor }}-sent-content" name="sent_content" rows="10"
+                    required spellcheck="false"
+                    aria-describedby="{{ view.anchor }}-sent-content-hint">{{ view.brief }}</textarea>
+          {% endcall %}
+          {% call ui.field(view.anchor ~ "-sent-by", "Who sent it", "Whoever actually sent the message, which may not be you.", required=true) %}
+          <input type="text" id="{{ view.anchor }}-sent-by" name="sent_by" required
+                 aria-describedby="{{ view.anchor }}-sent-by-hint">
+          {% endcall %}
+          {% call ui.field(view.anchor ~ "-sent-on", "The day it went out", required=true) %}
+          <input type="date" id="{{ view.anchor }}-sent-on" name="sent_on" required>
+          {% endcall %}
+          {% call ui.field(view.anchor ~ "-sent-expected", "The date you expect a reply by", "Corridor never derives this quietly. Nothing is a no-response before the date you set here.", required=true) %}
+          <input type="date" id="{{ view.anchor }}-sent-expected" name="expected_response_by"
+                 required
+                 {%- if view.bundle.due_date %} value="{{ view.bundle.due_date }}"{% endif %}
+                 aria-describedby="{{ view.anchor }}-sent-expected-hint">
+          {% endcall %}
+          {%- if view.correspondence.requests %}
+          {% call ui.field(view.anchor ~ "-sent-corrects", "This corrects a request already recorded", "The number of the request above. Nothing is overwritten: the original stays on this page.") %}
+          <input type="text" id="{{ view.anchor }}-sent-corrects" name="corrects_request_id"
+                 inputmode="numeric"
+                 aria-describedby="{{ view.anchor }}-sent-corrects-hint">
+          {% endcall %}
+          {% call ui.field(view.anchor ~ "-sent-correction-reason", "Why it is being corrected") %}
+          <input type="text" id="{{ view.anchor }}-sent-correction-reason" name="correction_reason">
+          {% endcall %}
+          {%- endif %}
+          {% call ui.sticky_actions("Recording a message you sent") %}
+          <button type="submit">Record sent</button>
+          {% endcall %}
+        </form>
+        {%- endif %}
+
+        <p>
+          <a href="/review/{{ project.slug }}">Return to the coordination question</a>
+          &mdash; a recorded reply stops the no-response finding; settling the
+          question is a separate act, and it happens on the review screen.
+        </p>
       </section>
       {%- endfor %}
       {%- endif %}

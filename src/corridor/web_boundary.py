@@ -253,6 +253,12 @@ PILOT_ROUTES: dict[tuple[str, str], PilotRoute] = {
                 "fact_statement_timings",
                 "facts",
                 "issue_coverage_declarations",
+                # #652's retained correspondence, read by the chase list's
+                # no-response band, and since #837 by the follow-up section
+                # that shows what was sent and what came back.
+                "outgoing_request_plans",
+                "outgoing_request_responses",
+                "outgoing_requests",
                 "project_baseline_format_manifests",
                 "project_baseline_formats",
                 "project_baseline_source_rows",
@@ -1004,6 +1010,36 @@ PILOT_ROUTES[("POST", "/work/{slug}/schedule")] = PilotRoute(
     ),
     relations=PILOT_ROUTES[("GET", "/work/{slug}")].relations,
 )
+
+# #837's two recording acts. Each writes through the record-decision command
+# and then re-renders the week around its outcome, so each reaches exactly what
+# the week reaches and nothing more. The set is *derived* from the week's
+# rather than copied beside it: a relation the week gains later cannot leave
+# these two behind, which is how the copied list would have failed.
+for _key, _why in (
+    (
+        ("POST", "/work/{slug}/follow-up/sent"),
+        "#837 record one message a person sent from their own mail client, "
+        "against the Follow-up Plans it advanced. Corridor sends nothing; this "
+        "is the recording of a send that already happened",
+    ),
+    (
+        ("POST", "/work/{slug}/follow-up/response"),
+        "#837 record that something came back, and which Document, Source "
+        "Delivery, Source Segment or attributable manual observation it was "
+        "read from. It stops the no-response finding and settles nothing",
+    ),
+    (
+        ("GET", "/work/{slug}/follow-up/sent/{request_id}"),
+        "#837 read back the exact message that was sent. A digest cannot show "
+        "a coordinator what was asked, so the content is retained and served "
+        "here rather than rendered into the week, which keeps a store that "
+        "will not answer out of the whole page",
+    ),
+):
+    PILOT_ROUTES[_key] = PilotRoute(
+        _why, PILOT_ROUTES[("GET", "/work/{slug}")].relations
+    )
 
 
 def route_is_enabled(method: str, template: str) -> bool:
