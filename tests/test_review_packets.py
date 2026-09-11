@@ -259,7 +259,8 @@ def test_a_stale_child_refuses_the_whole_packet_and_writes_nothing(
         accepted_value="1250+00",
         proposed_value="1260+00",
     )
-    # The coordinator's reading is one revision behind on station_from only.
+    # The coordinator's reading is one revision behind on station_from only,
+    # and nothing at all is written, including for the child that was fine.
     with nothing_written(session, project.id):
         result = resolve_review_packet(
             session,
@@ -280,7 +281,6 @@ def test_a_stale_child_refuses_the_whole_packet_and_writes_nothing(
     assert result.refusals[0].status == STALE
     assert result.refusals[0].current_accepted_revision_id == baseline
     assert result.receipt_id is None and result.revision_id is None
-    # Nothing at all was written, including for the child that was fine.
     # And the coordinator's own selections come back untouched.
     assert result.preserved_selections == tuple(
         (
