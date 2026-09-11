@@ -53,10 +53,10 @@ AUDIT_TABLE = "audit_log"
 # neither placed in the project graph nor classified here on purpose.
 GLOBAL_TABLES: dict[str, str] = {
     "customer_environment_binding": "one deployment's local identity",
-    "evidence_investigation_evaluation_receipts": "a deterministic shadow evaluation, not a project's record",
+    "evidence_investigation_evaluation_receipts": "a deterministic shadow evaluation",
     "external_orgs": "the External Party registry, shared by every project",
-    "extractor_configurations": "one sealed extractor configuration, cited by the runs of every project",
-    "person_identities": "the subject a verified email resolves to, which outlives any one project",
+    "extractor_configurations": "one sealed configuration, cited by every project's runs",
+    "person_identities": "the subject a verified email resolves to, not one project",
     "pipeline_configurations": "one immutable full-chain configuration",
     "pipeline_qualification_policies": "metric contracts frozen before any project's observations",
     "retention_manifests": "one retention dry run over the whole deployment",
@@ -86,7 +86,7 @@ GLOBAL_AUDIT_ENTITY_TYPES = frozenset({audit.PERSON_IDENTITY})
 # table is placed that way on purpose, and a check constraint keeps every
 # row of it placed.
 NULLABLE_PLACEMENT_TABLES: dict[str, str] = {
-    "work_decisions": "ck_work_decisions_exactly_one_subject requires one of dependency_id and commitment_lineage_id",
+    "work_decisions": "ck_work_decisions_exactly_one_subject requires one subject",
 }
 
 # A placement: the local column, the table it places this one against, and
@@ -184,7 +184,7 @@ def place_project_tables(
         name
         for name, found in placements.items()
         if found
-        and name not in (AUDIT_TABLE,)
+        and name != AUDIT_TABLE
         and "project_id" not in tables[name].c
         and all(tables[name].c[local].nullable for local, _, _ in found)
     }
@@ -207,7 +207,10 @@ def place_project_tables(
 def _dependents_first(placements: dict[str, tuple[Placement, ...]]) -> tuple[str, ...]:
     """Order the placed tables so each precedes every table that places it."""
 
-    remaining = {name: {parent for _, parent, _ in found} for name, found in placements.items()}
+    remaining = {
+        name: {parent for _, parent, _ in found}
+        for name, found in placements.items()
+    }
     order: list[str] = []
     while remaining:
         ready = sorted(name for name, parents in remaining.items() if not parents)
@@ -229,10 +232,12 @@ PROJECT_GRAPH_TABLES: tuple[Table, ...] = tuple(
     Base.metadata.tables[name] for name in PROJECT_GRAPH_ORDER
 )
 
-_declared = set(AUDIT_ENTITY_TABLES) | GLOBAL_AUDIT_ENTITY_TYPES
-assert _declared == set(audit.ENTITY_TYPES), (
+assert set(AUDIT_ENTITY_TABLES) | GLOBAL_AUDIT_ENTITY_TYPES == set(
+    audit.ENTITY_TYPES
+), (
     "an audit entity type is neither placed against a project-scoped table nor "
-    f"classified as global: {sorted(set(audit.ENTITY_TYPES) ^ _declared)}"
+    "classified as global: "
+    f"{sorted(set(audit.ENTITY_TYPES) ^ (set(AUDIT_ENTITY_TABLES) | GLOBAL_AUDIT_ENTITY_TYPES))}"
 )
 
 
