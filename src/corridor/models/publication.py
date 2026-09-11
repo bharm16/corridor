@@ -336,6 +336,11 @@ class IssueCoverageDeclaration(Base):
     ``created_at`` is server-assigned, and this is the record that lets the
     question be asked without one. ``None`` is the honest watermark of a
     project that has taken no delivery at all, and is not "everything".
+
+    **Who ``confirmed_by_principal`` may name is PostgreSQL's rule** (#839).
+    ``enforce_coordination_designation`` fires before every insert and reads
+    the roster: a person the project does not designate to coordinate cannot
+    be recorded as having confirmed its coverage, whatever the caller passed.
     """
 
     __tablename__ = "issue_coverage_declarations"
@@ -999,6 +1004,12 @@ class ReleasePreparationRequest(Base):
     cross-project queue: a second authority beside the append-only records
     would be stale the moment one of them moved, and somebody would have to
     tick it.
+
+    **Who ``requested_by_principal`` may name is PostgreSQL's rule** (#839).
+    ``enforce_coordination_designation`` fires before every insert and reads
+    the roster, so asking for a customer's issue to be built is the Project
+    Coordination act the maintainer settled it as, and not something project
+    membership carries.
     """
 
     __tablename__ = "release_preparation_requests"

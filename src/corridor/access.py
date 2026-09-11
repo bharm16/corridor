@@ -1839,6 +1839,27 @@ def _sqlstate(error: DBAPIError) -> str:
     return str(getattr(error.orig, "sqlstate", "") or "")
 
 
+# PostgreSQL's `insufficient_privilege`.  Every command and guard that re-proves
+# a roster designation inside the database raises it -- `open_project_partition`
+# for membership, `authorize_release_package` for external release,
+# `enforce_coordination_designation` for project coordination -- so a caller
+# that means to render the refusal rather than crash on it has one code to
+# recognise and does not classify a message by reading it.
+INSUFFICIENT_PRIVILEGE = "42501"
+
+
+def designation_refused(error: DBAPIError) -> bool:
+    """Whether PostgreSQL refused this write for want of a designation.
+
+    It answers only *which kind* of refusal arrived.  The sentence a person
+    reads belongs to the act that was refused -- confirming coverage and
+    authorizing a release are refused for different reasons and lead somewhere
+    different -- so this module deliberately composes none.
+    """
+
+    return _sqlstate(error) == INSUFFICIENT_PRIVILEGE
+
+
 def open_project_partition(
     session: Session, *, principal_subject: str, project_id: int
 ) -> int:

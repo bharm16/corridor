@@ -57,7 +57,13 @@ from corridor.issue_profile import (
     UPDATED_UCM,
     effective_issue_inventory,
 )
-from corridor.models import Document, IssueCoverageDeclaration, Project, SourceDelivery
+from corridor.models import (
+    Document,
+    IssueCoverageDeclaration,
+    Project,
+    ProjectRosterEntry,
+    SourceDelivery,
+)
 from corridor.principals import HumanPrincipal
 from corridor.source_delivery import (
     DISPOSITION_QUARANTINED,
@@ -87,6 +93,10 @@ from packet_review_support import (
 
 
 COORDINATOR = HumanPrincipal("local:coordinator")
+# A member of the same project holding no designation at all. #531 makes
+# membership the read boundary and nothing more, and #839 is where that
+# stopped being true of confirming coverage.
+READER = HumanPrincipal("local:reader")
 OPERATOR = HumanPrincipal("local:operator")
 
 JANUARY = datetime(2026, 1, 5, tzinfo=timezone.utc)
@@ -675,6 +685,66 @@ def test_a_naive_confirmation_instant_is_refused(session, adopted):
         _confirm(
             session, adopted, reading, confirmed_at=datetime(2026, 3, 2, 7, 0)
         )
+
+
+def test_a_member_without_the_coordination_designation_confirms_nothing(
+    session, adopted
+):
+    """The rule is the roster's and the refusal is PostgreSQL's (#839).
+
+    The maintainer settled it on 2026-09-10: Project Coordination may confirm
+    coverage and request preparation. Before this, any project member could
+    confirm the coverage the customer's issue was prepared under, because
+    nothing in the write path asked. The guard reads the roster, so the
+    principal string the caller passed proves nothing, and the session is left
+    usable because the append gave up only its own savepoint.
+    """
+
+    _configure(session, adopted)
+    enroll_member(
+        session,
+        project_id=adopted.project.id,
+        email="reader@example.test",
+        principal=READER,
+        display_name="Reader",
+        designations=[],
+        operator=OPERATOR,
+    )
+    reading = _read(session, adopted)
+
+    with pytest.raises(CoverageRefused) as refused:
+        _confirm(session, adopted, reading, principal=READER)
+
+    assert "holds no project-coordination designation" in str(refused.value)
+    assert "Nothing was confirmed." in str(refused.value)
+    assert session.scalars(
+        select(IssueCoverageDeclaration).where(
+            IssueCoverageDeclaration.project_id == adopted.project.id
+        )
+    ).all() == []
+    # The same reading, confirmed by the person the roster does designate, is
+    # recorded: the refusal was about who asked and about nothing else.
+    assert _confirm(session, adopted, reading).confirmed_by_principal == (
+        COORDINATOR.subject
+    )
+
+
+def test_a_designation_withdrawn_between_reading_and_confirming_refuses(
+    session, adopted
+):
+    """The roster is re-read when the row is appended, not when it was shown."""
+
+    _configure(session, adopted)
+    reading = _read(session, adopted)
+    session.execute(
+        ProjectRosterEntry.__table__.update()
+        .where(ProjectRosterEntry.principal_subject == COORDINATOR.subject)
+        .values(can_coordinate=False)
+    )
+    session.expire_all()
+
+    with pytest.raises(CoverageRefused, match="project-coordination designation"):
+        _confirm(session, adopted, reading)
 
 
 def test_a_confirmed_declaration_cannot_be_edited(session, adopted):

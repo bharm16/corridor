@@ -20,13 +20,27 @@ out unless everything looks fine" is such an easy line to write.
 
 **The refusal the database owns is not pre-empted here.** Only a principal
 holding the external-release designation may authorize, and #533 proves that
-*inside PostgreSQL*, as the command's own owner, raising ``42501``. This module
-therefore holds no designation check of its own and hides no control on the
-strength of one: a second Python gate could drift from the roster the command
-reads, and a control hidden by a rule the database does not enforce tells a
-coordinator something untrue about who may act. The section states the rule in
-words beside the control instead, and the refusal is rendered when the database
-gives it.
+*inside PostgreSQL*, as the command's own owner, raising ``42501``. Since #839
+the same is true of the other half of the section: confirming coverage and
+asking for a preparation are refused by ``enforce_coordination_designation``
+where the roster does not designate the person to coordinate this project.
+This module therefore holds no designation check of its own and hides no
+control on the strength of one: a second Python gate could drift from the
+roster the commands read, and a control hidden by a rule the database does not
+enforce tells a coordinator something untrue about who may act. The section
+states the rule in words beside the control instead, and the refusal is
+rendered when the database gives it.
+
+**What it does state is what this reader may do, from that same roster** (#839,
+and the audit's own "UI permission feedback is not a competing security
+boundary"). ``issue_view`` resolves the membership itself rather than taking a
+capability from its caller, so the sentence a person reads is the roster's
+answer and not a route's opinion of it; it prevents the predictable failed
+click, and it retires "Ready for your approval" printed to somebody who may not
+approve. It decides nothing: both controls are rendered exactly as before, the
+database refuses, and the refusal is what is shown when it does. The gap
+between the reading and the submission is the revocation race, and it is
+answered by the database rather than by this reading being right.
 
 **Nothing authorizable is offered while anything blocks.**
 ``_refuse_offered_with_blockers`` compares the state this view is about to
@@ -138,6 +152,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from corridor.access import COORDINATION, EXTERNAL_RELEASE, resolve_membership
 from corridor.issue_content import ARTIFACT_WORDS
 from corridor.issue_coverage import DerivedCoverageReading, derive_coverage_reading
 from corridor.issue_profile import effective_issue_inventory
@@ -190,6 +205,14 @@ STATE_LABELS: dict[str, StateLabel] = {
     ALREADY_AUTHORIZED: StateLabel("settled", "Approved for sharing"),
     PREPARING: StateLabel("neutral", "Preparing this issue"),
 }
+
+# The same state, read by somebody who may not perform its act. "Ready for your
+# approval" was printed to every reader, including the coordinator who prepared
+# the candidate and holds no external-release designation, which is the untrue
+# sentence #839 exists to stop. The words are the audit's own (#839).
+READY_FOR_THE_RELEASER = StateLabel(
+    "neutral", "Ready for approval by the designated releaser"
+)
 
 # The maintainer's own wording for the one action this section carries. It is
 # spelled once, here, and the template reaches it through the view: an adjacent
@@ -274,14 +297,51 @@ FRESH_PREPARATION_NEXT = (
     "cutoff, and it is the one that can be approved."
 )
 
+# What this reader may do in this section, said in the section (#839). The
+# maintainer's own division of 2026-09-10 is the rule both sentences state:
+# "Project Coordination may confirm coverage and request preparation. External
+# Release may authorize. Read-only membership confers neither."
+#
+# Each is a *reading* of the same roster the two commands prove against, never
+# a gate: neither control is hidden on the strength of one, and both refusals
+# still come from the database. What they prevent is the failed click a person
+# could not have predicted, and the section telling somebody an act is theirs
+# when it is not.
+MAY_PREPARE = (
+    "Confirming coverage and asking for this issue to be prepared is a "
+    "Project Coordination act, and you hold that designation for this project."
+)
+MAY_NOT_PREPARE = (
+    "Confirming coverage and asking for this issue to be prepared is a "
+    "Project Coordination act, and you do not hold that designation for this "
+    "project. Reading this project does not confer it, and neither does being "
+    "designated to release it externally. PostgreSQL refuses the confirmation "
+    "if it is submitted, so nothing would be confirmed and no issue prepared."
+)
+MAY_APPROVE = (
+    "Approving this issue for sharing is an External Release act, and you hold "
+    "that designation for this project."
+)
+MAY_NOT_APPROVE = (
+    "Approving this issue for sharing is an External Release act, and you do "
+    "not hold that designation for this project. Reading this project does not "
+    "confer it, and neither does coordinating it. PostgreSQL refuses the "
+    "approval if it is submitted, so nothing would be sent."
+)
+
 # Said beside the control, because the rule the database enforces is not the
-# rule "you can see the button" would imply.
+# rule "you can see the button" would imply. It stopped saying "if you do not
+# hold it, this refuses" when ``approval_capability`` began saying whether this
+# reader holds it (#839): what is left is the half a capability sentence cannot
+# carry -- why the control is offered to a person who may not use it, and why
+# a designation withdrawn since the page was read still refuses.
 DESIGNATION_RULE = (
-    "Approving an issue needs this project's external-release designation. "
-    "PostgreSQL proves that when the approval is submitted, as the release "
-    "command's own owner, so project membership and project coordination "
-    "confer none of it and a caller that skipped a screen releases nothing. "
-    "If you do not hold it, this refuses and nothing is sent."
+    "Approving an issue needs this project's external-release designation, and "
+    "PostgreSQL proves it when the approval is submitted, as the release "
+    "command's own owner. That is why this control is offered to everyone who "
+    "can read this project: hiding it would state the rule somewhere that does "
+    "not enforce it, and a caller that skipped this screen releases nothing "
+    "either. A designation withdrawn since this page was read refuses here."
 )
 
 
@@ -406,11 +466,20 @@ class IssueView:
     ``may_authorize`` is the only thing the template asks before rendering the
     approval control, and it is true only where ``blockers`` is empty — which
     is #529's answer, not a second one taken here.
+
+    ``holds_coordination`` and ``holds_external_release`` are the roster's
+    answer about the person reading, and they are deliberately *not* part of
+    either ``may_`` property (#839). Folding them in would hide a control on a
+    Python reading of a rule PostgreSQL enforces, which is the second authority
+    this section refuses to become; they say what this reader may do, and the
+    database says what happens when they act.
     """
 
     project_id: int
     cutoff: datetime
     state: str
+    holds_coordination: bool = False
+    holds_external_release: bool = False
     candidate: ReleaseCandidate | None = None
     declaration: BoundDeclaration | None = None
     artifacts: tuple[SealedArtifact, ...] = ()
@@ -531,7 +600,30 @@ class IssueView:
         return self.state == AUTHORIZABLE
 
     @property
+    def preparation_capability(self) -> str:
+        """Whether this reader may confirm coverage and ask, and why not."""
+
+        return MAY_PREPARE if self.holds_coordination else MAY_NOT_PREPARE
+
+    @property
+    def approval_capability(self) -> str:
+        """Whether this reader may approve this issue for sharing, and why not."""
+
+        return MAY_APPROVE if self.holds_external_release else MAY_NOT_APPROVE
+
+    @property
     def state_label(self) -> StateLabel:
+        """The state, named for the person reading it.
+
+        A prepared candidate with nothing outstanding is ready for *somebody's*
+        approval, and which somebody is a fact about the roster. "Ready for
+        your approval" told the coordinator who prepared it that the next act
+        was theirs, which is exactly the untruth #839 corrects; every other
+        state means the same thing to every reader.
+        """
+
+        if self.state == AUTHORIZABLE and not self.holds_external_release:
+            return READY_FOR_THE_RELEASER
         return STATE_LABELS[self.state]
 
     @property
@@ -630,14 +722,28 @@ class IssueView:
     check_again_rule = CHECK_AGAIN_RULE
 
 
-def issue_view(session: Session, *, project_id: int, as_of: datetime) -> IssueView:
+def issue_view(
+    session: Session, *, project_id: int, as_of: datetime, principal_subject: str
+) -> IssueView:
     """Read this project's current candidate and what may be done with it.
 
     ``as_of`` is the reporting cutoff the rest of the week is read at, and it
     is what ``authorization_blockers`` compares the candidate against, so the
     section and a release attempted from it answer at the same instant.
+
+    ``principal_subject`` is who is reading, and the standing is resolved here
+    rather than handed in (#839): the two commands prove themselves against
+    the roster, so the sentence this section prints about who may act is read
+    from the roster too, at this request, and cannot be a capability a caller
+    composed. A person with no live membership reads it as holding nothing,
+    which is what an access gate 404s them for anyway.
     """
 
+    membership = resolve_membership(session, principal_subject, project_id)
+    holds_coordination = membership is not None and membership.has(COORDINATION)
+    holds_external_release = membership is not None and membership.has(
+        EXTERNAL_RELEASE
+    )
     preparation = preparation_standing(session, project_id=project_id)
     # The derived coverage reading, taken once at the same declared cutoff the
     # rest of the week is read at. `issue_coverage` performs it; nothing here
@@ -663,6 +769,8 @@ def issue_view(session: Session, *, project_id: int, as_of: datetime) -> IssueVi
             project_id=project_id,
             cutoff=as_of,
             state=PREPARING if preparation.in_flight else NOTHING_PREPARED,
+            holds_coordination=holds_coordination,
+            holds_external_release=holds_external_release,
             coverage=coverage,
             preparation=preparation,
             accepted_revision_id=accepted_revision_id,
@@ -693,6 +801,8 @@ def issue_view(session: Session, *, project_id: int, as_of: datetime) -> IssueVi
         project_id=project_id,
         cutoff=as_of,
         state=state,
+        holds_coordination=holds_coordination,
+        holds_external_release=holds_external_release,
         candidate=candidate,
         declaration=read_declaration(candidate),
         artifacts=candidate_set(session, candidate),

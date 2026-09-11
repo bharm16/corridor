@@ -50,6 +50,30 @@ be the third attempt at it.
 #531's reason, and all three carry #529's immutability trigger: a confirmed
 declaration, a submitted request and a finished attempt are all records of
 something that happened, and none of them is edited afterwards.
+
+**Who may append is proved here too, and not only in the Python that calls
+in** (#839).  The maintainer settled the division on 2026-09-10: *Project
+Coordination may confirm coverage and request preparation.  External Release
+may authorize.  Read-only membership confers neither.*  #533 already proved its
+half inside PostgreSQL, because an application check is one a second caller can
+forget, and these two relations had no such proof at all -- any project member
+could confirm the coverage an issue was prepared under and ask for the
+preparation.  ``enforce_coordination_designation`` is that proof:
+``SECURITY DEFINER`` with a fixed ``search_path``, it re-reads the active
+roster entry and its ``can_coordinate`` flag as the schema's own owner and
+raises ``42501``, so the roster is what is consulted and never the principal
+string the caller passed.
+
+It is a trigger and not a fifth ``SECURITY DEFINER`` command, deliberately.
+These appends stay the runtime capability's own for the reason recorded below
+-- they write no accepted authority and make nothing effective -- and what
+#839 adds is a rule over them, not a new writer.  A trigger also holds for
+*every* inserter, including the schema owner a migration or a fixture connects
+as, which a command only reachable by grant would not; the same choice #520
+made when it put the adopted-project refusal on ``dependencies`` rather than in
+the Python that happens to call it.  ``release_preparation_attempts`` carries
+no such trigger and must not: an attempt is what a background worker records
+about its own run, and no person confirms it.
 """
 
 from __future__ import annotations
@@ -276,7 +300,68 @@ create trigger trg_{table}_truncate
     for table in COVERAGE_PREPARATION_TABLES
 )
 
+# The designation proof (#839). It reads the column naming the person out of
+# the row it is about, so one function serves both relations and neither can
+# name a different column than the one its own trigger declares.
+#
+# `security definer` for the reason `authorize_release_package` is: the answer
+# must not depend on what the inserting login happens to be granted on the
+# roster, or on whether a project partition was declared first. `search_path`
+# is fixed so the relation it reads cannot be shadowed. PostgreSQL checks
+# EXECUTE on a trigger function when the trigger is created and not when it
+# fires, so taking PUBLIC's default execute back costs the triggers nothing and
+# leaves nobody able to call the proof directly (#492, #545).
+COORDINATION_DESIGNATION_GUARD = """
+create function public.enforce_coordination_designation()
+    returns trigger
+    language plpgsql security definer
+    set search_path to 'public'
+    as $$
+        declare
+            v_principal text;
+        begin
+            v_principal := to_jsonb(NEW) ->> TG_ARGV[0];
+            if v_principal is null or length(btrim(v_principal)) = 0 then
+                raise exception 'this record names the person performing it'
+                    using errcode='23514';
+            end if;
+            if not exists (
+                select 1
+                  from public.project_roster_entries
+                 where project_id = NEW.project_id
+                   and principal_subject = v_principal
+                   and active
+                   and can_coordinate
+            ) then
+                raise exception
+                    'principal % holds no project-coordination designation for project %',
+                    v_principal, NEW.project_id
+                    using errcode='42501';
+            end if;
+            return NEW;
+        end; $$;
+"""
+
+# The two relations a person appends to. `release_preparation_attempts` is
+# deliberately absent: a worker records what its own run produced, and nobody
+# confirms an attempt.
+COORDINATION_DESIGNATION_TRIGGERS = """
+create trigger trg_issue_coverage_declarations_designated
+    before insert on public.issue_coverage_declarations
+    for each row
+    execute function public.enforce_coordination_designation(
+        'confirmed_by_principal'
+    );
+create trigger trg_release_preparation_requests_designated
+    before insert on public.release_preparation_requests
+    for each row
+    execute function public.enforce_coordination_designation(
+        'requested_by_principal'
+    );
+"""
+
 COVERAGE_PREPARATION_SCHEMA_DOWN = """
+drop function if exists public.enforce_coordination_designation() cascade;
 drop table if exists public.release_preparation_attempts cascade;
 drop table if exists public.release_preparation_requests cascade;
 alter table public.release_candidates
@@ -373,6 +458,15 @@ def upgrade(op) -> None:
     # the partition command #531 creates and re-declares under #657 and #676.
     op.execute(COVERAGE_PREPARATION_SCHEMA)
     op.execute(COVERAGE_PREPARATION_TRIGGERS)
+    # #839's designation proof, before the grants below hand anybody INSERT:
+    # the rule exists for the first row this schema can hold, not from the
+    # first row somebody remembered to check.
+    op.execute(COORDINATION_DESIGNATION_GUARD)
+    op.execute(
+        "revoke all on function public.enforce_coordination_designation() "
+        "from public"
+    )
+    op.execute(COORDINATION_DESIGNATION_TRIGGERS)
     for table in COVERAGE_PREPARATION_TABLES:
         # A new table arrives carrying the schema owner's default privileges,
         # which hand every runtime login full access including UPDATE and
@@ -389,7 +483,9 @@ def upgrade(op) -> None:
         # authority and makes nothing effective, so the runtime capabilities
         # append these rows directly rather than through a `SECURITY DEFINER`
         # command, exactly as #529 decided for the candidate itself. What they
-        # may never do is change one.
+        # may never do is change one -- and, since #839, what they may never do
+        # is append the first two on behalf of somebody the roster does not
+        # designate to coordinate this project.
         op.execute(f"grant insert on public.{table} to {RUNTIME_LOGINS}")
         op.execute(
             f"grant usage, select on sequence public.{table}_id_seq "

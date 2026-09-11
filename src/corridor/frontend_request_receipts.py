@@ -74,8 +74,11 @@ ROUTE_CONTRACTS: Mapping[str, frozenset[int]] = {
     # says the coverage was confirmed and the preparation was queued -- the
     # work itself happens in a worker, so the response cannot claim it is
     # done. A 409 says the profile, revision, cutoff or coverage digest moved
-    # after the coordinator was shown them, and nothing was appended.
-    "prepare_project_issue": frozenset({202, 409}),
+    # after the coordinator was shown them, and nothing was appended. A 403
+    # says PostgreSQL proved no project-coordination designation for the
+    # person submitting, which is the same answer the approval above gives a
+    # person holding no external-release designation (#839).
+    "prepare_project_issue": frozenset({202, 403, 409}),
     "queue": frozenset({200}),
     "internal_report": frozenset({200}),
     "internal_report_full": frozenset({200}),

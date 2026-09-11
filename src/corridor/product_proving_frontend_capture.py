@@ -160,7 +160,7 @@ _PRODUCT_PROVING_ROUTE_CONTRACT_DOCUMENTATION = {
     "release_report": frozenset({201}),
     "coordinator_home": frozenset({200}),
     "authorize_project_issue": frozenset({201, 403, 409}),
-    "prepare_project_issue": frozenset({202, 409}),
+    "prepare_project_issue": frozenset({202, 403, 409}),
     "queue": frozenset({200}),
     "internal_report": frozenset({200}),
     "internal_report_full": frozenset({200}),
