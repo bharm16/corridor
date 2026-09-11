@@ -19,6 +19,30 @@ new subject — is ``proposed_delta_comparison``, shared with the four capture
 paths that also produce deltas. This module owns which Facts are considered,
 where the pass resumes, and the rule version it compares under.
 
+**One delivery has one producer, and this is the general one (#937).** A
+delivery somebody declared a source revision for has a dedicated producer:
+``later_revision`` reads that workbook under the registered mapping, captures
+what it says, and appends the differences in the same transaction, under the
+declared family's own name and its own row-identity comparison rule. This pass
+swept those same Facts on its next slot and compared them a second time, so
+three changed rows of one file arrived as six proposals in two Delta Groups
+over one ``document_id`` and one ``source_revision`` — and because the two
+lineages differ, ``review_packet_reading`` keyed every one of them as two
+retained sources disagreeing, which is a Source Discrepancy a coordinator is
+then asked to settle over a delivery that arrived once.
+
+So a document whose delivery carries a ``source_revision_declarations`` row is
+left to the producer that owns it. That row is the record's own statement that
+these bytes belong to a registered source family (#825), which is exactly the
+thing this pass cannot see from a Document and exactly what
+``source_revision_declaration.route_delivered_revision`` routes the ordinary
+processing pass on. It is read here as one row rather than through that module,
+which sits above this one: the handler key below says why — the runtime imports
+this module's execution, never the reverse. Deferring to the *declaration*
+rather than to deltas already appended is also what makes it right where the
+dedicated producer deliberately writes none: an additional rendition of a
+revision already delivered is never compared at all (ADR-0069).
+
 Where the pass resumes was the design question. A watermark column was
 rejected: the migration window is closed (``corridor.migrations.policy``), and
 the runtime already retains one durable, append-only, ordered receipt per
@@ -59,6 +83,7 @@ from corridor.models import (
     Fact,
     ProjectRecordRevision,
     ProposedDelta,
+    SourceRevisionDeclaration,
 )
 from corridor.operating_mode import project_operating_mode
 from corridor.proposed_delta_comparison import (
@@ -152,10 +177,12 @@ def execute_delta_generation(
             groups = 0
             through = watermark
             for document_id, document_facts in _by_document(facts):
-                lineage = _lineage(working, project_id, document_id)
-                if lineage is None:
+                document = working.get(Document, document_id)
+                if document is None or int(document.project_id) != project_id:
                     continue
-                source_family, source_revision = lineage
+                if _declared_source_revision(working, document):
+                    continue
+                source_family, source_revision = _lineage(document)
                 stated: list[StatedSubject] = []
                 for subject_key, subject_facts in _by_subject(document_facts):
                     considered += len(subject_facts)
@@ -207,10 +234,11 @@ def execute_delta_generation(
                 groups += 1
                 created += len(fresh)
             if facts:
-                # The whole batch is either compared or unusable (its document
-                # is gone), and the append is one all-or-nothing transaction,
-                # so the watermark moves to the end of what was read. Leaving
-                # it behind would re-read the same rows on every slot forever.
+                # The whole batch is compared, or it belongs to a producer that
+                # already compared it, or it is unusable (its document is
+                # gone), and the append is one all-or-nothing transaction, so
+                # the watermark moves to the end of what was read. Leaving it
+                # behind would re-read the same rows on every slot forever.
                 through = max(through, facts[-1].id)
             operating_mode = project_operating_mode(working, project_id)
 
@@ -235,22 +263,58 @@ def execute_delta_generation(
     }
 
 
-def _lineage(
-    session: Session, project_id: int, document_id: int
-) -> tuple[str, str] | None:
-    """One source family and the exact revision of it these facts came from."""
+def _lineage(document: Document) -> tuple[str, str]:
+    """One source family and the exact revision of it these facts came from.
 
-    row = session.execute(
-        select(Document.registry_id, Document.sha256).where(
-            Document.id == document_id, Document.project_id == project_id
+    Both answers name the document, because by the time this is reached the
+    document is one no registered source family covers.  A curated corpus
+    declares its own name for a document in its manifest, and that name is the
+    family; a document with none is its own family, under an identifier that
+    cannot be mistaken for a declared one.
+
+    The fallback is not a stand-in for a family this pass failed to find, and
+    it is kept for the case that genuinely has none (#937).  A product upload
+    carries no ``registry_id`` and never will: ``source_intake`` reports it to
+    the person confirming as ``Not assigned. A registry id is declared for a
+    curated corpus, not minted from an upload (ADR-0030)``.  So on a legacy
+    project, and for a document that arrived through no transport at all, the
+    document really is the whole of what can be said about where these values
+    came from, and naming it is the true answer rather than a degraded one.
+    The delivery that *does* belong to a registered source family never reaches
+    here: its family is on its declaration, its comparison is
+    ``later_revision``'s, and the loop above leaves it to that producer.
+    """
+
+    family = (document.registry_id or f"document:{document.id}")[:64]
+    return family, str(document.sha256)[:128]
+
+
+def _declared_source_revision(session: Session, document: Document) -> bool:
+    """Whether somebody declared which revision of a registered source this is.
+
+    One row, read by the delivery the Document carries.  A declaration is
+    recorded per delivery and only on an adopted project, and it names the
+    registered source family the bytes belong to, so its presence is the
+    record's own answer to "does a dedicated producer own comparing this?" —
+    ``later_revision`` is that producer, and it appends its differences in the
+    same transaction as the capture.  A document with no delivery, or one whose
+    delivery nobody declared, is this pass's to compare.
+    """
+
+    delivery_id = document.source_delivery_id
+    if delivery_id is None:
+        return False
+    return (
+        session.scalar(
+            select(SourceRevisionDeclaration.id)
+            .where(
+                SourceRevisionDeclaration.project_id == document.project_id,
+                SourceRevisionDeclaration.delivery_id == int(delivery_id),
+            )
+            .limit(1)
         )
-    ).first()
-    if row is None:
-        return None
-    registry_id, sha256 = row
-    family = (registry_id or f"document:{document_id}")[:64]
-    return family, str(sha256)[:128]
-
+        is not None
+    )
 
 
 def _by_document(facts) -> list[tuple[int, list[Fact]]]:
