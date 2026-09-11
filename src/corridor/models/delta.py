@@ -1384,6 +1384,16 @@ class CaptureCorrectionResult(Base):
     the responsible operations actor beside the identity that executed the
     work, and an idempotency identity.
 
+    ``applicability_verdict`` is #945's proof that the passage the report named
+    carries a value for the challenged subject and field at all. It is derived
+    by ``record_capture_correction_result`` from source structure alone -- the
+    passage's own locator, the adopted source-row registration and a retained
+    heading cell of its own column -- so no Fact, and above all not the
+    corrected capture recorded beside it, is an input to it.
+    ``ck_capture_correction_results_applicable_correction`` admits a corrected
+    capture only beside ``applicable``, which is why a passage the structure
+    contradicts cannot produce one however a caller reaches the command.
+
     ``outcome`` is one of ``CAPTURE_CORRECTION_OUTCOMES``. ``inconclusive`` is
     a result and not a failure to record: ADR-0101 forbids claiming a
     successful correction from missing or ambiguous evidence, so that outcome
@@ -1437,6 +1447,12 @@ class CaptureCorrectionResult(Base):
             ["support_assessments.project_id", "support_assessments.id"],
             name="fk_capture_correction_results_support",
         ),
+        ForeignKeyConstraint(
+            ["project_id", "document_id", "passage_field_heading_segment_id"],
+            ["source_segments.project_id", "source_segments.document_id",
+             "source_segments.id"],
+            name="fk_capture_correction_results_field_heading",
+        ),
         CheckConstraint(
             "challenged_fact_sha256 ~ '^[0-9a-f]{64}$'",
             name="ck_capture_correction_results_challenged_digest",
@@ -1444,6 +1460,22 @@ class CaptureCorrectionResult(Base):
         CheckConstraint(
             "outcome in ('no_change', 'still_differs', 'inconclusive')",
             name="ck_capture_correction_results_outcome",
+        ),
+        CheckConstraint(
+            "applicability_verdict in "
+            "('applicable', 'other_subject', 'other_field', 'unclear')",
+            name="ck_capture_correction_results_applicability",
+        ),
+        CheckConstraint(
+            "outcome = 'inconclusive' or applicability_verdict = 'applicable'",
+            name="ck_capture_correction_results_applicable_correction",
+        ),
+        CheckConstraint(
+            "applicability_verdict <> 'applicable'"
+            " or (passage_subject_identity is not null"
+            " and passage_field is not null"
+            " and passage_field_heading_segment_id is not null)",
+            name="ck_capture_correction_results_applicable_shape",
         ),
         CheckConstraint(
             "(outcome = 'no_change'"
@@ -1503,6 +1535,11 @@ class CaptureCorrectionResult(Base):
         ForeignKey("project_record_revisions.id")
     )
     comparison_rule_version: Mapped[str] = mapped_column(String(64))
+    applicability_verdict: Mapped[str] = mapped_column(String(32))
+    passage_subject_identity: Mapped[str | None] = mapped_column(String(160))
+    passage_field: Mapped[str | None] = mapped_column(String(64))
+    passage_field_heading_segment_id: Mapped[int | None] = mapped_column(BigInteger)
+    passage_field_heading_text: Mapped[str | None] = mapped_column(Text)
     outcome: Mapped[str] = mapped_column(String(32))
     replacement_delta_id: Mapped[int | None] = mapped_column(BigInteger)
     finding: Mapped[str] = mapped_column(Text)

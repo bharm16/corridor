@@ -120,6 +120,14 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
 from corridor import refusals
+from corridor.correction_applicability import (
+    CROSS_SUBJECT_PASSAGE,
+    NOT_ESTABLISHED,
+    OTHER_FIELD,
+    OTHER_SUBJECT,
+    PassageApplicability,
+    assess_passage,
+)
 from corridor.models import (
     CaptureCorrectionRequest,
     Document,
@@ -143,6 +151,7 @@ __all__ = [
     "CorrectionRequest",
     "PassageChoice",
     "PassageChoices",
+    "passage_applicability",
     "ReportedCorrection",
     "build_correction_request",
     "challenged_capture",
@@ -191,6 +200,13 @@ CAPTURE_NOT_RETAINED = (
     "The capture this request names is no longer readable, so the request "
     "cannot be opened against it."
 )
+# Being a passage of this source is necessary and is not sufficient (#945).
+# The sentences are ``correction_applicability``'s, printed rather than
+# restated, and the *first* sentence alone is what this door may say: nothing
+# has been retained yet, so promising that a report remains available for
+# investigation would be a promise about a row that does not exist.
+PASSAGE_DESCRIBES_ANOTHER_SUBJECT = CROSS_SUBJECT_PASSAGE
+PASSAGE_APPLICABILITY_NOT_ESTABLISHED = NOT_ESTABLISHED
 
 
 
@@ -199,7 +215,8 @@ class CaptureCorrectionRefused(refusals.Refusal, ValueError):
 
     ``reason`` is a stable machine code and ``str(exc)`` is the sentence a
     person reads.  The codes are ``not_offered``, ``passage_required``,
-    ``passage_not_in_this_source``, ``interpretation_required``,
+    ``passage_not_in_this_source``, ``passage_describes_another_subject``,
+    ``passage_is_another_field``, ``interpretation_required``,
     ``capture_not_retained`` and ``relationship_not_decided``.  A refusal that
     belongs to one control on one row carries both, exactly as
     ``packet_review.ReviewScreenRefused`` does, so the screen binds the
@@ -378,6 +395,13 @@ def build_correction_request(
 
     Every refusal is raised before anything is read for writing and names the
     control that holds it, so a coordinator keeps what they had already typed.
+
+    The passage has to be one this source retained *and* one the retained
+    structure holds to the challenged subject and field (#945). What that
+    structure contradicts is refused here; what it merely leaves unsettled is
+    reported and retained, because "Corridor could not establish this" is a
+    finding for operations to record rather than a shape a coordinator can
+    correct by choosing again.
     """
 
     actor = require_human_principal(principal)
@@ -400,6 +424,35 @@ def build_correction_request(
         raise CaptureCorrectionRefused(
             "passage_not_in_this_source",
             PASSAGE_NOT_IN_THIS_SOURCE,
+            kind=refusals.MALFORMED_INPUT,
+            delta_id=child.delta_id,
+            control=CONTROL_PASSAGE,
+        )
+    # Being one of this source's retained passages is necessary and is not
+    # sufficient (#945). What the retained structure positively contradicts is
+    # refused here, before a report exists; what it merely leaves unsettled is
+    # retained and answered by the investigation, because "Corridor could not
+    # establish this" is a finding for operations to record and not a shape the
+    # coordinator can correct by choosing again.
+    applicability = assess_passage(
+        session,
+        project_id=capture.project_id,
+        subject_identity=capture.subject_identity,
+        field=capture.field,
+        selected=selected,
+    )
+    if applicability.verdict == OTHER_SUBJECT:
+        raise CaptureCorrectionRefused(
+            "passage_describes_another_subject",
+            PASSAGE_DESCRIBES_ANOTHER_SUBJECT,
+            kind=refusals.MALFORMED_INPUT,
+            delta_id=child.delta_id,
+            control=CONTROL_PASSAGE,
+        )
+    if applicability.verdict == OTHER_FIELD:
+        raise CaptureCorrectionRefused(
+            "passage_is_another_field",
+            PASSAGE_APPLICABILITY_NOT_ESTABLISHED,
             kind=refusals.MALFORMED_INPUT,
             delta_id=child.delta_id,
             control=CONTROL_PASSAGE,
@@ -519,12 +572,23 @@ PASSAGE_MATCH_LIMIT = 50
 
 @dataclass(frozen=True, slots=True)
 class PassageChoice:
-    """One retained passage of the capture's own source, as the form offers it."""
+    """One retained passage of the capture's own source, as the form offers it.
+
+    ``applicable`` is whether the retained source structure establishes that
+    this passage carries a value for the challenged subject and field, and
+    ``why_not`` is the approved sentence saying otherwise (#945).  The picker
+    explains rather than hides: a passage whose applicability is merely
+    unsettled is still one a coordinator may have real grounds to name, and
+    dropping the contradicted ones would take the cited cell itself off the
+    screen in exactly the case a coordinator is trying to describe.
+    """
 
     source_segment_id: int
     locator: str
     exact_text: str
     cited: bool
+    applicable: bool = True
+    why_not: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -610,6 +674,12 @@ def passage_choices(
     and never what may be selected: every passage either way belongs to this
     capture's own document, which ``report_capture_correction``'s composite
     foreign keys make structural rather than conventional.
+
+    Each offered passage also carries whether it establishes a value for this
+    subject and field, and the approved sentence where it does not (#945). The
+    list is not narrowed to the ones that do: on a structured sheet that would
+    be a select with one option in it, and it would take the cited cell itself
+    off the screen in exactly the case a coordinator is describing.
     """
 
     if capture.document_id is None:
@@ -628,7 +698,10 @@ def passage_choices(
     if words:
         matched = [row for row in found if _mentions(words, row)]
         return PassageChoices(
-            tuple(_offered(row, capture) for row in matched[:PASSAGE_MATCH_LIMIT]),
+            tuple(
+                _offered(session, row, capture)
+                for row in matched[:PASSAGE_MATCH_LIMIT]
+            ),
             searched=words,
             not_shown=max(0, len(matched) - PASSAGE_MATCH_LIMIT),
         )
@@ -644,7 +717,9 @@ def passage_choices(
         ]
     else:
         found = found[: PASSAGE_CHOICE_WINDOW * 2 + 1]
-    return PassageChoices(tuple(_offered(row, capture) for row in found))
+    return PassageChoices(
+        tuple(_offered(session, row, capture) for row in found)
+    )
 
 
 def _mentions(words: str, segment: SourceSegment) -> bool:
@@ -662,14 +737,39 @@ def _mentions(words: str, segment: SourceSegment) -> bool:
     )
 
 
-def _offered(segment: SourceSegment, capture: ChallengedCapture) -> PassageChoice:
-    """One retained passage as the picker offers it."""
+def _offered(
+    session: Session, segment: SourceSegment, capture: ChallengedCapture
+) -> PassageChoice:
+    """One retained passage as the picker offers it, with what it may support."""
 
+    applicability = passage_applicability(session, capture, segment)
     return PassageChoice(
         source_segment_id=int(segment.id),
         locator=source_segment_locator_words(segment),
         exact_text=segment.exact_text,
         cited=segment.id == capture.source_segment_id,
+        applicable=applicability.applies,
+        why_not=applicability.offered_sentence,
+    )
+
+
+def passage_applicability(
+    session: Session, capture: ChallengedCapture, selected: SourceSegment
+) -> PassageApplicability:
+    """What the retained structure says about this passage for this capture.
+
+    One call, so the picker, the request door and operations all ask the same
+    question with the same arguments.  The rule itself is
+    ``correction_applicability``'s; this only supplies the challenged capture's
+    own subject and field to it, read off retained rows rather than typed.
+    """
+
+    return assess_passage(
+        session,
+        project_id=capture.project_id,
+        subject_identity=capture.subject_identity,
+        field=capture.field,
+        selected=selected,
     )
 
 

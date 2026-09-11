@@ -56,11 +56,13 @@ from corridor.capture_correction import (
     challenged_capture,
     correction_idempotency_key,
     offers_correction,
+    passage_applicability,
     passage_choices,
     record_correction_request,
     reported_corrections,
     resolve_challenged_capture,
 )
+from corridor.correction_applicability import UNCLEAR
 from corridor.delta_resolution import live_delta_status
 from corridor.models import (
     CaptureCorrectionRequest,
@@ -69,6 +71,7 @@ from corridor.models import (
     DeltaRecordDecision,
     DeltaSupersession,
     Fact,
+    FactSource,
     Project,
     SourceSegment,
 )
@@ -89,6 +92,8 @@ from corridor.web.app import (
 )
 
 from browser_session_support import form_fields, submit_form
+
+from source_capture_support import append_header_row
 
 from packet_review_support import (
     Rendition,
@@ -117,49 +122,91 @@ def project(member_project) -> Project:
     return member_project(ALICE)
 
 
+#: The sheet's own header row, and the one Utility Conflict beneath it. A row
+#: is a conflict and a column is a field, which is how every structured capture
+#: is already filed (``facts.append_structured_cell_facts``) and therefore how
+#: a correction's passage is held to a subject and a field (#945).
+CONFLICT_ROW = 2
+OWNER_COLUMN = "C"
+STATION_COLUMN = "D"
+
+
 class Misread:
     """One adopted row, and a revision whose organization change was captured.
 
     ``incoming`` is the revised workbook the capture came from, so a test that
     needs a *second* capture of the same document and field appends it to this
-    same rendition.
+    same rendition.  Its first row is the form's own column headings, because a
+    workbook that names none of its columns says nothing about what any cell of
+    it carries.
+
+    ``cited_cell`` is where the capture says it read the owner.  It defaults to
+    the owner column's own cell -- a capture that read the right cell and got
+    its words wrong -- and a test that wants the *locator* to be the defect
+    names another cell of the same conflict's row instead.
 
     ``ordinary_change`` appends a second change of that same revision, whose
     shape the partition does not hold out.  The revision then has both an
     item that batches its ordinary change and an item that decides the
     organization change on its own, which is the reading the availability
-    rule and ADR-0085's exactly-once rule are both read against.
+    rule and ADR-0085's exactly-once rule are both read against.  It writes the
+    station column's own cell, so it is not combined with a ``cited_cell`` that
+    names that same cell.
     """
 
     def __init__(
-        self, session: Session, project: Project, *, ordinary_change: bool = False
+        self,
+        session: Session,
+        project: Project,
+        *,
+        ordinary_change: bool = False,
+        cited_cell: str = f"{OWNER_COLUMN}{CONFLICT_ROW}",
     ):
         self.session = session
         self.project = project
+        self.subject_key = subject(CONFLICT_ROW)
         self.adopted = Rendition(session, project, "ucm-2026-08.xlsx")
         accepted, _ = self.adopted.capture(
-            fact_type="station_from", value="1001+00", subject_key=subject(1)
+            fact_type="station_from", value="1001+00", subject_key=self.subject_key
         )
         revision = accept_baseline_fact(session, project, accepted)
         baseline = register_baseline(
             session, project, self.adopted.document, revision
         )
         register_source_row(
-            session, project, baseline, row_number=1, business_identity="U-001"
+            session,
+            project,
+            baseline,
+            row_number=CONFLICT_ROW,
+            business_identity="U-001",
         )
         register_output_template(
             session, project, identity="district-ucm-template", version="v3"
         )
         self.incoming = Rendition(session, project, "ucm-2026-09.xlsx")
+        self.headings = append_header_row(
+            self.incoming,
+            {OWNER_COLUMN: "external_org", STATION_COLUMN: "station_from"},
+        )
         self.fact, self.segment = self.incoming.capture(
             fact_type="external_org",
             value="AT&T Texas (SWBT)",
-            subject_key=subject(1),
+            subject_key=self.subject_key,
+            cell=cited_cell,
         )
         support(session, project, self.fact, self.segment)
+        # The owner column's own cell for this conflict: the one passage the
+        # retained structure holds to this subject and this field.
+        self.owner_cell = (
+            self.segment
+            if cited_cell == f"{OWNER_COLUMN}{CONFLICT_ROW}"
+            else self.incoming.segment(
+                "AT&T Texas", cell=f"{OWNER_COLUMN}{CONFLICT_ROW}"
+            )
+        )
         values = [
             modify(
-                subject_key=subject(1),
+                subject_key=self.subject_key,
                 field_name="external_org",
                 accepted_value="AT&T Texas",
                 proposed_value="AT&T Texas (SWBT)",
@@ -169,12 +216,15 @@ class Misread:
         self.batched_fact: Fact | None = None
         if ordinary_change:
             self.batched_fact, batched_segment = self.incoming.capture(
-                fact_type="station_from", value="1002+00", subject_key=subject(1)
+                fact_type="station_from",
+                value="1002+00",
+                subject_key=self.subject_key,
+                cell=f"{STATION_COLUMN}{CONFLICT_ROW}",
             )
             support(session, project, self.batched_fact, batched_segment)
             values.append(
                 modify(
-                    subject_key=subject(1),
+                    subject_key=self.subject_key,
                     field_name="station_from",
                     accepted_value="1001+00",
                     proposed_value="1002+00",
@@ -222,7 +272,7 @@ class Misread:
             child,
             principal=ALICE,
             reported_at=REPORTED_AT,
-            selected_source_segment_id=(passage or self.segment).id,
+            selected_source_segment_id=(passage or self.owner_cell).id,
             expected_interpretation=EXPECTED,
         )
 
@@ -232,12 +282,18 @@ def _cross_source(session: Session, project: Project):
 
     adopted = Rendition(session, project, "ucm-2026-08.xlsx")
     accepted, _ = adopted.capture(
-        fact_type="committed_date", value="2026-11-01", subject_key=subject(1)
+        fact_type="committed_date",
+        value="2026-11-01",
+        subject_key=subject(CONFLICT_ROW),
     )
     revision = accept_baseline_fact(session, project, accepted)
     baseline = register_baseline(session, project, adopted.document, revision)
     register_source_row(
-        session, project, baseline, row_number=1, business_identity="U-001"
+        session,
+        project,
+        baseline,
+        row_number=CONFLICT_ROW,
+        business_identity="U-001",
     )
     register_output_template(
         session, project, identity="district-ucm-template", version="v3"
@@ -248,7 +304,9 @@ def _cross_source(session: Session, project: Project):
     ):
         rendition = Rendition(session, project, name)
         fact, segment = rendition.capture(
-            fact_type="committed_date", value=value, subject_key=subject(1)
+            fact_type="committed_date",
+            value=value,
+            subject_key=subject(CONFLICT_ROW),
         )
         support(session, project, fact, segment)
         append_deltas(
@@ -259,7 +317,7 @@ def _cross_source(session: Session, project: Project):
             source_revision=source_revision,
             values=[
                 modify(
-                    subject_key=subject(1),
+                    subject_key=subject(CONFLICT_ROW),
                     field_name="committed_date",
                     accepted_value="2026-11-01",
                     proposed_value=value,
@@ -441,7 +499,7 @@ def test_the_request_names_the_capture_and_the_passage_that_was_shown(
     assert request.capture.source_segment_id == built.segment.id
     assert request.capture.document_id == built.incoming.document.id
     assert request.capture.document_filename == "ucm-2026-09.xlsx"
-    assert request.capture.subject_identity == subject(1)
+    assert request.capture.subject_identity == subject(CONFLICT_ROW)
     assert request.capture.field == "external_org"
     assert request.capture.exact_text == "AT&T Texas (SWBT)"
     assert request.capture.locator is not None
@@ -464,7 +522,7 @@ def test_a_second_capture_of_the_same_document_and_field_does_not_move_the_reque
     later, later_segment = built.incoming.capture(
         fact_type="external_org",
         value="AT&T Texas (SBC)",
-        subject_key=subject(1),
+        subject_key=built.subject_key,
     )
     support(session, project, later, later_segment)
 
@@ -501,23 +559,31 @@ def test_a_passage_from_another_source_is_refused(
     assert refused.value.control == CONTROL_PASSAGE
 
 
-def _a_neighbouring_conflicts_own_cell(session: Session, project: Project):
+def _a_neighbouring_conflicts_own_cell(
+    session: Session, project: Project, *, capture_the_neighbour: bool = True
+):
     """One misread size, and the *next* Utility Conflict's own size cell.
 
-    Two adopted rows of one sheet.  The revision misread the first row's size,
-    and the second row's size is captured as *that row's* own Source Fact, so
-    the cell a coordinator could point at is not merely another cell that
-    happens to read plausibly: the record itself already says it describes a
-    different Utility Conflict.
+    Two adopted rows under one header row.  The revision misread the first
+    row's size, and the second row's size sits in that row's own cell -- so the
+    cell a coordinator could point at is not merely another cell that happens
+    to read plausibly: the sheet's own structure says it describes a different
+    Utility Conflict.
+
+    ``capture_the_neighbour`` decides whether anything was ever extracted from
+    that cell.  Both answers must refuse, because what makes the cell another
+    conflict's is the row it sits on and not whether a Fact was captured from
+    it -- and a rule that only knew about extracted cells would let the
+    unextracted half of the same workbook through.
     """
 
     adopted = Rendition(session, project, "ucm-2026-08.xlsx")
     accepted, _ = adopted.capture(
-        fact_type="size", value="12 in", subject_key=subject(1), cell="C1"
+        fact_type="size", value="12 in", subject_key=subject(2), cell="C2"
     )
     revision = accept_baseline_fact(session, project, accepted)
     baseline = register_baseline(session, project, adopted.document, revision)
-    for row_number, identity in ((1, "U-001"), (2, "U-002")):
+    for row_number, identity in ((2, "U-001"), (3, "U-002")):
         register_source_row(
             session,
             project,
@@ -529,14 +595,20 @@ def _a_neighbouring_conflicts_own_cell(session: Session, project: Project):
         session, project, identity="district-ucm-template", version="v3"
     )
     incoming = Rendition(session, project, "ucm-2026-09.xlsx")
+    # Two headings, because one is a title band as far as the released
+    # header rule is concerned.
+    append_header_row(incoming, {"C": "size", "D": "material"})
     misread, misread_cell = incoming.capture(
-        fact_type="size", value="16 in", subject_key=subject(1), cell="C1"
+        fact_type="size", value="16 in", subject_key=subject(2), cell="C2"
     )
     support(session, project, misread, misread_cell)
-    neighbour, neighbours_cell = incoming.capture(
-        fact_type="size", value="6 in", subject_key=subject(2), cell="C2"
-    )
-    support(session, project, neighbour, neighbours_cell)
+    if capture_the_neighbour:
+        neighbour, neighbours_cell = incoming.capture(
+            fact_type="size", value="6 in", subject_key=subject(3), cell="C3"
+        )
+        support(session, project, neighbour, neighbours_cell)
+    else:
+        neighbours_cell = incoming.segment("6 in", cell="C3")
     append_deltas(
         session,
         project,
@@ -544,7 +616,7 @@ def _a_neighbouring_conflicts_own_cell(session: Session, project: Project):
         source_revision="2026-09",
         values=[
             modify(
-                subject_key=subject(1),
+                subject_key=subject(2),
                 field_name="size",
                 accepted_value="12 in",
                 proposed_value="16 in",
@@ -558,43 +630,130 @@ def _a_neighbouring_conflicts_own_cell(session: Session, project: Project):
     return item, child, neighbours_cell
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="the product accepts it: `build_correction_request` checks only "
-    "that the passage belongs to this document and this project "
-    "(capture_correction.py:393-406), so a correction from another Utility "
-    "Conflict's own cell is built, `correct_captured_reading` writes a Source "
-    "Fact under the challenged capture's subject with that cell's words, holds "
-    "it there with a supported value_support assessment naming only that cell, "
-    "retires the proposal and raises a replacement proposing the neighbour's "
-    "value onto this conflict. Reported, not worked around; the marking is "
-    "strict so it fails the moment a refusal exists.",
-)
+class MisreadDate:
+    """Two date columns on one row, and the neighbouring conflict beneath it.
+
+    The maintainer's own worked example of the substitution a correction may
+    not make: **Required By** selected as **Promised For**.  Both are dates,
+    both sit on the challenged conflict's own row, and one of them is the
+    column the sheet's header names for the challenged field.
+
+    The capture read the wrong column of the right row, so this fixture also
+    carries the *legitimate* case in the same shape: the Promised For cell of
+    this conflict's own row, which nothing was ever extracted from.
+
+    ``header=False`` retains the same cells with no header row at all, which is
+    the sheet that says nothing about what its columns carry.
+    """
+
+    PROMISED_COLUMN = "C"
+    REQUIRED_COLUMN = "D"
+
+    def __init__(self, session: Session, project: Project, *, header: bool = True):
+        self.session = session
+        self.project = project
+        self.subject_key = subject(CONFLICT_ROW)
+        self.adopted = Rendition(session, project, "ucm-2026-08.xlsx")
+        accepted, _ = self.adopted.capture(
+            fact_type="committed_date",
+            value="2026-11-01",
+            subject_key=self.subject_key,
+        )
+        revision = accept_baseline_fact(session, project, accepted)
+        baseline = register_baseline(
+            session, project, self.adopted.document, revision
+        )
+        for row_number, identity in (
+            (CONFLICT_ROW, "U-001"),
+            (CONFLICT_ROW + 1, "U-002"),
+        ):
+            register_source_row(
+                session,
+                project,
+                baseline,
+                row_number=row_number,
+                business_identity=identity,
+            )
+        register_output_template(
+            session, project, identity="district-ucm-template", version="v3"
+        )
+        self.incoming = Rendition(session, project, "ucm-2026-09.xlsx")
+        if header:
+            append_header_row(
+                self.incoming,
+                {
+                    self.PROMISED_COLUMN: "committed_date",
+                    self.REQUIRED_COLUMN: "need_date",
+                },
+            )
+        # The misreading: this conflict's Required By cell, captured as its
+        # Promised For.
+        self.fact, self.required_by_cell = self.incoming.capture(
+            fact_type="committed_date",
+            value="2026-12-15",
+            subject_key=self.subject_key,
+            cell=f"{self.REQUIRED_COLUMN}{CONFLICT_ROW}",
+        )
+        support(session, project, self.fact, self.required_by_cell)
+        # This conflict's own Promised For cell, which nothing was read from...
+        self.promised_for_cell = self.incoming.segment(
+            "2026-11-01", cell=f"{self.PROMISED_COLUMN}{CONFLICT_ROW}"
+        )
+        # ...and the next conflict's, which is a different subject entirely.
+        self.neighbours_cell = self.incoming.segment(
+            "2027-03-01", cell=f"{self.PROMISED_COLUMN}{CONFLICT_ROW + 1}"
+        )
+        (self.delta,) = append_deltas(
+            session,
+            project,
+            self.incoming,
+            source_revision="2026-09",
+            values=[
+                modify(
+                    subject_key=self.subject_key,
+                    field_name="committed_date",
+                    accepted_value="2026-11-01",
+                    proposed_value="2026-12-15",
+                    baseline_revision=revision,
+                )
+            ],
+        )
+
+    def item(self):
+        """The Review item that decides this change, and the reading it is in."""
+
+        reading = read_review_items(
+            self.session, project_id=self.project.id, as_of=CUTOFF
+        )
+        item = next(
+            row
+            for row in reading.items
+            if any(child.delta_id == self.delta.id for child in row.children)
+        )
+        return reading, item
+
+
 def test_another_conflicts_valid_cell_cannot_support_this_conflict(
     session: Session, project: Project
 ):
-    """A plausible number somewhere else in the file is not evidence here.
+    """A plausible number somewhere else in the file is not evidence here (#945).
 
     ``PASSAGE_NOT_IN_THIS_SOURCE`` establishes that a correction is grounded in
     *this document's* retained bytes.  Being in the same document is necessary
     and is not sufficient: a correction re-reads the passage a coordinator
     names and records the result as a Source Fact about the challenged
     capture's own subject, held to that passage by a ``value_support``
-    assessment.  So a passage the record already attributes to a different
-    Utility Conflict establishes support for a conflict it says nothing about,
-    and nothing in the request declares a relationship under which it could.
+    assessment.  So a passage the sheet's own structure places on a different
+    Utility Conflict's row would establish support for a conflict it says
+    nothing about, and ADR-0082 has always forbidden that: support concerns one
+    proposition and its relationship to evidence.
 
-    What that means for the fixture the core journey walks is the reason this
-    test exists: "another cell in the same document contains a plausible
-    value" cannot stand in for a misread capture, because it does not
-    establish that the cell describes the same Utility Conflict.  The journey's
-    correction scenarios now inject a declared extraction fault and point the
-    correction at each conflict's *own* cell, which is why they no longer
-    depend on the answer to this.
-
-    What a permitted evidentiary relationship would be is a maintainer's
-    decision, not this test's: the refusal's words, and whether one row may
-    ever be evidence about another, belong with ADR-0100 and ADR-0101.
+    This was an ``xfail(strict=True)`` between the finding and the fix, with
+    the finding in its reason.  What it pinned is now an ordinary refusal, and
+    the test stays as the permanent negative regression: the acting principal,
+    the roster membership, the adopted baseline and the retained cells are all
+    built exactly as the passing cases build them, so an unrelated setup or
+    authorization failure surfaces as itself rather than as this refusal.
     """
 
     item, child, neighbours_cell = _a_neighbouring_conflicts_own_cell(
@@ -612,7 +771,205 @@ def test_another_conflicts_valid_cell_cannot_support_this_conflict(
             expected_interpretation="this conflict's size is 6 in",
         )
 
+    assert refused.value.reason == "passage_describes_another_subject"
     assert refused.value.control == CONTROL_PASSAGE
+    assert str(refused.value) == (
+        "This passage describes a different Utility Conflict. Choose evidence "
+        "for this conflict, or ask Corridor operations to review the source "
+        "mapping. No correction was applied."
+    )
+    # Nothing was retained: the refusal is raised before the report exists, so
+    # the sentence does not promise an investigation that nobody opened.
+    assert not session.scalars(select(CaptureCorrectionRequest.id)).all()
+
+
+def test_another_conflicts_cell_is_refused_although_nothing_was_extracted_from_it(
+    session: Session, project: Project
+):
+    """What makes a cell another conflict's is its row, not a Fact over it.
+
+    The neighbour's cell is never captured here, so a rule that asked "does the
+    record already attribute this passage to somebody else?" would find nothing
+    and let it through -- which is most of a workbook, because most cells of a
+    revision are never extracted at all.
+    """
+
+    item, child, neighbours_cell = _a_neighbouring_conflicts_own_cell(
+        session, project, capture_the_neighbour=False
+    )
+
+    with pytest.raises(CaptureCorrectionRefused) as refused:
+        build_correction_request(
+            session,
+            item,
+            child,
+            principal=ALICE,
+            reported_at=REPORTED_AT,
+            selected_source_segment_id=neighbours_cell.id,
+            expected_interpretation="this conflict's size is 6 in",
+        )
+
+    assert refused.value.reason == "passage_describes_another_subject"
+
+
+def test_the_same_conflicts_cell_under_another_field_is_refused(
+    session: Session, project: Project
+):
+    """The right conflict read through the wrong column is still a substitution.
+
+    A Required By date and a Promised For date are both dates on the same row,
+    and that is exactly why the substitution is available and exactly why it is
+    not permitted: sharing a value class is not a relationship between a
+    passage and a proposition.
+    """
+
+    built = MisreadDate(session, project)
+    _, item = built.item()
+    (child,) = item.children
+
+    with pytest.raises(CaptureCorrectionRefused) as refused:
+        build_correction_request(
+            session,
+            item,
+            child,
+            principal=ALICE,
+            reported_at=REPORTED_AT,
+            selected_source_segment_id=built.required_by_cell.id,
+            expected_interpretation="this conflict is promised for 2027-01-20",
+        )
+
+    assert refused.value.reason == "passage_is_another_field"
+    assert refused.value.control == CONTROL_PASSAGE
+    assert str(refused.value) == (
+        "Corridor could not establish that this passage supports the value "
+        "for this Utility Conflict."
+    )
+    assert not session.scalars(select(CaptureCorrectionRequest.id)).all()
+
+
+def test_this_conflicts_own_column_is_accepted_although_nothing_was_extracted_from_it(
+    session: Session, project: Project
+):
+    """The legitimate case ADR-0100 exists for, and the one #945 must not break.
+
+    The Promised For cell of this conflict's own row was never captured -- the
+    extractor read the neighbouring column instead -- so the record holds no
+    Fact over it at all. An existing Fact is not what makes a passage
+    applicable; the sheet's own header row and the conflict's own row are.
+    """
+
+    built = MisreadDate(session, project)
+    _, item = built.item()
+    (child,) = item.children
+
+    request = build_correction_request(
+        session,
+        item,
+        child,
+        principal=ALICE,
+        reported_at=REPORTED_AT,
+        selected_source_segment_id=built.promised_for_cell.id,
+        expected_interpretation="this conflict is promised for 2026-11-01",
+    )
+
+    assert request.selected_source_segment_id == built.promised_for_cell.id
+    assert not session.scalars(
+        select(Fact.id).where(
+            Fact.id.in_(
+                select(FactSource.fact_id).where(
+                    FactSource.source_segment_id == built.promised_for_cell.id
+                )
+            )
+        )
+    ).all()
+
+
+def test_the_wrongly_cited_locator_is_corrected_to_this_conflicts_own_cell(
+    session: Session, project: Project
+):
+    """The locator correction the treatment table calls legitimate.
+
+    Corridor cited the station column for the owner. The passage the
+    coordinator names is a different cell from the one the capture cited, and
+    it is admitted because it is independently attributable to the challenged
+    conflict -- its own row, and the owner column the sheet's header names.
+    """
+
+    built = Misread(
+        session, project, cited_cell=f"{STATION_COLUMN}{CONFLICT_ROW}"
+    )
+
+    request = built.request()
+
+    assert request.capture.source_segment_id == built.segment.id
+    assert request.selected_source_segment_id == built.owner_cell.id
+    assert request.selected_source_segment_id != request.capture.source_segment_id
+
+
+def test_a_passage_of_a_sheet_that_names_no_columns_is_left_for_investigation(
+    session: Session, project: Project
+):
+    """Unsettled is not contradicted, and the two have different exits.
+
+    A rendition whose sheet retained no header row says nothing about what any
+    of its columns carry. That is not proof the coordinator is wrong, so the
+    report is built and retained; what may not happen is a *supported*
+    correction, and ``tests/test_operations_repair.py`` holds that half.
+    """
+
+    built = MisreadDate(session, project, header=False)
+    _, item = built.item()
+    (child,) = item.children
+
+    request = build_correction_request(
+        session,
+        item,
+        child,
+        principal=ALICE,
+        reported_at=REPORTED_AT,
+        selected_source_segment_id=built.promised_for_cell.id,
+        expected_interpretation="this conflict is promised for 2026-11-01",
+    )
+    recorded = record_correction_request(session, request)
+
+    assert recorded.selected_source_segment_id == built.promised_for_cell.id
+    assert (
+        passage_applicability(
+            session, request.capture, built.promised_for_cell
+        ).verdict
+        == UNCLEAR
+    )
+
+
+def test_the_picker_says_which_offered_passages_could_support_the_value(
+    session: Session, project: Project
+):
+    """The picker explains rather than hides (#945).
+
+    Every retained passage of this source is still offered -- a coordinator
+    describing a defect may have grounds to name one the structure cannot
+    settle -- and each carries whether it establishes a value for this subject
+    and field, with the approved sentence where it does not.
+    """
+
+    built = MisreadDate(session, project)
+    _, item = built.item()
+    (child,) = item.children
+    capture = challenged_capture(session, item, child)
+
+    offered = {
+        choice.source_segment_id: choice
+        for choice in passage_choices(session, capture).choices
+    }
+
+    assert offered[built.promised_for_cell.id].applicable is True
+    assert offered[built.promised_for_cell.id].why_not == ""
+    assert offered[built.required_by_cell.id].applicable is False
+    assert "could not establish" in offered[built.required_by_cell.id].why_not
+    assert offered[built.neighbours_cell.id].applicable is False
+    assert (
+        "different Utility Conflict" in offered[built.neighbours_cell.id].why_not
+    )
 
 
 @pytest.mark.parametrize(
@@ -695,9 +1052,12 @@ def test_a_recorded_report_retains_the_capture_the_passage_and_the_reason(
 ):
     """Everything ADR-0100 says the process preserves, on the row it writes."""
 
-    built = Misread(session, project)
-    elsewhere = built.incoming.segment("AT&T Texas", cell="D1")
-    request = built.request(passage=elsewhere)
+    # The capture cited the station column for the owner, which is the defect:
+    # the right conflict, read through the wrong cell.
+    built = Misread(
+        session, project, cited_cell=f"{STATION_COLUMN}{CONFLICT_ROW}"
+    )
+    request = built.request()
 
     recorded = record_correction_request(session, request)
 
@@ -708,7 +1068,7 @@ def test_a_recorded_report_retains_the_capture_the_passage_and_the_reason(
     # The passage the capture cited and the passage the coordinator chose are
     # different columns, because reading the wrong cell is the defect reported.
     assert recorded.source_segment_id == built.segment.id
-    assert recorded.selected_source_segment_id == elsewhere.id
+    assert recorded.selected_source_segment_id == built.owner_cell.id
     assert recorded.expected_interpretation == EXPECTED
     assert recorded.reported_by_principal == ALICE.subject
     assert recorded.reported_at == REPORTED_AT
@@ -788,7 +1148,9 @@ def test_a_second_capture_does_not_move_the_retained_report(
     recorded = record_correction_request(session, built.request())
 
     later, later_segment = built.incoming.capture(
-        fact_type="external_org", value="AT&T Texas (SBC)", subject_key=subject(1)
+        fact_type="external_org",
+        value="AT&T Texas (SBC)",
+        subject_key=built.subject_key,
     )
     support(session, project, later, later_segment)
     _, item = built.item()
@@ -815,18 +1177,28 @@ def test_the_passages_offered_are_this_sources_own_with_the_cited_one_marked(
     """The picker is bounded to the capture's own retained source, in source order."""
 
     built = Misread(session, project)
-    built.incoming.segment("AT&T Texas", cell="D1")
+    built.incoming.segment("AT&T Texas", cell="E2")
     built.adopted.segment("somewhere else entirely")
     _, item = built.item()
     (child,) = item.children
 
     offered = passage_choices(session, challenged_capture(session, item, child))
 
+    # This source's own retained cells, in the order the sheet presents them:
+    # its two column headings, the cell the capture cited, and the one this
+    # test added. The other document's passage is not among them.
     assert [choice.exact_text for choice in offered.choices] == [
+        "Utility Owner",
+        "Start Station",
         "AT&T Texas (SWBT)",
         "AT&T Texas",
     ]
-    assert [choice.cited for choice in offered.choices] == [True, False]
+    assert [choice.cited for choice in offered.choices] == [
+        False,
+        False,
+        True,
+        False,
+    ]
     assert (offered.searched, offered.not_shown) == ("", 0)
 
 
@@ -1040,15 +1412,23 @@ def test_an_incomplete_report_names_the_control_and_keeps_what_was_typed(
     assert not session.scalars(select(CaptureCorrectionRequest.id)).all()
 
 
-def test_the_screen_finds_a_distant_passage_and_reports_the_capture_against_it(
+def test_the_screen_finds_a_distant_passage_and_refuses_another_conflicts_row(
     session: Session, project: Project, web
 ):
-    """The act end to end, with the passage reached by reading rather than by id."""
+    """The search seam end to end, and #945's refusal at the end of it.
+
+    Reaching a distant passage of the same file is an ordinary act on the form
+    and is unchanged: the opening window does not hold it, the search does, and
+    the picker says what it is offering. What the search may not do is make a
+    passage evidence: this one sits on row 40 of the sheet, which is a
+    different Utility Conflict, so the screen refuses it in the approved words
+    and retains nothing.
+    """
 
     built = Misread(session, project)
     for number in range(2, 32):
-        built.incoming.segment(f"row {number} of this sheet", cell=f"D{number}")
-    distant = built.incoming.segment("AT&T Texas, per the owner column", cell="D40")
+        built.incoming.segment(f"row {number} of this sheet", cell=f"E{number}")
+    distant = built.incoming.segment("AT&T Texas, per the owner column", cell="C40")
     _, item = built.item()
     (child,) = item.children
     opened = quote(item.item_key, safe="")
@@ -1064,17 +1444,21 @@ def test_the_screen_finds_a_distant_passage_and_reports_the_capture_against_it(
     # And the picker says which passages it is offering, so a shortened list
     # is never presented as everything this source holds.
     assert 'that mention "per the owner column"' in html.unescape(found)
+    # It also says, on the option itself, that this one cannot carry the value.
+    assert "(cannot support this change)" in found
 
     fields = form_fields(found, f"/review/{project.slug}/correction")
     fields["correction_passage"] = str(distant.id)
     fields["correction_interpretation"] = EXPECTED
     saved = submit_form(web, f"/review/{project.slug}/correction", fields)
 
-    assert saved.status_code == 200
-    (recorded,) = session.scalars(select(CaptureCorrectionRequest)).all()
-    assert recorded.selected_source_segment_id == distant.id
+    assert saved.status_code == 400
+    assert "This passage describes a different Utility Conflict." in html.unescape(
+        saved.text
+    )
+    assert not session.scalars(select(CaptureCorrectionRequest.id)).all()
     # The passages the coordinator was reading are still the ones on the page,
-    # because the search came back with the report rather than resetting to
+    # because the refusal came back with the search rather than resetting to
     # the window the chosen passage is not in.
     assert "per the owner column" in saved.text
 

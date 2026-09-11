@@ -98,6 +98,7 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
 from corridor.capture_correction import CaptureCorrectionRefused, command_refusal
+from corridor.correction_applicability import PassageApplicability
 from corridor.models import (
     CaptureCorrectionResult,
     DeltaCaptureCorrection,
@@ -356,6 +357,7 @@ def record_correction_result(
     corrected_support_assessment_id: int | None,
     accepted_revision_id: int | None,
     comparison_rule_version: str,
+    applicability: PassageApplicability,
     outcome: str,
     replacement_delta_id: int | None,
     finding: str,
@@ -379,6 +381,15 @@ def record_correction_result(
     disposition written, and the operation retained and idempotent. A Python
     copy of any of them would be a second opinion that can drift, and the
     concurrency ones would be a guess at state Python cannot hold still.
+
+    ``applicability`` is #945's seventh, and it is passed rather than trusted.
+    The command re-derives the whole verdict from the same retained rows --
+    the selected passage's locator, the adopted source-row registration and the
+    document's own header row -- and what travels here is the evidence it is
+    checked against: the subject and field the passage was found to carry, and
+    the exact header cell the field claim rests on. A caller that states a
+    convenient verdict, or assembles its own Support Assessment over an
+    unrelated cell, is refused by the command and by the relation's own CHECK.
     """
 
     if outcome not in CORRECTION_OUTCOMES:
@@ -408,6 +419,9 @@ def record_correction_result(
                     corrected_support_assessment_id,
                     accepted_revision_id,
                     comparison_rule_version,
+                    applicability.subject_identity,
+                    applicability.field,
+                    applicability.field_heading_segment_id,
                     outcome,
                     replacement_delta_id,
                     finding,

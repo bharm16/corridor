@@ -70,6 +70,20 @@ are deliberate.
   Support Assessment, at most one replacement proposal, and the correction
   result; no accepted value, no revision, no disposition. Where the corrected
   value still differs, a coordinator decides it in Review as they always would.
+- **It re-asks whether the reported passage applies at all (#945).** Being a
+  retained passage of this source is necessary and is not sufficient: the
+  selected cell may describe another Utility Conflict, or the same one under
+  another field. ``correction_applicability`` answers that from source
+  structure alone, and the answer is taken *before* anything is written, so an
+  inapplicable selection produces no Source Fact, no Support Assessment, no
+  retirement and no replacement proposal. What it does produce is an
+  investigation that says it could not be substantiated, which is a truthful
+  receipt of what was attempted rather than a claim that a correction happened.
+  The verdict and its exact inputs then travel to
+  ``record_capture_correction_result``, which derives the whole thing again
+  from the same retained rows inside the writing transaction -- so a caller
+  that assembles its own convenient Support Assessment and calls the command
+  directly is refused there too.
 
 **Why this procedure asks a different gate from the two above.** A re-parse
 asks whether *document reading* is permitted. A re-capture reads the retained
@@ -133,6 +147,7 @@ from corridor import (
     refusals,
 )
 from corridor.baseline_adoption import effective_baseline_formats
+from corridor.correction_applicability import APPLICABLE
 from corridor.delta_resolution import current_accepted_revision_id
 from corridor.facts import fact_identity_digest
 from corridor.materializer import FactValidationError, materialize_segment_value
@@ -484,6 +499,10 @@ class CaptureCorrectionOutcome:
     replacement_delta_id: int | None
     accepted_revision_id: int | None
     comparison_rule_version: str
+    #: What the retained source structure said about the reported passage
+    #: (#945). ``applicable`` is the only verdict a corrected capture may be
+    #: written under; the other three are recorded as themselves.
+    applicability_verdict: str
     finding: str
     authorized_by_principal: str
     executed_by: str
@@ -521,6 +540,14 @@ def correct_captured_reading(
     proposal stays open: "the source did not establish this assertion" is not
     "the source matches the accepted value", and no Source Fact claiming
     absence or equality is written (ADR-0101).
+
+    A reported passage the retained source structure does not hold to this
+    subject and this field reaches the same outcome by the same route (#945).
+    The applicability verdict is taken before the first write, so an
+    inapplicable selection leaves no corrected Source Fact, no Support
+    Assessment, no retirement and no replacement proposal -- only the report
+    that was already retained and a receipt saying what the investigation
+    found.
     """
 
     actor = require_human_principal(principal)
@@ -561,12 +588,25 @@ def correct_captured_reading(
         field_name=delta.target_field,
     )
 
+    selected = session.get(SourceSegment, int(request.selected_source_segment_id))
+    challenged_capture_row = session.get(Fact, capture.fact_id)
+    field = delta.target_field or capture.field
+    # Asked before anything is written, and asked of source structure alone: a
+    # correction may assert a value only where the retained evidence
+    # establishes that the value applies to this subject and this field (#945).
+    # The verdict cannot be moved by the Fact this procedure is about to
+    # append, because no Fact is an input to it.
+    applicability = capture_correction.passage_applicability(
+        session, capture, selected
+    )
+
     if not substantiated:
         return _record_correction(
             session,
             request=request,
             delta=delta,
             capture=capture,
+            applicability=applicability,
             outcome=capture_correction_retirement.INCONCLUSIVE,
             corrected_fact_id=None,
             support_assessment_id=None,
@@ -579,9 +619,29 @@ def correct_captured_reading(
             performed_at=performed_at,
         )
 
-    selected = session.get(SourceSegment, int(request.selected_source_segment_id))
-    challenged_capture_row = session.get(Fact, capture.fact_id)
-    field = delta.target_field or capture.field
+    if applicability.verdict != APPLICABLE:
+        # Nothing is written but the receipt. A retained report and a recorded
+        # refusal are evidence of what was attempted; they are not a claim that
+        # the correction succeeded, and the proposal stays open for the
+        # coordinator it was always waiting on.
+        return _record_correction(
+            session,
+            request=request,
+            delta=delta,
+            capture=capture,
+            applicability=applicability,
+            outcome=capture_correction_retirement.INCONCLUSIVE,
+            corrected_fact_id=None,
+            support_assessment_id=None,
+            accepted_revision_id=None,
+            replacement_delta_id=None,
+            rule_version=rule_version,
+            finding=finding.strip() or applicability.investigation_sentence,
+            actor=actor,
+            performer=performer,
+            performed_at=performed_at,
+        )
+
     try:
         # The corrected value comes out of the retained passage's own text,
         # through the materializer every capture goes through. There is no
@@ -596,6 +656,7 @@ def correct_captured_reading(
             request=request,
             delta=delta,
             capture=capture,
+            applicability=applicability,
             outcome=capture_correction_retirement.INCONCLUSIVE,
             corrected_fact_id=None,
             support_assessment_id=None,
@@ -693,6 +754,7 @@ def correct_captured_reading(
         request=request,
         delta=delta,
         capture=capture,
+        applicability=applicability,
         outcome=recomparison.outcome,
         corrected_fact_id=int(corrected.id),
         support_assessment_id=int(support.id),
@@ -739,6 +801,7 @@ def _record_correction(
     request: CaptureCorrectionRequest,
     delta: ProposedDelta,
     capture,
+    applicability,
     outcome: str,
     corrected_fact_id: int | None,
     support_assessment_id: int | None,
@@ -769,6 +832,7 @@ def _record_correction(
         corrected_support_assessment_id=support_assessment_id,
         accepted_revision_id=accepted_revision_id,
         comparison_rule_version=rule_version,
+        applicability=applicability,
         outcome=outcome,
         replacement_delta_id=replacement_delta_id,
         finding=finding,
@@ -791,6 +855,7 @@ def _record_correction(
             "result_id": recorded.result_id,
             "retirement_id": recorded.retirement_id,
             "corrected_fact_id": corrected_fact_id,
+            "applicability_verdict": applicability.verdict,
             "replacement_delta_id": replacement_delta_id,
             "accepted_revision_id": accepted_revision_id,
             "comparison_rule_version": rule_version,
@@ -810,6 +875,7 @@ def _record_correction(
         replacement_delta_id=replacement_delta_id,
         accepted_revision_id=accepted_revision_id,
         comparison_rule_version=rule_version,
+        applicability_verdict=applicability.verdict,
         finding=finding,
         authorized_by_principal=actor.subject,
         executed_by=performer,

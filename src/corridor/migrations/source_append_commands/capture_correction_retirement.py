@@ -34,6 +34,47 @@ proof is a row of its own.
   result that established it, and nothing else, because nothing else is part of
   that assertion.
 
+**The seventh proof: the reported passage applies to this subject and field
+(#945).**  ADR-0100's same-document rule was the only thing standing between a
+correction and any cell of the workbook, and #945 proved end to end what that
+allows: another Utility Conflict's own valid cell selected as the supporting
+passage, a Source Fact written under the challenged conflict's subject carrying
+the neighbour's value, a ``supported`` ``value_support`` assessment naming only
+the neighbour's cell, the proposal retired and that value proposed onto the
+record.  ADR-0082 already forbade the result -- support is a relation between
+*one proposition* and its evidence, and a passage can support one proposition
+and be irrelevant to another.
+
+So the command derives, for itself, what the retained source structure says
+about the passage the report named, and refuses a substantiated outcome the
+structure does not hold to this subject and this field.  Three things make it
+a proof rather than a restated opinion:
+
+- **It is computed here, from rows a correction cannot write**: the passage's
+  own typed locator, the customer's adopted ``project_baseline_source_rows``
+  registration, and a retained heading cell of the passage's own column.  No
+  Fact is an input -- not the challenged capture, not a neighbour's, and above
+  all not the corrected capture this command is about to insert.  A caller
+  cannot manufacture its own admission by creating a Fact that claims the
+  subject, which is the circularity the rule names.
+- **The caller's stated subject is contradicted rather than believed.**  The
+  subject half is entirely the command's; a stated one that disagrees is a
+  bounded refusal.  The field half rests on the released heading vocabulary,
+  which stays in ``sheets.column_mapping`` rather than being restated in SQL
+  where two copies would drift -- so what is proved here is that the claim is
+  anchored to real retained bytes above the passage in its own column, and the
+  exact heading text is copied off that cell so a later reader can check the
+  vocabulary claim without trusting anyone's summary of it.
+- **The relation refuses it too.**  ``ck_capture_correction_results_applicable_correction``
+  admits a corrected capture only beside the ``applicable`` verdict, so the
+  containment survives a future caller that forgets the rule.
+
+Two neighbouring proofs were loosened by the same defect and are tightened with
+it: the corrected capture must be about the challenged subject and field, and
+its Support Assessment must cite **the passage the report named** rather than
+merely some passage of the same document -- which is how a caller assembling
+its own convenient assessment used to get through.
+
 **Why the outcome is not a column on the relationship.** An investigation that
 cannot be substantiated has a result and retires nothing; ADR-0101 requires
 that outcome recorded honestly rather than dressed as a successful correction.
@@ -133,6 +174,18 @@ INCONCLUSIVE = "inconclusive"
 CORRECTION_OUTCOMES = (NO_CHANGE, STILL_DIFFERS, INCONCLUSIVE)
 _OUTCOMES_SQL = ", ".join(f"'{value}'" for value in CORRECTION_OUTCOMES)
 
+#: What the retained source structure said about the reported passage (#945),
+#: spelled where the check constraint spells it. ``applicable`` is the only one
+#: a corrected capture may be written under: the other three each record that
+#: the evidence does not hold this passage to the challenged subject and field,
+#: which ADR-0082 has always said is what support means.
+APPLICABLE = "applicable"
+OTHER_SUBJECT = "other_subject"
+OTHER_FIELD = "other_field"
+UNCLEAR = "unclear"
+APPLICABILITY_VERDICTS = (APPLICABLE, OTHER_SUBJECT, OTHER_FIELD, UNCLEAR)
+_VERDICTS_SQL = ", ".join(f"'{value}'" for value in APPLICABILITY_VERDICTS)
+
 
 CAPTURE_CORRECTION_RETIREMENT_SCHEMA = f"""
 create table public.{RESULT_TABLE} (
@@ -147,6 +200,15 @@ create table public.{RESULT_TABLE} (
     corrected_support_assessment_id bigint,
     accepted_revision_id bigint references public.project_record_revisions (id),
     comparison_rule_version character varying(64) not null,
+    -- #945's proof: what the retained source structure said about the passage
+    -- the report named, and the evidence it said it from. The verdict is this
+    -- command's own derivation, never the caller's word, and the heading text
+    -- is copied off the named cell here rather than supplied.
+    applicability_verdict character varying(32) not null,
+    passage_subject_identity character varying(160),
+    passage_field character varying(64),
+    passage_field_heading_segment_id bigint,
+    passage_field_heading_text text,
     outcome character varying(32) not null,
     replacement_delta_id bigint,
     finding text not null,
@@ -175,10 +237,32 @@ create table public.{RESULT_TABLE} (
     constraint fk_{RESULT_TABLE}_support
         foreign key (project_id, corrected_support_assessment_id)
         references public.support_assessments (project_id, id),
+    constraint fk_{RESULT_TABLE}_field_heading
+        foreign key (project_id, document_id, passage_field_heading_segment_id)
+        references public.source_segments (project_id, document_id, id),
     constraint ck_{RESULT_TABLE}_challenged_digest check (
         challenged_fact_sha256 ~ '^[0-9a-f]{{64}}$'
     ),
     constraint ck_{RESULT_TABLE}_outcome check (outcome in ({_OUTCOMES_SQL})),
+    constraint ck_{RESULT_TABLE}_applicability check (
+        applicability_verdict in ({_VERDICTS_SQL})
+    ),
+    -- The containment, as the relation's own shape rather than as a rule the
+    -- command remembers to apply (#945). A substantiated correction asserts a
+    -- value about a subject and a field, so it exists only where the retained
+    -- evidence held the reported passage to that subject and that field; the
+    -- other three verdicts can only ever be recorded as an investigation that
+    -- concluded nothing. Whatever else a future caller gets wrong, it cannot
+    -- write a corrected capture over a passage the structure contradicts.
+    constraint ck_{RESULT_TABLE}_applicable_correction check (
+        outcome = '{INCONCLUSIVE}' or applicability_verdict = '{APPLICABLE}'
+    ),
+    constraint ck_{RESULT_TABLE}_applicable_shape check (
+        applicability_verdict <> '{APPLICABLE}'
+        or (passage_subject_identity is not null
+            and passage_field is not null
+            and passage_field_heading_segment_id is not null)
+    ),
     -- The three outcomes, each shaped as itself. A no-change conclusion needs
     -- the accepted revision it was drawn against, because that revision is
     -- what the coordinator is shown; a still-differing one needs the
@@ -317,6 +401,9 @@ create function public.record_capture_correction_result(
     p_corrected_support_assessment_id bigint,
     p_accepted_revision_id bigint,
     p_comparison_rule_version character varying,
+    p_passage_subject_identity character varying,
+    p_passage_field character varying,
+    p_passage_field_heading_segment_id bigint,
     p_outcome character varying,
     p_replacement_delta_id bigint,
     p_finding text,
@@ -335,10 +422,22 @@ create function public.record_capture_correction_result(
             corrected facts%ROWTYPE;
             support support_assessments%ROWTYPE;
             delta proposed_deltas%ROWTYPE;
+            selected source_segments%ROWTYPE;
+            heading source_segments%ROWTYPE;
+            registered project_baseline_source_rows%ROWTYPE;
             live_revision bigint;
             result_id bigint;
             retirement_id bigint;
             retires boolean;
+            v_challenged_field character varying;
+            v_row integer;
+            v_column character varying;
+            v_row_identity character varying;
+            v_passage_subject character varying;
+            v_passage_field character varying;
+            v_heading_id bigint;
+            v_heading_text text;
+            v_verdict character varying;
         begin
             if p_authorized_by_principal is null
                or length(btrim(p_authorized_by_principal)) = 0 then
@@ -422,12 +521,121 @@ create function public.record_capture_correction_result(
                     using errcode='23514';
             end if;
 
-            -- Proof 2: the corrected capture is supported by the retained
+            -- Proof 2: the reported passage carries a value for *this*
+            -- subject and *this* field (#945). Being a passage of the same
+            -- source is necessary and is not sufficient: another Utility
+            -- Conflict's own cell is a passage of this workbook and says
+            -- nothing about this conflict, and a Required By cell on the right
+            -- row is the right conflict under the wrong field. The verdict is
+            -- derived here, from rows the correction cannot write -- the
+            -- passage's own locator, the customer's adopted source-row
+            -- registration, and a retained heading cell of the passage's own
+            -- column. No Fact is an input, so the corrected capture this
+            -- command is about to record cannot be the evidence that admits
+            -- it, which is the circularity ADR-0082 rules out.
+            v_challenged_field := coalesce(delta.target_field, challenged.fact_type);
+            select * into selected from source_segments
+             where id = request.selected_source_segment_id
+               and project_id = p_project_id;
+            if not found then
+                raise exception 'capture_correction:passage_not_retained the passage this report named is no longer retained'
+                    using errcode='23514';
+            end if;
+            if selected.kind = 'spreadsheet_cell'
+               and selected.sheet_name is not null
+               and selected.cell_range ~ '^[A-Z]+[1-9][0-9]*$' then
+                v_column := substring(selected.cell_range from '^[A-Z]+');
+                v_row := (substring(selected.cell_range from '[0-9]+$'))::int;
+                -- One row resolves under two retained rules and the product
+                -- uses both: the `sheet_name!worksheet_row_number` identity
+                -- every structured capture is filed under, and the adopted
+                -- row's own record_subject_key, which is the customer's
+                -- resolution of that row and is its business identity where
+                -- the form prints one. A row resolves to either, so what is
+                -- asked is whether the challenged subject is one of them --
+                -- which refuses a neighbouring row whichever space the delta
+                -- is stated in. A row the adoption excluded resolves to
+                -- nothing: it is not in the record.
+                v_row_identity := selected.sheet_name || '!' || v_row::text;
+                select * into registered from project_baseline_source_rows
+                 where project_id = p_project_id
+                   and sheet_name = selected.sheet_name
+                   and row_number = v_row
+                 order by baseline_source_id desc, id desc
+                 limit 1;
+                if not found then
+                    v_passage_subject := v_row_identity;
+                elsif registered.excluded
+                      or registered.record_subject_key is null then
+                    v_passage_subject := null;
+                elsif challenged.subject_key in (
+                    v_row_identity, registered.record_subject_key
+                ) then
+                    v_passage_subject := challenged.subject_key;
+                else
+                    v_passage_subject := registered.record_subject_key;
+                end if;
+            end if;
+            -- The subject half is the command's own answer, so a caller that
+            -- states a different one is contradicted rather than believed.
+            if p_passage_subject_identity is distinct from v_passage_subject then
+                raise exception 'capture_correction:passage_subject_disagrees the stated subject for this passage is not the one its retained source row resolves to'
+                    using errcode='23514';
+            end if;
+            -- The field half rests on a retained heading cell of the passage's
+            -- own column, named by the caller and checked here. The released
+            -- heading vocabulary stays in one place -- `sheets.column_mapping`,
+            -- which every structured capture is already filed by -- rather than
+            -- being restated in SQL where it would drift; what this proves is
+            -- that the claim is anchored to real retained bytes above the
+            -- passage in its own column, and the exact heading text is copied
+            -- off that cell here so a later reader can check the vocabulary
+            -- claim without trusting anybody's summary of it.
+            if p_passage_field is not null
+               and p_passage_field_heading_segment_id is not null
+               and v_row is not null then
+                select * into heading from source_segments
+                 where id = p_passage_field_heading_segment_id
+                   and project_id = p_project_id;
+                if not found
+                   or heading.document_id is distinct from selected.document_id
+                   or heading.kind <> 'spreadsheet_cell'
+                   or heading.sheet_name is distinct from selected.sheet_name
+                   or heading.cell_range !~ '^[A-Z]+[1-9][0-9]*$'
+                   or substring(heading.cell_range from '^[A-Z]+') <> v_column
+                   or (substring(heading.cell_range from '[0-9]+$'))::int >= v_row then
+                    raise exception 'capture_correction:field_heading_not_this_column the heading this field claim rests on is not a retained cell above this passage in its own column'
+                        using errcode='23514';
+                end if;
+                v_passage_field := p_passage_field;
+                v_heading_id := heading.id;
+                v_heading_text := heading.exact_text;
+            end if;
+
+            if v_passage_subject is null or v_passage_field is null then
+                v_verdict := '{UNCLEAR}';
+            elsif v_passage_subject is distinct from challenged.subject_key then
+                v_verdict := '{OTHER_SUBJECT}';
+            elsif v_passage_field is distinct from v_challenged_field then
+                v_verdict := '{OTHER_FIELD}';
+            else
+                v_verdict := '{APPLICABLE}';
+            end if;
+            if retires and v_verdict <> '{APPLICABLE}' then
+                raise exception 'capture_correction:passage_not_applicable the retained source does not establish that the reported passage carries % for %; no corrected capture may be recorded from it', v_challenged_field, challenged.subject_key
+                    using errcode='23514';
+            end if;
+
+            -- Proof 3: the corrected capture is supported by the retained
             -- source. The reporter's expected interpretation is a reason for
             -- an investigation and never evidence, so what is checked is an
             -- effective Support Assessment naming this Fact, assessed
-            -- supported, citing at least one passage of the challenged
-            -- capture's own document.
+            -- supported, citing the very passage the report named -- not
+            -- merely some passage of this document, which is how a caller
+            -- assembling its own convenient assessment used to get through.
+            -- The corrected capture must also be about the challenged subject
+            -- and field, so a Fact recorded under some other subject cannot be
+            -- offered as this one's correction.
             if p_corrected_fact_id is not null then
                 select * into corrected from facts
                  where id = p_corrected_fact_id and project_id = p_project_id;
@@ -439,6 +647,11 @@ create function public.record_capture_correction_result(
                     raise exception 'capture_correction:corrected_capture_other_source the corrected capture was read from another source; operations corrects a capture against bytes this source already retained'
                         using errcode='23514';
                 end if;
+                if corrected.subject_key is distinct from challenged.subject_key
+                   or corrected.fact_type is distinct from v_challenged_field then
+                    raise exception 'capture_correction:corrected_capture_other_subject the corrected capture is about % %, not the % of % this report challenged', corrected.subject_key, corrected.fact_type, v_challenged_field, challenged.subject_key
+                        using errcode='23514';
+                end if;
                 select * into support from support_assessments
                  where id = p_corrected_support_assessment_id
                    and project_id = p_project_id;
@@ -448,17 +661,16 @@ create function public.record_capture_correction_result(
                    or support.assessment <> 'supported'
                    or not exists (
                        select 1 from support_assessment_sources sources
-                        join source_segments segment
-                          on segment.id = sources.source_segment_id
                        where sources.support_assessment_id = support.id
-                         and segment.document_id = challenged.document_id
+                         and sources.source_segment_id
+                             = request.selected_source_segment_id
                    ) then
-                    raise exception 'capture_correction:corrected_capture_unsupported the corrected capture is not held to this source by an effective Support Assessment citing one of its retained passages'
+                    raise exception 'capture_correction:corrected_capture_unsupported the corrected capture is not held to this source by an effective Support Assessment citing the passage this report named'
                         using errcode='23514';
                 end if;
             end if;
 
-            -- Proof 3: the recomparison used the declared rule and the stated
+            -- Proof 4: the recomparison used the declared rule and the stated
             -- accepted revision, and both are recorded. A replacement proposal
             -- is checked to be this project's and to be about the same subject
             -- and field, so "replaced by a corrected proposal" names the
@@ -488,7 +700,7 @@ create function public.record_capture_correction_result(
                 -- table and both committing.
                 perform public.lock_proposed_delta_terminal(p_delta_id);
 
-                -- Proof 4: the delta is still eligible. A customer decision
+                -- Proof 5: the delta is still eligible. A customer decision
                 -- made during the investigation is preserved, not undone, and
                 -- a newer source version that already superseded the delta
                 -- keeps its own explanation.
@@ -530,7 +742,10 @@ create function public.record_capture_correction_result(
                 project_id, request_id, delta_id, document_id,
                 challenged_fact_id, challenged_fact_sha256,
                 corrected_fact_id, corrected_support_assessment_id,
-                accepted_revision_id, comparison_rule_version, outcome,
+                accepted_revision_id, comparison_rule_version,
+                applicability_verdict, passage_subject_identity, passage_field,
+                passage_field_heading_segment_id, passage_field_heading_text,
+                outcome,
                 replacement_delta_id, finding, authorized_by_principal,
                 executed_by, recorded_at, idempotency_key
             ) values (
@@ -538,6 +753,8 @@ create function public.record_capture_correction_result(
                 p_challenged_fact_id, p_challenged_fact_sha256,
                 p_corrected_fact_id, p_corrected_support_assessment_id,
                 p_accepted_revision_id, btrim(p_comparison_rule_version),
+                v_verdict, v_passage_subject, v_passage_field,
+                v_heading_id, v_heading_text,
                 p_outcome, p_replacement_delta_id, btrim(p_finding),
                 p_authorized_by_principal, p_executed_by, p_recorded_at,
                 p_idempotency_key
@@ -561,7 +778,8 @@ create function public.record_capture_correction_result(
 
 RECORD_CAPTURE_CORRECTION_RESULT_SIGNATURE = (
     "(bigint, bigint, bigint, bigint, character varying, bigint, bigint, "
-    "bigint, character varying, character varying, bigint, text, "
+    "bigint, character varying, character varying, character varying, bigint, "
+    "character varying, bigint, text, "
     "character varying, character varying, timestamp with time zone, "
     "character varying)"
 )

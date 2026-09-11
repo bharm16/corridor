@@ -206,7 +206,25 @@ EXPECTED_SCHEMA_SHA256 = (
     # The body is rewritten, so the digest moves; no relation, sequence,
     # privilege or grant changes, so both counts are unchanged. Recomputed
     # against a fresh disposable database with template reuse off.
-    "1334b7abe9d9fefced5df35247e0eb8b3b8933992b33b2df1d3ad11ec3e1b4ca"
+    # #945 makes a capture correction prove that the passage it rests on
+    # carries a value for the challenged subject and field, rather than only
+    # that the passage belongs to this document.
+    # `capture_correction_results` gains the verdict and the evidence it was
+    # derived from -- the subject the passage's row resolves to, the field its
+    # column carries, and the retained heading cell and its exact words that
+    # said so -- with a composite foreign key naming that heading through the
+    # result's own `document_id`. Three CHECK constraints go with them: the
+    # verdict vocabulary, the shape an `applicable` verdict must have, and the
+    # containment itself, which admits a corrected capture only beside that
+    # verdict. `record_capture_correction_result` takes three more arguments
+    # and derives the verdict itself from the passage's locator, the adopted
+    # source-row registration and that heading cell; its corrected-capture
+    # proof now also requires the capture to be about the challenged subject
+    # and field and its Support Assessment to cite the passage the report
+    # named. Five columns and a rewritten command on relations that already
+    # exist, so the digest moves and neither count does. Recomputed against a
+    # fresh disposable database with template reuse off.
+    "6809f0674ee506702d614fe2070b9d5c77743f2a75a569c6292f30337b1ab73d"
 )
 
 pytestmark = [pytest.mark.slow, pytest.mark.migration]

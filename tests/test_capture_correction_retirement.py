@@ -30,14 +30,14 @@ Nothing here reads a clock.  Every instant and cutoff is declared.
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from threading import Barrier
 from uuid import uuid4
 
 import pytest
 from sqlalchemy import func, select, text
-from sqlalchemy.exc import DBAPIError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.orm import Session
 
 from corridor import access, audit
@@ -48,6 +48,7 @@ from corridor.migrations.source_append_commands.project_partition import (
 from corridor.capture_correction import (
     CaptureCorrectionRefused,
 )
+from corridor.correction_applicability import PassageApplicability
 from corridor.capture_correction_retirement import (
     CORRECTED_READING,
     INCONCLUSIVE,
@@ -73,6 +74,7 @@ from corridor.models import (
     DeltaDeferral,
     DeltaDisposition,
     DeltaSupersession,
+    Fact,
     Project,
     ProposedDelta,
 )
@@ -92,6 +94,7 @@ from harness_support import as_role
 from packet_review_support import (
     append_deltas,
     modify,
+    register_baseline,
     subject,
     support,
 )
@@ -100,10 +103,12 @@ from packet_review_support import (
 from capture_correction_support import (
     ACCEPTED_TEXT,
     ALICE,
+    CONFLICT_ROW,
     CORRECTED_AT,
     CUTOFF,
     DECIDED_AT,
     FIELD,
+    FIELD_COLUMN,
     OPERATOR,
     STILL_DIFFERENT_TEXT,
     WORKER_IDENTITY,
@@ -124,6 +129,21 @@ def misread(session: Session, project: Project) -> Misread:
         session, project, OPERATOR, designations=(access.TECHNICAL_OPERATIONS,)
     )
     return Misread(session, project)
+
+
+@pytest.fixture
+def differing(session: Session, project: Project) -> Misread:
+    """The same misread, over a cell whose corrected reading still differs.
+
+    One subject and one field have exactly one passage that can support them
+    (#945), so "the corrected value still differs" is a different *text* in
+    that cell rather than a second cell to point at.
+    """
+
+    seed_membership(
+        session, project, OPERATOR, designations=(access.TECHNICAL_OPERATIONS,)
+    )
+    return Misread(session, project, correct_text=STILL_DIFFERENT_TEXT)
 
 
 def _correct(misread: Misread, report, **kwargs):
@@ -250,38 +270,38 @@ def test_every_role_that_may_ask_the_retirement_question_can_read_the_answer(
 
 
 def test_a_correction_that_still_differs_replaces_rather_than_supersedes(
-    session: Session, misread: Misread
+    session: Session, differing: Misread
 ) -> None:
     """ADR-0101 property 2. The cause is a correction, not a newer version."""
 
-    report = misread.report(passage=misread.divergent)
+    report = differing.report()
 
-    outcome = _correct(misread, report)
+    outcome = _correct(differing, report)
 
     assert outcome.outcome == STILL_DIFFERS
     assert outcome.retired
     replacement = session.get(ProposedDelta, outcome.replacement_delta_id)
     assert replacement is not None
-    assert replacement.target_subject_identity == subject(1)
+    assert replacement.target_subject_identity == differing.subject_key
     assert replacement.target_field == FIELD
     assert replacement.proposed_value == STILL_DIFFERENT_TEXT
     # The original left Review through this relationship, and not by being
     # called superseded: ADR-0083's supersession is a newer source version, and
     # this is the same version read again.
-    assert live_delta_status(session, misread.delta.id) == "capture_corrected"
+    assert live_delta_status(session, differing.delta.id) == "capture_corrected"
     assert not session.scalar(
         select(DeltaSupersession.id).where(
-            DeltaSupersession.prior_delta_id == misread.delta.id
+            DeltaSupersession.prior_delta_id == differing.delta.id
         )
     )
     # Both the retirement and the replacement hang off one correction result.
-    retired = retirements_by_delta(session, project_id=misread.project.id)
-    assert retired[misread.delta.id].replacement_delta_id == replacement.id
-    assert retired[misread.delta.id].result_id == outcome.result_id
+    retired = retirements_by_delta(session, project_id=differing.project.id)
+    assert retired[differing.delta.id].replacement_delta_id == replacement.id
+    assert retired[differing.delta.id].result_id == outcome.result_id
     # The corrected proposal is an ordinary open proposal for Review.
-    reading = read_open_deltas(session, project_id=misread.project.id, as_of=CUTOFF)
+    reading = read_open_deltas(session, project_id=differing.project.id, as_of=CUTOFF)
     assert replacement.id in reading.actionable_delta_ids
-    assert misread.delta.id not in reading.open_delta_ids
+    assert differing.delta.id not in reading.open_delta_ids
 
 
 def test_an_unsubstantiated_investigation_claims_nothing_and_leaves_it_open(
@@ -333,16 +353,18 @@ def test_a_passage_that_does_not_read_as_this_field_is_not_a_correction(
     seed_membership(
         session, project, OPERATOR, designations=(access.TECHNICAL_OPERATIONS,)
     )
+    # The passage this conflict's Promised For really is, carrying words no
+    # date materializer can read. It is the right row and the right column, so
+    # the applicability half is satisfied and what fails is the reading itself.
     dated = Misread(
         session,
         project,
         field="committed_date",
         accepted_text="2026-11-01",
         misread_text="2026-12-15",
-        divergent_text="2027-01-20",
+        correct_text="to be advised",
     )
-    unreadable = dated.incoming.segment("to be advised", cell="C9")
-    report = dated.report(passage=unreadable)
+    report = dated.report()
 
     outcome = _correct(dated, report)
 
@@ -350,6 +372,340 @@ def test_a_passage_that_does_not_read_as_this_field_is_not_a_correction(
     assert outcome.corrected_fact_id is None
     assert live_delta_status(session, dated.delta.id) == "open"
     assert "committed_date" in outcome.finding
+
+
+# --- #945: the passage has to carry a value for this subject and field -----
+
+
+def _wrote_nothing(session: Session, misread: Misread, outcome) -> None:
+    """The whole of "no correction was applied", asserted once for every case.
+
+    No corrected Source Fact, no Support Assessment, no retirement and no
+    replacement proposal -- and the proposal the coordinator was always going
+    to have to decide is still theirs to decide.
+    """
+
+    assert outcome.outcome == INCONCLUSIVE
+    assert not outcome.retired
+    assert outcome.corrected_fact_id is None
+    assert outcome.replacement_delta_id is None
+    stored = session.get(CaptureCorrectionResult, outcome.result_id)
+    assert stored.corrected_fact_id is None
+    assert stored.corrected_support_assessment_id is None
+    assert stored.applicability_verdict != "applicable"
+    assert live_delta_status(session, misread.delta.id) == "open"
+    assert session.scalar(
+        select(func.count())
+        .select_from(Fact)
+        .where(
+            Fact.project_id == misread.project.id,
+            Fact.recorded_by.like("operations:%"),
+        )
+    ) == 0
+    assert not session.scalars(
+        select(DeltaCaptureCorrection.id).where(
+            DeltaCaptureCorrection.delta_id == misread.delta.id
+        )
+    ).all()
+
+
+def test_a_sheet_that_names_no_columns_settles_nothing_and_corrects_nothing(
+    session: Session, project: Project
+) -> None:
+    """#945's unsettled case: the report stands, the correction does not happen.
+
+    A rendition whose sheet retained no header row says nothing about what any
+    of its columns carry, so nothing establishes that the reported passage
+    carries this field for this conflict. That is not proof the coordinator is
+    wrong, which is why the report is retained and the investigation records
+    that it could not be substantiated rather than refusing the report itself.
+    """
+
+    seed_membership(
+        session, project, OPERATOR, designations=(access.TECHNICAL_OPERATIONS,)
+    )
+    built = Misread(session, project, header=False)
+    report = built.report()
+
+    outcome = _correct(built, report)
+
+    _wrote_nothing(session, built, outcome)
+    assert outcome.applicability_verdict == "unclear"
+    assert outcome.finding == (
+        "Corridor could not establish that this passage supports the value "
+        "for this Utility Conflict. Your report remains available for "
+        "investigation; no correction was applied."
+    )
+    # The report really is retained, which is what makes that sentence true.
+    (found,) = results_by_request(
+        session, project_id=project.id, request_ids=[report.id]
+    )[report.id]
+    assert found.request_id == report.id
+
+
+def test_re_running_an_unestablished_correction_replays_its_own_receipt(
+    session: Session, project: Project
+) -> None:
+    """A retry is the same act, and it still corrects nothing.
+
+    Operations re-running the procedure over a report the evidence does not
+    bear must not accumulate receipts, and must not reach a different answer
+    the second time: the verdict is derived from retained rows, so it is the
+    same answer however often it is asked.
+    """
+
+    seed_membership(
+        session, project, OPERATOR, designations=(access.TECHNICAL_OPERATIONS,)
+    )
+    built = Misread(session, project, header=False)
+    report = built.report()
+
+    first = _correct(built, report)
+    again = _correct(built, report)
+
+    assert again.result_id == first.result_id
+    assert (
+        session.scalar(
+            select(func.count())
+            .select_from(CaptureCorrectionResult)
+            .where(CaptureCorrectionResult.request_id == report.id)
+        )
+        == 1
+    )
+    _wrote_nothing(session, built, again)
+
+
+def test_a_report_that_went_round_the_picker_is_refused_by_the_investigation(
+    session: Session, misread: Misread
+) -> None:
+    """The authoritative recheck, at the door the picker cannot stand in for.
+
+    The screen refuses a contradicted selection, so a report naming one exists
+    only where somebody went round the screen. Operations re-asks before it
+    writes anything, and both shapes #945 names come back as an investigation
+    that concluded nothing: another Utility Conflict's own cell, and this
+    conflict's own row under the neighbouring field.
+    """
+
+    for passage, verdict, sentence in (
+        (
+            misread.other_conflicts_cell,
+            "other_subject",
+            "This passage describes a different Utility Conflict. Choose "
+            "evidence for this conflict, or ask Corridor operations to review "
+            "the source mapping. No correction was applied.",
+        ),
+        (
+            misread.wrong_field_cell,
+            "other_field",
+            "Corridor could not establish that this passage supports the "
+            "value for this Utility Conflict. Your report remains available "
+            "for investigation; no correction was applied.",
+        ),
+    ):
+        report = misread.report_bypassing_the_picker(passage)
+
+        outcome = _correct(misread, report)
+
+        _wrote_nothing(session, misread, outcome)
+        assert outcome.applicability_verdict == verdict
+        assert outcome.finding == sentence
+
+
+def test_the_row_mapping_a_correction_rests_on_cannot_move_under_it(
+    session: Session, misread: Misread
+) -> None:
+    """Why there is no "the registration changed mid-investigation" case.
+
+    Which subject a source row resolves to is the customer's own adopted
+    registration, and a project has exactly one adopted baseline source. So the
+    subject half of #945's verdict cannot be re-registered under a correction
+    that is in flight; the half that *can* move is the accepted record, which
+    ``test_the_accepted_record_moving_refuses_the_earlier_comparison`` holds.
+    """
+
+    with pytest.raises(IntegrityError, match="uq_project_baseline_sources_project"):
+        with session.begin_nested():
+            register_baseline(
+                session,
+                misread.project,
+                misread.adopted.document,
+                misread.revision_id,
+            )
+
+
+def test_a_caller_cannot_substitute_its_own_support_assessment(
+    session: Session, misread: Misread
+) -> None:
+    """The bypass the procedure alone could not close (#945).
+
+    ``correct_captured_reading`` re-asks before it writes, so a caller that
+    wants the old behaviour has to go round it and call the command itself with
+    a Support Assessment it assembled. The command's own proofs answer that:
+    the corrected capture has to be about the challenged subject and field, and
+    its assessment has to cite **the passage the report named** rather than
+    merely some passage of the same document.
+    """
+
+    report = misread.report()
+    # A corrected capture held to a cell of this document that is not the one
+    # the report named -- the neighbouring column's, which is the shape #945
+    # found.
+    convenient, _ = misread.incoming.capture(
+        fact_type=misread.field,
+        value=misread.accepted_text,
+        subject_key=misread.subject_key,
+        cell="C7",
+    )
+    assembled = support(session, misread.project, convenient, misread.wrong_field_cell)
+
+    with pytest.raises(CaptureCorrectionRefused) as refused:
+        with session.begin_nested():
+            record_correction_result(
+                session,
+                project_id=misread.project.id,
+                request_id=int(report.id),
+                delta_id=int(misread.delta.id),
+                challenged_fact_id=int(misread.fact.id),
+                challenged_fact_sha256=misread.fact.content_sha256,
+                corrected_fact_id=int(convenient.id),
+                corrected_support_assessment_id=int(assembled.id),
+                accepted_revision_id=misread.revision_id,
+                comparison_rule_version="v1",
+                applicability=misread.applicability(),
+                outcome=NO_CHANGE,
+                replacement_delta_id=None,
+                finding="assembled its own evidence",
+                authorized_by_principal=OPERATOR.subject,
+                executed_by=WORKER_IDENTITY,
+                recorded_at=CORRECTED_AT,
+            )
+
+    assert refused.value.reason == "corrected_capture_unsupported"
+    assert not session.scalars(
+        select(DeltaCaptureCorrection.id).where(
+            DeltaCaptureCorrection.delta_id == misread.delta.id
+        )
+    ).all()
+
+
+def test_a_corrected_capture_about_another_subject_is_refused_by_the_command(
+    session: Session, misread: Misread
+) -> None:
+    """The other half of the same bypass: a Fact filed under somebody else.
+
+    A correction asserts a value about the challenged subject and field. A
+    capture recorded under a different subject is not that assertion, whatever
+    passage it cites.
+    """
+
+    report = misread.report()
+    elsewhere, _ = misread.incoming.capture(
+        fact_type=misread.field,
+        value=misread.accepted_text,
+        subject_key=subject(CONFLICT_ROW + 5),
+        cell="C7",
+    )
+    assembled = support(session, misread.project, elsewhere, misread.correct)
+
+    with pytest.raises(CaptureCorrectionRefused) as refused:
+        with session.begin_nested():
+            record_correction_result(
+                session,
+                project_id=misread.project.id,
+                request_id=int(report.id),
+                delta_id=int(misread.delta.id),
+                challenged_fact_id=int(misread.fact.id),
+                challenged_fact_sha256=misread.fact.content_sha256,
+                corrected_fact_id=int(elsewhere.id),
+                corrected_support_assessment_id=int(assembled.id),
+                accepted_revision_id=misread.revision_id,
+                comparison_rule_version="v1",
+                applicability=misread.applicability(),
+                outcome=NO_CHANGE,
+                replacement_delta_id=None,
+                finding="a capture about another conflict",
+                authorized_by_principal=OPERATOR.subject,
+                executed_by=WORKER_IDENTITY,
+                recorded_at=CORRECTED_AT,
+            )
+
+    assert refused.value.reason == "corrected_capture_other_subject"
+
+
+def test_the_command_derives_the_verdict_rather_than_taking_the_callers_word(
+    session: Session, misread: Misread
+) -> None:
+    """A stated applicability the retained rows do not bear is contradicted.
+
+    The subject half is entirely the command's, so a caller that states a
+    convenient one is refused rather than believed; the field half has to be
+    anchored to a retained heading cell of the passage's own column, so a
+    caller that points at some other cell is refused too.
+    """
+
+    report = misread.report()
+    honest = misread.applicability()
+
+    for stated, reason in (
+        (
+            replace(honest, subject_identity=subject(CONFLICT_ROW + 7)),
+            "passage_subject_disagrees",
+        ),
+        (
+            replace(
+                honest, field_heading_segment_id=int(misread.wrong_field_cell.id)
+            ),
+            "field_heading_not_this_column",
+        ),
+    ):
+        with pytest.raises(CaptureCorrectionRefused) as refused:
+            with session.begin_nested():
+                record_correction_result(
+                    session,
+                    project_id=misread.project.id,
+                    request_id=int(report.id),
+                    delta_id=int(misread.delta.id),
+                    challenged_fact_id=int(misread.fact.id),
+                    challenged_fact_sha256=misread.fact.content_sha256,
+                    corrected_fact_id=None,
+                    corrected_support_assessment_id=None,
+                    accepted_revision_id=None,
+                    comparison_rule_version="v1",
+                    applicability=stated,
+                    outcome=INCONCLUSIVE,
+                    replacement_delta_id=None,
+                    finding="a verdict the rows do not bear",
+                    authorized_by_principal=OPERATOR.subject,
+                    executed_by=WORKER_IDENTITY,
+                    recorded_at=CORRECTED_AT,
+                )
+        assert refused.value.reason == reason
+
+
+def test_the_successful_correction_retains_the_evidence_it_was_admitted_on(
+    session: Session, misread: Misread
+) -> None:
+    """The proof is on the result row, not recomputed by whoever reads it later.
+
+    Which subject the passage's row resolved to, which field its column
+    carries, and the exact retained heading cell that said so -- with the
+    heading's own words copied off that cell by the command rather than
+    supplied by its caller.
+    """
+
+    report = misread.report()
+
+    outcome = _correct(misread, report)
+
+    stored = session.get(CaptureCorrectionResult, outcome.result_id)
+    assert stored.applicability_verdict == "applicable"
+    assert stored.passage_subject_identity == misread.subject_key
+    assert stored.passage_field == misread.field
+    assert stored.passage_field_heading_segment_id == misread.headings[
+        FIELD_COLUMN
+    ].id
+    assert stored.passage_field_heading_text == "Start Station"
 
 
 def test_a_proposal_decided_during_the_investigation_keeps_its_decision(
@@ -409,6 +765,7 @@ def test_the_request_has_to_name_this_proposal_and_this_capture(
                 corrected_support_assessment_id=None,
                 accepted_revision_id=None,
                 comparison_rule_version="v1",
+                applicability=misread.applicability(),
                 outcome=INCONCLUSIVE,
                 replacement_delta_id=None,
                 finding="not this capture",
@@ -433,7 +790,7 @@ def test_the_corrected_capture_has_to_be_held_to_the_retained_source(
     report = misread.report()
     # A Fact of this document with no supporting assessment at all.
     unsupported, _ = misread.incoming.capture(
-        fact_type=FIELD, value=ACCEPTED_TEXT, subject_key=subject(1), cell="C7"
+        fact_type=FIELD, value=ACCEPTED_TEXT, subject_key=misread.subject_key, cell="C7"
     )
 
     with pytest.raises(CaptureCorrectionRefused) as refused:
@@ -449,6 +806,7 @@ def test_the_corrected_capture_has_to_be_held_to_the_retained_source(
                 corrected_support_assessment_id=None,
                 accepted_revision_id=misread.revision_id,
                 comparison_rule_version="v1",
+                applicability=misread.applicability(),
                 outcome=NO_CHANGE,
                 replacement_delta_id=None,
                 finding="no support was cited",
@@ -487,6 +845,7 @@ def test_the_accepted_record_moving_refuses_the_earlier_comparison(
                 # stand on, as if the record had moved under the comparison.
                 accepted_revision_id=None,
                 comparison_rule_version="v1",
+                applicability=misread.applicability(),
                 outcome=STILL_DIFFERS,
                 replacement_delta_id=None,
                 finding="computed against a revision that is no longer current",
@@ -538,6 +897,7 @@ def test_an_exact_retry_is_the_same_act_and_a_changed_one_is_a_conflict(
                 corrected_support_assessment_id=None,
                 accepted_revision_id=None,
                 comparison_rule_version="v1",
+                applicability=misread.applicability(),
                 outcome=INCONCLUSIVE,
                 replacement_delta_id=None,
                 finding="a different result under the same key",
@@ -561,7 +921,7 @@ def test_a_later_capture_does_not_move_what_the_correction_names(
     # A second capture of the same document, subject and field arrives, so the
     # query the screen reconstructs a capture from now answers differently.
     later, later_segment = misread.incoming.capture(
-        fact_type=FIELD, value="1099+00", subject_key=subject(1), cell="C8"
+        fact_type=FIELD, value="1099+00", subject_key=misread.subject_key, cell="C8"
     )
     support(session, misread.project, later, later_segment)
 
@@ -702,7 +1062,7 @@ def test_a_superseded_proposal_cannot_also_be_retired(
         source_revision="2026-10",
         values=[
             modify(
-                subject_key=subject(1),
+                subject_key=misread.subject_key,
                 field_name=FIELD,
                 accepted_value=ACCEPTED_TEXT,
                 proposed_value="1050+00",
@@ -756,13 +1116,13 @@ def test_the_no_change_sentence_prints_the_revision_it_was_compared_against(
 
 
 def test_the_replacement_sentence_points_at_the_corrected_proposal(
-    session: Session, misread: Misread
+    session: Session, differing: Misread
 ) -> None:
-    report = misread.report(passage=misread.divergent)
-    outcome = _correct(misread, report)
+    report = differing.report()
+    outcome = _correct(differing, report)
 
     (reading,) = retirements_by_delta(
-        session, project_id=misread.project.id
+        session, project_id=differing.project.id
     ).values()
 
     assert reading.headline == CORRECTED_READING
@@ -921,6 +1281,9 @@ class Competing:
     corrected_fact_id: int
     corrected_support_id: int
     support_id: int
+    #: The verdict the retained structure gives for the reported passage,
+    #: computed in the seeding transaction because the racing ones only write.
+    applicability: PassageApplicability
 
 
 def _seed_competing_scenario(factory) -> Competing:
@@ -943,12 +1306,16 @@ def _seed_competing_scenario(factory) -> Competing:
         )
         misread = Misread(seeding, project)
         report = misread.report()
+        applicability = misread.applicability()
         # The corrected capture and its Support Assessment are seeded here
         # rather than appended by each competing act, so what the two
         # transactions race for is the one thing under test: the delta's single
         # terminal relationship.
         corrected, _ = misread.incoming.capture(
-            fact_type=FIELD, value=ACCEPTED_TEXT, subject_key=subject(1), cell="C2"
+            fact_type=FIELD,
+            value=ACCEPTED_TEXT,
+            subject_key=misread.subject_key,
+            cell=misread.correct.cell_range,
         )
         corrected_support = support(seeding, project, corrected, misread.correct)
         seeding.commit()
@@ -962,6 +1329,7 @@ def _seed_competing_scenario(factory) -> Competing:
             corrected_fact_id=int(corrected.id),
             corrected_support_id=int(corrected_support.id),
             support_id=int(misread.support.id),
+            applicability=applicability,
         )
 
 
@@ -1019,6 +1387,7 @@ def _one_competing_pair(factory) -> None:
                     corrected_support_assessment_id=seeded.corrected_support_id,
                     accepted_revision_id=seeded.revision_id,
                     comparison_rule_version="v1",
+                    applicability=seeded.applicability,
                     outcome=NO_CHANGE,
                     replacement_delta_id=None,
                     finding="competing retirement",
@@ -1115,6 +1484,7 @@ def test_two_competing_retirements_leave_exactly_one(runtime_database) -> None:
                     corrected_support_assessment_id=seeded.corrected_support_id,
                     accepted_revision_id=seeded.revision_id,
                     comparison_rule_version="v1",
+                    applicability=seeded.applicability,
                     outcome=NO_CHANGE,
                     replacement_delta_id=None,
                     finding="competing retirement",
@@ -1178,6 +1548,7 @@ def test_a_retirement_in_flight_holds_the_lock_every_terminal_writer_takes(
             corrected_support_assessment_id=seeded.corrected_support_id,
             accepted_revision_id=seeded.revision_id,
             comparison_rule_version="v1",
+            applicability=seeded.applicability,
             outcome=NO_CHANGE,
             replacement_delta_id=None,
             finding="held open while a competing writer tries to take the lock",
