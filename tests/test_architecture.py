@@ -3315,11 +3315,42 @@ def test_every_authenticated_form_carries_the_forgery_field():
 # and neither was visible to the tests that own those seams, because both
 # replace the session with the schema owner's.
 #
-# `access.keep_partition_declared` is the fix, and this is the rule that keeps
-# it applied: every partition the web layer declares is kept for the request
-# that declared it.  A new surface that opens one and forgets fails here rather
-# than in production, which is the half a fix at a single call site does not
-# buy.
+# `access.keep_partition_declared` is the fix, and the first rule below is what
+# keeps it applied: every partition the web layer declares is kept for the
+# request that declared it. A new surface that opens one and forgets fails here
+# rather than in production, which is the half a fix at a single call site does
+# not buy.
+#
+# **That rule is necessary and it is not sufficient, and saying so is the
+# point.** It matches a name. A call to `keep_partition_declared` proves that a
+# route asked for the mechanism; it proves nothing whatever about the mechanism
+# handling the transitions a request actually makes, and #938 shipped with the
+# rule green and two of those transitions wrong. So two further rules read the
+# keeper itself, each aimed at a way of getting it wrong that a reviewer cannot
+# see by reading one handler at a time:
+#
+# - a handler registered on a transaction-boundary event has to decide which
+#   boundary fired, from SQLAlchemy's own transaction information. The event
+#   name does not say: `after_commit` fires when a SAVEPOINT is released and
+#   `after_rollback` when one is rolled back, exactly as they do for the outer
+#   transaction. Every recoverable refusal in `access` is a savepoint, so an
+#   undecided handler gives a live continuation away or arms itself over work
+#   that has not committed.
+# - the re-declaration catches one answer and lets every other database failure
+#   through. `insufficient_privilege` covers a missing grant as well as a
+#   withdrawn membership, and reporting either as an empty partition tells a
+#   person their project holds nothing.
+#
+# What none of the three can establish is that the handlers are *correct* over
+# real transactions. A static rule can see that a discriminator is consulted;
+# it cannot see that the answer is used the right way round, that the savepoint
+# the re-declaration opens is given back, or that a refusal reaches the route
+# that has to answer it. That is behaviour, and it is proved as behaviour, in
+# `tests/test_project_partition_and_offboarding.py` -- the two sections there
+# headed "A savepoint is not a unit of work" and "An authorization refusal is
+# not an answer about the record", which walk the transitions against a real
+# PostgreSQL and mutate to fail when either rule here is satisfied by a handler
+# that does the wrong thing.
 
 
 def _partition_declaring_functions() -> dict[str, set[str]]:
@@ -3361,6 +3392,141 @@ def test_every_partition_the_web_layer_declares_is_kept_for_the_request():
         "`access.keep_partition_declared`, so the declaration ends at the "
         "first commit the request makes and every partitioned relation then "
         "answers as if the project were empty (#935, #936)"
+    )
+
+
+#: The events `access.keep_partition_declared` may register a handler on, and
+#: nothing else. Each is a transaction boundary; which *kind* of boundary it is
+#: is what the handler has to work out for itself.
+PARTITION_KEEPER_EVENTS = frozenset(
+    {"after_begin", "after_commit", "after_rollback", "after_soft_rollback"}
+)
+
+#: What consulting SQLAlchemy's transaction information looks like. The two
+#: events handed a `SessionTransaction` read `nested` and `parent` off it; the
+#: two handed only the `Session` ask it `in_nested_transaction`, which answers
+#: the same question because a nested transaction is still the session's
+#: current one while its own event runs.
+TRANSACTION_DISCRIMINATORS = frozenset(
+    {"nested", "parent", "in_nested_transaction"}
+)
+
+
+def _module_functions(path: Path) -> dict[str, ast.FunctionDef | ast.AsyncFunctionDef]:
+    """Every function defined at the top level of one module, by name."""
+
+    return {
+        node.name: node
+        for node in _tree(path).body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+
+
+def _partition_keeper_handlers() -> dict[str, str]:
+    """Which handler `keep_partition_declared` registers on which event."""
+
+    keeper = _module_functions(SOURCE_ROOT / "access.py")["keep_partition_declared"]
+    registered: dict[str, str] = {}
+    for call in ast.walk(keeper):
+        if not isinstance(call, ast.Call):
+            continue
+        if not (isinstance(call.func, ast.Attribute) and call.func.attr == "listen"):
+            continue
+        _session, event, handler = call.args
+        registered[ast.literal_eval(event)] = handler.id
+    return registered
+
+
+def _attributes_consulted(
+    name: str,
+    functions: dict[str, ast.FunctionDef | ast.AsyncFunctionDef],
+    seen: set[str] | None = None,
+) -> set[str]:
+    """Every attribute a function reads, following the module helpers it calls.
+
+    Following the calls is what lets one shared predicate answer for several
+    handlers, which is how the keeper is actually written -- two of its four
+    handlers ask the same helper rather than repeating its body.
+    """
+
+    seen = set() if seen is None else seen
+    if name in seen or name not in functions:
+        return set()
+    seen.add(name)
+    found: set[str] = set()
+    for node in ast.walk(functions[name]):
+        if isinstance(node, ast.Attribute):
+            found.add(node.attr)
+        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            found |= _attributes_consulted(node.func.id, functions, seen)
+    return found
+
+
+def test_the_partition_keeper_decides_from_the_transaction_not_the_event_name():
+    functions = _module_functions(SOURCE_ROOT / "access.py")
+    registered = _partition_keeper_handlers()
+
+    assert set(registered) == PARTITION_KEEPER_EVENTS, (
+        f"{sorted(registered)}: `keep_partition_declared` listens to a "
+        "different set of transaction events than this rule was written for. "
+        "Each of these is a boundary the kept declaration turns on, so adding "
+        "or dropping one is a decision about the lifecycle and belongs here "
+        "with it"
+    )
+
+    undecided = sorted(
+        f"{event} -> {handler}"
+        for event, handler in registered.items()
+        if not _attributes_consulted(handler, functions) & TRANSACTION_DISCRIMINATORS
+    )
+
+    assert undecided == [], (
+        f"{undecided}: this handler acts on a transaction event without asking "
+        "which transaction fired it. SQLAlchemy dispatches `after_commit` on a "
+        "SAVEPOINT release and `after_rollback` on a SAVEPOINT rollback, and "
+        "every recoverable refusal in `access` is a savepoint, so an "
+        "unconditional handler forgets a live continuation when an unrelated "
+        "refusal gives its savepoint back -- or arms the keeper over work that "
+        f"has not committed. Read one of {sorted(TRANSACTION_DISCRIMINATORS)}"
+    )
+
+
+def test_the_partition_keeper_lets_an_unexpected_database_failure_through():
+    """The re-declaration answers one refusal and reports no others as empty."""
+
+    functions = _module_functions(SOURCE_ROOT / "access.py")
+    handler = functions[_partition_keeper_handlers()["after_begin"]]
+    catching = [
+        node
+        for node in ast.walk(handler)
+        if isinstance(node, ast.ExceptHandler)
+        and node.type is not None
+        and "DBAPIError" in ast.dump(node.type)
+    ]
+
+    assert catching, (
+        f"{handler.name}: the re-declaration catches no database error at all. "
+        "It proves a roster entry by raising, and an escaping exception leaves "
+        "an event handler no caller can catch"
+    )
+
+    swallowing = [
+        ast.dump(node.type)
+        for node in catching
+        if "membership_proof_refused" not in ast.dump(node)
+        or not any(
+            isinstance(inner, ast.Raise) and inner.exc is None
+            for inner in ast.walk(node)
+        )
+    ]
+
+    assert swallowing == [], (
+        f"{handler.name}: this catch turns every database failure into an "
+        "empty partition. PostgreSQL answers a missing grant with the same "
+        "`insufficient_privilege` code the membership proof raises, so the "
+        "test has to be `membership_proof_refused` and everything else has to "
+        "be re-raised -- an unreachable server or a half-applied migration is "
+        "not a person's project holding nothing"
     )
 
 

@@ -1918,6 +1918,33 @@ def designation_refused(error: DBAPIError) -> bool:
     return _sqlstate(error) == INSUFFICIENT_PRIVILEGE
 
 
+# The refusal `open_project_partition` raises when the roster no longer allows
+# the scope -- the exact words, read back out of the migration that defines the
+# command by `tests/test_project_partition_and_offboarding.py`, on the pattern
+# `refusals.STALE_PREDECESSOR_SENTENCES` set.
+#
+# The code is not enough on its own, and that is the whole reason this constant
+# exists.  PostgreSQL answers a *missing grant* with `insufficient_privilege`
+# too, so a caller that reads the code alone cannot tell "this person is no
+# longer on this project" from "this login may not run the command at all" --
+# and the second is a deployment fault that must never be reported to a person
+# as an answer about their project.
+MEMBERSHIP_PROOF_REFUSAL = "holds no active membership of project"
+
+
+def membership_proof_refused(error: DBAPIError) -> bool:
+    """Whether PostgreSQL refused this because the roster entry is gone.
+
+    Narrower than `designation_refused` on purpose: the same code covers every
+    privilege PostgreSQL withholds, and only this one sentence is an answer
+    about a person's membership.
+    """
+
+    return designation_refused(error) and MEMBERSHIP_PROOF_REFUSAL in str(
+        getattr(error, "orig", error)
+    )
+
+
 def open_project_partition(
     session: Session, *, principal_subject: str, project_id: int
 ) -> int:
@@ -2070,27 +2097,61 @@ def current_project_partition(session: Session) -> tuple[int, ...] | None:
 # command, which proves the roster entry again, so a person offboarded
 # mid-request is refused rather than carried.
 #
-# **A commit, and only a commit, is what the keeper follows.**  The first shape
-# of this took every transaction the session opened, and that is wrong in one
-# exact way: a *rollback* gives up the transaction's work, and this seam has
-# always said the partition goes with it.  Re-installing a scope after one
-# would carry an authorization past the unit of work that proved it, and it
-# also breaks a caller that legitimately declares a different scope next --
-# ``/portfolio`` reads the member-wide partition and then opening one project
-# from it declares that project.  Those are two units of work, and #662 refuses
-# two scopes inside *one*.  A keeper that echoed the first into the second's
-# transaction would turn a legitimate second declaration into a refusal, and
-# the caller cannot tell an echo from a scope it declared itself.  So the
-# keeper never produces one: it re-declares only where the same unit of work
-# continued through its own commit, and a rollback forgets what was kept.
+# **A commit of the unit of work, and only that, is what the keeper follows.**
+# The first shape of this took every transaction the session opened, and that
+# is wrong in one exact way: a *rollback* gives up the transaction's work, and
+# this seam has always said the partition goes with it.  Re-installing a scope
+# after one would carry an authorization past the unit of work that proved it,
+# and it also breaks a caller that legitimately declares a different scope next
+# -- ``/portfolio`` reads the member-wide partition and then opening one
+# project from it declares that project.  Those are two units of work, and #662
+# refuses two scopes inside *one*.  A keeper that echoed the first into the
+# second's transaction would turn a legitimate second declaration into a
+# refusal, and the caller cannot tell an echo from a scope it declared itself.
+# So the keeper never produces one: it re-declares only where the same unit of
+# work continued through its own commit, and a rollback forgets what was kept.
+#
+# **A savepoint is not a unit of work, and the event name does not say which
+# one fired.**  This is the correction #938's review asked for, and it is not a
+# nicety: SQLAlchemy dispatches ``after_commit`` when a SAVEPOINT is *released*
+# and ``after_rollback`` when one is *rolled back*, exactly as it does for the
+# outer transaction (``SessionTransaction.commit`` and ``.rollback`` both guard
+# with ``if self._parent is None or self.nested``).  Every recoverable refusal
+# in this module is a savepoint -- that is what #654 bought -- so a handler
+# registered on ``after_rollback`` with no further test forgets a live
+# continuation the moment an *unrelated* refusal gives its savepoint up, and
+# the caller then commits and reads the empty partition.  A handler on
+# ``after_commit`` with no further test arms the keeper on a savepoint release,
+# before the unit of work has committed anything at all.
+#
+# So each handler below decides from SQLAlchemy's own transaction information
+# rather than from which event called it:
+#
+# - ``after_begin`` and ``after_soft_rollback`` are handed the
+#   ``SessionTransaction``, and ``SessionTransaction.nested`` is true for a
+#   SAVEPOINT and false for the outer transaction.  ``after_begin`` also reads
+#   ``.parent``, so that anything with a transaction above it is left alone.
+# - ``after_commit`` and ``after_rollback`` are handed only the ``Session``.
+#   A nested ``SessionTransaction`` is still the session's current one when its
+#   own event fires -- ``close()`` restores the previous one afterwards -- so
+#   ``Session.in_nested_transaction()`` answers the same question there.
 #
 # The rule the keeper must not weaken is #662's, and it does not: a caller that
 # declares scope A and then scope B in one transaction is refused exactly as it
 # was, whether or not the keeper is holding A.
+#
+# **A commit is not a promise that the request continues.**  The keeper's
+# replay is a convenience for the deployment's one-session-per-request shape,
+# not a universal truth about transactions, and it is bounded on both sides by
+# an actual boundary rather than by that assumption: ``close_project_partition``
+# ends it because the caller said it is finished, and ``forget_kept_partition``
+# ends it because the unit of work is over.  A session reused across units of
+# work -- a test, a tool, a worker loop -- calls the second one, and then the
+# next unit's own declaration meets no echo.
 _KEPT_PARTITION = "corridor.kept_partition"
 _KEPT_PARTITION_ARMED = "corridor.kept_partition_armed"
-_KEPT_PARTITION_BUSY = "corridor.kept_partition_busy"
 _KEPT_PARTITION_LISTENING = "corridor.kept_partition_listening"
+_KEPT_PARTITION_REFUSED = "corridor.kept_partition_refused"
 
 
 def keep_partition_declared(session: Session) -> None:
@@ -2102,10 +2163,12 @@ def keep_partition_declared(session: Session) -> None:
     reading.  It re-runs the same declaration command, so nothing is trusted
     across the commit that was not proved before it.
 
-    Declaring a different scope later replaces what is kept, and a rollback
-    gives it up altogether.  The scope-change rules are unchanged: a caller
-    that declares a second, different scope inside one transaction meets #662's
-    refusal exactly as it did before.
+    Declaring a different scope later replaces what is kept, and a rollback of
+    the unit of work gives it up altogether.  A savepoint inside that unit --
+    which is what every recoverable refusal in this module rolls back -- is
+    neither.  The scope-change rules are unchanged: a caller that declares a
+    second, different scope inside one transaction meets #662's refusal exactly
+    as it did before.
 
     What is kept lives on the ``Session``, and in the deployment a ``Session``
     is one request.  A caller whose session outlives its unit of work says so
@@ -2118,8 +2181,8 @@ def keep_partition_declared(session: Session) -> None:
         return
     session.info[_KEPT_PARTITION_LISTENING] = True
     event.listen(session, "after_commit", _arm_kept_partition)
+    event.listen(session, "after_rollback", _forget_after_rollback)
     event.listen(session, "after_soft_rollback", _forget_after_soft_rollback)
-    event.listen(session, "after_rollback", _forget_kept_partition)
     event.listen(session, "after_begin", _redeclare_kept_partition)
 
 
@@ -2131,9 +2194,47 @@ def forget_kept_partition(session: Session) -> None:
     previous unit declared must not be taken up again inside the next one's
     transaction, where the caller's own declaration would meet it and be
     refused as an in-transaction scope change it never made.
+
+    It also ends the request-level record of a refused continuation, because
+    that record belongs to the unit of work this call is closing.
     """
 
     _forget_kept_partition(session)
+    session.info.pop(_KEPT_PARTITION_REFUSED, None)
+
+
+def partition_continuation_refused(session: Session) -> bool:
+    """Whether this request's authorization ended before its reading did.
+
+    True only for the one expected answer: the roster no longer allows the
+    scope this request declared, so re-declaring it on the transaction after
+    the request's own commit was refused.  Every other database failure is a
+    technical failure and travels as one -- it is raised from here rather than
+    reported as ``False`` -- because "this person has no projects" is a
+    specific claim and a missing grant, an unreachable server or a migration
+    mismatch do not support it.
+
+    A caller that has committed and gone on reading asks here *before*
+    rendering what it read.  Asking is what takes the declaration up again if
+    the commit has not been followed yet: the answer is what the
+    re-declaration returned, and until the next transaction has begun there is
+    nothing to report.  It begins that transaction without issuing a statement
+    of its own, so the only cost is the declaration the next read would have
+    paid for anyway.
+
+    What a caller must not do is read the empty partition as an answer about
+    the record.  An offboarded person's partitioned queries return nothing and
+    their already-loaded rows will not refresh, and neither of those means the
+    project is legacy, empty, or finished.  The act the request already
+    committed stands; only the reading after it was refused.
+    """
+
+    if (
+        session.info.get(_KEPT_PARTITION) is not None
+        and session.info.get(_KEPT_PARTITION_ARMED)
+    ):
+        session.connection()
+    return bool(session.info.get(_KEPT_PARTITION_REFUSED))
 
 
 def _remember_partition(session: Session, declaration) -> None:
@@ -2142,9 +2243,23 @@ def _remember_partition(session: Session, declaration) -> None:
     session.info[_KEPT_PARTITION] = declaration
 
 
+def _savepoint_is_current(session: Session) -> bool:
+    """Whether the event that just fired belongs to a SAVEPOINT.
+
+    For ``after_commit`` and ``after_rollback``, which are handed no
+    transaction: the nested ``SessionTransaction`` is still the session's
+    current one while its own event runs, and the outer transaction's event
+    runs with every nested one already closed.
+    """
+
+    return session.in_nested_transaction()
+
+
 def _arm_kept_partition(session: Session) -> None:
     """This unit of work committed and may continue, so the scope may follow it."""
 
+    if _savepoint_is_current(session):
+        return
     session.info[_KEPT_PARTITION_ARMED] = True
 
 
@@ -2155,15 +2270,22 @@ def _forget_kept_partition(session: Session) -> None:
     session.info.pop(_KEPT_PARTITION_ARMED, None)
 
 
-def _forget_after_soft_rollback(session: Session, previous_transaction) -> None:
-    """The same, for a rollback the driver did not have to perform.
+def _forget_after_rollback(session: Session) -> None:
+    """The same, once it is the unit of work that went back and not a savepoint."""
 
-    A savepoint going back is not the unit of work going back -- every
-    recoverable refusal in this module is a savepoint -- so this only forgets
-    when nothing of the transaction is left.
+    if _savepoint_is_current(session):
+        return
+    _forget_kept_partition(session)
+
+
+def _forget_after_soft_rollback(session: Session, previous_transaction) -> None:
+    """The same again, for a rollback the driver did not have to perform.
+
+    This event is handed the transaction that was rolled back, so it reads
+    ``nested`` directly rather than asking what the session's current one is.
     """
 
-    if session.in_transaction():
+    if previous_transaction.nested:
         return
     _forget_kept_partition(session)
 
@@ -2171,34 +2293,48 @@ def _forget_after_soft_rollback(session: Session, previous_transaction) -> None:
 def _redeclare_kept_partition(session: Session, transaction, connection) -> None:
     """Take the kept partition up again at the start of the next transaction.
 
-    Runs on ``connection`` rather than through the ``Session`` so it cannot
-    re-enter this listener, and guards itself anyway: a savepoint opened while
-    the declaration is in flight fires this event again.
+    Only at the start of the next *unit of work*: a SAVEPOINT opened inside one
+    begins no new authorization scope, and the scope it would re-declare is
+    already installed, so it is left alone.  That check is also what keeps this
+    handler out of its own way, because the savepoint it opens below is a Core
+    one on ``connection`` and reaches no session event at all.
 
-    It runs inside its own savepoint for the reason ``open_project_partition``
+    It runs inside that savepoint for the reason ``open_project_partition``
     uses one: the command proves the roster entry by raising, and a statement
-    that errors poisons the transaction it is in.  A person whose membership
-    was withdrawn between the commit and here is refused -- and the refusal is
-    a partition this transaction does not hold, which reads as the empty one,
-    rather than an exception escaping an event handler no caller can catch.
-    Once refused, it stops being kept: the answer will not change by asking
-    again on every transaction that follows.
+    that errors poisons the transaction it is in.
+
+    **What is caught here is one answer, not every failure.**  A person whose
+    membership was withdrawn between the commit and here is refused by the
+    command's own membership proof, and that is an answer about this person and
+    this project: the savepoint goes back, the continuation is given up -- it
+    will not change by asking again on every transaction that follows -- and
+    the refusal is recorded for the request to read.  The transaction is left
+    usable and holding no partition, which is what an offboarded person should
+    read, rather than an exception escaping an event handler no caller can
+    catch.
+
+    Any other database failure -- a missing grant, an unreachable server, a
+    migration mismatch -- is a technical failure and travels as one, because
+    reporting it as an empty partition would tell a person their project holds
+    nothing on the strength of a broken connection.  That is why the test here
+    is `membership_proof_refused` and not the privilege code: PostgreSQL
+    answers a revoked EXECUTE with the same code the membership proof raises.
     """
 
-    if session.info.get(_KEPT_PARTITION_BUSY):
+    if transaction.nested or transaction.parent is not None:
         return
     declaration = session.info.get(_KEPT_PARTITION)
     if declaration is None or not session.info.get(_KEPT_PARTITION_ARMED):
         return
     session.info[_KEPT_PARTITION_ARMED] = False
-    session.info[_KEPT_PARTITION_BUSY] = True
     attempt = connection.begin_nested()
     try:
         connection.execute(select(declaration))
-    except DBAPIError:
+    except DBAPIError as error:
         attempt.rollback()
         session.info.pop(_KEPT_PARTITION, None)
+        if not membership_proof_refused(error):
+            raise
+        session.info[_KEPT_PARTITION_REFUSED] = True
     else:
         attempt.commit()
-    finally:
-        session.info[_KEPT_PARTITION_BUSY] = False
