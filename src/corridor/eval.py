@@ -837,7 +837,7 @@ def exit_code(
     """A measurement that could not be made is not a pass.
 
     Exiting zero on an empty enumeration would let a broken measurement
-    slide through `scripts/gate-run.sh` as a green run.
+    slide through the M7 gate run as a green run.
     """
     return 1 if (
         result.unmeasurable

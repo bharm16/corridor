@@ -1646,6 +1646,241 @@ def test_only_allowlisted_modules_still_use_pymupdf_or_tesseract():
     assert problems == {}
 
 
+# --- Every file under `scripts/` is reachable -------------------------------
+#
+# `scripts/` is the executable half of the control plane, and nothing proved a
+# file in it had a door. `scripts/gate-run.sh` outlived the module it imported
+# -- `corridor.extract_matrix`, retired by #768 -- without a single failure:
+# no target ran it, so nothing noticed, and its only surviving trace was prose
+# in `corridor.eval`. The engine scan above is the other rule that reads this
+# tree and it reads `*.py` alone, so a shell file was invisible to every check
+# here.
+
+SCRIPTS_ROOT = REPO_ROOT / "scripts"
+
+# What can start a process. The test tree is deliberately absent: a test
+# imports what it measures, so admitting it would make every abandoned command
+# reachable through its own test.
+SCRIPT_CALLERS = ("Makefile", "Dockerfile", "docker-compose.yml", "pyproject.toml")
+WORKFLOW_ROOT = REPO_ROOT / ".github" / "workflows"
+
+# A file kept with no caller, and why. The rule below is exact in both
+# directions, so an entry that gains a caller, loses its file, or states no
+# reason fails here rather than ageing quietly.
+RETAINED_WITHOUT_CALLER: dict[str, str] = {
+    "scripts/sh99-cohort-wizard.sh": (
+        "ADR-0027 superseded the operator step it walks, so nothing calls it, "
+        "and its forty stages are the repository's only copy of sixty-five "
+        "dated SH 99 commitment sentences quoted from the meeting minutes "
+        "with their parties named. Deleting the file deletes customer "
+        "commitment text; that is a decision to state, not a side effect."
+    ),
+    "scripts/test_feedback.py": (
+        "the strict local verdict on a timing report, stricter than the "
+        "advisory merge gate (ADR-0097). It is reachable only by typing its "
+        "path, which the `make` target convention asks it not to be; the "
+        "target belongs in the change that adds it."
+    ),
+    "scripts/test_timing.py": (
+        "the second half of `make test-timing`: the target writes the JUnit "
+        "file and a human converts it to duration weights by typing this "
+        "path, as the target's own comment and "
+        "docs/operations/test-timing-native-integration-2026-09-08.md both "
+        "say. Same missing target as `test_feedback.py` above."
+    ),
+}
+
+
+def _script_files() -> tuple[Path, ...]:
+    """Every file under `scripts/`, whatever its suffix."""
+    return tuple(
+        sorted(
+            path
+            for path in SCRIPTS_ROOT.rglob("*")
+            if path.is_file()
+            and not any(
+                part.startswith(".") or part == "__pycache__"
+                for part in path.relative_to(SCRIPTS_ROOT).parts
+            )
+        )
+    )
+
+
+def _names(text: str, name: str) -> bool:
+    """True when `text` names the whole of `name` rather than the end of one.
+
+    `scripts/release_contract.py` ends with the name of
+    `scripts/test_gate/contract.py`, and a plain substring search reads the
+    first as a caller of the second.
+    """
+    return re.search(rf"(?<![\w./-]){re.escape(name)}(?![\w-])", text) is not None
+
+
+def _prose(nodes: tuple[ast.AST, ...]) -> set[ast.AST]:
+    """Every docstring constant among the nodes."""
+    found: set[ast.AST] = set()
+    for node in nodes:
+        if not isinstance(
+            node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+        ):
+            continue
+        first = node.body[0] if node.body else None
+        if (
+            isinstance(first, ast.Expr)
+            and isinstance(first.value, ast.Constant)
+            and isinstance(first.value.value, str)
+        ):
+            found.add(first.value)
+    return found
+
+
+def _invoking_text(path: Path) -> str:
+    """One caller's text with its prose removed.
+
+    A comment or a docstring that still names a retired file is the stale
+    reference this rule exists to catch, so neither counts as a call. A Python
+    caller offers its string literals rather than its source, which is the
+    form a script names a sibling resource in: `Path(__file__).parent /
+    "retired_engines.json"`.
+    """
+    if path.suffix == ".py":
+        nodes = read_python(path).nodes
+        prose = _prose(nodes)
+        return "\n".join(
+            node.value
+            for node in nodes
+            if isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and node not in prose
+        )
+    return "\n".join(
+        line
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if not line.lstrip().startswith("#")
+    )
+
+
+def _imported_scripts(path: Path) -> set[Path]:
+    """The files under `scripts/` one caller's imports reach.
+
+    `scripts/` is a regular package, so a shared definition is reached by
+    `from scripts.test_gate.receipt import ...` and never by its path. Every
+    package on the way is reached too, which is what gives an `__init__.py` a
+    caller.
+    """
+    reached: set[Path] = set()
+    if path.suffix != ".py":
+        return reached
+    for name, _ in imported_names(path):
+        parts = name.split(".")
+        if parts[0] != SCRIPTS_ROOT.name:
+            continue
+        for depth in range(1, len(parts) + 1):
+            package = REPO_ROOT.joinpath(*parts[:depth])
+            reached.update(
+                candidate
+                for candidate in (package / "__init__.py", package.with_suffix(".py"))
+                if candidate.is_file()
+            )
+    return reached
+
+
+def _callers_by_script() -> dict[str, tuple[str, ...]]:
+    """Repository-relative path -> the callers naming it, for every script.
+
+    A sibling may name a file by its bare name as well as by its path, because
+    that is how a script resolves a neighbour it ships with; anything outside
+    the tree spells the path.
+    """
+    scripts = _script_files()
+    callers = tuple(
+        path
+        for path in [REPO_ROOT / name for name in SCRIPT_CALLERS]
+        + sorted(WORKFLOW_ROOT.glob("*.yml"))
+        if path.is_file()
+    )
+    found: dict[str, tuple[str, ...]] = {}
+    for path in scripts:
+        relative = path.relative_to(REPO_ROOT).as_posix()
+        naming = set()
+        for caller in callers + scripts:
+            if caller == path:
+                continue
+            sibling = caller.is_relative_to(SCRIPTS_ROOT)
+            text = _invoking_text(caller)
+            if (
+                _names(text, relative)
+                or (sibling and _names(text, path.name))
+                or path in _imported_scripts(caller)
+            ):
+                naming.add(caller.relative_to(REPO_ROOT).as_posix())
+        found[relative] = tuple(sorted(naming))
+    return found
+
+
+def test_the_script_caller_scanner_reads_invocations_and_not_prose(tmp_path):
+    """The retained list is only as honest as the scanner behind it."""
+
+    def invoking(name: str, source: str) -> str:
+        path = tmp_path / name
+        path.write_text(source, encoding="utf-8")
+        return _invoking_text(path)
+
+    commented = invoking("Makefile", "x:\n#\tuv run python scripts/test_timing.py o.xml\n")
+    recipe = invoking("Makefile.ran", "x:\n\tuv run python scripts/test_timing.py o.xml\n")
+    assert (
+        _names(commented, "scripts/test_timing.py"),
+        _names(recipe, "scripts/test_timing.py"),
+    ) == (False, True)
+
+    module = invoking(
+        "caller.py",
+        '"""Superseded by `gate-run.sh`."""\nPATH = "retired_engines.json"\n',
+    )
+    assert (
+        _names(module, "gate-run.sh"),
+        _names(module, "retired_engines.json"),
+    ) == (False, True)
+
+    longer = "python3 scripts/release_contract.py resolve outputs.json"
+    assert (
+        _names(longer, "scripts/test_gate/contract.py"),
+        _names(longer, "contract.py"),
+        _names(longer, "scripts/release_contract.py"),
+    ) == (False, False, True)
+
+
+def test_every_file_under_scripts_is_reachable_or_retained_with_a_reason():
+    """An operator command with no door is a defect, and `*.sh` is a command.
+
+    Reachability is decided here and nowhere else: a `make` target, a workflow
+    step, the image build, the packaging file, or another script that runs or
+    imports it. Anything else is retired, or recorded above with the reason it
+    stays.
+    """
+
+    callers = _callers_by_script()
+    problems: dict[str, str] = {}
+    for relative, naming in sorted(callers.items()):
+        reason = RETAINED_WITHOUT_CALLER.get(relative)
+        if naming and reason is not None:
+            problems[relative] = (
+                f"is named by {', '.join(naming)}; "
+                "delete its RETAINED_WITHOUT_CALLER line"
+            )
+        elif not naming and reason is None:
+            problems[relative] = (
+                "nothing runs or imports it: give it a `make` target, a "
+                "workflow step or a caller, retire it, or record why it stays"
+            )
+        elif not naming and not reason.strip():
+            problems[relative] = "is retained without a reason"
+    for relative in sorted(set(RETAINED_WITHOUT_CALLER) - set(callers)):
+        problems[relative] = "is retained but no longer exists; delete its line"
+
+    assert problems == {}
+
+
 def test_database_upgrade_tests_are_one_explicitly_marked_baseline_contract():
     paths = sorted((REPO_ROOT / "tests").glob("test_*migration*.py"))
 

@@ -945,7 +945,7 @@ def test_a_gold_set_covering_one_revision_is_scored_against_that_revision(
 
     `evaluate` filtered on project and kind alone, so a CSV covering one
     matrix revision, scored against a project holding two, put every row
-    of the other in `spurious`. `scripts/gate-run.sh` offers exactly that
+    of the other in `spurious`. `--extraction-run` offers exactly that
     invocation as the stricter alternative.
     """
     make_candidate(session, project, document, "FOC1-1")
@@ -1118,8 +1118,8 @@ def test_a_genuine_critical_recall_of_zero_is_written_as_zero(
 def test_a_measurement_that_could_not_be_made_is_not_a_pass(
     session, project, document
 ):
-    """Exiting zero would let a broken enumeration slide through
-    `scripts/gate-run.sh` as a green run."""
+    """Exiting zero would let a broken enumeration slide through the M7
+    gate run as a green run."""
     make_candidate(session, project, document, "FOC1-1")
 
     empty = evaluate(session, slug=project.slug, gold=scanned())
