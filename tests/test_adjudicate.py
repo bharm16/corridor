@@ -30,7 +30,6 @@ from corridor.models import (
     Dependency,
     Assertion,
     AuditLog,
-    Candidate,
     Document,
     DocPage,
     EvidenceLink,
@@ -39,6 +38,9 @@ from corridor.models import (
     Project,
 )
 from corridor.principals import HumanPrincipal
+from corridor.vocabulary import dedupe_hint
+
+from proposal_support import proposal
 
 BRYCE = HumanPrincipal("local:bryce")
 REVIEWER = HumanPrincipal("local:test-reviewer")
@@ -109,34 +111,18 @@ def make_candidate(
     ).first():
         session.add(ExternalOrg(name=source_party, aliases=[]))
         session.flush()
-    candidate = Candidate(
-        project_id=document.project_id,
-        kind="dependency",
-        payload_json={
-            "kind": "dependency",
-            "fields": fields,
-            "citations": [
-                {
-                    "document_id": document.id,
-                    "page": 1,
-                    "quote": quote,
-                    "verified": verified,
-                    "whole_row": whole_row,
-                }
-            ],
-            "confidence": 1.0,
-            "unverified_fields": list(unverified_fields),
-            "low_confidence_tokens": list(low_confidence_tokens),
-            "tier": tier,
-            "dedupe_hint": "AT&T Texas (SWBT)|Telecom|1149+00-1153+17",
-        },
-        source_document_id=document.id,
-        source_pages=[1],
-        confidence=1.0,
-        prompt_version="txdot_ucm_v1",
-        citations_verified=(
-            verified and not unverified_fields and not low_confidence_tokens
-        ),
+    candidate = proposal(
+        document,
+        fields=fields,
+        quote=quote,
+        quote_verified=verified,
+        whole_row=whole_row,
+        # `FIELDS`' own blocking key, whatever `fields` says: a test that
+        # edits one field still gets the row it is editing, not a new one.
+        dedupe=dedupe_hint(FIELDS),
+        tier=tier,
+        unverified=unverified_fields,
+        low_confidence=low_confidence_tokens,
     )
     session.add(candidate)
     session.flush()
@@ -1860,30 +1846,16 @@ def test_a_9540_row_marked_on_both_sides_still_settles_nothing():
 
 def make_event_candidate(session, document):
     """What `make minutes` writes: a commitment read off meeting notes."""
-    candidate = Candidate(
-        project_id=document.project_id,
+    candidate = proposal(
+        document,
         kind="event",
-        payload_json={
-            "kind": "event",
-            "fields": {
-                "description": "AT&T confirmed relocation NTP in August",
-                "committed_date": "2026-08-14",
-            },
-            "citations": [
-                {
-                    "document_id": document.id,
-                    "page": 1,
-                    "quote": "AT&T confirmed relocation NTP in August",
-                    "verified": True,
-                }
-            ],
-            "confidence": 1.0,
+        fields={
+            "description": "AT&T confirmed relocation NTP in August",
+            "committed_date": "2026-08-14",
         },
-        source_document_id=document.id,
-        source_pages=[1],
-        confidence=1.0,
+        quote="AT&T confirmed relocation NTP in August",
+        whole_row=False,
         prompt_version="minutes_v1",
-        citations_verified=True,
     )
     session.add(candidate)
     session.flush()
@@ -1914,27 +1886,15 @@ def test_accepting_an_event_is_refused_rather_than_faked(session, document):
 
 
 def test_accepting_a_sue_evidence_proposal_is_refused(session, document):
-    candidate = Candidate(
-        project_id=document.project_id,
+    candidate = proposal(
+        document,
         kind="evidence",
-        payload_json={
-            "kind": "evidence",
-            "fields": {"test_hole_number": "169-A", "external_org": "VERIZON"},
-            "citations": [
-                {
-                    "document_id": document.id,
-                    "page": 1,
-                    "quote": "FOC1-1 AT&T",
-                    "verified": True,
-                }
-            ],
-            "tier": "native",
-        },
-        source_document_id=document.id,
-        source_pages=[1],
+        fields={"test_hole_number": "169-A", "external_org": "VERIZON"},
+        quote="FOC1-1 AT&T",
+        whole_row=False,
         confidence=None,
         prompt_version="evidence_fixture_v1",
-        citations_verified=True,
+        tier="native",
     )
     session.add(candidate)
     session.flush([candidate])
@@ -1991,29 +1951,13 @@ def agreement_candidate(session, document, *, fields=None):
     ).first():
         session.add(ExternalOrg(name=source_party, aliases=[]))
         session.flush()
-    candidate = Candidate(
-        project_id=document.project_id,
-        kind="dependency",
-        payload_json={
-            "kind": "dependency",
-            "fields": fields,
-            "citations": [
-                {
-                    "document_id": document.id,
-                    "page": 1,
-                    "quote": "The City maintains the traffic signals",
-                    "verified": True,
-                    "whole_row": False,
-                }
-            ],
-            "confidence": 1.0,
-            "dedupe_hint": "City of Houston|agreement|signal maintenance",
-        },
-        source_document_id=document.id,
-        source_pages=[1],
-        confidence=1.0,
+    candidate = proposal(
+        document,
+        fields=fields,
+        quote="The City maintains the traffic signals",
+        whole_row=False,
         prompt_version="agreement_v3",
-        citations_verified=True,
+        dedupe="City of Houston|agreement|signal maintenance",
     )
     session.add(candidate)
     session.flush()
@@ -2101,29 +2045,11 @@ def test_a_dependency_candidate_from_an_unmaterializable_source_refuses(
     session.flush()
     session.add(DocPage(document_id=plan.id, page_no=1, text="FOC1-1 AT&T"))
     session.flush()
-    candidate = Candidate(
-        project_id=plan.project_id,
-        kind="dependency",
-        payload_json={
-            "kind": "dependency",
-            "fields": dict(FIELDS),
-            "citations": [
-                {
-                    "document_id": plan.id,
-                    "page": 1,
-                    "quote": "FOC1-1 AT&T",
-                    "verified": True,
-                    "whole_row": True,
-                }
-            ],
-            "confidence": 1.0,
-            "dedupe_hint": "x",
-        },
-        source_document_id=plan.id,
-        source_pages=[1],
-        confidence=1.0,
-        prompt_version="txdot_ucm_v1",
-        citations_verified=True,
+    candidate = proposal(
+        plan,
+        fields=dict(FIELDS),
+        quote="FOC1-1 AT&T",
+        dedupe="x",
     )
     session.add(candidate)
     session.flush()
