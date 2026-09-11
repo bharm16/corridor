@@ -767,34 +767,19 @@ def test_no_production_module_retains_an_outgoing_request_yet():
     so the seam gains a producer on purpose rather than by accident.
     """
 
-    import ast
     from pathlib import Path
 
-    from source_scan_support import python_files, read_python
+    from source_scan_support import callers_of
 
     writers = {"retain_outgoing_request", "record_outgoing_request_response"}
     source_root = Path(__file__).parents[1] / "src" / "corridor"
-    callers: list[str] = []
-    for path in python_files(source_root):
-        if path.name == "outgoing_requests.py" or "migrations" in path.parts:
-            continue
-        for node in read_python(path).nodes:
-            if isinstance(node, ast.ImportFrom) and node.module == "corridor.outgoing_requests":
-                callers.extend(
-                    f"{path.name}:{node.lineno} imports {alias.name}"
-                    for alias in node.names
-                    if alias.name in writers
-                )
-            if isinstance(node, ast.Call):
-                name = (
-                    node.func.id
-                    if isinstance(node.func, ast.Name)
-                    else node.func.attr
-                    if isinstance(node.func, ast.Attribute)
-                    else None
-                )
-                if name in writers:
-                    callers.append(f"{path.name}:{node.lineno} calls {name}")
+    callers = sorted(
+        f"{path.name}:{lineno} names {writer}"
+        for writer, sites in callers_of(writers, (source_root,)).items()
+        for path, lines in sites.items()
+        if path.name != "outgoing_requests.py" and "migrations" not in path.parts
+        for lineno in lines
+    )
 
     assert callers == [], (
         "outgoing_requests has a production producer now; retire this pin and "

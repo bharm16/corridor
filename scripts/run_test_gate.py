@@ -25,15 +25,10 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 from scripts.test_gate.junit import measured_cases
 from scripts.test_gate.partition import (
-    DURATIONS, SLOW_DURATIONS, SLOW_MINIMUM_FILE_SECONDS, recorded_seconds, shard, test_files,
+    CHECK_OWNED_FILES, DURATIONS, SLOW_DURATIONS, SLOW_MINIMUM_FILE_SECONDS,
+    recorded_seconds, shard, test_files,
 )
 from scripts.test_gate.receipt import ShardReceipt
-
-
-CHECK_OWNED_FILES = (
-    "tests/test_architecture.py",
-    "tests/test_source_scan_support.py",
-)
 
 
 def partition(suite: str, shards: int, number: int, inputs: Path) -> list[str]:
@@ -55,9 +50,9 @@ def partition(suite: str, shards: int, number: int, inputs: Path) -> list[str]:
         or not math.isfinite(value) or value < 0 for name, value in weights.items()
     ):
         raise ValueError("partition weights must be finite nonnegative seconds")
-    if suite == "pytest":
-        weights.update({name: 0.0 for name in CHECK_OWNED_FILES})
-    return shard(test_files(), weights, shards,
+    # `make check` runs the check-owned files, so neither behavior gate
+    # selects them: the same required proof would otherwise run twice.
+    return shard(test_files(exclude=CHECK_OWNED_FILES), weights, shards,
                  minimum_file_seconds=SLOW_MINIMUM_FILE_SECONDS if suite == "slow" else 0.0)[number - 1]
 
 
@@ -90,7 +85,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output", type=Path, default=ROOT / "out/test-feedback")
     args = parser.parse_args(argv)
     assigned = partition(args.suite, args.shards, args.shard, args.input)
-    files = [name for name in assigned if args.suite != "pytest" or name not in CHECK_OWNED_FILES]
     args.output.mkdir(parents=True, exist_ok=True)
     junit = args.output / f"{args.suite}-{args.shard}.xml"
     # An interrupted earlier invocation must never provide this run's proof.
@@ -103,11 +97,11 @@ def main(argv: list[str] | None = None) -> int:
     for name in ("GITHUB_OUTPUT", "GITHUB_STEP_SUMMARY", "GITHUB_ENV", "GITHUB_PATH"):
         child_environment.pop(name, None)
     started = time.monotonic()
-    status = subprocess.run(pytest_command(args.suite, files, args.workers, junit), cwd=ROOT, env=child_environment).returncode if files else 5
+    status = subprocess.run(pytest_command(args.suite, assigned, args.workers, junit), cwd=ROOT, env=child_environment).returncode if assigned else 5
     elapsed = time.monotonic() - started
     if junit.exists():
         count, totals = measured_cases(junit, assigned)
-    elif status == 5 and not files:
+    elif status == 5 and not assigned:
         count, totals = 0, dict.fromkeys(assigned, 0.0)
     else:
         print("pytest produced no timing receipt; required evidence is missing", file=sys.stderr)

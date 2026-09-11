@@ -7,7 +7,15 @@ from pathlib import Path
 import pytest
 
 import source_scan_support
-from source_scan_support import python_files, read_python, source_scan_cache  # noqa: F401
+from source_scan_support import (  # noqa: F401
+    callers_of,
+    imported_names,
+    importers_of,
+    mentions_of,
+    python_files,
+    read_python,
+    source_scan_cache,
+)
 
 
 def test_repeated_reads_share_one_parse_but_same_metadata_edits_are_reparsed(tmp_path, monkeypatch):
@@ -73,3 +81,115 @@ def test_file_discovery_is_fresh_and_never_enters_hidden_or_cache_directories(tm
 def test_file_discovery_does_not_silently_skip_an_unreadable_root(tmp_path):
     with pytest.raises(FileNotFoundError):
         python_files(tmp_path / "missing")
+
+
+def test_the_import_scanner_sees_every_form_of_dependency(tmp_path):
+    """The graph is only as honest as the scanner behind it (#548 shape).
+
+    `from corridor import x` is how most of this codebase imports a sibling,
+    and a scanner that only understood `from corridor.x import y` reported an
+    acyclic graph that was not one. The provider-spend guard was written after
+    that lesson and still saw two forms, so `from corridor_pdf_reader import
+    textract_adapter` reached the Textract adapter from any of the twelve
+    already-listed reader importers with both guards green. One scanner is
+    what stops each guard learning the lesson separately.
+    """
+
+    cases = {
+        "from corridor.exceptions import review\n": {"corridor.exceptions", "corridor.exceptions.review"},
+        "from corridor import disputes, notifications\n": {"corridor", "corridor.disputes", "corridor.notifications"},
+        "import corridor.work_decisions\n": {"corridor.work_decisions"},
+        "from corridor.web import app\n": {"corridor.web", "corridor.web.app"},
+        "from corridor_pdf_reader import textract_adapter\n": {"corridor_pdf_reader", "corridor_pdf_reader.textract_adapter"},
+        "from . import sibling\n": set(),
+        "from .relative import name\n": set(),
+        "import httpx\n": {"httpx"},
+    }
+    module = tmp_path / "module.py"
+
+    read: dict[str, set[str]] = {}
+    for source in cases:
+        module.write_text(source, encoding="utf-8")
+        read[source] = {name for name, _ in imported_names(module)}
+    assert read == cases
+
+    module.write_text("import first\nfrom second import leaf\n", encoding="utf-8")
+    assert imported_names(module) == (
+        ("first", 1),
+        ("second", 2),
+        ("second.leaf", 2),
+    )
+
+
+def test_importers_of_names_each_file_that_reaches_the_prefix_by_any_form(tmp_path):
+    """A policy asks which files reach a tree; it never learns an import form."""
+    root = tmp_path / "src"
+    (root / "nested").mkdir(parents=True)
+    (root / "dotted.py").write_text("import pkg.leaf\n", encoding="utf-8")
+    (root / "nested" / "from_package.py").write_text(
+        "from pkg import leaf\n", encoding="utf-8"
+    )
+    (root / "nested" / "from_module.py").write_text(
+        "from pkg.leaf import symbol\n", encoding="utf-8"
+    )
+    (root / "unrelated.py").write_text("import pkgother\nimport pkg\n", encoding="utf-8")
+
+    assert importers_of("pkg.leaf", (root,)) == {
+        root / "dotted.py": (("pkg.leaf", 1),),
+        root / "nested" / "from_module.py": (("pkg.leaf", 1), ("pkg.leaf.symbol", 1)),
+        root / "nested" / "from_package.py": (("pkg.leaf", 1),),
+    }
+    assert importers_of("pkg", (root,)).keys() == {
+        root / "dotted.py",
+        root / "nested" / "from_module.py",
+        root / "nested" / "from_package.py",
+        root / "unrelated.py",
+    }
+    assert importers_of("absent", (root,)) == {}
+
+
+def test_callers_of_finds_every_call_and_import_of_each_symbol(tmp_path):
+    """A per-symbol pin asks who reaches a name; it never walks the AST itself."""
+    root = tmp_path / "src"
+    root.mkdir()
+    (root / "owner.py").write_text(
+        "def wanted():\n    return other()\n\n\ndef other():\n    return None\n",
+        encoding="utf-8",
+    )
+    (root / "caller.py").write_text(
+        "from owner import wanted\n\n\ndef run(module):\n"
+        "    module.wanted()\n"
+        "    return wanted\n",
+        encoding="utf-8",
+    )
+    (root / "prose.py").write_text('"""wanted is named here only in prose."""\n', encoding="utf-8")
+
+    found = callers_of({"wanted", "absent"}, (root,))
+
+    assert found["absent"] == {}
+    assert found["wanted"] == {root / "caller.py": (1, 5, 6)}, (
+        "the import, the attribute and the bare name are references; the "
+        "defining statement and a docstring are not"
+    )
+
+
+def test_mentions_of_sees_a_name_written_anywhere_in_the_text(tmp_path):
+    """The weaker question, for the rule that would otherwise delete live code.
+
+    A name in a docstring, an ``__all__`` or the source of a probe a test
+    executes is not a caller, but it is the repository writing the name. A
+    rule whose failure means "delete this" has to ask the weaker question, so
+    that it can only ever be wrong by letting something live.
+    """
+    root = tmp_path / "src"
+    root.mkdir()
+    (root / "owner.py").write_text(
+        '"""Nothing calls wanted yet."""\n\n__all__ = ["wanted"]\n\n\ndef wanted():\n    return None\n',
+        encoding="utf-8",
+    )
+    (root / "other.py").write_text("unwanted = 1\nwanted_too = 2\n", encoding="utf-8")
+
+    assert mentions_of({"wanted"}, (root,)) == {
+        "wanted": {root / "owner.py": (1, 3, 6)}
+    }
+    assert callers_of({"wanted"}, (root,)) == {"wanted": {}}

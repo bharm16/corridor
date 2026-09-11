@@ -18,11 +18,9 @@ import pytest
 from sqlalchemy import create_engine, text
 import yaml
 
-from scripts.run_test_gate import CHECK_OWNED_FILES
-from scripts.test_gate import partition
-from scripts.test_gate.partition import (
-    DURATIONS, SLOW_DURATIONS, SLOW_MINIMUM_FILE_SECONDS, recorded_seconds, shard,
-)
+from corridor.render_profiles import DEFAULT_WORKER_PROJECT
+from scripts import run_test_gate
+from scripts.test_gate.partition import CHECK_OWNED_FILES
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -51,6 +49,15 @@ def _run_commands(workflow: dict) -> tuple[str, ...]:
         for job in workflow["jobs"].values()
         for step in job["steps"]
         if "run" in step
+    )
+
+
+def _shell_statements(script: Path) -> tuple[str, ...]:
+    """Every executable line of a shell script, whole-line comments removed."""
+    return tuple(
+        stripped
+        for line in script.read_text().splitlines()
+        if (stripped := line.strip()) and not stripped.startswith("#")
     )
 
 
@@ -352,6 +359,41 @@ def test_the_gate_defers_empty_shared_state_to_the_coordinated_harness():
     assert setup.index('wait "$postgres_job"') < setup.index("CORRIDOR_CI_EMPTY_SHARED_SOURCE=1")
 
 
+def test_the_setup_script_provisions_exactly_what_a_test_job_may_assume():
+    """Nothing may download packages inside a test, so the script must say so.
+
+    `scripts/ci_environment.sh` is the interface every test job depends on:
+    what it leaves provisioned is what a test may assume already exists.
+    `workers/render` is a separate uv project whose opencv-python-headless is
+    never in the root lock, so before #548 the first page render built that
+    environment over the network, inside pytest, in four racing xdist workers,
+    with its output captured. Deleting that line again costs a slow job rather
+    than a red one, so the ordered statement list is asserted here the way
+    `tests/test_ci_cache_warming.py` asserts the warmer's step list: a
+    provisioning step may not appear, move or disappear unnoticed.
+    """
+
+    statements = _shell_statements(ROOT / "scripts" / "ci_environment.sh")
+    assert statements == (
+        "set -euo pipefail",
+        'cd "$(dirname "${BASH_SOURCE[0]}")/.."',
+        'logs="${RUNNER_TEMP:-/tmp}"',
+        'scripts/ci_postgres.sh >"$logs/postgres.log" 2>&1 &',
+        "postgres_job=$!",
+        "uv sync --locked",
+        "uv sync --project workers/render --frozen",
+        'wait "$postgres_job" || { cat "$logs/postgres.log" >&2; exit 1; }',
+        'cat "$logs/postgres.log"',
+        'if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then',
+        "printf 'CORRIDOR_CI_EMPTY_SHARED_SOURCE=1\\n' >> \"$GITHUB_ENV\"",
+        "fi",
+    )
+    # The provisioned project is the one the runtime caller actually runs, so
+    # moving the worker cannot leave the sync pointing at the old path.
+    project = DEFAULT_WORKER_PROJECT.relative_to(ROOT).as_posix()
+    assert f"uv sync --project {project} --frozen" in statements
+
+
 def test_the_shared_state_fixture_reaches_a_migrated_database(
     shared_source_database_url,
 ):
@@ -376,26 +418,32 @@ def test_the_shared_state_fixture_reaches_a_migrated_database(
     )
 
 
-def test_every_test_file_lands_in_exactly_one_shard():
-    """Sharding must cover the suite, or the gate silently proves less.
+def test_every_test_file_lands_in_exactly_one_shard(monkeypatch, tmp_path):
+    """Sharding must cover the suite, less what check owns, or the gate proves less.
 
     The risk of splitting a suite across runners is a file that falls in no
-    shard: the gate stays green while nothing runs it.
+    shard: the gate stays green while nothing runs it. The two check-owned
+    files are the one deliberate omission, because the `check` job runs them
+    and each required proof runs once.
     """
 
     expected = {
         str(path.relative_to(ROOT)) for path in (ROOT / "tests").glob("test_*.py")
-    }
+    } - set(CHECK_OWNED_FILES)
 
-    # Each gate balances on its own recorded seconds and carries its own
-    # runner count, so each has its own partition; both must cover the suite
-    # exactly.
-    for job, durations, floor in (
-        ("pytest", DURATIONS, 0.0), ("slow", SLOW_DURATIONS, SLOW_MINIMUM_FILE_SECONDS),
-    ):
-        buckets = shard(partition.test_files(), recorded_seconds(durations), _shard_count(job),
-                        minimum_file_seconds=floor)
-        assigned = [name for bucket in buckets for name in bucket]
+    # Partition through the gate's own command, on the recorded bootstrap
+    # weights, so the cover is the one CI computes rather than one this test
+    # rebuilds. Each gate balances on its own recorded seconds and carries its
+    # own runner count, so each has its own partition.
+    monkeypatch.delenv("CORRIDOR_CI_WEIGHTS", raising=False)
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    for job in ("pytest", "slow"):
+        count = _shard_count(job)
+        assigned = [
+            name
+            for number in range(1, count + 1)
+            for name in run_test_gate.partition(job, count, number, tmp_path)
+        ]
 
         assert len(assigned) == len(set(assigned)), f"{job}: a file landed twice"
         assert set(assigned) == expected, (

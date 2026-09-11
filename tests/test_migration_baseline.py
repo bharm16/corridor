@@ -42,32 +42,16 @@ from alembic.script import ScriptDirectory
 from corridor.migrations import policy
 from corridor.product_proving_database import fingerprint_database_url
 from corridor.report_release import retrieve_released_external_report
+from ratchet_support import assert_ratchet
 
 
 ROOT = Path(__file__).resolve().parents[1]
 VERSIONS = ROOT / "src" / "corridor" / "migrations" / "baseline_versions"
-SCHEMA_BUILDER = "b7d3f9a1c2e5"
-SPREADSHEET_HEAD = "0ca809014df7"
-FACT_HEAD = "444758f7b4a7"
-RELEASE_HEAD = "d430a1b2c3d4"
-APPEND_HEAD = "1142da5be661"
-PAGE_INVENTORY_HEAD = "1d2e3f4a5b6c"
-IMMUTABLE_PROPOSAL_HEAD = "961bd259310f"
-PROSE_HEAD = "437e8c9a0b1d"
-DECISION_HEAD = "20c7d970be63"
-CURRENT_RECORD_HEAD = "8fc4c747b2d9"
-STRUCTURED_FACT_HEAD = "7e1b2c3d4f50"
-SUBJECT_RESOLUTION_HEAD = "453a1b2c3d4e"
-PROSE_ACCOUNTING_HEAD = "452c7d8e9f10"
-RENDER_HEAD = "2e3f4a5b6c7d"
-CLASS_B_RETENTION_HEAD = "7a3e91c4d8b2"
-TOKEN_LAYER_HEAD = "3f4a5b6c7d8e"
-HUMAN_DECISION_HEAD = "4a5b6c7d8e9f"
-VERBAL_SEGMENT_HEAD = "5b6c7d8e9f01"
-STATEMENT_TIMING_HEAD = "6c7d8e9f0a12"
-COORDINATE_COMMAND_HEAD = "7d8e9f0a1b23"
-SUPPORTED_HEAD = "a1c4e7b0d2f3"
-CURRENT_HEAD = "b2d5f8a1c4e7"
+# The two revisions this file drives its upgrades between. Read from the
+# policy rather than retyped: a retyped copy that a revision consolidation
+# missed would silently prove the transition of a revision nothing installs.
+SUPPORTED_HEAD = policy.SUPPORTED_FROM_REVISION
+CURRENT_HEAD = policy.CURRENT_HEAD
 EXPECTED_SCHEMA_SHA256 = (
     # One `policy_activations` relation replaces the four per-family ADR-0050
     # activation ledgers (-4 tables and -4 sequences, +1 of each), and its
@@ -141,7 +125,8 @@ def test_the_executable_migration_window_matches_the_recorded_policy():
         f"unrelated executable history remains: {sorted(unreachable)}"
     )
 
-    # The ratchet. `UNRELEASED_EDGES` may fall and must never rise; a change
+    # The ratchet. `UNRELEASED_EDGES` may fall and must never rise -- against
+    # the number the merge base records, so bumping it here buys nothing. A change
     # needing another revision folds into the current unreleased transition,
     # or consolidates the chain and lowers the recorded number.
     # `iterate_revisions` excludes its lower bound, so the reachable set is
@@ -160,6 +145,11 @@ def test_the_executable_migration_window_matches_the_recorded_policy():
     )
     assert policy.UNRELEASED_EDGE_TARGET == 1, (
         "ADR-0065's window is one supported transition; the target does not move"
+    )
+    assert_ratchet(
+        "src/corridor/migrations/policy.py:UNRELEASED_EDGES",
+        measured=edges,
+        recorded=policy.UNRELEASED_EDGES,
     )
 
 
