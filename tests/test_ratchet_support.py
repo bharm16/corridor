@@ -248,7 +248,11 @@ def _census_holds(root, consumers, relocations):
         (name, module) for name, modules in listed.items() for module in modules
     }
     relocated = assert_reviewed_relocations(
-        relocations, consumers=consumers, source_root="src", repository=root
+        relocations,
+        consumers=consumers,
+        source_root="src",
+        census="census.py:CONSUMERS",
+        repository=root,
     )
     assert_ratchet(
         "census.py:CONSUMERS",
@@ -370,9 +374,12 @@ def test_one_reading_moves_once_and_a_spent_declaration_is_not_reusable(tmp_path
 def test_a_relocation_that_has_landed_is_spent_and_its_declaration_has_to_go(tmp_path, monkeypatch):
     """The permission does not survive the merge that used it.
 
-    Once the extraction is what the merge base holds, the source reading no
-    longer carries the dependency, the evidence stops existing, and the
-    destination is an ordinary consumer the census counts like any other.
+    Once the extraction is what the merge base holds, the destination is an
+    ordinary consumer the census counts like any other, and the declaration is
+    refused on that alone. The source reading has also stopped carrying the
+    dependency here -- it was deleted outright -- but that is not what spends
+    the permission, because a source left as a delegating stub would go on
+    satisfying every check that reads it.
     """
     root = _extraction(tmp_path, monkeypatch)
     _moved(root, _AFTER)
@@ -380,7 +387,29 @@ def test_a_relocation_that_has_landed_is_spent_and_its_declaration_has_to_go(tmp
     _run(root, "branch", "-qf", "main", "HEAD")
 
     _census_holds(root, _AFTER, ())
-    with pytest.raises(AssertionError, match="already landed is spent"):
+    with pytest.raises(AssertionError, match="already consumes"):
+        _census_holds(root, _AFTER, (_MOVED,))
+
+
+def test_a_landed_relocation_is_spent_even_when_its_source_stayed_as_a_stub(
+    tmp_path, monkeypatch
+):
+    """The permission expires on the census, not on what the source became.
+
+    Every check that reads `source_reading` goes on passing forever when the
+    extraction leaves a delegating stub behind: the annotation it still types
+    counts as naming the dependency, and an annotation never counts as running
+    one. Evidence and not-still-executing are both satisfied by the same line,
+    so a stub would hold the declaration open indefinitely. What spends it is
+    the destination joining the recorded census, which no stub can undo.
+    """
+    root = _extraction(tmp_path, monkeypatch)
+    _moved(root, _AFTER, app=_APP_DELEGATING)
+    _commit(root, "extract the screen's reading, leaving a delegating stub")
+    _run(root, "branch", "-qf", "main", "HEAD")
+
+    _census_holds(root, _AFTER, ())
+    with pytest.raises(AssertionError, match="already consumes"):
         _census_holds(root, _AFTER, (_MOVED,))
 
 
