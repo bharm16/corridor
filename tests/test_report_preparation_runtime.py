@@ -57,14 +57,7 @@ from corridor.proposed_deltas import (
 from corridor.support_assessments import FactProposition, record_support_assessment
 from corridor.report_preparation import execute_report_preparation
 from harness_support import as_record_decision_role
-
-
-class ControlledClock:
-    def __init__(self, value: datetime):
-        self.value = value
-
-    def now(self) -> datetime:
-        return self.value
+from clock_support import ControlledClock
 
 
 COORDINATOR = HumanPrincipal("local:coordinator")

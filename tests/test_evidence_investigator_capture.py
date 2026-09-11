@@ -16,7 +16,7 @@ review duration) is one shared reading, proved in
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta
+from datetime import timedelta
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
 from uuid import uuid4
@@ -60,6 +60,7 @@ from evidence_outcome_support import (
     record_disposition,
     unplaced_statement,
 )
+from clock_support import ControlledClock
 
 
 # --------------------------------------------------------------------------- #
@@ -272,14 +273,6 @@ def test_reconstruction_refuses_a_case_from_another_project(session, project):
 # --------------------------------------------------------------------------- #
 # The shared Due Work runtime: timing, idempotency, recovery, protection
 # --------------------------------------------------------------------------- #
-
-
-class ControlledClock:
-    def __init__(self, value: datetime):
-        self.value = value
-
-    def now(self) -> datetime:
-        return self.value
 
 
 def _committed_case(factory):

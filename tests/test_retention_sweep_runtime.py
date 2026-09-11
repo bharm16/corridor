@@ -35,18 +35,11 @@ from corridor.models import (
 )
 from corridor.principals import HumanPrincipal
 from corridor.retention import open_reference, place_hold
+from clock_support import ControlledClock
 
 
 OPERATOR = HumanPrincipal("local:retention-operator")
 NOW = datetime(2026, 9, 3, 7, 0, tzinfo=timezone.utc)
-
-
-class ControlledClock:
-    def __init__(self, value: datetime):
-        self.value = value
-
-    def now(self) -> datetime:
-        return self.value
 
 
 def _project_with_due_content(session, *, due=True, slug_prefix="retention-sweep"):

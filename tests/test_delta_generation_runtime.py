@@ -51,20 +51,13 @@ from corridor.models import (
     SourceSegment,
 )
 from corridor.operating_mode import ADOPTED_BASELINE, adopt_project_baseline
+from clock_support import ControlledClock
 
 
 ACCEPTED_STATION = "1149+00"
 PROPOSED_STATION = "1200+00"
 SUBJECT = "Utility Conflicts!3"
 NEW_SUBJECT = "Utility Conflicts!9"
-
-
-class ControlledClock:
-    def __init__(self, value: datetime):
-        self.value = value
-
-    def now(self) -> datetime:
-        return self.value
 
 
 def _document(session, project, *, registry_id, sha_character, filename):

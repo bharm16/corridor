@@ -77,17 +77,10 @@ from test_release_authorization import (
     configure as configure_issued_set,
     prepare as prepare_candidate,
 )
+from clock_support import ControlledClock
 
 
 RELEASER = HumanPrincipal("local:publication-releaser")
-
-
-class ControlledClock:
-    def __init__(self, value: datetime):
-        self.value = value
-
-    def now(self) -> datetime:
-        return self.value
 
 
 def _fake_pdf(html: str) -> bytes:

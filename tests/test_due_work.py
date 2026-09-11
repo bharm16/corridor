@@ -53,14 +53,7 @@ from corridor.models import (
     DueWorkReceipt,
     DueWorkSchedule,
 )
-
-
-class ControlledClock:
-    def __init__(self, value: datetime):
-        self.value = value
-
-    def now(self) -> datetime:
-        return self.value
+from clock_support import ControlledClock
 
 
 def _domain_counts(session, project_id: int) -> dict[str, int]:

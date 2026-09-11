@@ -55,14 +55,7 @@ from corridor.models import (
     Project,
 )
 from corridor import policy
-
-
-class ControlledClock:
-    def __init__(self, value: datetime):
-        self.value = value
-
-    def now(self) -> datetime:
-        return self.value
+from clock_support import ControlledClock
 
 
 def _acceptance_receipt(session, project, *, source_revision, migration_head, eligible):

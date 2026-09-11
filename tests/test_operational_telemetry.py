@@ -69,14 +69,7 @@ from corridor.web.app import (
     get_machine_session,
     get_session,
 )
-
-
-class ControlledClock:
-    def __init__(self, value: datetime):
-        self.value = value
-
-    def now(self) -> datetime:
-        return self.value
+from clock_support import ControlledClock
 
 
 @pytest.fixture

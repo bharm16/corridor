@@ -46,17 +46,10 @@ from corridor.models import (
 from corridor.notifications import DeliveryOutcome, RecordingDeliveryAdapter
 from corridor.principals import HumanPrincipal
 from corridor.work_decisions import CoordinationSubject, assign_internal_owner
+from clock_support import ControlledClock
 
 RECORDER = HumanPrincipal("local:runtime-coordinator")
 CHANNEL = "email"
-
-
-class ControlledClock:
-    def __init__(self, value: datetime):
-        self.value = value
-
-    def now(self) -> datetime:
-        return self.value
 
 
 def _assignee(index: int = 1) -> HumanPrincipal:

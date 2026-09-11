@@ -49,18 +49,11 @@ from corridor.work_decisions import (
     FOLLOW_UP_NEXT_ACTION_CHOICES,
     save_follow_up_plan,
 )
+from clock_support import ControlledClock
 
 CHANNEL = "email"
 COORDINATOR = HumanPrincipal("local:docrt-coordinator")
 REGISTRAR = "runtime:docrt-registrar"
-
-
-class ControlledClock:
-    def __init__(self, value: datetime):
-        self.value = value
-
-    def now(self) -> datetime:
-        return self.value
 
 
 def _assignee(index: int) -> HumanPrincipal:

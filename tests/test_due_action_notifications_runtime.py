@@ -51,18 +51,11 @@ from corridor.work_decisions import (
     defer_work,
     set_next_action,
 )
+from clock_support import ControlledClock
 
 RECORDER = HumanPrincipal("local:due-action-runtime-coordinator")
 CHANNEL = "email"
 CONFIG_VERSION = "due-action-notification-v1"
-
-
-class ControlledClock:
-    def __init__(self, value: datetime):
-        self.value = value
-
-    def now(self) -> datetime:
-        return self.value
 
 
 def _assignee(index: int) -> HumanPrincipal:

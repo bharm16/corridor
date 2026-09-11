@@ -44,17 +44,10 @@ from corridor.principals import HumanPrincipal
 from corridor.revision_comparison import DEFAULT_MATCHER_VERSION
 from corridor.revision_reconciliation_request import revision_reconciliation_pending
 from corridor.supersession import SupersessionDeclaration, register_supersessions
+from clock_support import ControlledClock
 
 
 REVIEWER = HumanPrincipal("local:revision-runtime")
-
-
-class ControlledClock:
-    def __init__(self, value: datetime):
-        self.value = value
-
-    def now(self) -> datetime:
-        return self.value
 
 
 def _document(session, project, *, registry_id, sha_character, filename, page_text):
