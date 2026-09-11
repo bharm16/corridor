@@ -1639,13 +1639,13 @@ def test_accepting_another_projects_candidate_is_hidden_and_refused(
     session.add(stray_doc)
     session.flush()
     candidate = make_candidate(session, other, stray_doc)
-    before_audit = session.scalar(select(func.count()).select_from(AuditLog))
 
-    response = client.post(
-        f"/candidates/{candidate.id}/accept",
-        data={"slug": project.slug},
-        follow_redirects=False,
-    )
+    with nothing_written(session, project.id, other.id):
+        response = client.post(
+            f"/candidates/{candidate.id}/accept",
+            data={"slug": project.slug},
+            follow_redirects=False,
+        )
 
     assert response.status_code == 404
     assert candidate.state == "pending"
@@ -1655,7 +1655,6 @@ def test_accepting_another_projects_candidate_is_hidden_and_refused(
         ).all()
         == []
     )
-    assert session.scalar(select(func.count()).select_from(AuditLog)) == before_audit
 
 
 def test_rejecting_another_projects_candidate_is_hidden_and_refused(
@@ -1675,13 +1674,13 @@ def test_rejecting_another_projects_candidate_is_hidden_and_refused(
     session.add(stray_doc)
     session.flush()
     candidate = make_candidate(session, other, stray_doc)
-    before_audit = session.scalar(select(func.count()).select_from(AuditLog))
 
-    response = client.post(
-        f"/candidates/{candidate.id}/reject",
-        data={"slug": project.slug, "reason": "duplicate"},
-        follow_redirects=False,
-    )
+    with nothing_written(session, project.id, other.id):
+        response = client.post(
+            f"/candidates/{candidate.id}/reject",
+            data={"slug": project.slug, "reason": "duplicate"},
+            follow_redirects=False,
+        )
 
     assert response.status_code == 404
     assert candidate.state == "pending"
@@ -1691,7 +1690,6 @@ def test_rejecting_another_projects_candidate_is_hidden_and_refused(
         ).all()
         == []
     )
-    assert session.scalar(select(func.count()).select_from(AuditLog)) == before_audit
 
 
 def test_edit_accepting_another_projects_candidate_is_hidden_and_refused(
@@ -1712,18 +1710,18 @@ def test_edit_accepting_another_projects_candidate_is_hidden_and_refused(
     session.flush()
     candidate = make_candidate(session, other, stray_doc)
     original = dict(candidate.payload_json["fields"])
-    before_audit = session.scalar(select(func.count()).select_from(AuditLog))
 
-    response = client.post(
-        f"/candidates/{candidate.id}/edit-accept",
-        data={
-            "slug": project.slug,
-            "field_utility_id": "FOC9-9",
-            "field_external_org": "AT&T Texas (SWBT)",
-            "field_station_from": "1150+00",
-        },
-        follow_redirects=False,
-    )
+    with nothing_written(session, project.id, other.id):
+        response = client.post(
+            f"/candidates/{candidate.id}/edit-accept",
+            data={
+                "slug": project.slug,
+                "field_utility_id": "FOC9-9",
+                "field_external_org": "AT&T Texas (SWBT)",
+                "field_station_from": "1150+00",
+            },
+            follow_redirects=False,
+        )
 
     assert response.status_code == 404
     assert candidate.state == "pending"
@@ -1734,7 +1732,6 @@ def test_edit_accepting_another_projects_candidate_is_hidden_and_refused(
         ).all()
         == []
     )
-    assert session.scalar(select(func.count()).select_from(AuditLog)) == before_audit
 
 
 def test_marking_evidence_on_another_projects_dependency_is_hidden_and_refused(
