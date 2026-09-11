@@ -11,6 +11,7 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
+from corridor.extractor_lineage import _named_source_bytes
 from corridor.migrations import policy
 from corridor.prompt_library import installed_prompt_path
 from makefile_support import entry_point, parser_description, targets as make_targets
@@ -2468,15 +2469,25 @@ def test_released_policy_sources_are_outside_executable_migration_history():
 # (`storage_baseline.py`), so a released run's prompt may have no preimage but
 # the file it was read from. It is not hypothetical. The retained receipt under
 # `artifacts/product-proving/sh99-8da8568-extraction-repeatability-failed`
-# exports a run recording `prompt_version: minutes_v3` and no digest, and the
-# same receipt names `matrix_tiered_v2` and `matrix_tiered_v3`, whose bytes are
-# in no file here at all. Those two prompts are already unrecoverable.
+# exports a run recording `prompt_version: minutes_v3` and no digest, and that
+# file's bytes are its only preimage.
 #
 # So the retained-revision answer above applies unchanged: one executable
 # directory holding exactly what the code loads, one inert directory holding
 # the retained bytes, and a registry saying what each retained file is the
 # preimage of. `corridor_pdf_reader` keeps its own prompt beside its module;
 # only the top-level directory is this rule's subject.
+#
+# What the rules below prove is bounded, and saying so is part of the rule:
+# they hold the files and the references they inventory, in this repository.
+# They cannot show that a prompt some other store names was retained, and they
+# never showed that a prompt missing from `prompts/` was lost. The same receipt
+# names `matrix_tiered_v2` and `matrix_tiered_v3`, and #858 read their absence
+# from `prompts/` as proof they were gone. They were not: those are two-file
+# prompt versions whose bytes #768 retained under
+# `artifacts/pdf-engine-retirement/legacy-prompts`, and framing the retained
+# components reproduces the digest the sh99-9a4342d receipt records for
+# `matrix_tiered_v3` exactly. The last rule below is that computation.
 
 PROMPT_ROOT = REPO_ROOT / "prompts"
 RETAINED_PROMPTS = REPO_ROOT / "docs" / "history" / "prompts"
@@ -2581,6 +2592,102 @@ def test_a_registered_retention_reason_names_a_real_preimage():
             path = REPO_ROOT / artifact
             if not path.exists() or not recorded.search(path.read_text()):
                 wrong.append(f"{name}: {artifact} does not record that prompt version")
+
+    assert wrong == []
+
+
+# A prompt version is not always one file. The retired tiered Matrix extractor
+# sealed two -- a structure prompt and a transcribe prompt -- framed together
+# by `extractor_lineage._named_source_bytes`, so its `prompt_sha256` is the
+# digest of that framing and of no file on disk. Reading "no file has these
+# bytes" as "the prompt is gone" is what #858 did. The registry names the
+# components instead, and this rule reproduces the digest from the retained
+# bytes rather than asserting the match in prose.
+
+
+def _multi_file_prompt_versions() -> dict[str, dict]:
+    return json.loads(PROMPT_REGISTRY.read_text())["multi_file_prompt_versions"][
+        "versions"
+    ]
+
+
+def _retained_component_bytes(manifest: Path) -> dict[str, bytes]:
+    """The retaining artifact's own manifest resolves each original path.
+
+    The digests stay in the one manifest that sealed these bytes; nothing is
+    copied into the prompt registry, so there is no second place to update.
+    """
+    resolved: dict[str, bytes] = {}
+    for entry in json.loads(manifest.read_text())["files"]:
+        data = (REPO_ROOT / entry["retained_path"]).read_bytes()
+        assert hashlib.sha256(data).hexdigest() == entry["sha256"], (
+            f"{entry['retained_path']} no longer hashes to the digest "
+            f"{manifest.relative_to(REPO_ROOT)} retained it under"
+        )
+        resolved[entry["original_path"]] = data
+    return resolved
+
+
+def _objects_naming(value: object, version: str):
+    """Every object in a receipt that records this `prompt_version`."""
+    if isinstance(value, dict):
+        if value.get("prompt_version") == version:
+            yield value
+        yield from (
+            found for item in value.values() for found in _objects_naming(item, version)
+        )
+    elif isinstance(value, list):
+        yield from (
+            found for item in value for found in _objects_naming(item, version)
+        )
+
+
+def test_a_multi_file_prompt_version_reproduces_the_digest_its_receipts_record():
+    """The recovery is a computation, and a version-only record stays uncertain.
+
+    Two halves, because the registry can be wrong in two directions. Claiming a
+    digest a receipt does not record would invent a proof; recording `null`
+    while a receipt does carry one would hide the proof that exists. Only the
+    first half recovers anything: a version-only record leaves the retained
+    files the best candidate for what that run read, not evidence of it.
+    """
+    wrong = []
+    for version, entry in _multi_file_prompt_versions().items():
+        components = _retained_component_bytes(REPO_ROOT / entry["retained_by"])
+        missing = [name for name in entry["components"] if name not in components]
+        if missing:
+            wrong.append(f"{version}: {entry['retained_by']} retains no {missing}")
+            continue
+        framed = _named_source_bytes(
+            {name: components[name] for name in entry["components"]}
+        )
+
+        recorded = set()
+        for artifact in entry["named_by"]:
+            named = list(
+                _objects_naming(
+                    json.loads((REPO_ROOT / artifact).read_text()), version
+                )
+            )
+            if not named:
+                wrong.append(f"{version}: {artifact} does not record that version")
+            recorded.update(
+                found["prompt_sha256"]
+                for found in named
+                if found.get("prompt_sha256") is not None
+            )
+
+        expected = entry["recorded_prompt_sha256"]
+        if recorded != ({expected} if expected is not None else set()):
+            wrong.append(
+                f"{version}: receipts record {sorted(recorded)}, registry "
+                f"records {expected!r}"
+            )
+        elif expected is not None and hashlib.sha256(framed).hexdigest() != expected:
+            wrong.append(
+                f"{version}: the retained components frame to "
+                f"{hashlib.sha256(framed).hexdigest()}, not {expected}"
+            )
 
     assert wrong == []
 

@@ -1,6 +1,6 @@
 {
-  "rule": "prompts/ holds exactly the prompt files a live loader in src/ names. A superseded prompt file is never edited and never deleted: it is moved here, and listed below with the reason its bytes are still the preimage of something. tests/test_architecture.py enforces both halves, so a file in neither state fails make check rather than sitting unexplained.",
-  "why_not_deleted": "Every ExtractionRun row records prompt_version and prompt_sha256 (src/corridor/storage_baseline.py). Those rows live in databases this repository cannot read, so a released run may name a prompt whose only preimage is the file it was read from. minutes_v3.md shows the case is real and not hypothetical, and matrix_tiered_v2/v3 show what is lost without this rule: the same retained receipt names them, no file in the repository has their bytes, and that prompt is now unrecoverable.",
+  "rule": "prompts/ holds exactly the prompt files a live loader in src/ names. A superseded prompt file is never edited and never deleted: it is moved here, and listed below with the reason its bytes are still the preimage of something. tests/test_architecture.py enforces both halves, so a file in neither state fails make check rather than sitting unexplained. What that proves is bounded: it holds the files and the references inventoried here, in this repository. It is not evidence that a prompt some other store names was retained, and a prompt missing from prompts/ is not thereby lost -- multi_file_prompt_versions below is the case where it was retained elsewhere all along.",
+  "why_not_deleted": "Every ExtractionRun row records prompt_version and prompt_sha256 (src/corridor/storage_baseline.py). Those rows live in databases this repository cannot read, so a released run may name a prompt whose only preimage is the file it was read from. minutes_v3.md shows the case is real and not hypothetical. A live-database census is not what settles deletion, either: the retention universe this repository can see already includes retained product-proving receipts under artifacts/product-proving/, the acceptance capture tests/fixtures/m8_acceptance/nhhip-five-revision-v1/fixture.json, which names matrix_tiered_v3 3,241 times and records no digest, and every container image built from this Dockerfile, whose line 69 copies prompts/ and not this directory. Backups, exports and older images extend it further and are outside what any rule here can inspect.",
   "basis_values": {
     "receipt": "a retained artifact in this repository names this prompt version",
     "stored-run-digest": "no artifact in this repository names it; retained because a stored ExtractionRun outside the repository still may"
@@ -65,6 +65,39 @@
       "superseded_by": "minutes_v5.md",
       "basis": "stored-run-digest",
       "preimage_of": []
+    }
+  },
+  "multi_file_prompt_versions": {
+    "rule": "A prompt version is not always one file. The retired tiered Matrix extractor sealed a structure prompt and a transcribe prompt together, framed by extractor_lineage._named_source_bytes under their repository paths, so its recorded prompt_sha256 is the digest of that framing and of no file on disk. #768 retained those component bytes under artifacts/pdf-engine-retirement/legacy-prompts; this section says which components compose which version, and tests/test_architecture.py::test_a_multi_file_prompt_version_reproduces_the_digest_its_receipts_record recomputes the digest rather than asserting the match in prose. Component digests are not repeated here: they stay in the manifest named by retained_by.",
+    "versions": {
+      "matrix_tiered_v2": {
+        "components": [
+          "prompts/matrix_structure_v2.md",
+          "prompts/matrix_v1.md"
+        ],
+        "retained_by": "artifacts/pdf-engine-retirement/legacy-prompts/manifest.json",
+        "recorded_prompt_sha256": null,
+        "named_by": [
+          "artifacts/product-proving/sh99-8da8568-extraction-repeatability-failed/receipt.json",
+          "artifacts/product-proving/sh99-8da8568-extraction-repeatability-failed/canonical-content.json"
+        ],
+        "finding": "Version-only, and it stays that way. The 455 baseline candidate rows exported in that receipt come from run 117, which predates the sealed extractor configuration of #632, so it recorded no prompt_sha256 and nothing can be recomputed against it. At 42551372, extract_matrix.PROMPT_VERSION was matrix_tiered_v2 and named exactly these two files, and each path has only ever held one byte-state -- so an old file with the same label may be the best candidate without proving it is what that run used. A database census cannot settle it either: prompt_sha256 is null on every legacy row by schema (models/extraction.py)."
+      },
+      "matrix_tiered_v3": {
+        "components": [
+          "prompts/matrix_structure_v3.md",
+          "prompts/matrix_v1.md"
+        ],
+        "retained_by": "artifacts/pdf-engine-retirement/legacy-prompts/manifest.json",
+        "recorded_prompt_sha256": "4b2ba15c3f6af77683fe6d38fe91d73ea7d39fe766d21d1f6d43449e48657ce3",
+        "named_by": [
+          "artifacts/product-proving/sh99-9a4342d-two-pass-passed/receipt.json",
+          "artifacts/product-proving/sh99-9a4342d-two-pass-passed/canonical-content.json",
+          "artifacts/product-proving/sh99-8da8568-extraction-repeatability-failed/receipt.json",
+          "artifacts/product-proving/sh99-8da8568-extraction-repeatability-failed/canonical-content.json"
+        ],
+        "finding": "Recovered, by computation and not by label. Framing the two retained components under the repository paths above reproduces 4b2ba15c... exactly -- the prompt_sha256 the sh99-9a4342d receipt records for baseline run 214183 and fresh run 216732, and the prompt run 206506 of the sh99-8da8568 receipt read under the same version. Both retained files are byte-identical to the prompts/ files #768 deleted (blobs dcb2c222 and f0e65da5), and neither path ever held any other bytes. Exact prompt replay for those runs is available."
+      }
     }
   }
 }
