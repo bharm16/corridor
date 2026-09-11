@@ -639,6 +639,17 @@ def upgrade(op) -> None:
         f"grant select on public.capture_correction_requests, "
         f"public.support_assessment_sources to {RECORD_DECISION_ROLE}"
     )
+    # `proposed_delta_capture_correction` is `security invoker`, so it reads
+    # the retirement relation as whoever called it -- and the two bulk
+    # supersession sweeps that call it (`append_email_thread_reading` and
+    # `append_minutes_capture`) are `security definer` functions owned by the
+    # source-append role, which owns none of this family's relations. Execute
+    # without select is a call that raises `insufficient_privilege` the first
+    # time a retirement exists, which is exactly what CI found. Every role
+    # granted execute below can now read what the helper reads.
+    op.execute(
+        f"grant select on public.{RETIREMENT_TABLE} to {SOURCE_APPEND_ROLE}"
+    )
 
     op.execute(LOCK_PROPOSED_DELTA_TERMINAL)
     op.execute(PROPOSED_DELTA_CAPTURE_CORRECTION)

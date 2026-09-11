@@ -42,6 +42,9 @@ from sqlalchemy.orm import Session
 
 from corridor import access, audit
 from corridor.db_roles import RECORD_DECISION_ROLE
+from corridor.migrations.source_append_commands.project_partition import (
+    UNPARTITIONED_ROLES,
+)
 from corridor.capture_correction import (
     CaptureCorrectionRefused,
 )
@@ -201,6 +204,49 @@ def test_a_correction_matching_the_accepted_value_retires_the_proposal(
     # The accepted revision the recomparison actually read is recorded, which
     # is what the approved sentence prints.
     assert outcome.accepted_revision_id == misread.revision_id
+
+
+@pytest.mark.parametrize(
+    "role", ["corridor_web", "corridor_worker", "corridor_source_append"]
+)
+def test_every_role_that_may_ask_the_retirement_question_can_read_the_answer(
+    session: Session, misread: Misread, role: str
+) -> None:
+    """Execute without select is a call that raises the first time it matters.
+
+    ``proposed_delta_capture_correction`` is ``security invoker``, so it reads
+    the retirement relation as whoever called it. The two bulk supersession
+    sweeps that call it -- ``append_email_thread_reading`` and
+    ``append_minutes_capture`` -- are ``security definer`` functions owned by
+    the source-append role, which owns none of this family's relations, so
+    granting execute alone left them raising ``insufficient_privilege`` the
+    first time any retirement existed. Neither sweep's own tests could catch
+    it, because they build no retirement; three unrelated spine tests did.
+
+    Reading the answer and *being allowed to ask* are two different things
+    here, and the test says which it is proving for each role. The
+    unpartitioned roles see every project's rows, so for them the recorded
+    retirement must come back. ``corridor_web`` reads under the project
+    partition policy, so with no partition declared it correctly sees nothing
+    -- what matters for it is that the call does not raise.
+    """
+
+    _correct(misread, misread.report())
+    session.flush()
+    with as_role(session, role):
+        answered = session.scalar(
+            text("select public.proposed_delta_capture_correction(:delta)"),
+            {"delta": misread.delta.id},
+        )
+    if role in UNPARTITIONED_ROLES:
+        assert answered is not None, (
+            f"{role} may call the helper but cannot read what it reads"
+        )
+    else:
+        assert answered is None, (
+            "a partitioned reader with no declared partition sees no row, and "
+            "the point of this case is that asking did not raise"
+        )
 
 
 def test_a_correction_that_still_differs_replaces_rather_than_supersedes(
