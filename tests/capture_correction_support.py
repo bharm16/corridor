@@ -41,7 +41,7 @@ from corridor.capture_correction import (
     record_correction_request,
 )
 from corridor.correction_applicability import PassageApplicability, assess_passage
-from corridor.models import Project, SourceSegment
+from corridor.models import Project, ProposedDelta, SourceSegment
 from corridor.packet_review import read_review_items
 from corridor.principals import HumanPrincipal
 
@@ -76,6 +76,10 @@ EXPECTED = "the station column on this row reads 1001+00, unchanged"
 
 #: The one conflict this scenario is about, as a worksheet row under the header.
 CONFLICT_ROW = 2
+#: The conflict below it, which the same revision also proposes a change to and
+#: which no correction here ever names. See ``neighbouring_open_proposal``.
+NEIGHBOUR_ROW = CONFLICT_ROW + 1
+NEIGHBOUR_ACCEPTED_TEXT = "1004+00"
 #: The column the challenged field is published in, and the column the capture
 #: wrongly read it from. Both are named by the rendition's own header row.
 FIELD_COLUMN = "C"
@@ -199,6 +203,54 @@ class Misread:
                 )
             ],
         )
+        #: The neighbour's own accepted revision, once one is asked for.
+        self.neighbour_revision_id: int | None = None
+
+    def neighbouring_open_proposal(self) -> ProposedDelta:
+        """One more proposal from this revision, about the conflict below (#952).
+
+        A reader that must not name the retired proposal has to be caught
+        naming something else, or an accidentally empty reading passes for a
+        correct exclusion. So this appends the control: the next Utility
+        Conflict down, read from this field's own column -- the cell
+        ``other_conflicts_cell`` already stands for -- against an accepted
+        value of its own, so it is a genuine difference from the accepted
+        record and reads as open rather than as raised against a value that
+        moved.
+
+        No correction ever names it. It is a different subject from the
+        challenged one, so ``correct_captured_reading`` recomputes nothing
+        about it and the retirement cannot reach it.
+
+        Opt-in, because the modules that exercise the correction itself count
+        what this project has open and must keep counting what they always
+        did.
+        """
+
+        accepted, _ = self.adopted.capture(
+            fact_type=self.field,
+            value=NEIGHBOUR_ACCEPTED_TEXT,
+            subject_key=subject(NEIGHBOUR_ROW),
+        )
+        self.neighbour_revision_id = accept_baseline_fact(
+            self.session, self.project, accepted
+        )
+        (delta,) = append_deltas(
+            self.session,
+            self.project,
+            self.incoming,
+            source_revision="2026-09",
+            values=[
+                modify(
+                    subject_key=subject(NEIGHBOUR_ROW),
+                    field_name=self.field,
+                    accepted_value=NEIGHBOUR_ACCEPTED_TEXT,
+                    proposed_value=STILL_DIFFERENT_TEXT,
+                    baseline_revision=self.neighbour_revision_id,
+                )
+            ],
+        )
+        return delta
 
     def item(self):
         """The Review item that decides this change, and the reading it is in."""

@@ -7,8 +7,8 @@ ever existed inside one open transaction would prove nothing about what a web
 request reads. The clock is an argument to the reader, so expiry is stated
 rather than waited for.
 
-The six cases are the ones #900 asks to be proved, and each of them is a way
-the banner could lie:
+The cases are the ones #900 asks to be proved, and each of them is a way the
+banner could lie:
 
 - another project's claim, which must not become this project's banner;
 - an unrelated scheduled handler, whose claim is not a source-processing pass;
@@ -16,13 +16,21 @@ the banner could lie:
 - an expired lease, which says the claim lapsed and never that the worker
   stopped;
 - a completed pass, which holds no claim;
+- a failed pass, the one unclaimed state that still gets a sentence;
+- a later pass, which takes the banner off an earlier failure from its own
+  record -- queued, claimed or finished -- and is the whole of what lets that
+  sentence say *the latest*;
+- a lapsed lease, which is not a failure however long ago it lapsed; and
 - recovery, where the next worker takes the lapsed occurrence and the banner
   follows the new claim rather than the old one.
 
-Two more follow them. The seventh is the grant: the page reads the projection
-and holds nothing on the scheduler underneath it. The eighth is the page, where
-both sentences are proved through the real route and the real template, because
-a reading the register never prints is a reading nobody has.
+Four more follow them. The grant: the page reads the projection and holds
+nothing on the scheduler underneath it. Then the page twice, because a reading
+the register never prints is a reading nobody has -- the claim and its expiry
+through the real route and the real template, and the failure beside the rows
+it does not speak for. And last the surface count, which is one: the approved
+failure wording ends by pointing a reader at Sources, and Sources is the only
+page this banner is on.
 """
 
 from __future__ import annotations
@@ -403,10 +411,161 @@ def test_a_failed_pass_keeps_its_failure_where_a_coordinator_sees_it(factory):
     banner = _banner(factory, project_id, failed_at)
 
     assert banner.status == FAILED
-    assert banner.sentence == "This project's document-processing pass failed."
+    assert banner.sentence == "The latest document-processing pass failed."
     # No qualification, because there is none to make: the occurrence is not
     # claimed and not recoverable, so nothing about a worker is in question.
     assert banner.detail == ""
+    # And none of the three things a failure does not mean. The sentence is
+    # about the pass: it names no document and counts nothing, because nothing
+    # in this reading counts -- what became of each delivery is the register's
+    # own rows, immediately below it. It does not say completed work was
+    # undone, and it promises no retry; a subsequent attempt is a later
+    # occurrence, and the test below shows it arriving as one.
+    assert not any(
+        word in banner.sentence.lower()
+        for word in ("document ", "documents", "file", "page", "every", "all ")
+    )
+    assert not any(char.isdigit() for char in banner.sentence)
+
+
+def test_a_later_pass_displaces_the_failure_from_its_own_record(factory):
+    """What "the latest" has to earn, in each of the three states it loses to.
+
+    The sentence says *latest*, so the reading has to establish that the run it
+    read is the latest relevant attempt rather than the only one it happened to
+    find. It does, and by the projection rather than by this module: every
+    terminal state releases its lease, so `lease_expires_at desc nulls last`
+    ranks only claimed rows and `due_at desc, id desc` decides among the rest.
+    A `failed` reading therefore means nothing is claimed *and* nothing is
+    newer.
+
+    So the next due slot has to take the banner away from the failure, and it
+    does so from its own record in all three of the states it can be in --
+    queued, claimed, finished. Nothing is written on the failed occurrence to
+    make that happen and nothing about the retry is read off it, which is the
+    distinction a sentence promising "a worker is retrying" would erase.
+    """
+
+    starts_at = datetime(2026, 9, 11, 8, 0, tzinfo=timezone.utc)
+    with factory() as setup:
+        project_id = _project(setup, "banner-outlived", starts_at=starts_at)
+        setup.commit()
+    with factory() as ticking:
+        enqueue_due_work(ticking, now=starts_at)
+        ticking.commit()
+    first = _claim(factory, starts_at)
+    failed_at = starts_at + timedelta(minutes=2)
+    with factory() as failing:
+        fail_due_work(
+            failing,
+            first,
+            error_code="extraction_failed",
+            now=failed_at,
+            retryable=False,
+        )
+        failing.commit()
+    assert _banner(factory, project_id, failed_at).status == FAILED
+
+    # The next due slot, as its own occurrence. Queued and unclaimed, the page
+    # says nothing: the failure is no longer the latest attempt, and a queued
+    # one is not something the record can describe beyond that.
+    next_due = starts_at + timedelta(hours=1)
+    with factory() as ticking:
+        enqueue_due_work(ticking, now=next_due)
+        ticking.commit()
+    queued = _banner(factory, project_id, next_due)
+    assert queued.status == UNCLAIMED
+    assert queued.sentence == ""
+
+    # Claimed, it is the claim sentence and not a qualified failure.
+    second = _claim(factory, next_due)
+    assert second.occurrence_id != first.occurrence_id
+    claimed = _banner(factory, project_id, next_due)
+    assert claimed.status == CLAIMED
+    assert SENTENCES[FAILED] != claimed.sentence
+
+    # Finished, the page is silent again rather than reverting to the failure
+    # underneath it.
+    finished_at = next_due + timedelta(minutes=4)
+    with factory() as finalizing:
+        complete_due_work(
+            finalizing,
+            second,
+            handler_result=_completed_result(project_id, finished_at),
+            now=finished_at,
+        )
+        finalizing.commit()
+    assert _banner(factory, project_id, finished_at).status == UNCLAIMED
+
+    # The failure is still in the record; it stopped being the latest attempt,
+    # which is a different thing from being forgotten. Both terminal rows carry
+    # no lease, which is precisely what leaves `due_at` to decide between them
+    # -- a terminal state that kept its lease would let this failure outrank
+    # the completed pass that followed it.
+    with factory() as checking:
+        rows = (
+            checking.execute(
+                text(
+                    "select o.state, o.claimed_at, o.lease_expires_at "
+                    "  from public.due_work_occurrences o "
+                    "  join public.due_work_schedules s "
+                    "    on s.id = o.scheduled_job_id "
+                    " where s.project_id = :project "
+                    "   and s.handler_key = :handler "
+                    " order by o.due_at"
+                ),
+                {"project": project_id, "handler": HANDLER_PROJECT_PROCESSING},
+            )
+            .mappings()
+            .all()
+        )
+    assert [dict(row) for row in rows] == [
+        {"state": "failed", "claimed_at": None, "lease_expires_at": None},
+        {"state": "completed", "claimed_at": None, "lease_expires_at": None},
+    ]
+
+
+def test_a_lapsed_lease_is_not_a_processing_failure(factory):
+    """The two readings stay two readings, however long the lease has been gone.
+
+    A lease expiring means the claim lapsed and the occurrence is recoverable.
+    It is not a failure, and the distance between them is not a matter of
+    degree: `_status` reads `failed` off the occurrence's own column, which the
+    runtime writes only once the retries are spent, and reaches `CLAIM_EXPIRED`
+    from a `claimed` row whose lease has gone. A lapsed lease can therefore
+    never arrive at the failure sentence, no matter how stale it is -- and a
+    coordinator reading "Recovery is pending" is being told the truth rather
+    than a softened version of "this failed".
+    """
+
+    starts_at = datetime(2026, 9, 11, 8, 0, tzinfo=timezone.utc)
+    with factory() as setup:
+        project_id = _project(setup, "banner-lapsed-not-failed", starts_at=starts_at)
+        setup.commit()
+    with factory() as ticking:
+        enqueue_due_work(ticking, now=starts_at)
+        ticking.commit()
+    claim = _claim(factory, starts_at)
+
+    for now in (
+        claim.lease_expires_at,
+        claim.lease_expires_at + timedelta(days=30),
+    ):
+        banner = _banner(factory, project_id, now)
+        assert banner.status == CLAIM_EXPIRED
+        assert banner.sentence == SENTENCES[CLAIM_EXPIRED]
+        assert banner.sentence != SENTENCES[FAILED]
+        assert "fail" not in banner.sentence.lower()
+
+    # Because the record says so: the occurrence is `claimed`, and no age of
+    # lease turns that column into `failed`. The runtime writing `failed` is a
+    # separate act, and the reading follows the act rather than the clock.
+    with factory() as checking:
+        state = checking.execute(
+            text("select state from public.due_work_occurrences where id = :id"),
+            {"id": claim.occurrence_id},
+        ).scalar_one()
+    assert state == "claimed"
 
 
 def test_recovery_of_a_lapsed_claim_is_reported_as_the_new_claim(factory):
@@ -630,3 +789,87 @@ def test_the_register_prints_the_claim_sentence_and_then_the_expiry_one(
     assert "Processing" not in STATE_WORDS.values()
     for page in (held, lapsed):
         assert "is being read" not in page
+
+
+def test_the_register_prints_the_failure_above_rows_it_does_not_speak_for(
+    session, rendering_client
+):
+    """The failure sentence on the real route, and what it deliberately omits.
+
+    The approved wording is two sentences: "The latest document-processing pass
+    failed. Open Sources to see the affected documents and next steps." This
+    page is Sources. The affected documents are the rows immediately below the
+    banner, so the second sentence would send a reader to where they already
+    are; it is left off rather than reworded, because what to say instead to a
+    reader already here is a customer-facing wording decision and not one to
+    make in passing.
+
+    What the page does carry is the division the first sentence depends on. The
+    banner speaks for the *pass*. Each delivery's own outcome is a register row
+    with its own state word, and one of those words is the one that says a
+    later pass will retry -- so a failed pass never has to claim that every
+    document failed, that finished work was undone, or that nothing is trying
+    again.
+    """
+
+    from corridor.source_register import STATE_WORDS
+    from corridor.web.app import app, get_review_clock
+
+    starts_at = datetime(2026, 9, 11, 8, 0, tzinfo=timezone.utc)
+    project_id = _member_project(session, "banner-failed-page")
+    _processing_schedule(session, project_id, starts_at=starts_at)
+    enqueue_due_work(session, now=starts_at)
+    claim = claim_due_work(session, now=starts_at, owner="runtime:banner-worker")
+    assert claim is not None
+    failed_at = starts_at + timedelta(minutes=2)
+    fail_due_work(
+        session,
+        claim,
+        error_code="extraction_failed",
+        now=failed_at,
+        retryable=False,
+    )
+    session.flush()
+    slug = session.get(Project, project_id).slug
+
+    app.dependency_overrides[get_review_clock] = lambda: (lambda: failed_at)
+    response = rendering_client.get(f"/projects/{slug}/sources")
+    assert response.status_code == 200
+    page = unescape(response.text)
+
+    assert SENTENCES[FAILED] in page
+    assert SENTENCES[CLAIMED] not in page
+    assert SENTENCES[CLAIM_EXPIRED] not in page
+    # Not printed, and not silently: the link half of the approved wording has
+    # no reader here, and the surface count below is what notices the day it
+    # acquires one.
+    assert "Open Sources" not in page
+    # The rows are on this page and they are the ones that carry per-delivery
+    # outcomes, including a retry. The banner's sentence is none of them.
+    assert "Source register" in page
+    assert SENTENCES[FAILED] not in STATE_WORDS.values()
+    assert "processing_failed" in STATE_WORDS
+
+
+def test_the_banner_has_one_surface_and_it_is_the_page_it_would_link_to():
+    """Why the approved second sentence is printed nowhere.
+
+    "Open Sources to see the affected documents and next steps" is a link out
+    of wherever the banner is, and today the banner is only ever on Sources.
+    That is a fact about the templates rather than an opinion, so it is checked
+    like one: the day a second surface prints this reading, this fails, and the
+    half of the approved sentence that was waiting for a reader somewhere else
+    has one.
+    """
+
+    from pathlib import Path
+
+    import corridor.web
+
+    templates = Path(corridor.web.__file__).parent / "templates"
+    printing = sorted(
+        path.name
+        for path in templates.glob("*.html")
+        if "processing_pass" in path.read_text()
+    )
+    assert printing == ["source_uploads.html"]
