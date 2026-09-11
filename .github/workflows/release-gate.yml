@@ -133,21 +133,10 @@ jobs:
           INSTALL_RESULT: ${{ steps.infra_install.outcome }}
           ASSERTIONS_RESULT: ${{ steps.infra_assertions.outcome }}
           SYNTH_RESULT: ${{ steps.infra_synth.outcome }}
-        run: |
-          set -uo pipefail
-          case "$INFRASTRUCTURE_REQUIRED" in
-            true) expected=success ;;
-            false) expected=skipped ;;
-            *) echo '::error::infrastructure classification is absent or invalid'; exit 1 ;;
-          esac
-          failed=0
-          for result in "$NODE_RESULT" "$INSTALL_RESULT" "$ASSERTIONS_RESULT" "$SYNTH_RESULT"; do
-            if [ "$result" != "$expected" ]; then
-              printf '::error::infrastructure step is %s; expected %s\n' "${result:-<absent>}" "$expected"
-              failed=1
-            fi
-          done
-          exit "$failed"
+        # The same fail-closed rule the required summary applies, from the
+        # same module: `success` where the classifier said required,
+        # `skipped` where it said not, and an unreadable answer fails.
+        run: python3 scripts/gate_results.py infrastructure
 
   pytest:
     # Every file lands in exactly one shard. Each private runner has two
@@ -266,6 +255,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      # The matcher below is an in-repository module, so the repository has
+      # to be on disk before it runs. This checkout is unconditional and
+      # first for that reason; it installs no package, so the job still adds
+      # no concurrent download to the gate.
+      - uses: actions/checkout@v4
       - name: Match every job result against the classifier
         env:
           BEHAVIOR_REQUIRED: ${{ needs.classify.outputs.behavior_required }}
@@ -276,54 +270,9 @@ jobs:
           SLOW_RESULT: ${{ needs.slow.result }}
           MIGRATION_RESULT: ${{ needs.migration.result }}
         # No `${{ }}` in this body on purpose: every value arrives through
-        # `env` above, which keeps the script exactly what
-        # tests/test_ci_policy.py executes.
-        run: |
-          set -uo pipefail
-
-          failed=0
-
-          require() {
-            if [ "$2" = "$3" ]; then
-              printf '%s = %s\n' "$1" "$2"
-            else
-              printf '::error::%s is %s; the release gate requires %s\n' "$1" "${2:-<absent>}" "$3"
-              failed=1
-            fi
-          }
-
-          # Sets `expected`. An answer that is neither `true` nor `false`
-          # is a classifier the summary cannot trust, so it fails the gate
-          # rather than picking a default.
-          expected_for() {
-            case "$2" in
-              true) expected=success ;;
-              false) expected=skipped ;;
-              *)
-                printf '::error::%s is %s; the classifier must answer true or false\n' "$1" "${2:-<absent>}"
-                expected=unclassified
-                failed=1
-                ;;
-            esac
-          }
-
-          require classify "$CLASSIFY_RESULT" success
-          require check "$CHECK_RESULT" success
-
-          expected_for behavior_required "$BEHAVIOR_REQUIRED"
-          require pytest "$PYTEST_RESULT" "$expected"
-          require slow "$SLOW_RESULT" "$expected"
-
-          expected_for migration_required "$MIGRATION_REQUIRED"
-          require migration "$MIGRATION_RESULT" "$expected"
-
-          if [ "$failed" -ne 0 ]; then
-            printf '::error::release gate failed closed\n'
-            exit 1
-          fi
-          printf 'release gate satisfied\n'
-      - uses: actions/checkout@v4
-        if: ${{ success() && needs.classify.outputs.behavior_required == 'true' }}
+        # `env` above, which keeps what CI runs exactly the module
+        # tests/test_ci_policy.py calls.
+        run: python3 scripts/gate_results.py summary
       - name: Verify test evidence and report timing targets
         if: ${{ success() && needs.classify.outputs.behavior_required == 'true' }}
         env:
