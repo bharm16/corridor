@@ -386,10 +386,10 @@ def _write_receipt(
 ) -> RevisionComparisonRun:
     """Write one sealed receipt and its complete finding set, or nothing.
 
-    It runs inside its own savepoint so a lost race for the execution
-    identity rolls back this attempt alone -- no half-written finding set,
-    and nothing undone that the surrounding transaction still needs, the
-    project lock included.
+    Its caller runs it inside a savepoint of its own, so a lost race for the
+    execution identity rolls back this attempt alone -- no half-written
+    finding set left behind, and nothing undone that the surrounding
+    transaction still needs, the project lock included.
     """
 
     content = _receipt_content(
