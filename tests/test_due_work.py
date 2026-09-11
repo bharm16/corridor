@@ -31,18 +31,21 @@ from corridor.due_work_contract import (
 from corridor.due_work import (
     ProcessingHealthDeclaration,
     DueWorkRefusal,
+    HANDLER_LOCATION_DISCOVERY,
     HANDLER_PROCESSING_HEALTH,
     HandlerContract,
     StaleDueWorkClaim,
     claim_due_work,
     complete_due_work,
     configure_due_work,
+    configure_location_discovery,
     due_work_status,
     enqueue_due_work,
     fail_due_work,
     run_due_work_once,
     supervise_due_work,
 )
+from corridor.location_discovery import LocationDiscoveryDeclaration
 from corridor.models import (
     Dependency,
     Document,
@@ -377,6 +380,44 @@ def test_invalid_gate_configuration_is_refused_without_a_job(runtime_database):
         assert setup.scalars(
             select(DueWorkSchedule).where(DueWorkSchedule.project_id == project.id)
         ).all() == []
+
+
+def test_a_declaration_that_names_another_handler_configures_nothing(
+    session, project
+):
+    """The key the seam names and the key the declaration carries must agree.
+
+    `configure_due_work` reads the key off the declaration, so there the two
+    agree by construction. `configure_location_discovery` and
+    `configure_connector_polling` still name a key literally, for the two
+    handlers a deployment enables directly, and that is where the two can
+    disagree: a declaration the registered type accepts, carrying another
+    handler's key, must not configure this one. The refusal precedes every
+    write, so no schedule survives it.
+    """
+
+    class ImpostorDeclaration(LocationDiscoveryDeclaration):
+        handler_key: ClassVar[str] = HANDLER_PROCESSING_HEALTH
+
+    now = datetime(2026, 8, 29, 12, 30, tzinfo=timezone.utc)
+    impostor = ImpostorDeclaration.released_hourly(
+        project_id=project.id,
+        configuration_version="loc-impostor-v1",
+        location_id="impostor-location",
+        adapter_identity="http-index-v1",
+        source_manifest_id="impostor-manifest",
+        index_url="https://docs.example.gov/index.json",
+        authorized_hosts=("docs.example.gov",),
+        starts_at=now,
+    )
+    assert isinstance(impostor, LocationDiscoveryDeclaration)
+    assert impostor.handler_key != HANDLER_LOCATION_DISCOVERY
+
+    with pytest.raises(DueWorkRefusal, match="not server-owned"):
+        configure_location_discovery(session, impostor, now=now)
+    assert session.scalars(
+        select(DueWorkSchedule).where(DueWorkSchedule.project_id == project.id)
+    ).all() == []
 
 
 def test_shutdown_stops_before_taking_new_work(runtime_database):
