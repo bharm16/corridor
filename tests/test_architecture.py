@@ -4104,23 +4104,24 @@ def test_the_migration_revokes_exactly_the_relations_the_boundary_denies():
     )
 
 
-def test_the_write_revoke_is_one_list_the_migration_and_the_boundary_share():
-    """#893's narrower revoke, held to the same no-drift rule as #680's.
+def test_the_partitioned_revoke_is_one_list_the_migration_and_the_boundary_share():
+    """#893's second revoke, held to the same no-drift rule as #680's.
 
-    A relation may be *read* by the web capability and never written by it, and
-    these four are that: #824 granted them the schema owner's default writes
+    These four are the boundary's third answer: partitioned, policied, and
+    granted nothing. #824 gave them the schema owner's default privileges
     because the confirmation route rendered and parsed the uploaded file inside
-    the request, and #893 moved that read to the standing pass. The two halves
-    can drift exactly as the denied set can, so they are compared here -- and
-    with the assertions that say what kind of relation may be on this list at
-    all: one the boundary protects (so it is partitioned and still readable),
-    and never one it denies outright (which would be a contradiction rather
-    than a narrower rule).
+    the request; #893 moved that read to the standing pass, and the same
+    instrumented walk that found no writer found no reader. The two halves can
+    drift exactly as the denied set can, so they are compared here -- and with
+    the assertions that say what kind of relation may be on this list at all:
+    one the classification calls partitioned (so the policy applies and the
+    ceiling does not move), and never one the boundary denies outright, which
+    would be the same relation answered twice.
     """
 
     import importlib.util
 
-    from corridor import web_boundary
+    from corridor import access, web_boundary
 
     path = (
         Path(__file__).resolve().parents[1]
@@ -4132,24 +4133,71 @@ def test_the_write_revoke_is_one_list_the_migration_and_the_boundary_share():
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
 
-    assert frozenset(module.WEB_DENIED_WRITES) == web_boundary.WRITE_DENIED_RELATIONS
-    assert len(module.WEB_DENIED_WRITES) == len(set(module.WEB_DENIED_WRITES))
-    assert web_boundary.WRITE_DENIED_RELATIONS <= web_boundary.PROTECTED_RELATIONS
     assert (
-        web_boundary.WRITE_DENIED_RELATIONS & web_boundary.DENIED_RELATIONS
+        frozenset(module.WEB_DENIED_PARTITIONED)
+        == web_boundary.PARTITIONED_UNGRANTED_RELATIONS
+    )
+    assert len(module.WEB_DENIED_PARTITIONED) == len(
+        set(module.WEB_DENIED_PARTITIONED)
+    )
+    assert (
+        web_boundary.PARTITIONED_UNGRANTED_RELATIONS
+        <= frozenset(access.PARTITIONED_RELATIONS)
+    )
+    assert (
+        web_boundary.PARTITIONED_UNGRANTED_RELATIONS & web_boundary.DENIED_RELATIONS
         == frozenset()
     )
 
 
-def test_no_enabled_pilot_route_writes_a_relation_the_boundary_makes_read_only():
-    """The application half of #893's write revoke.
+def test_partition_coverage_and_a_grant_are_two_questions_not_one():
+    """The guard the correction to #893 asked for.
 
-    A route recorded as reaching one of these is not proof it writes it -- the
-    instrument records every statement, read or write -- so this is the weaker
-    claim the static reading can carry: none of the four is in any enabled
-    route's recorded set at all. The live proof that the privilege is really
-    gone is in `tests/test_project_partition_and_offboarding.py`, against the
-    deployed login.
+    The first draft revoked only writes and kept SELECT, reasoning that a
+    relation cannot lose its reading without losing its policy. PostgreSQL asks
+    for no such thing: a privilege decides whether the role may touch the
+    relation, a policy decides which rows it then sees. The coupling was the
+    guards' own -- they had two states, and "granted nothing" could only be
+    said by calling the relation unpartitioned, which drops its policy and
+    raises the ceiling to express a reduced privilege. So the boundary carries
+    three answers now, and the third is *partitioned and not granted*.
+
+    What this pins is that the two questions stay separate. A relation granted
+    nothing is still in the partitioned classification, so no ceiling moved and
+    no policy was dropped to express reduced privilege; and `GRANTED_RELATIONS`
+    is derived from the protected set rather than listed beside it, so a
+    relation that stops being granted cannot stay in the set a route is checked
+    against.
+    """
+
+    from corridor import access, web_boundary
+
+    assert web_boundary.GRANTED_RELATIONS == (
+        web_boundary.PROTECTED_RELATIONS - web_boundary.PARTITIONED_UNGRANTED_RELATIONS
+    )
+    # Partition coverage is untouched by the grant: every one of them is still
+    # classified partitioned, which is what keeps its policy and its place in
+    # the ratchet.
+    assert sorted(
+        web_boundary.PARTITIONED_UNGRANTED_RELATIONS
+        - frozenset(access.PARTITIONED_RELATIONS)
+    ) == []
+    assert (
+        web_boundary.PARTITIONED_UNGRANTED_RELATIONS
+        & frozenset(access.NOT_YET_PARTITIONED_RELATIONS)
+        == frozenset()
+    )
+
+
+def test_no_enabled_pilot_route_reaches_a_relation_granted_to_nobody():
+    """The application half of #893's second revoke.
+
+    A route recorded as reaching one of these would meet `permission denied`,
+    which is the same failure a denied relation produces and is why
+    `unprotected_route_relations` measures grants rather than partition
+    coverage. The live proof that the privilege is really gone is in
+    `tests/test_project_partition_and_offboarding.py`, against the deployed
+    login.
     """
 
     from corridor import web_boundary
@@ -4158,14 +4206,15 @@ def test_no_enabled_pilot_route_writes_a_relation_the_boundary_makes_read_only()
         {
             relation
             for route in web_boundary.PILOT_ROUTES.values()
-            for relation in route.relations & web_boundary.WRITE_DENIED_RELATIONS
+            for relation in route.relations
+            & web_boundary.PARTITIONED_UNGRANTED_RELATIONS
         }
     )
 
     assert reached == [], (
         "an enabled pilot route is recorded as reaching a relation the web "
-        "capability may no longer write; either it only reads it -- in which "
-        "case say so here -- or the revoke is wrong"
+        "capability holds no grant on; either admit the relation back with a "
+        "grant, or the revoke is wrong"
     )
 
 

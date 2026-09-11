@@ -224,8 +224,8 @@ from corridor.migrations.source_append_commands.public_privileges import (
 )
 from corridor.migrations.source_append_commands import replay_gate
 from corridor.migrations.source_append_commands.web_capability import (
+    WEB_DENIED_PARTITIONED,
     WEB_DENIED_RELATIONS,
-    WEB_DENIED_WRITES,
     WEB_PARTITIONED_TABLES,
 )
 
