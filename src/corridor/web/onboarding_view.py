@@ -67,6 +67,7 @@ from corridor.onboarding_authorization import (
 from corridor.operating_mode import baseline_adoption, is_adopted_baseline
 from corridor.source_delivery import delivery_confirmations
 from corridor.web.format_replacement_view import OperationsPanel
+from corridor.web.ui_primitives import recorded_moment
 
 
 #: What each permitted operation is called where a coordinator reads it. These
@@ -452,18 +453,19 @@ def _confirmation(confirmation: SourceDeliveryConfirmation | None) -> str:
     preview was left on screen. So the absence is said rather than left to be
     inferred from a line that is not there.
 
-    In the source register's own words, because these two screens report the
-    same relation and must not describe it differently. What is deliberately
-    not borrowed is ``source_register``'s *state*: those words are a joint
-    reading of the disposition, the registered source and the confirmation,
-    and this row has read only the last of the three.
+    In the source register's own words, and through its rendering of the
+    instant, because these two screens report the same relation and must not
+    describe it differently. What is deliberately not borrowed is
+    ``source_register``'s *state*: those words are a joint reading of the
+    disposition, the registered source and the confirmation, and this row has
+    read only the last of the three.
     """
 
     if confirmation is None:
         return "Nobody has confirmed it for processing yet"
     return (
         f"Confirmed by {confirmation.confirmed_by_principal} "
-        f"on {confirmation.confirmed_at}"
+        f"on {recorded_moment(confirmation.confirmed_at)}"
     )
 
 
@@ -529,6 +531,17 @@ def _next_action(
                 # not perform on this project right now, so the sentence is
                 # why, not an invitation (#934).
                 return _standing_sentence(preparing)
+            if sum(len(group.deliveries) for group in supplied) > 1:
+                # "This workbook" named the one delivery the page used to
+                # show. It became false the moment the page stopped collapsing
+                # deliveries by digest and started listing all of them (#933),
+                # because the reader now has to pick one before anything can
+                # be prepared. Same promise, said about the delivery they
+                # choose rather than about a workbook the page cannot name.
+                return (
+                    "Choose a delivery and prepare a preview of the values it "
+                    "would establish. Nothing is adopted until you approve it."
+                )
             return (
                 "Prepare a preview of the values this workbook would "
                 "establish. Nothing is adopted until you approve it."

@@ -404,6 +404,15 @@ def test_two_deliveries_of_one_workbook_are_both_offered_and_told_apart(
     readable = prose(page.text)
     assert "Identical file contents — 2 deliveries" in readable, readable[:600]
 
+    # The sentence naming what happens next is true of a page that lists two
+    # of them: the act is on a delivery the reader chooses, not on "this
+    # workbook", which named the one delivery the page used to show.
+    assert (
+        "Choose a delivery and prepare a preview of the values it would "
+        "establish. Nothing is adopted until you approve it." in readable
+    ), readable[:600]
+    assert "the values this workbook would establish" not in readable
+
     # What tells them apart is what each delivery's own row retains: the
     # channel and configuration that carried it, and who submitted it.
     assert "shared-files" in readable, (
@@ -507,6 +516,56 @@ def test_a_later_identical_delivery_does_not_replace_the_selection(
     assert int(document.source_delivery_id) == int(chosen["source_delivery_id"]), (
         "the reading was made from the delivery that arrived later, not the "
         "one the coordinator selected"
+    )
+
+
+def test_the_register_and_the_selection_print_one_delivery_time_alike(
+    session, browser, provisioned, tmp_path
+):
+    """One retained instant, one rendering, on both screens that print it.
+
+    The register printed a delivery's received time to the minute and dropped
+    the zone, while the onboarding selection printed the stored value as it
+    came back. Same row, same column, two forms -- and a delivery time with no
+    zone cannot be compared against the customer's own record of when they
+    sent the file. This is the argument that already put the register's
+    confirmation wording on the selection row rather than a second phrasing of
+    it, applied to the instant beside it.
+    """
+
+    project, _ = provisioned
+    client = browser(COORDINATOR_EMAIL)
+    name = "one-time-two-screens.xlsx"
+    upload = client.get(
+        f"/projects/{project.slug}/sources/upload", follow_redirects=False
+    )
+    client.post(
+        f"/projects/{project.slug}/sources/upload",
+        data={**(form_fields(upload.text, "/sources/upload") or {}), "doc_type": "matrix"},
+        files={"upload": (name, workbook(tmp_path, name=name))},
+        follow_redirects=False,
+    )
+
+    received = session.scalars(
+        select(SourceDelivery.received_at).where(
+            SourceDelivery.project_id == int(project.id)
+        )
+    ).one()
+    printed = f"{received:%Y-%m-%d %H:%M %Z}"
+    assert printed != f"{received:%Y-%m-%d %H:%M} ", (
+        "the retained instant carries no zone to print, so this proves nothing"
+    )
+
+    selection = client.get(f"/work/{project.slug}", follow_redirects=False)
+    register = client.get(f"/projects/{project.slug}/sources", follow_redirects=False)
+
+    assert printed in prose(selection.text), (
+        "the onboarding selection does not print the delivery's received time "
+        "with its zone"
+    )
+    assert printed in prose(register.text), (
+        "the register prints the same instant differently, so one delivery "
+        "time reaches a coordinator as two"
     )
 
 

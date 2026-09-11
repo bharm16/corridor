@@ -137,7 +137,7 @@
           {% for source in group.deliveries %}
             <li>
               <b>{{ source.filename }}</b>
-              <div>Received {{ source.delivered_at }}</div>
+              <div>Received {{ recorded_moment(source.delivered_at) }}</div>
               <div>
                 Arrived on {{ source.channel }}, configuration
                 {{ source.configuration_identity }}

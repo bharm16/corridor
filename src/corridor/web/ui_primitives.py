@@ -25,7 +25,7 @@ The accessibility properties the consuming screens must satisfy are recorded in
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from typing import Iterable, Mapping
 
 from corridor.presentation import (
@@ -163,6 +163,27 @@ def focus_target(
     return FOCUS_IDS["item"]
 
 
+def recorded_moment(value: datetime | None) -> str:
+    """One retained instant, to the minute, carrying the zone it was kept in.
+
+    Two screens print the same delivery's ``received_at`` and the same
+    confirmation's ``confirmed_at`` -- the source register and the onboarding
+    selection -- and they printed them in two different forms, one of which
+    dropped the zone (#933). One retained instant shown two ways reads as two
+    facts, which is the same argument that put the register's own confirmation
+    wording on the onboarding row rather than a second phrasing of it.
+
+    The zone is part of the instant rather than decoration: a delivery time
+    with no zone cannot be compared to the customer's own record of when they
+    sent the file. ``None`` is the register's document row that names no
+    delivery, and it says so in the words every absent value here uses.
+    """
+
+    if value is None:
+        return NOT_RECORDED
+    return value.strftime("%Y-%m-%d %H:%M %Z").rstrip()
+
+
 def register(env) -> None:
     """Give every template the primitives' vocabulary under stable names."""
     env.globals.update(
@@ -174,4 +195,5 @@ def register(env) -> None:
         focus_ids=FOCUS_IDS,
         focus_target=focus_target,
         not_recorded=NOT_RECORDED,
+        recorded_moment=recorded_moment,
     )

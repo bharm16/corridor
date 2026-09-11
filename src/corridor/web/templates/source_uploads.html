@@ -169,14 +169,14 @@
             <a href="/sources/{{ project.slug }}/document/{{ row.document_id }}/original">{{ row.filename }}</a>
             {%- else %}{{ row.filename }}{% endif -%}
           </div>
-          <div>{{ row.received_at.strftime('%Y-%m-%d %H:%M') if row.received_at else not_recorded }}</div>
+          <div>{{ recorded_moment(row.received_at) }}</div>
           <div class="who">
             {%- if row.channel %}{{ row.channel }} &middot; {{ row.transport }}
             {%- else %}registered from no recorded delivery{% endif -%}
           </div>
           {%- if row.confirmed_at %}
           <div class="who">confirmed by {{ row.confirmed_by }}
-            on {{ row.confirmed_at.strftime('%Y-%m-%d %H:%M') }}</div>
+            on {{ recorded_moment(row.confirmed_at) }}</div>
           {%- endif %}
           <div class="mono">{{ row.content_sha256[:16] }}…</div>
         </th>
