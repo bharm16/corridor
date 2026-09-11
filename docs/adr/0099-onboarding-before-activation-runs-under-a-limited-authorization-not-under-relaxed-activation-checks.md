@@ -5,7 +5,6 @@ scope: current product
 amends:
   - ADR-0079
   - ADR-0083
-migration: the limited onboarding authorization, its control-plane record, the retained proof that it was valid when an onboarding act committed, the atomic consumption of its adoption permission, its withdrawal record, and the granted adoption command do not exist; #827 builds them, states the withdrawal mechanism and the maximum stale-validity window before customer deployment, and gives the step after adoption its own bounded setup permission, and until it does no production caller of the adoption or preview functions exists in `src/`, `workers/` or `scripts/`.
 ---
 
 # Onboarding before activation runs under a limited authorization, not under relaxed activation checks
@@ -260,8 +259,16 @@ afterwards:
 - retained proof of that validity;
 - current customer authorization and the normal activation prerequisites **at
   activation**;
-- no continuing onboarding authority after it expires, is withdrawn, or is
-  consumed.
+- no continuing onboarding **write** authority after the relevant permission
+  expires, is withdrawn, or — for the adoption permission specifically — is
+  consumed. These are three different endings and #827 states them apart: a
+  **consumed adoption permission** ends permission for new adoption writes and
+  nothing else; **expiry or withdrawal of the relevant permission** ends new
+  protected writes under that permission and reaches back into nothing already
+  committed; and **authorized retrieval of an existing record** — reading the
+  completed onboarding status, or returning the receipt an exact retry names —
+  is neither, because it is retrieval of a prior result under current read
+  access rather than the exercise of authority that has ended.
 
 **Withdrawal must stop future onboarding writes.** #827 must specify how the
 customer-side authorization becomes stale or revoked, and fail closed when its

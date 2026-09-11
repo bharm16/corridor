@@ -246,7 +246,9 @@ earlier.
 3. #518 (#510A) Proposed Delta identity, groups, and lifecycle — **done**.
 4. #520 (#510C) adopted-baseline operating mode and database refusal —
    **done**, and it landed before #509 as required.
-5. #509 Adopt Baseline — **done**, invoking the #520 transition atomically.
+5. #509 Adopt Baseline — **done**, invoking the #520 transition atomically,
+   and reachable from a coordinator's own session since #827 built the limited
+   onboarding authorization it runs under (ADR-0099).
 6. #519 (#510B) typed Resolve Delta commands — **done**. Accept, edit, and
    reject are semantic; defer is Work List scheduling (ADR-0084). #510 closes
    with #518, #519, #520, and #526.
@@ -360,10 +362,14 @@ record, and it is unchanged by anything below.
 yet. Under the enforced live-pilot boundary a person signs in and finds the
 projects they are enrolled on, and on an *already adopted* project they can
 review the week, confirm coverage, and — once #821 puts the request-forgery
-token on those two forms — prepare and approve an issue. They cannot start a
-project: there is no way to supply a baseline inside the boundary (#823,
-#824), no way to preview and adopt it (#827), and no way to review and approve
-what the project issues (#828). They cannot see a delivery's receipt or its
+token on those two forms — prepare and approve an issue. Opening a
+*provisioned but unadopted* project now shows its onboarding state, what
+Corridor needs next, the material questions a prepared reading raises, and the
+one act that adopts them, all under the limited onboarding authorization
+ADR-0099 decides (#827). What is still missing before that path runs end to
+end is a way to supply the baseline inside the boundary (#823, #824), the
+operator surface that settles a delivery Corridor could not place (#842), and
+a way to review and approve what the project issues (#828). They cannot see a delivery's receipt or its
 processing state (#841), read the exact wording behind a proposed change
 (#831), report a wrong capture (#832, #836), undo a decision (#834), or
 retrieve the bytes of an issue the product has told them was approved (#830).

@@ -21,6 +21,7 @@ from dataclasses import replace
 import json
 import secrets
 from datetime import date, datetime, time, timezone
+from uuid import uuid4
 from pathlib import Path
 from collections.abc import Iterable
 from typing import Any, Callable, Literal
@@ -487,7 +488,20 @@ from corridor.issue_profile_approval import (
     approve_issue_profile,
 )
 from corridor.web.issue_profile_view import issue_configuration_view
-from corridor.baseline_adoption import BaselineAdoptionRefused
+from corridor.baseline_adoption import (
+    BaselineAdoptionRefused,
+    BaselineAnswerRefused,
+    QuestionAnswer,
+    adopt_retained_baseline,
+    prepare_baseline_reading,
+    retained_baseline_reading,
+)
+from sqlalchemy.exc import DBAPIError
+
+from corridor.onboarding_authorization import (
+    OnboardingRefused,
+    refusal_from_database as onboarding_refusal_from_database,
+)
 from corridor.format_replacement import (
     OUTPUT_TEMPLATE,
     REPLACEMENT_SUFFIX,
@@ -507,6 +521,7 @@ from corridor.web.format_replacement_view import (
     format_replacement_view,
     validated_replacement,
 )
+from corridor.web.onboarding_view import onboarding_view
 from corridor.project_workflow import read_project_workflow
 from corridor.release_preparation import (
     PreparationRequestRefused,
@@ -5382,6 +5397,23 @@ def coordinator_home(
         return _project_workflow_response(
             request, project, principal, session, now=now
         )
+    # #827 A provisioned project that has not adopted a baseline is not an
+    # empty Work List: there is no accepted record to list, and every relation
+    # ADR-0035's item-per-record list reads is revoked under the pilot
+    # boundary. It is the onboarding surface instead, which is what the
+    # coordinator's first sign-in actually needs -- and it stays a refusal for
+    # a deployment whose boundary configuration is inconsistent.
+    state = getattr(
+        request.state, "live_pilot_boundary", web_boundary.BoundaryState.NOT_DECLARED
+    )
+    if state is web_boundary.BoundaryState.ENFORCED:
+        return _onboarding_page(
+            request,
+            project,
+            access.resolve_membership(session, principal.subject, project.id),
+            session,
+            now=clock(),
+        )
     _refuse_legacy_project_under_the_boundary(request, project)
     work_list = build_work_list(
         session,
@@ -9660,3 +9692,247 @@ def _safe_upload_name(filename: str | None) -> str:
 
     name = (filename or "").strip()
     return name or f"replacement{REPLACEMENT_SUFFIX}"
+
+
+# --- #827 A provisioned project that has not adopted a baseline -------------
+#
+# ADR-0099 settles the authority this surface runs under: a limited onboarding
+# authorization the control plane issues and a restricted operations actor
+# records, never a coordinator's own membership and never a relaxed activation
+# check. Two properties of these three handlers follow from it and are easy to
+# lose in a refactor.
+#
+# **The authority is never read off the request.** Nothing here takes a flag,
+# a parameter or a session value saying onboarding is permitted. Both writing
+# handlers call a domain function that asks PostgreSQL, for this project and
+# this named operation, inside the transaction that writes.
+#
+# **The expensive read is not in the committing request.** `prepare` opens the
+# workbook, registers the Document and writes its Source Segments; `adopt`
+# verifies retained identities and writes. That split is #893's lesson applied
+# to a second file format, and `tests/test_onboarding_authorization.py` fails
+# if the approval request ever opens a workbook again.
+
+
+def _onboarding_page(
+    request: Request,
+    project: Project,
+    membership: access.MembershipAccess,
+    session: Session,
+    *,
+    now: datetime,
+    refusal: str = "",
+    status_code: int = 200,
+) -> Response:
+    """The one reading this project's onboarding screen renders."""
+
+    view = onboarding_view(
+        session,
+        project_id=int(project.id),
+        project_slug=project.slug,
+        project_name=project.name,
+        membership=membership,
+        as_of=now,
+    )
+    return TEMPLATES.TemplateResponse(
+        request,
+        "onboarding.html",
+        {
+            "project": project,
+            "view": view,
+            "refusal": refusal,
+            # A fresh key per rendered form, so two submissions of the same
+            # page are the same act and a new page is a new one. It is the
+            # request identity #827 binds an exact retry to; the material
+            # payload is bound separately, so a reused key with different
+            # content is refused rather than replayed.
+            "request_key": uuid4().hex,
+        },
+        status_code=status_code,
+    )
+
+
+@app.post("/projects/{slug}/baseline/prepare", response_class=HTMLResponse)
+def prepare_baseline(
+    request: Request,
+    slug: str,
+    sha256: str = Form(...),
+    filename: str = Form(...),
+    source_identity: str = Form(""),
+    customer: str = Form(""),
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+    clock=Depends(get_review_clock),
+):
+    """Read the supplied workbook once, and retain what adopting it would do.
+
+    The bounded compatibility read ADR-0099 permits, and the only place in the
+    product where a baseline workbook is opened. Operations may run it while
+    they settle the mechanics, and a coordinator may run it on their own
+    source; neither consumes anything, so it can be run again after a mapping
+    changes.
+    """
+
+    project = _project(session, slug, principal)
+    membership = _authorize(session, principal, project)
+    now = clock()
+    staged_path = staged_file(sha256)
+    if staged_path is None:
+        return _onboarding_page(
+            request, project, membership, session, now=now,
+            refusal=(
+                "Those bytes are no longer staged. Supply the workbook again."
+            ),
+            status_code=409,
+        )
+    staged = StagedSource(
+        sha256=sha256,
+        size_bytes=Path(staged_path).stat().st_size,
+        suffix=Path(filename).suffix.lower(),
+        filename=filename,
+        stored_path=Path(staged_path),
+    )
+    try:
+        with session.begin_nested():
+            prepare_baseline_reading(
+                session,
+                project=project,
+                staged=staged,
+                customer=customer.strip() or project.name,
+                source_identity=source_identity.strip() or filename,
+                principal=principal,
+                at=now,
+            )
+    except (OnboardingRefused, BaselineAdoptionRefused) as refused:
+        return _onboarding_page(
+            request, project, membership, session, now=now,
+            refusal=refused.customer_sentence
+            if isinstance(refused, refusals.Refusal)
+            else str(refused),
+            status_code=refusal_status(refused)
+            if isinstance(refused, refusals.Refusal)
+            else 409,
+        )
+    except HostileContentRefused as held:
+        return _onboarding_page(
+            request, project, membership, session, now=now,
+            refusal=(
+                "This source is held and cannot be read further until Corridor "
+                "operations releases it."
+            ),
+            status_code=409,
+        )
+    session.commit()
+    return _onboarding_page(request, project, membership, session, now=now,
+                            status_code=201)
+
+
+@app.post("/projects/{slug}/baseline/adopt", response_class=HTMLResponse)
+async def adopt_baseline_from_the_product(
+    request: Request,
+    slug: str,
+    binding_fingerprint: str = Form(...),
+    request_key: str = Form(...),
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+    clock=Depends(get_review_clock),
+):
+    """The coordinator's one attributable act, in their own session.
+
+    Short and atomic: it verifies the retained reading's identity, writes the
+    Project Record revision, moves the project into adopted-baseline mode and
+    consumes the adoption permission with its retained proof of validity, in
+    one transaction, and opens no file.
+
+    The designation is *not* gated here. `_project` admits any member, and the
+    command's own `enforce_coordination_designation` trigger refuses a caller
+    who holds no project-coordination designation -- so the refusal comes from
+    the authority that records the act rather than from a second opinion in the
+    adapter, which is what #533 and #839 already do.
+    """
+
+    project = _project(session, slug, principal)
+    membership = _authorize(session, principal, project)
+    now = clock()
+    retained = retained_baseline_reading(
+        session, project_id=int(project.id), binding_fingerprint=binding_fingerprint
+    )
+    if retained is None:
+        return _onboarding_page(
+            request, project, membership, session, now=now,
+            refusal=(
+                "This adoption no longer matches the reading you were shown. "
+                "Prepare the baseline reading again before adopting it."
+            ),
+            status_code=409,
+        )
+    form = await request.form()
+    try:
+        answers = _submitted_answers(form)
+        with session.begin_nested():
+            adopt_retained_baseline(
+                session,
+                retained=retained,
+                principal=principal,
+                answers=answers,
+                request_key=request_key,
+                at=now,
+            )
+    except (OnboardingRefused, BaselineAdoptionRefused) as refused:
+        return _onboarding_page(
+            request, project, membership, session, now=now,
+            refusal=refused.customer_sentence
+            if isinstance(refused, refusals.Refusal)
+            else str(refused),
+            status_code=refusal_status(refused)
+            if isinstance(refused, refusals.Refusal)
+            else 409,
+        )
+    except DBAPIError as exc:
+        refused = onboarding_refusal_from_database(exc)
+        if refused is None:
+            raise
+        return _onboarding_page(
+            request, project, membership, session, now=now,
+            refusal=refused.customer_sentence,
+            status_code=refusal_status(refused),
+        )
+    session.commit()
+    return _onboarding_page(request, project, membership, session, now=now,
+                            status_code=201)
+
+
+def _submitted_answers(form) -> tuple[QuestionAnswer, ...]:
+    """The answers the rendered form carried, in the form's own encoding.
+
+    Each control is named `answer:<kind>:<index>:<subject>` so a subject
+    containing any character a customer's identifier can hold survives the
+    round trip without a second lookup table, and the index keeps two questions
+    of one kind about one subject distinct. Anything else in the form is
+    ignored rather than guessed at.
+    """
+
+    answers = []
+    choices = {
+        tuple(key.split(":", 2)[1:]): value
+        for key, value in form.multi_items()
+        if key.startswith("choice:")
+    }
+    for key, value in form.multi_items():
+        if not key.startswith("answer:") or not value:
+            continue
+        parts = key.split(":", 3)
+        if len(parts) != 4:
+            raise BaselineAnswerRefused(
+                "this form was not the one the page rendered"
+            )
+        _prefix, kind, _index, subject = parts
+        answers.append(
+            QuestionAnswer(
+                kind=kind,
+                subject=subject,
+                answer=value,
+                choice=str(choices.get((kind, subject), "")),
+            )
+        )
+    return tuple(answers)

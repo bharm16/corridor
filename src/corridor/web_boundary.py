@@ -1160,6 +1160,80 @@ for _key, _why in (
     )
 
 
+# #827 The onboarding surface, and the two acts it carries.
+#
+# `/work/{slug}` renders this page for a project that has not adopted a
+# baseline, so the four onboarding relations join what that route reaches
+# rather than living on a second entry nothing would keep in step. The two acts
+# re-render the same page around their own outcome, so each reaches exactly
+# what the page reaches plus what its own command writes -- derived from the
+# page's set for the reason #837's pair is derived from it.
+PILOT_ROUTES[("GET", "/work/{slug}")] = PilotRoute(
+    why=PILOT_ROUTES[("GET", "/work/{slug}")].why
+    + "; #827 a provisioned project that has not adopted one shows its "
+    "onboarding state and the next permitted action",
+    relations=PILOT_ROUTES[("GET", "/work/{slug}")].relations
+    | {
+        "project_onboarding_grants",
+        "project_onboarding_grant_events",
+        "project_onboarding_previews",
+        "project_onboarding_acts",
+        "project_baseline_adoptions",
+        "project_baseline_sources",
+        "project_baseline_formats",
+    },
+)
+
+for _key, _why, _own in (
+    (
+        ("POST", "/projects/{slug}/baseline/prepare"),
+        "#827 the bounded compatibility read of a supplied baseline workbook, "
+        "retained so the approval request can verify it without opening it. "
+        "It registers the source and writes its Source Segments, and consumes "
+        "no permission (ADR-0099)",
+        frozenset(
+            {
+                # No `doc_pages`: a spreadsheet has neither pages nor a layout
+                # (ADR-0005, `corridor.ingest`), so this read writes worksheet
+                # Source Segments and no page projection -- which is the only
+                # reason it can run inside a human request at all, since #893
+                # left the web capability holding nothing on that relation.
+                "extraction_runs",
+                "facts",
+                "fact_sources",
+                "source_deliveries",
+                "source_delivery_confirmations",
+                "source_segments",
+                "support_assessments",
+                "support_assessment_sources",
+            }
+        ),
+    ),
+    (
+        ("POST", "/projects/{slug}/baseline/adopt"),
+        "#827 the coordinator's one attributable adoption, in their own "
+        "session and through the granted command. It verifies the retained "
+        "reading's identity, writes one Project Record revision, moves the "
+        "project into adopted-baseline mode and consumes the adoption "
+        "permission with its retained proof, in one transaction",
+        frozenset(
+            {
+                "extraction_runs",
+                "facts",
+                "fact_sources",
+                "project_record_revisions",
+                "source_segments",
+                "support_assessments",
+                "support_assessment_sources",
+            }
+        ),
+    ),
+):
+    PILOT_ROUTES[_key] = PilotRoute(
+        _why, PILOT_ROUTES[("GET", "/work/{slug}")].relations | _own
+    )
+
+
 def route_is_enabled(method: str, template: str) -> bool:
     """Whether the live pilot serves this route at all."""
 

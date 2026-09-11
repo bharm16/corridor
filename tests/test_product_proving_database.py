@@ -277,8 +277,13 @@ def test_public_fingerprint_discovers_all_current_tables_and_sequences_read_only
     # accepted value -- keyed by its own bigserial: one table, one sequence.
     # The command that writes it and the guard that refuses every other write
     # are schema objects the digest reads and neither count does.
-    assert fingerprint.table_count == 227
-    assert fingerprint.sequence_count == 205
+    # #827 adds the four relations the limited onboarding authorization needs
+    # in the customer environment -- the grant, what happened to it, the
+    # retained preview and the retained proof of a committed act -- each keyed
+    # by its own bigserial: four tables, four sequences. The authorization
+    # itself is the control plane's and is not an Alembic relation at all.
+    assert fingerprint.table_count == 231
+    assert fingerprint.sequence_count == 209
     assert fingerprint.schema_object_count > 0
     assert len(fingerprint.schema_sha256) == 64
     assert [item.name for item in fingerprint.tables] == sorted(

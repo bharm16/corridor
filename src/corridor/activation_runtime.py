@@ -26,6 +26,13 @@ from corridor.control_plane import RouteRefused
 from corridor.shadow_capabilities import verify_runtime
 
 _BOOTSTRAP = ContextVar("corridor_authorized_source_bootstrap", default=None)
+# ADR-0099's pre-activation authority. Deliberately shaped like `_BOOTSTRAP`
+# and deliberately *not* the same thing: entering it requires a grant this
+# process cannot write, read out of the customer database that is about to be
+# written, for the one project and the one operation named. A caller who sets
+# it without such a row gets nothing, because `limited_onboarding_authorization`
+# refuses before the token exists.
+_ONBOARDING = ContextVar("corridor_limited_onboarding_authorization", default=None)
 
 
 def runtime_data_class():
@@ -94,6 +101,14 @@ def require_source_project(session, project_id):
         verify_runtime(session, project_id=project_id, customer=settings.customer_id,
             environment=settings.customer_environment_id)
         return
+    if _onboarding_authorized(session, project_id):
+        # The bounded pre-activation authority (ADR-0099). It is not a relaxed
+        # activation check: an activation receipt is still required for every
+        # operation this authorization does not name, and the grant behind this
+        # one was proved in the database, for this project, before the context
+        # opened. A shadow deployment never reaches here -- the bootstrap and
+        # the shadow runtime stay two credentials and two acts.
+        return
     configuration = current_activation()
     if configuration.project_id != project_id:
         raise RouteRefused("source project is outside the activated project")
@@ -113,6 +128,12 @@ def require_source_delivery(session, binding):
         require_source_project(session, binding.project_id)
         if binding.customer != settings.customer_id:
             raise RouteRefused("source delivery is outside the shadow customer")
+        return
+    if _onboarding_authorized(session, binding.project_id):
+        # Bounded receipt and safe staging of material inside the authorized
+        # source scope is one of the activities ADR-0099 permits, and the
+        # delivery selection an activation would compare against does not yet
+        # exist. The project binding is still proved, by the same grant.
         return
     configuration = current_activation()
     if (binding.customer, binding.project_id, binding.channel, binding.configuration_identity,
@@ -137,6 +158,38 @@ def owner_source_bootstrap(session):
         yield
     finally:
         _BOOTSTRAP.reset(token)
+
+
+def _onboarding_authorized(session, project_id) -> bool:
+    """Whether this exact session holds ADR-0099's authority for this project."""
+
+    held = _ONBOARDING.get()
+    return held is not None and held[0] is session and held[1] == project_id
+
+
+@contextmanager
+def limited_onboarding_authorization(session, *, project_id, operation, at):
+    """The bounded authority the work before activation runs under (ADR-0099).
+
+    Not the owner bootstrap. That context is the schema owner's and exists for
+    one-time operations bootstrap; this one is the web capability's, is bound
+    to one project and one named operation, and is opened only after the
+    customer database itself says the grant permits that operation right now.
+    A request cannot assert it: `require_onboarding_permission` reads
+    `onboarding_grant_standing`, and `corridor_web` can neither write the grant
+    nor record anything about it.
+    """
+
+    from corridor.onboarding_authorization import require_onboarding_permission
+
+    standing = require_onboarding_permission(
+        session, project_id=project_id, operation=operation, at=at
+    )
+    token = _ONBOARDING.set((session, project_id))
+    try:
+        yield standing
+    finally:
+        _ONBOARDING.reset(token)
 
 
 class SourceDeliveryScope(Protocol):

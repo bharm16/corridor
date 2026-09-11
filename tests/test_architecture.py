@@ -148,6 +148,15 @@ def test_control_plane_metadata_has_no_customer_content_relations():
         "control_plane.destruction_receipts",
         "control_plane.disposition_plans",
         "control_plane.disposition_rehearsal_receipts",
+        # #827's limited onboarding authorization and what happened to it
+        # (ADR-0099). It belongs to ADR-0083's control-plane clause -- an
+        # authorization to process a named customer's data is cross-customer
+        # operations state and has to stay legible after that customer's
+        # environment is disposed of -- and it carries identifiers, versions
+        # and digests only. The preview, mapping, answers and adoption receipt
+        # it permits stay in the customer environment.
+        "control_plane.onboarding_authorizations",
+        "control_plane.onboarding_authorization_events",
     }
     assert {table.name for table in tables.values()}.isdisjoint(Base.metadata.tables)
     assert all(foreign_key.column.table.metadata is CONTROL_PLANE_METADATA for table in tables.values() for foreign_key in table.foreign_keys)

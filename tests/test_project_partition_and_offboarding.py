@@ -3327,20 +3327,27 @@ def test_each_state_answers_an_unapproved_route_in_its_own_way():
         assert web_boundary.route_refusal(state, *inside) is None
 
 
-def test_the_enabled_work_route_refuses_a_project_the_pilot_cannot_serve(
+def test_the_enabled_work_route_serves_onboarding_rather_than_the_legacy_list(
     two_projects, live_pilot_client, boundary_enabled
 ):
-    """`/work/{slug}` is enabled, and its legacy branch is not.
+    """`/work/{slug}` is enabled, and its legacy branch is still not (#680, #827).
 
-    An unadopted project falls to ADR-0035's item-per-record Work List, which
-    reads `dependencies`, `work_decisions` and `evidence_links` — all revoked.
-    Leaving them readable to reach this branch is the trade #680 refuses, so
-    the route refuses the project instead.
+    An unadopted project used to fall to ADR-0035's item-per-record Work List,
+    which reads `dependencies`, `work_decisions` and `evidence_links` -- all
+    revoked -- so the route answered 404 and a coordinator's first sign-in was
+    told their project did not exist. #827 does not make that branch readable:
+    it renders the onboarding surface instead, which reads the four onboarding
+    relations, the adoption receipt and nothing the revoke took. The trade #680
+    refuses is still refused; what changed is that there is now a page to serve.
     """
 
-    refused = live_pilot_client.get("/work/ours", follow_redirects=False)
+    served = live_pilot_client.get("/work/ours", follow_redirects=False)
 
-    assert refused.status_code == 404
+    assert served.status_code == 200, served.text
+    assert "baseline" in served.text.lower()
+    # Nothing from ADR-0035's item-per-record list, which is what the revoke
+    # took away and what this page must never reach for.
+    assert "Attention Reason" not in served.text
 
 
 # --- The identity and authorization export ---------------------------------

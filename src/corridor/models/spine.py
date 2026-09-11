@@ -28,7 +28,7 @@ from sqlalchemy import (
     func,
     text,
 )
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from corridor.fact_types import (
@@ -61,6 +61,10 @@ __all__ = [
     "FactSource",
     "FactStatementTiming",
     "MinutesCapture",
+    "OnboardingAct",
+    "OnboardingGrant",
+    "OnboardingGrantEvent",
+    "OnboardingPreview",
     "ProjectRecordRevision",
     "SUPPORT_ASSESSMENT_EVIDENCE_ROLES",
     "SUPPORT_ASSESSMENT_OUTCOMES",
@@ -1372,5 +1376,184 @@ class FactDecision(Base):
         ForeignKey("fact_decisions.id", deferrable=True, initially="DEFERRED")
     )
     decided_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+# --- The limited onboarding authorization ADR-0099 decides (#827) -----------
+#
+# The authorization itself is the control plane's (ADR-0083, a different
+# database). These four relations are what the customer environment holds: the
+# grant a restricted operations actor recorded here, what happened to it
+# afterwards, the preview the coordinator approves, and the retained proof that
+# a permitted onboarding act committed while the grant was valid.
+#
+# All four are append-only and written only by their own commands; the mappings
+# below are readings, and nothing in the application writes them through the
+# ORM.
+
+
+class OnboardingGrant(Base):
+    """One project's record of a limited onboarding authorization (#827)."""
+
+    __tablename__ = "project_onboarding_grants"
+    __table_args__ = (
+        UniqueConstraint("project_id", "id", name="uq_project_onboarding_grants_project_id"),
+        UniqueConstraint(
+            "project_id",
+            "authorization_id",
+            "grant_version",
+            name="uq_project_onboarding_grants_version",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    authorization_id: Mapped[str] = mapped_column(String(128))
+    grant_version: Mapped[int] = mapped_column(Integer)
+    customer: Mapped[str] = mapped_column(String(128))
+    environment: Mapped[str] = mapped_column(String(128))
+    permitted_operations: Mapped[list[str]] = mapped_column(ARRAY(Text))
+    source_scope: Mapped[str] = mapped_column(String(256))
+    governing_authorization_identity: Mapped[str] = mapped_column(String(128))
+    governing_authorization_version: Mapped[str] = mapped_column(String(64))
+    evidence_identity: Mapped[str] = mapped_column(String(256))
+    evidence_sha256: Mapped[str] = mapped_column(String(64))
+    issued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    issued_by_actor: Mapped[str] = mapped_column(String(128))
+    recorded_by_actor: Mapped[str] = mapped_column(String(128))
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class OnboardingGrantEvent(Base):
+    """What happened to one grant after it was recorded (#827).
+
+    Withdrawal is three separate recorded facts, never one: the customer's
+    request, this database's enforcement of it, and an enforcement that failed.
+    ADR-0099 refuses to let a request be described as fully enforced while the
+    customer database can still exercise the grant, and that is only sayable if
+    the two are different rows.
+    """
+
+    __tablename__ = "project_onboarding_grant_events"
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id", "id", name="uq_project_onboarding_grant_events_project_id"
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "grant_id"],
+            ["project_onboarding_grants.project_id", "project_onboarding_grants.id"],
+            name="fk_project_onboarding_grant_events_grant",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(BigInteger)
+    grant_id: Mapped[int] = mapped_column(BigInteger)
+    kind: Mapped[str] = mapped_column(String(48))
+    requested_by: Mapped[str | None] = mapped_column(String(256))
+    requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    executed_by_actor: Mapped[str] = mapped_column(String(128))
+    executed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    reason: Mapped[str | None] = mapped_column(Text)
+    detail: Mapped[str | None] = mapped_column(Text)
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class OnboardingPreview(Base):
+    """The server-retained preview a coordinator approves (#827).
+
+    ``adoptable`` is the database's own answer, taken from
+    ``project_operating_mode`` when the preview was retained. A preview
+    regenerated after the project adopted is retained for verification and is
+    not an adoptable baseline.
+    """
+
+    __tablename__ = "project_onboarding_previews"
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id", "id", name="uq_project_onboarding_previews_project_id"
+        ),
+        UniqueConstraint(
+            "project_id",
+            "binding_fingerprint",
+            name="uq_project_onboarding_previews_fingerprint",
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "grant_id"],
+            ["project_onboarding_grants.project_id", "project_onboarding_grants.id"],
+            name="fk_project_onboarding_previews_grant",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    grant_id: Mapped[int] = mapped_column(BigInteger)
+    source_sha256: Mapped[str] = mapped_column(String(64))
+    filename: Mapped[str] = mapped_column(String(512))
+    source_identity: Mapped[str] = mapped_column(String(256))
+    mapping_identity: Mapped[str] = mapped_column(String(256))
+    mapping_version: Mapped[str] = mapped_column(String(64))
+    binding_fingerprint: Mapped[str] = mapped_column(String(64))
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    operations_resolved: Mapped[bool] = mapped_column(Boolean)
+    blocking_question_count: Mapped[int] = mapped_column(Integer)
+    adoptable: Mapped[bool] = mapped_column(Boolean)
+    prepared_by_actor: Mapped[str] = mapped_column(String(128))
+    prepared_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class OnboardingAct(Base):
+    """Retained proof that one onboarding act committed under a valid grant (#827).
+
+    ADR-0099 asks activation for this row rather than for an unexpired
+    authorization, so a legitimate adoption does not become unusable history
+    when the temporary permission lapses. ``(project_id, operation,
+    request_key)`` is the exact-retry key; ``(project_id, operation)`` is what
+    refuses a second act under a new key.
+    """
+
+    __tablename__ = "project_onboarding_acts"
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id", "id", name="uq_project_onboarding_acts_project_id"
+        ),
+        UniqueConstraint(
+            "project_id",
+            "operation",
+            "request_key",
+            name="uq_project_onboarding_acts_request",
+        ),
+        UniqueConstraint(
+            "project_id", "operation", name="uq_project_onboarding_acts_once"
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "grant_id"],
+            ["project_onboarding_grants.project_id", "project_onboarding_grants.id"],
+            name="fk_project_onboarding_acts_grant",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    grant_id: Mapped[int] = mapped_column(BigInteger)
+    authorization_id: Mapped[str] = mapped_column(String(128))
+    grant_version: Mapped[int] = mapped_column(Integer)
+    operation: Mapped[str] = mapped_column(String(48))
+    request_key: Mapped[str] = mapped_column(String(160))
+    material_sha256: Mapped[str] = mapped_column(String(64))
+    principal: Mapped[str] = mapped_column(String(128))
+    committed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    validity: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    result: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    recorded_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

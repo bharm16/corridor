@@ -119,7 +119,7 @@ CORE_JOURNEY: tuple[JourneyRow, ...] = (
         role=COORDINATION,
         state="Project provisioned, baseline not adopted",
         action="Read what Corridor needs next to start this project",
-        route="",
+        route="GET /work/{slug}",
         result="The onboarding state and the next act, in the product",
         scenario="read_onboarding_state",
         owner="#827",
@@ -159,7 +159,7 @@ CORE_JOURNEY: tuple[JourneyRow, ...] = (
         role=COORDINATION,
         state="Baseline previewed, material questions open",
         action="Answer the material questions and adopt the baseline",
-        route="",
+        route="POST /projects/{slug}/baseline/adopt",
         result="One Adopt Baseline receipt, and the project moves to adopted "
         "baseline operating mode in the same transaction",
         scenario="coordinator_answers_and_adopts",
@@ -373,7 +373,8 @@ CLAIMED_WORKFLOWS: tuple[WorkflowRow, ...] = (
     ),
     WorkflowRow(
         workflow="The baseline is adopted",
-        producer="",
+        producer="POST /projects/{slug}/baseline/adopt, through the granted "
+        "command under the limited onboarding authorization",
         consumer="GET /work/{slug}",
         scenario="coordinator_answers_and_adopts",
         owner="#827",

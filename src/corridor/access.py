@@ -918,6 +918,15 @@ PARTITIONED_RELATIONS: frozenset[str] = frozenset(
         "pipeline_selections",
         "candidates",
         "capture_correction_requests",
+        # #827 The limited onboarding authorization a project holds, what
+        # happened to it, the reading a coordinator approves, and the retained
+        # proof that a permitted act committed while it was valid. All four are
+        # one customer's own material and answer #531's partition exactly as the
+        # adoption they attribute does.
+        "project_onboarding_grants",
+        "project_onboarding_grant_events",
+        "project_onboarding_previews",
+        "project_onboarding_acts",
         "connector_checkpoint_advances",
         "delta_decision_supports",
         "delta_deferrals",
