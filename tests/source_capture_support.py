@@ -60,7 +60,7 @@ def _as_capability_login(session: Session) -> Iterator[Session]:
     """Append as the login the runtime appends as, and stop however the body ends.
 
     ``harness_support.as_record_decision_role`` is this same pair for the
-    record-decision role, and records why the reset belongs in a ``finally``.
+    record-decision role, and records why the restore belongs in a ``finally``.
     It is not generalised to other roles on this branch, so the source-append
     commands' caller is written out here; when one seam covers every role this
     becomes a call to it.
@@ -74,15 +74,19 @@ def _as_capability_login(session: Session) -> Iterator[Session]:
 
     Pending ORM state is flushed first, as the owner, so an autoflush inside a
     command does not try to write the caller's unrelated rows as the login.
+    The principal in force on the way in is restored on the way out rather
+    than reset, so a capture inside a borrowed role hands that role back
+    instead of quietly dropping the caller to the session user.
     """
 
     session.flush()
+    previous = session.scalar(text("select current_user"))
     session.execute(text(f"set local role {WORKER_CAPABILITY_LOGIN}"))
     try:
         yield session
     finally:
         try:
-            session.execute(text("reset role"))
+            session.execute(text(f"set local role {previous}"))
         except (DBAPIError, InvalidRequestError):
             # A refused append leaves the transaction unusable, in PostgreSQL
             # or in SQLAlchemy's own guard over it. Either way the enclosing

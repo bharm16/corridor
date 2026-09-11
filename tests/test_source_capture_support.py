@@ -21,7 +21,7 @@ import pytest
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import DBAPIError, IntegrityError
 
-from corridor.db_roles import WORKER_CAPABILITY_LOGIN
+from corridor.db_roles import RECORD_DECISION_ROLE, WORKER_CAPABILITY_LOGIN
 from corridor.materializer import (
     FactReplayMismatch,
     FactValidationError,
@@ -30,6 +30,7 @@ from corridor.materializer import (
 from corridor.models import Fact, FactSource, Project, SourceSegment
 from corridor.source_append import SegmentValues, append_source_segments
 
+from harness_support import as_record_decision_role
 from source_capture_support import Rendition, _as_capability_login
 
 
@@ -263,6 +264,24 @@ def test_the_capture_login_holds_no_write_on_the_tables_it_captures_into(
                 session.flush()
 
     assert session.scalar(text("select current_user")) != WORKER_CAPABILITY_LOGIN
+
+
+def test_a_capture_supplies_its_own_principal_and_hands_back_the_callers(
+    session, project
+):
+    """The caller's role is neither what appends nor what the append leaves behind."""
+
+    rendition = Rendition(session, project, "ucm-principal.xlsx")
+
+    with as_record_decision_role(session):
+        assert session.scalar(text("select current_user")) == RECORD_DECISION_ROLE
+        fact, segment = rendition.capture(
+            fact_type="station_from", value="1200+00", subject_key=SUBJECT
+        )
+        assert session.scalar(text("select current_user")) == RECORD_DECISION_ROLE
+
+    assert (fact.text_value, segment.exact_text) == ("1200+00", "1200+00")
+    assert session.scalar(text("select current_user")) != RECORD_DECISION_ROLE
 
 
 def test_the_fact_takes_its_transformation_and_value_from_the_released_contract(
