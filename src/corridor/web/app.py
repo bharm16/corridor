@@ -229,7 +229,7 @@ from corridor.dependency_events import (
     current_scope_decision_filter,
     current_statement_evidence_memberships,
 )
-from corridor.web.follow_up_view import chase_view
+from corridor.web.follow_up_view import chase_view, correspondence_history
 from corridor.web.issue_section import artifact_words, issue_view
 from corridor.analytics import EventFamily
 from corridor.measurement_collection import binding_for_session, emit_presentation
@@ -5561,6 +5561,13 @@ def record_history_screen(
             "project": project,
             "history": history,
             "refused_revision": refused_revision,
+            # What was sent and what came back, composed by the same module
+            # the week's Follow-up section composes it with (#837). The week
+            # builds its section out of the bundles it is still asking about,
+            # so a message whose every Follow-up Plan has closed reaches
+            # nobody there; here the reading is the project's whole retained
+            # correspondence and nothing filters it.
+            "correspondence": correspondence_history(history.correspondence),
             # The search this page is answering, as a query string, so the
             # one capped section can offer its older entries without dropping
             # the question the rest of the page is asking (#830). The path is

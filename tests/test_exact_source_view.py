@@ -578,13 +578,18 @@ def test_the_record_view_opens_the_passage_behind_an_accepted_value(
 
 
 def test_every_record_citation_site_is_a_link_to_its_passage():
-    """All three places the Record view prints a citation, not just the one.
+    """All four places the Record view prints a citation, not just the one.
 
-    The other two — a native source decision's Source Fact, and native
-    publication support — need an accepted decision history and a retained
-    support receipt to render, which is a different module's fixture. What
-    they share with the rendered case is the address, so the template is read
-    for the three and the rendered case above proves the address is right.
+    Three of them need a fixture this module does not build — a native source
+    decision's Source Fact, native publication support, and #837's recorded
+    reply that was read off an exact passage — so the template is read for
+    those and the rendered case above proves the address is right.
+
+    The fourth is the one #837's correspondence history added: a reply linked
+    to a Source Segment is evidence, and evidence a reader cannot open is the
+    assumption ADR-0090 retired the legacy STALE alert for. It is counted here
+    so that a later change which prints that citation as words again fails
+    beside the other three rather than quietly.
     """
 
     record = (TEMPLATE_ROOT / "record_history.html").read_text(encoding="utf-8")
@@ -594,9 +599,12 @@ def test_every_record_citation_site_is_a_link_to_its_passage():
         for line in record.splitlines()
         if "/sources/{{ project.slug }}/passage/" in line
     ]
-    assert len(links) == 3, links
+    assert len(links) == 4, links
     assert sum("source.source_segment_id" in line for line in links) == 2
     assert sum("support.source_segment_id" in line for line in links) == 1
+    assert sum(
+        "reply.response.source_segment_id" in line for line in links
+    ) == 1
 
 
 def test_the_follow_up_bundle_links_only_the_citations_the_record_resolves():

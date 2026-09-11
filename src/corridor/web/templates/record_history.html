@@ -76,6 +76,7 @@
       <li><a href="#search-heading">Look something up</a></li>
       <li><a href="#values-heading">Accepted values</a></li>
       <li><a href="#deltas-heading">Proposed changes and how they were settled</a></li>
+      <li><a href="#correspondence-heading">What has been sent, and what came back</a></li>
       <li><a href="#revisions-heading">Revisions of this record</a></li>
       <li><a href="#releases-heading">What was approved for sharing</a></li>
       <li><a href="#audit-heading">Audit trail</a></li>
@@ -326,6 +327,130 @@
     <p><a href="/review/{{ project.slug }}">Open the review screen</a></p>
     {%- else %}
     <p>No proposed change matches this search.</p>
+    {%- endif %}
+  {% endcall %}
+
+  {#
+    What was sent and what came back, after the follow-up is over (#837).
+
+    The week's Follow-up section shows this too, and shows it only while a
+    bundle exists to carry it — bundles are built from the Follow-up Plans a
+    week is *still* asking about, so once every plan one message advanced has
+    closed, that message reaches nobody there. It survived in the reader and in
+    the database and was rendered nowhere. A closed question must not make the
+    communication behind it inaccessible, so it is rendered here, on the page
+    that already exists to answer "what happened, and who did it".
+
+    It is history and not a chase. There is no form, no band, no control and no
+    ask: every plan says in words how that ask ended, and what is still
+    outstanding is on the work page this section links to. The exact message is
+    a link to the retained content — a digest can prove two things are the same
+    and can show nobody anything — and each reply that was read off a record
+    Corridor holds links to that record.
+  #}
+  {% call ui.region("correspondence", "What has been sent, and what came back", focus) %}
+    <p>
+      Every message recorded as sent to an outside party about this project's
+      questions, and everything recorded back against one. Corridor sends
+      nothing: each of these was sent from somebody's own mail client and
+      recorded here afterwards.
+    </p>
+    <p class="quiet">
+      This is the record of what was asked, not a list of what is still
+      outstanding. What is still outstanding is on
+      <a href="/work/{{ project.slug }}">this project's work</a>. A message
+      whose questions have all closed stays here, because a closed question
+      should not make its supporting communication unreachable.
+    </p>
+    {%- if correspondence %}
+    {%- for record in correspondence %}
+    <div class="value" id="correspondence-request-{{ record.request.request_id }}">
+      <h3>
+        Recorded as sent on {{ record.request.sent_on }} to
+        {{ record.request.external_organization }}
+      </h3>
+      <p>{{ ui.state(record.state) }}</p>
+      {{ ui.fact_list([
+           ("What was asked", record.request.question),
+           ("Who sent it, and who recorded it", record.sender_sentence),
+           ("A reply was expected by", record.request.expected_response_by),
+           ("Utility Conflicts named in it", record.covered_subjects|join(", ")),
+           ("Whether the answer is still outstanding", record.answer_sentence),
+           ("What a recorded reply does, and does not do", record.settles_nothing),
+         ]) }}
+      {%- if record.correction_sentence %}
+      <p>{{ record.correction_sentence }}</p>
+      {%- endif %}
+      <p>
+        <a href="/work/{{ project.slug }}/follow-up/sent/{{ record.request.request_id }}">Read the exact message that was sent</a>
+        &mdash; retained content, digest {{ record.request.content_sha256 }}.
+      </p>
+
+      <h4>The questions this message asked about</h4>
+      {%- if record.plans %}
+      {% call ui.record_table(
+           "Every Follow-up Plan this message named, and how that ask ended",
+           ["Follow-up Plan", "The question it asked", "Who owed the answer",
+            "How the ask ended"]) %}
+        {%- for named in record.plans %}
+        <tr>
+          <th scope="row">{{ named.plan.plan_id }}</th>
+          <td>
+            {{ named.plan.open_question }}
+            <p class="quiet">Raised on proposed change {{ named.plan.delta_id }}.</p>
+          </td>
+          <td>{{ named.plan.responsible if named.plan.responsible else not_recorded }}</td>
+          <td>
+            {{ ui.state(named.state) }}
+            {%- if named.closure_sentence %}
+            <p class="quiet">{{ named.closure_sentence }}</p>
+            {%- endif %}
+          </td>
+        </tr>
+        {%- endfor %}
+      {% endcall %}
+      {%- else %}
+      <p class="quiet">
+        No Follow-up Plan this message named is readable in this project.
+      </p>
+      {%- endif %}
+
+      <h4>What came back</h4>
+      {%- if record.replies %}
+      {% call ui.record_table(
+           "Everything recorded back against this request",
+           ["Day it came back", "What came back", "What it is linked to",
+            "Who recorded it"]) %}
+        {%- for reply in record.replies %}
+        <tr>
+          <th scope="row">{{ reply.response.received_on }}</th>
+          <td>
+            {{ ui.state(reply.state) }}
+            {%- if reply.correction_sentence %}
+            <p class="quiet">{{ reply.correction_sentence }}</p>
+            {%- endif %}
+          </td>
+          <td>
+            {{ reply.evidence_sentence }}
+            {%- if reply.response.evidence_kind == "source_segment" %}
+            <p class="quiet"><a href="/sources/{{ project.slug }}/passage/{{ reply.response.source_segment_id }}">Open the cited passage</a></p>
+            {%- elif reply.response.evidence_kind == "document" %}
+            <p class="quiet"><a href="/sources/{{ project.slug }}/document/{{ reply.response.document_id }}/original">Open the document that came in</a></p>
+            {%- elif reply.response.evidence_kind == "source_delivery" %}
+            <p class="quiet"><a href="/projects/{{ project.slug }}/sources">Find delivery {{ reply.response.source_delivery_id }} in the source register</a></p>
+            {%- endif %}
+          </td>
+          <td>{{ reply.response.recorded_by_principal }}</td>
+        </tr>
+        {%- endfor %}
+      {% endcall %}
+      {%- else %}
+      <p class="quiet">Nothing has been recorded back against this request.</p>
+      {%- endif %}
+    </div>
+    {%- endfor %}
+    {%- else %}
+    <p>Nothing has been recorded as sent to an outside party for this project.</p>
     {%- endif %}
   {% endcall %}
 

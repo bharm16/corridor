@@ -593,7 +593,9 @@ PILOT_ROUTES: dict[tuple[str, str], PilotRoute] = {
     ),
     ("GET", "/record/{slug}"): PilotRoute(
         why=(
-            "#642 the read-only record and history investigation"
+            "#642 the read-only record and history investigation; #837 the "
+            "correspondence it retains, which the week can only show while a "
+            "follow-up bundle still carries the plans one message advanced"
         ),
         relations=frozenset(
             {
@@ -613,6 +615,12 @@ PILOT_ROUTES: dict[tuple[str, str], PilotRoute] = {
                 "current_project_record",
                 "delta_deferrals",
                 "delta_dispositions",
+                # The Follow-up Plans each retained message advanced, with
+                # the closure that ended each ask (#835). They are read here
+                # and nowhere else on this page, because a closed plan is
+                # exactly the one the week no longer renders.
+                "delta_follow_up_plan_closures",
+                "delta_follow_up_plans",
                 "delta_record_decisions",
                 "delta_review_packet_children",
                 "delta_review_packet_receipts",
@@ -629,6 +637,11 @@ PILOT_ROUTES: dict[tuple[str, str], PilotRoute] = {
                 "fact_sources",
                 "fact_statement_timings",
                 "facts",
+                # #837's retained correspondence: the message, the plans it
+                # advanced, and everything recorded back against it.
+                "outgoing_request_plans",
+                "outgoing_request_responses",
+                "outgoing_requests",
                 "project_baseline_source_rows",
                 "project_record_revisions",
                 "project_roster_entries",

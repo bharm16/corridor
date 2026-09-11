@@ -54,7 +54,10 @@ from corridor.follow_up_bundles import (
     read_follow_up_bundles,
     read_retained_outgoing_requests,
 )
-from corridor.follow_up_plan_lifecycle import cancel_follow_up_plan
+from corridor.follow_up_plan_lifecycle import (
+    cancel_follow_up_plan,
+    update_follow_up_plan,
+)
 from corridor.models import (
     DeltaDisposition,
     DeltaFollowUpPlan,
@@ -77,6 +80,7 @@ from corridor.packet_review import (
     read_review_items,
 )
 from corridor.principals import HumanPrincipal
+from corridor.record_history import read_record_history
 from corridor.review_packets import NEEDS_COORDINATION, resolve_review_packet
 from corridor import web_boundary
 from corridor.web.app import (
@@ -88,6 +92,7 @@ from corridor.web.app import (
 from corridor.web.follow_up_view import chase_view
 
 import journey_matrix
+from access_support import seed_membership
 from browser_session_support import page_without_shell
 from journey_harness import Step, run_scenario
 from packet_review_support import (
@@ -1083,6 +1088,356 @@ def test_nothing_on_the_follow_up_section_sends_anything(
     assert re.findall(r"sender\.send_\w+", application) == [
         "sender.send_sign_in_link"
     ]
+
+
+# --- the history stays reachable after the plans close (#837 x #642) ---------
+#
+# #910 reported this honestly rather than quietly building it: a follow-up
+# bundle is built from the Follow-up Plans a week is *still* asking about, so
+# once every plan one message advanced has closed, that message has no bundle
+# to hang on and the week renders it nowhere.  The record survived in
+# ``read_correspondence`` and in the database and reached nobody.
+#
+# The maintainer ruled that history must remain reachable after plans close,
+# on the existing per-plan or Record history view, with the sent content and
+# the evidence links.  The per-plan section is on the week, and the week's
+# follow-up reading is exactly what drops a closed plan -- extending it could
+# not reach a closed ask at all -- so this is the Record history view, which is
+# read-only, needs no designation, and exists to answer "what happened, and who
+# did it".
+
+
+def _cancel_every(session, project, plans):
+    for plan_id in plans:
+        _cancel(session, project, plan_id=plan_id)
+
+
+def _readable(markup: str) -> str:
+    """The page as one run of text, so a sentence wrapped in markup matches."""
+
+    return re.sub(r"\s+", " ", unescape(page_without_shell(markup)))
+
+
+def test_the_week_drops_a_closed_asks_message_and_the_record_page_keeps_it(
+    session, project, client
+):
+    """The gap #910 reported, and the surface that closes it, in one walk.
+
+    Both halves are asserted against rendered pages rather than readers,
+    because the defect was never in the reader: the record was there the whole
+    time and no screen printed it.
+    """
+
+    plans = _planned(session, project)
+    row = _retain(session, project, plans=plans)
+    session.expire_all()
+
+    week = _readable(client.get(f"/work/{project.slug}").text)
+    assert f"Recorded as sent on {SENT_ON} to {WATER}" in week
+
+    _cancel_every(session, project, plans)
+    session.expire_all()
+
+    closed_week = _readable(client.get(f"/work/{project.slug}").text)
+    assert f"Recorded as sent on {SENT_ON} to {WATER}" not in closed_week
+
+    markup = client.get(f"/record/{project.slug}").text
+    page = _readable(markup)
+    assert "What has been sent, and what came back" in page
+    assert f"Recorded as sent on {SENT_ON} to {WATER}" in page
+    assert "Which date do you hold to?" in page
+    # The conflict is named the way every other section of this page names it,
+    # not by the retained subject key.
+    assert (
+        "<dt>Utility Conflicts named in it</dt>"
+        f"<dd>U-{FIRST:03d} (Utility Conflicts row {FIRST})</dd>" in page
+    )
+    # The sent content, reachable, with the digest beside it and not instead.
+    assert f"/work/{project.slug}/follow-up/sent/{row.id}" in markup
+    assert row.content_sha256 in page
+    assert client.get(
+        f"/work/{project.slug}/follow-up/sent/{row.id}"
+    ).text == MESSAGE
+
+
+def test_the_record_page_says_how_each_closed_ask_ended(session, project, client):
+    """A retired ask reads as finished, in the words the closure act used."""
+
+    plans = _planned(session, project)
+    _retain(session, project, plans=plans)
+    _cancel_every(session, project, plans)
+    session.expire_all()
+
+    page = _readable(client.get(f"/record/{project.slug}").text)
+
+    for plan_id in plans:
+        assert f"<th scope=\"row\">{plan_id}</th>" in page
+    assert page.count("No longer an outside ask") == len(plans)
+    assert (
+        f"Closed on {LATER.date()} by {COORDINATOR.subject}: "
+        "this no longer needs an outside answer." in page
+    )
+    assert "No closure is recorded for this Follow-up Plan" not in page
+    # The proposed change the ask was raised on, so the question behind it is
+    # findable in the section above rather than only nameable.
+    assert page.count("Raised on proposed change") == len(plans)
+
+
+def test_a_retired_asks_history_carries_no_control_at_all(
+    session, project, client
+):
+    """History, not a chase: nothing here can be acted on, including by post.
+
+    The record page carries exactly one form, the GET search, and this is the
+    section most likely to grow a second one -- a "chase them again" beside a
+    message nobody answered is an easy control to add and would resurrect an
+    ask the coordinator explicitly retired.
+    """
+
+    plans = _planned(session, project)
+    _retain(session, project, plans=plans)
+    _cancel_every(session, project, plans)
+    session.expire_all()
+
+    markup = client.get(f"/record/{project.slug}").text
+    body = page_without_shell(markup)
+
+    assert 'method="post"' not in body.lower()
+    assert body.lower().count("<form") == 1
+    assert "csrf" not in body.lower()
+    for control in ("Record sent", "Record response", "Send", "Chase"):
+        assert f">{control}<" not in body
+    # And the section says what it is before anything else in it.
+    assert (
+        "This is the record of what was asked, not a list of what is still "
+        "outstanding." in _readable(markup)
+    )
+
+
+def test_the_record_page_links_each_reply_to_the_evidence_behind_it(
+    session, project, client
+):
+    """The maintainer's second requirement: the evidence, reachable.
+
+    Two of the four kinds are records Corridor holds at their own route, and
+    the reply names which row, so the link is to that row and not to a list.
+    """
+
+    plans = _planned(session, project)
+    row = _retain(session, project, plans=plans)
+    segment_id = session.scalars(
+        select(SourceSegment.id)
+        .where(SourceSegment.project_id == project.id)
+        .order_by(SourceSegment.id)
+    ).first()
+    document_id = session.scalars(
+        select(Document.id)
+        .where(Document.project_id == project.id)
+        .order_by(Document.id)
+    ).first()
+    _reply(
+        session,
+        project,
+        request_id=row.id,
+        completeness="partial",
+        source_segment_id=segment_id,
+        observation=None,
+        observed_by_principal=None,
+        source_reference="the cell they pointed at",
+    )
+    _reply(
+        session,
+        project,
+        request_id=row.id,
+        document_id=document_id,
+        observation=None,
+        observed_by_principal=None,
+        source_reference="the letter they attached, page 2",
+    )
+    _cancel_every(session, project, plans)
+    session.expire_all()
+
+    markup = client.get(f"/record/{project.slug}").text
+
+    assert f"/sources/{project.slug}/passage/{segment_id}" in markup
+    assert f"/sources/{project.slug}/document/{document_id}/original" in markup
+    page = _readable(markup)
+    assert "They answered part of the ask" in page
+    assert "They answered the ask" in page
+
+
+def test_the_four_facts_an_acknowledgement_leaves_true_stay_separate(
+    session, project, client
+):
+    """Acknowledged, still open, answer outstanding, and nothing settled.
+
+    The maintainer kept these four independently true, and a history page is
+    where they are most likely to collapse into one: by the time somebody reads
+    it the follow-up is usually over, and "they replied" reads as "it was
+    answered" unless the page says otherwise in as many words.
+    """
+
+    plans = _planned(session, project)
+    row = _retain(session, project, plans=plans)
+    _reply(
+        session,
+        project,
+        request_id=row.id,
+        completeness="acknowledgement",
+        observation="They confirmed they have the question.",
+        source_reference="their reply of 25 September",
+    )
+    session.expire_all()
+
+    page = _readable(client.get(f"/record/{project.slug}").text)
+
+    # One: a reply arrived, and it was an acknowledgement.
+    assert "They acknowledged, without answering yet" in page
+    # Two: the question it asked about has not been closed.
+    assert page.count("No closure is recorded for this Follow-up Plan") == len(plans)
+    # Three: the answer itself is still outstanding.
+    assert (
+        "An acknowledgement is recorded and nothing more; the answer itself "
+        "is still outstanding." in page
+    )
+    # Four: recording it settled nothing.
+    assert (
+        "A recorded reply stops the no-response finding. It does not settle "
+        "the question, resolve the proposed change, or change an accepted "
+        "value." in page
+    )
+
+
+def test_a_superseded_plan_does_not_inherit_the_predecessors_correspondence(
+    session, project, client
+):
+    """The predecessor's message stays readable and stays the predecessor's.
+
+    A replacement plan does not inherit the old request or its response
+    deadline; the retention decided for the first slice is that the
+    predecessor's correspondence is kept as history and the successor starts
+    with no assumed sent request. Both halves are asserted, because keeping
+    the history and attaching it to the successor are different acts and only
+    one of them is right.
+    """
+
+    plans = _planned(session, project)
+    row = _retain(session, project, plans=plans[:1])
+    outcome = update_follow_up_plan(
+        session,
+        project_id=project.id,
+        plan_id=plans[0],
+        principal=COORDINATOR,
+        open_question="Which date does City Water hold to, in writing?",
+        responsible_organization=WATER,
+        closed_at=LATER,
+        idempotency_key=f"correct:{uuid4().hex[:10]}",
+    )
+    assert outcome.closed, outcome
+    successor = outcome.successor_plan_id
+    session.expire_all()
+
+    (recorded,) = read_correspondence(session, project_id=project.id, as_of=None)
+    assert recorded.covered_plan_ids == plans[:1]
+    assert successor not in recorded.covered_plan_ids
+
+    page = _readable(client.get(f"/record/{project.slug}").text)
+    assert f"Recorded as sent on {SENT_ON} to {WATER}" in page
+    assert "Replaced by a corrected Follow-up Plan" in page
+    assert (
+        f"Closed on {LATER.date()} by {COORDINATOR.subject}, replaced by "
+        f"Follow-up Plan {successor}. The question was corrected, not "
+        "abandoned." in page
+    )
+
+
+def test_the_record_page_keeps_a_corrected_request_beside_its_correction(
+    session, project, client
+):
+    """A page that hid the original would be rewriting history (#837)."""
+
+    plans = _planned(session, project)
+    row = _retain(session, project, plans=plans)
+    corrected = _retain(
+        session,
+        project,
+        plans=plans,
+        question="Which date do you hold to, for U-042 only?",
+        supersedes_request_id=row.id,
+        correction_reason="the first message named the wrong conflict",
+    )
+    _cancel_every(session, project, plans)
+    session.expire_all()
+
+    page = _readable(client.get(f"/record/{project.slug}").text)
+
+    assert "Corrected by a later record" in page
+    assert (
+        f"Corrects the request recorded as {row.id}: the first message named "
+        "the wrong conflict" in page
+    )
+    assert "Which date do you hold to?" in page
+    assert "Which date do you hold to, for U-042 only?" in page
+    assert corrected.id != row.id
+
+
+def test_reading_the_correspondence_history_needs_no_designation(
+    session, project, client
+):
+    """A read-only member may inspect the correspondence they may read.
+
+    The Record history view's boundary is the project's plain read boundary
+    and not the coordination designation, and this section must not be the one
+    thing on the page that quietly needs more than reading.
+    """
+
+    plans = _planned(session, project)
+    _retain(session, project, plans=plans)
+    _cancel_every(session, project, plans)
+    session.expire_all()
+    reader = HumanPrincipal("local:correspondence-reader")
+    seed_membership(session, project, reader, designations=[])
+    corridor.web.app.app.dependency_overrides[get_human_principal] = lambda: reader
+
+    answered = client.get(f"/record/{project.slug}")
+
+    assert answered.status_code == 200
+    page = _readable(answered.text)
+    assert f"Recorded as sent on {SENT_ON} to {WATER}" in page
+
+
+def test_the_record_page_reads_its_correspondence_without_a_cutoff(
+    session, project
+):
+    """A history reading declares no moment, so it clips nothing at one.
+
+    The record page reads no clock at all, and the one failure this would
+    reintroduce is the one the section exists to fix: the most recent message
+    silently missing from the history of what was sent.
+    """
+
+    plans = _planned(session, project)
+    early = _retain(session, project, plans=plans, sent_on=date(2026, 9, 1))
+    late = _retain(
+        session,
+        project,
+        plans=plans,
+        sent_on=date(2027, 3, 4),
+        expected_response_by=date(2027, 3, 20),
+    )
+    session.expire_all()
+
+    history = read_record_history(session, project_id=project.id)
+
+    assert [entry.request.request_id for entry in history.correspondence] == [
+        early.id,
+        late.id,
+    ]
+    assert not any(
+        plan.closed
+        for entry in history.correspondence
+        for plan in entry.plans
+    )
 
 
 # --- the scenario, run over #848's harness ----------------------------------
