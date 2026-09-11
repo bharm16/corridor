@@ -56,7 +56,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from hashlib import sha256
 import json
 import re
 from typing import Any, Mapping, Sequence
@@ -66,7 +65,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
-from corridor import refusals
+from corridor import digests, refusals
 from corridor.models import OnboardingAct, OnboardingGrant, OnboardingGrantEvent
 
 
@@ -229,11 +228,14 @@ class OnboardingRefused(refusals.Refusal, ValueError):
     def __init__(self, code: str, detail: str = "") -> None:
         self.code = code
         self.detail = detail
+        # Per-instance, set the way `issue_coverage` sets its own: the base
+        # declares `refusal_kind` as a class attribute, and
+        # `test_every_declared_refusal_names_one_of_the_five_kinds` reads it
+        # off the *class*. A property would satisfy every instance and leave
+        # the class answering with a property object, which is not one of the
+        # five -- so the taxonomy guard would fail while the adapter worked.
+        self.refusal_kind = _REFUSAL_KINDS.get(code, refusals.CONFLICT)
         super().__init__(_REFUSAL_SENTENCES.get(code, detail or code))
-
-    @property
-    def refusal_kind(self) -> str:  # type: ignore[override]
-        return _REFUSAL_KINDS.get(self.code, refusals.CONFLICT)
 
 
 def refusal_from_database(exc: BaseException) -> OnboardingRefused | None:
@@ -694,13 +696,14 @@ def canonical_material_digest(payload: Mapping[str, Any]) -> str:
     what makes the difference sayable: the material a person submitted, in a
     canonical form, and nothing incidental. Fresh cookies and a fresh
     request-forgery token are not adoption content and are not in it.
+
+    It is `digests.coerced_sha256` rather than a digest of its own: the
+    answers carry dates and typed configuration objects, which is exactly the
+    coercion that encoding exists for, and `tests/test_digests.py` refuses a
+    module that grows a private canonical encoding beside the shared one.
     """
 
-    return sha256(
-        json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode(
-            "utf-8"
-        )
-    ).hexdigest()
+    return digests.coerced_sha256(payload)
 
 
 def check_onboarding_act(

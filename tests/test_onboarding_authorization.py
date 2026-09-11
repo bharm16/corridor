@@ -987,13 +987,33 @@ def test_a_held_source_is_refused_a_rich_onboarding_read(
     """
 
     project, _ = onboarding
-    first = prepared(session, project, tmp_path)
+    # One set of bytes, staged twice. `openpyxl` stamps the save time into the
+    # workbook, so building it a second time yields a different digest -- and
+    # the gate this test is about asks whether *these exact bytes* are already
+    # registered and held. Regenerating the file passed whenever both saves
+    # landed in the same second and failed under load, which is what it did
+    # once on CI before this.
+    bytes_ = workbook(tmp_path)
+    first = prepare_baseline_reading(
+        session,
+        project=project,
+        staged=validate_and_stage(bytes_, "ucm.xlsx"),
+        customer="Lone Star Transit Authority",
+        source_identity="UCM workbook revision C",
+        principal=COORDINATOR,
+        at=AT,
+        field_mapping=DEMO,
+        images_dir=tmp_path / "images",
+    )
     intake_hardening.quarantine_document(
         session, first.document_id, "unclassified pending #919"
     )
     session.flush()
 
-    staged = validate_and_stage(workbook(tmp_path), "ucm.xlsx")
+    staged = validate_and_stage(bytes_, "ucm.xlsx")
+    assert staged.sha256 == first.content_sha256, (
+        "the gate asks about these exact bytes, so the two stagings must agree"
+    )
     with refusal(session, intake_hardening.HostileContentRefused) as refused:
         prepare_baseline_reading(
             session,
