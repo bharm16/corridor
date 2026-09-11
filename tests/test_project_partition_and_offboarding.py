@@ -44,10 +44,12 @@ from sqlalchemy import create_engine, event as sa_event, func, select, text, upd
 from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.exc import DBAPIError, ProgrammingError
 from sqlalchemy.orm import Session as OrmSession
+from sqlalchemy.orm.exc import ObjectDeletedError
 from sqlalchemy.pool import NullPool, QueuePool
 
 from corridor import access, audit, identity_audit, web_boundary
 from corridor.config import settings
+from corridor.migrations.source_append_commands import partition_declaration
 from corridor.models import (
     AuditLog,
     Document,
@@ -55,6 +57,7 @@ from corridor.models import (
     Project,
     ProjectRosterEntry,
     SignInToken,
+    SourceDelivery,
     SourceSegment,
     WebSession,
 )
@@ -908,6 +911,443 @@ def test_giving_the_partition_up_stops_it_being_taken_up_again(
 
         assert web.scalars(select(SourceSegment)).all() == []
         web.rollback()
+
+
+# --- A savepoint is not a unit of work (#938's review) ---------------------
+#
+# The keeper above follows a commit and gives up on a rollback, and the events
+# it listens to do not by themselves say *which* transaction committed or went
+# back. SQLAlchemy dispatches `after_commit` when a SAVEPOINT is released and
+# `after_rollback` when one is rolled back, exactly as it does for the outer
+# transaction. Every recoverable refusal in this module is a savepoint -- that
+# is what #654 bought -- so a handler that reads the event name alone gives a
+# live continuation away the moment an unrelated refusal rolls its savepoint
+# back, and arms itself the moment one is released.
+#
+# These tests are written from the transitions rather than from the handlers,
+# so they stay true if the handlers are rewritten again.
+
+
+@pytest.fixture
+def declarations_issued():
+    """Every declaration command that reaches PostgreSQL, in order.
+
+    The keeper's re-declaration is otherwise invisible: it is idempotent, so a
+    replay at the wrong moment looks exactly like no replay at all until a
+    caller declares something else and is refused. Recording the statements is
+    what makes "nothing was re-declared here" an assertion about the database
+    rather than about the handler's internal flags.
+    """
+
+    recorded: list[str] = []
+
+    def _record(conn, cursor, statement, parameters, context, executemany):
+        if "open_project_partition" in statement:
+            recorded.append(statement)
+        elif "open_member_project_partition" in statement:
+            recorded.append(statement)
+
+    sa_event.listen(Engine, "before_cursor_execute", _record)
+    yield recorded
+    sa_event.remove(Engine, "before_cursor_execute", _record)
+
+
+def test_releasing_a_savepoint_is_not_the_unit_of_work_committing(
+    two_projects, pooled_web_engine, declarations_issued
+):
+    """Arming is the commit's, and re-declaring is the next transaction's.
+
+    Two mistakes are refused here at once, because one hides the other. A
+    released savepoint must not arm the keeper, and a savepoint that begins
+    inside an armed unit of work must not be re-declared into: the scope it
+    would install is already installed, and the caller asked for neither.
+    """
+
+    ours, _theirs = two_projects
+    with OrmSession(bind=pooled_web_engine) as web:
+        access.open_project_partition(
+            web, principal_subject=LEAVER.subject, project_id=ours
+        )
+        access.keep_partition_declared(web)
+        declarations_issued.clear()
+
+        # A savepoint opens and is released. Nothing about the unit of work has
+        # changed, so nothing is armed.
+        with web.begin_nested():
+            web.execute(text("select 1"))
+        # A second one begins. If the release above had armed the keeper, this
+        # is where the replay would happen.
+        with web.begin_nested():
+            web.execute(text("select 1"))
+
+        assert declarations_issued == []
+
+        # And the commit, which *is* the unit of work continuing, re-declares
+        # exactly once on the transaction that follows it.
+        web.commit()
+        web.execute(text("select 1"))
+
+        assert len(declarations_issued) == 1
+        assert access.current_project_partition(web) == (ours,)
+        web.rollback()
+
+
+def test_a_unit_of_work_that_was_abandoned_is_not_continued(
+    two_projects, pooled_web_engine
+):
+    """The arming rule on its own, where the re-declaration guard cannot cover it.
+
+    This session is closed rather than committed, which is what an abandoned
+    request does: the driver rolls the transaction back and the work is gone.
+    Nothing may follow it. If a released savepoint had armed the keeper, the
+    scope would be taken up again on the next transaction over a unit of work
+    that never committed anything.
+    """
+
+    ours, _theirs = two_projects
+    web = OrmSession(bind=pooled_web_engine)
+    try:
+        access.open_project_partition(
+            web, principal_subject=LEAVER.subject, project_id=ours
+        )
+        access.keep_partition_declared(web)
+        with web.begin_nested():
+            web.execute(text("select 1"))
+
+        web.close()
+
+        web.execute(text("select 1"))
+        assert access.current_project_partition(web) is None
+        assert web.scalars(select(SourceSegment)).all() == []
+    finally:
+        web.close()
+
+
+def test_a_refused_declaration_does_not_cost_the_request_its_continuation(
+    two_projects, pooled_web_engine
+):
+    """The recoverable refusal #654 built is a savepoint, and only a savepoint.
+
+    The person is a member of `ours` and not of `theirs`, so asking for
+    `theirs` is refused by the membership proof, which rolls its savepoint
+    back. That refusal is about the project it named. It is not this request
+    saying it is finished, and the continuation of the scope the request does
+    hold has to survive it.
+    """
+
+    ours, theirs = two_projects
+    with OrmSession(bind=pooled_web_engine) as web:
+        access.open_project_partition(
+            web, principal_subject=LEAVER.subject, project_id=ours
+        )
+        access.keep_partition_declared(web)
+
+        with pytest.raises(access.PartitionRefused):
+            access.open_project_partition(
+                web, principal_subject=LEAVER.subject, project_id=theirs
+            )
+
+        assert access.current_project_partition(web) == (ours,)
+
+        web.commit()
+
+        assert [
+            row.exact_text for row in web.scalars(select(SourceSegment)).all()
+        ] == ["ours-UC-1"]
+        assert access.current_project_partition(web) == (ours,)
+        web.rollback()
+
+
+def test_an_unrelated_savepoint_rollback_does_not_cost_the_request_its_continuation(
+    two_projects, pooled_web_engine
+):
+    """And the same for a savepoint this module never opened.
+
+    A caller's own recoverable attempt -- a competing insert, a probe it means
+    to give up -- is the ordinary use of a savepoint, and it says nothing at
+    all about authorization.
+    """
+
+    ours, _theirs = two_projects
+    with OrmSession(bind=pooled_web_engine) as web:
+        access.open_project_partition(
+            web, principal_subject=LEAVER.subject, project_id=ours
+        )
+        access.keep_partition_declared(web)
+
+        with pytest.raises(DBAPIError):
+            with web.begin_nested():
+                web.execute(text("select 1 / 0"))
+
+        web.commit()
+
+        assert [
+            row.exact_text for row in web.scalars(select(SourceSegment)).all()
+        ] == ["ours-UC-1"]
+        web.rollback()
+
+
+def test_a_member_wide_reading_that_ended_does_not_collide_with_the_next_unit(
+    member_of_both, pooled_web_engine
+):
+    """`/portfolio` and then one project from it, on one reused session.
+
+    Two units of work, and #662 refuses two scopes inside *one*. So the second
+    has to be able to declare the project it is opening, and the first one's
+    cross-project scope must not be sitting there waiting for it. Saying the
+    first unit is over is what makes that true, which is why it is a call and
+    not a comment.
+    """
+
+    ours, theirs = member_of_both
+    with OrmSession(bind=pooled_web_engine) as web:
+        assert access.open_member_project_partition(
+            web, principal_subject=LEAVER.subject
+        ) == (ours, theirs)
+        access.keep_partition_declared(web)
+        web.commit()
+
+        access.forget_kept_partition(web)
+
+        assert access.open_project_partition(
+            web, principal_subject=LEAVER.subject, project_id=ours
+        ) == ours
+        assert access.current_project_partition(web) == (ours,)
+        assert [
+            row.exact_text for row in web.scalars(select(SourceSegment)).all()
+        ] == ["ours-UC-1"]
+        web.rollback()
+
+
+def test_a_session_reused_without_saying_so_meets_the_scope_it_kept(
+    member_of_both, pooled_web_engine
+):
+    """The other half of that, stated rather than left to be discovered.
+
+    The keeper cannot know that a caller's next transaction is a new unit of
+    work; only the caller knows. So a session reused without the explicit end
+    of the previous unit finds the kept scope re-declared under it and its own
+    declaration refused as the in-transaction scope change it never made. That
+    is the cost of reuse, and it is why `forget_kept_partition` exists rather
+    than being advice about tidiness. In the deployment a `Session` is one
+    request and is discarded with it, so nothing reaches this.
+    """
+
+    ours, _theirs = member_of_both
+    with OrmSession(bind=pooled_web_engine) as web:
+        access.open_member_project_partition(
+            web, principal_subject=LEAVER.subject
+        )
+        access.keep_partition_declared(web)
+        web.commit()
+
+        with pytest.raises(access.PartitionScopeConflict):
+            access.open_project_partition(
+                web, principal_subject=LEAVER.subject, project_id=ours
+            )
+        web.rollback()
+
+
+def test_nothing_of_one_request_reaches_the_next_on_the_same_connection(
+    member_of_both, pooled_web_engine
+):
+    """The deployment's shape: one `Session` per request, one pooled connection.
+
+    Three things could leak across that boundary and all three are asked
+    about -- the declared scope, the intent the keeper remembered, and the rows
+    the first request had already loaded. The backend process id is asserted
+    unchanged so a pool that quietly opened a second connection cannot let this
+    pass for the wrong reason.
+    """
+
+    ours, theirs = member_of_both
+    with OrmSession(bind=pooled_web_engine) as first:
+        backend_pid = first.scalar(text("select pg_backend_pid()"))
+        access.open_project_partition(
+            first, principal_subject=LEAVER.subject, project_id=ours
+        )
+        access.keep_partition_declared(first)
+        loaded = first.scalars(select(SourceSegment)).one()
+        assert loaded.exact_text == "ours-UC-1"
+        first.commit()
+
+    with OrmSession(bind=pooled_web_engine) as second:
+        assert second.scalar(text("select pg_backend_pid()")) == backend_pid
+
+        assert access.current_partition_declaration(second) is None
+        assert access.current_project_partition(second) is None
+        assert second.scalars(select(SourceSegment)).all() == []
+        assert second.info == {}
+        assert access.partition_continuation_refused(second) is False
+        assert loaded not in second
+
+        # And the next request declares its own scope, unrefused.
+        assert access.open_project_partition(
+            second, principal_subject=LEAVER.subject, project_id=theirs
+        ) == theirs
+        assert [
+            row.exact_text for row in second.scalars(select(SourceSegment)).all()
+        ] == ["theirs-UC-1"]
+        second.rollback()
+
+
+# --- An authorization refusal is not an answer about the record (#938) ------
+#
+# The keeper re-proves the roster entry on every transaction it follows a
+# commit into, which is what makes it safe. What it does with the refusal is
+# the rest of the guarantee: a partition that was refused reads exactly like an
+# empty one, and a route that cannot tell them apart reports a project as
+# legacy, empty, or finished on the strength of an authorization failure.
+#
+# So the refusal is recorded for the request, and it is recorded for *one*
+# answer. PostgreSQL raises `insufficient_privilege` for a withdrawn membership
+# and for a revoked EXECUTE alike, so the code alone cannot be the test.
+
+
+def _withdraw_membership(runtime_database, project_id: int) -> None:
+    """Offboard the person from one project, committed, from outside the request."""
+
+    with runtime_database.session_factory.begin() as operations:
+        operations.execute(
+            update(ProjectRosterEntry)
+            .where(
+                ProjectRosterEntry.project_id == project_id,
+                ProjectRosterEntry.principal_subject == LEAVER.subject,
+            )
+            .values(active=False)
+        )
+
+
+@pytest.fixture
+def withhold_the_membership_proof(runtime_database):
+    """Take the web login's EXECUTE on the proving command away, and give it back.
+
+    A missing grant is the failure the narrowed catch is written against: it is
+    a deployment fault, it answers with the same `insufficient_privilege` code
+    a withdrawn membership does, and a person must never be told their project
+    is empty because of it.
+    """
+
+    command = "public.open_project_partition(text, bigint)"
+
+    def withhold() -> None:
+        with runtime_database.session_factory.begin() as owner:
+            owner.execute(
+                text(f"revoke execute on function {command} from corridor_web")
+            )
+
+    yield withhold
+    with runtime_database.session_factory.begin() as owner:
+        owner.execute(text(f"grant execute on function {command} to corridor_web"))
+
+
+def test_the_refusal_the_keeper_recognises_is_the_one_the_command_raises():
+    """The sentence is read back out of the command that raises it.
+
+    Matching a message is how this repository already tells one database
+    refusal from another (`refusals.STALE_PREDECESSOR_SENTENCES`), and it
+    carries the same obligation: a reworded RAISE has to fail here rather than
+    quietly turn a membership refusal into an unhandled technical failure.
+    """
+
+    assert (
+        access.MEMBERSHIP_PROOF_REFUSAL
+        in partition_declaration.OPEN_PROJECT_PARTITION_657
+    )
+
+
+def test_a_withdrawn_membership_is_reported_as_a_refusal_not_an_empty_project(
+    runtime_database, two_projects, pooled_web_engine
+):
+    """The expected answer, recorded where the request can read it.
+
+    The empty partition below is the whole hazard: it is indistinguishable from
+    a project that holds nothing, and without the recorded refusal beside it a
+    route has no way to tell which one it is looking at.
+    """
+
+    ours, _theirs = two_projects
+    with OrmSession(bind=pooled_web_engine) as web:
+        access.open_project_partition(
+            web, principal_subject=LEAVER.subject, project_id=ours
+        )
+        access.keep_partition_declared(web)
+        web.commit()
+        _withdraw_membership(runtime_database, ours)
+
+        assert access.partition_continuation_refused(web) is True
+
+        assert web.scalars(select(SourceSegment)).all() == []
+        assert access.current_project_partition(web) is None
+        # The transaction is still the caller's to use, and the answer stands
+        # without asking the database a second time.
+        assert web.scalar(select(func.count()).select_from(Project)) >= 2
+        assert access.partition_continuation_refused(web) is True
+        web.rollback()
+
+
+def test_a_row_loaded_before_the_membership_ended_cannot_be_rendered_after_it(
+    runtime_database, two_projects, pooled_web_engine
+):
+    """An empty query does not prove a response cannot show what it already had.
+
+    The row is loaded while the reading is authorized and is still in the
+    session's identity map afterwards, which is the state a half-rendered
+    response is in. The commit expired it, so the value a template would print
+    is not held anywhere: reading it goes back to the database, meets the
+    partition the refusal left empty, and refuses. That is #935's 500, and it
+    is why the recorded refusal has to be readable *before* the object is
+    touched rather than after.
+    """
+
+    ours, _theirs = two_projects
+    with OrmSession(bind=pooled_web_engine) as web:
+        access.open_project_partition(
+            web, principal_subject=LEAVER.subject, project_id=ours
+        )
+        access.keep_partition_declared(web)
+        segment = web.scalars(select(SourceSegment)).one()
+        assert segment.exact_text == "ours-UC-1"
+
+        web.commit()
+        _withdraw_membership(runtime_database, ours)
+
+        assert segment in web
+        with pytest.raises(ObjectDeletedError):
+            segment.exact_text
+
+        assert access.partition_continuation_refused(web) is True
+        web.rollback()
+
+
+def test_a_withheld_grant_is_a_technical_failure_and_not_an_empty_project(
+    two_projects, pooled_web_engine, withhold_the_membership_proof
+):
+    """The failure the narrowed catch exists to let through.
+
+    Before it, every `DBAPIError` the re-declaration met became an empty
+    partition, so a login that had lost EXECUTE on the proving command -- a
+    half-applied migration, a revoke aimed at the wrong role -- would have told
+    every person that every project they were on held nothing. It is a
+    technical failure and it travels as one, and nothing is recorded as an
+    answer about this person's projects.
+    """
+
+    ours, _theirs = two_projects
+    with OrmSession(bind=pooled_web_engine) as web:
+        access.open_project_partition(
+            web, principal_subject=LEAVER.subject, project_id=ours
+        )
+        access.keep_partition_declared(web)
+        web.commit()
+        withhold_the_membership_proof()
+
+        with pytest.raises(DBAPIError) as refused:
+            access.partition_continuation_refused(web)
+
+        assert "permission denied" in str(refused.value.orig)
+        web.rollback()
+        assert access.partition_continuation_refused(web) is False
 
 
 def test_a_new_transaction_is_the_boundary_for_changing_scope(
@@ -3003,6 +3443,102 @@ def test_the_admitted_intake_path_serves_as_the_real_web_login(
         for relation in sorted(web_boundary.PARTITIONED_UNGRANTED_RELATIONS)
         if re.search(rf"\b{relation}\b", statement)
     ] == []
+
+
+# --- The route this mechanism was built for, answering a refused continuation --
+#
+# `source_upload_preview` is the one route that commits and then keeps reading,
+# and the reading it keeps doing is what #936 got wrong: it asked whether the
+# project had adopted a baseline and read the empty partition, so an adopted
+# project was reported as legacy. A withdrawn roster entry puts the route in
+# exactly that state on purpose, and the answer has to be a bounded refusal
+# about access rather than a page about a project the person may no longer see.
+
+
+@pytest.fixture
+def withdrawing_pilot_client(runtime_database, pilot_member):
+    """The application, with this person's membership withdrawn at a commit.
+
+    The window is inside one request -- between the commit the route makes and
+    the reading it goes on to do -- and nothing a test does from outside lands
+    in it reliably. So the withdrawal hangs on the session's own `after_commit`
+    and is armed for one commit by the test. It is registered when the session
+    is created, before the route declares anything, which is what puts it ahead
+    of the keeper's own handler on the same event.
+    """
+
+    web_engine = create_engine(
+        _web_url(runtime_database.name), poolclass=NullPool, future=True
+    )
+    withdraw_next_commit = {"armed": False}
+
+    def _withdraw(session):
+        if not withdraw_next_commit["armed"]:
+            return
+        withdraw_next_commit["armed"] = False
+        with runtime_database.session_factory.begin() as operations:
+            operations.execute(
+                update(ProjectRosterEntry)
+                .where(ProjectRosterEntry.principal_subject == LEAVER.subject)
+                .values(active=False)
+            )
+
+    def _web_session():
+        with OrmSession(bind=web_engine) as opened:
+            sa_event.listen(opened, "after_commit", _withdraw)
+            yield opened
+
+    sender = auth.RecordingEmailSender()
+    app.dependency_overrides[get_session] = _web_session
+    app.dependency_overrides[auth.get_email_sender] = lambda: sender
+    with TestClient(
+        app, base_url="https://testserver", raise_server_exceptions=False
+    ) as opened:
+        _sign_in(opened, sender, "pilot@example.com")
+        yield opened, withdraw_next_commit
+    app.dependency_overrides.clear()
+    web_engine.dispose()
+
+
+def test_the_upload_preview_refuses_rather_than_read_a_project_it_may_no_longer_see(
+    runtime_database,
+    two_projects,
+    withdrawing_pilot_client,
+    staged_store,
+    uploaded_workbook,
+):
+    """The whole contract, walked as one request through the real route.
+
+    Three things are asserted because each is a different way of getting this
+    wrong. The status is 403 and not 500, because an authorization that ended
+    is an answer and not a crash -- #935's was a crash. The sentence says
+    access changed and says the file was taken, because the delivery *did*
+    commit and a response that implied it was rolled back would be false. And
+    the delivery is read back from outside the request, which is what makes
+    that sentence true rather than merely reassuring.
+    """
+
+    client, withdraw_next_commit = withdrawing_pilot_client
+
+    form = client.get("/projects/ours/sources/upload")
+    assert form.status_code == 200, form.text[:400]
+
+    withdraw_next_commit["armed"] = True
+    refused = client.post(
+        "/projects/ours/sources/upload",
+        data={**form_fields(form.text, "/sources/upload"), "doc_type": "matrix"},
+        files={"upload": ("ucm.xlsx", uploaded_workbook, "application/octet-stream")},
+    )
+
+    assert refused.status_code == 403, refused.text[:400]
+    detail = refused.json()["detail"]
+    assert "your access to this project changed" in detail
+    assert "is recorded" in detail
+
+    with runtime_database.session_factory.begin() as operations:
+        assert operations.scalar(
+            select(func.count()).select_from(SourceDelivery)
+        ) == 1
 
 
 def test_the_admitted_intake_path_refuses_the_other_project(

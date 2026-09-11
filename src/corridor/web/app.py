@@ -8543,6 +8543,20 @@ def source_upload_preview(
     # The delivery outlives an abandoned preview: the person may close the tab,
     # and what arrived is recorded either way.
     session.commit()
+    if access.partition_continuation_refused(session):
+        # This route is the one that commits and then keeps reading, so it is
+        # the one that can meet a roster withdrawn mid-request. Everything
+        # below reads partitioned relations, and a refused continuation reads
+        # exactly like an empty project -- which is what made #936's preview
+        # call an adopted project legacy. So the reading stops here instead.
+        # The delivery above is committed and stands; what ended is the
+        # authority to read the project back.
+        raise HTTPException(
+            403,
+            "your access to this project changed before this page could be "
+            "shown; the file you sent was taken and is recorded, and asking "
+            "for this page again will show it once your access allows it",
+        )
     # What registering a workbook on an adopted project has to establish that
     # its bytes cannot (#825). Read-only, like the preview it sits beside: it
     # resolves the registered family and proves the file against the registered
