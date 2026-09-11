@@ -11,13 +11,11 @@ from corridor.models import (
     DocPage,
     Document,
     EvidenceLink,
-    Project,
 )
 from corridor.principals import HumanPrincipal
 
 from corridor.llm import RequestConfiguration
 from model_client_support import FakeModelClient
-from access_support import seed_membership
 
 
 TODAY = date(2026, 8, 30)
@@ -25,12 +23,8 @@ ACTOR = HumanPrincipal("local:summary-coordinator")
 
 
 @pytest.fixture
-def project(session):
-    value = Project(slug="summary-test", name="Summary Test", is_synthetic=True)
-    session.add(value)
-    session.flush()
-    seed_membership(session, value, ACTOR)
-    return value
+def project(member_project):
+    return member_project(ACTOR)
 
 
 def stub_client(response):

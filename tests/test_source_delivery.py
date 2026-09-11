@@ -17,7 +17,7 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import func, select, text
 
-from corridor.models import Project, PushIntakeCredential, SourceDelivery
+from corridor.models import PushIntakeCredential, SourceDelivery
 from corridor.source_delivery import (
     DeliveryBinding,
     DeliveryObservation,
@@ -27,16 +27,6 @@ from corridor.source_delivery import (
     stored_delivery,
     take_delivery,
 )
-
-
-@pytest.fixture
-def project(session):
-    row = Project(
-        slug=f"delivery-{uuid4().hex[:12]}", name="Delivery", is_synthetic=True
-    )
-    session.add(row)
-    session.flush()
-    return row
 
 
 def _pull_binding(project) -> DeliveryBinding:

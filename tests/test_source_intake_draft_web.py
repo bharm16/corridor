@@ -21,7 +21,7 @@ from sqlalchemy import func, select
 
 from corridor import access
 from corridor.config import settings
-from corridor.models import Document, Project, SourceIntakeDraftRequest
+from corridor.models import Document, SourceIntakeDraftRequest
 import corridor.source_intake as source_intake
 from corridor.principals import HumanPrincipal
 from corridor.web.app import (
@@ -113,12 +113,8 @@ def client(session, adapter_box):
 
 
 @pytest.fixture
-def project(session):
-    row = Project(slug="draft-web", name="Draft Web", is_synthetic=True)
-    session.add(row)
-    session.flush()
-    seed_membership(session, row, CURATOR)
-    return row
+def project(member_project):
+    return member_project(CURATOR)
 
 
 def _register_predecessor(session, project):

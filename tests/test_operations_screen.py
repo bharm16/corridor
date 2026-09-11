@@ -31,14 +31,8 @@ def client(session):
 
 
 @pytest.fixture
-def project(session):
-    row = Project(slug="operations-screen", name="Operations Screen", is_synthetic=True)
-    session.add(row)
-    session.flush()
-    seed_membership(
-        session, row, OPERATOR, designations=(access.TECHNICAL_OPERATIONS,)
-    )
-    return row
+def project(member_project):
+    return member_project(OPERATOR, designations=(access.TECHNICAL_OPERATIONS,))
 
 
 def _document_with_completed_run(session, project):

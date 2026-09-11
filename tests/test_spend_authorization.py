@@ -21,14 +21,6 @@ from corridor.spend_authorization import (
 ACTOR = HumanPrincipal("local:spend-declarer")
 
 
-@pytest.fixture
-def project(session):
-    value = Project(slug="spend-authorization", name="Spend", is_synthetic=True)
-    session.add(value)
-    session.flush()
-    return value
-
-
 def _complete(project, **overrides):
     declaration = dict(
         project_id=project.id,

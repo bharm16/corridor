@@ -12,7 +12,6 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
-from access_support import seed_membership
 from corridor.models import (
     Dependency,
     ExternalOrg,
@@ -47,16 +46,8 @@ OTHER_ACTION = FOLLOW_UP_NEXT_ACTION_CHOICES[1]
 
 
 @pytest.fixture
-def project(session):
-    project = Project(
-        slug="follow-up-plan-test",
-        name="Follow-up plan test",
-        is_synthetic=True,
-    )
-    session.add(project)
-    session.flush()
-    seed_membership(session, project, RECORDER)
-    return project
+def project(member_project):
+    return member_project(RECORDER)
 
 
 @pytest.fixture

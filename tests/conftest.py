@@ -467,16 +467,22 @@ def session():
 
 
 @contextmanager
-def rollback_scoped_session():
+def rollback_scoped_session(isolation_level: str | None = None):
     """One transaction on the owner engine that always rolls back on exit.
 
     The ``session`` fixture is this and nothing more; a test that must prove
     the rollback itself, rather than rely on it, opens the same seam directly.
+    ``isolation_level`` names the one thing a module ever varied here: two
+    modules copied the whole body to reach ``READ COMMITTED`` and
+    ``REPEATABLE READ``, which PostgreSQL accepts only before the transaction
+    begins, so it is applied to the connection rather than to the Session.
     """
 
     from corridor.db import capability_engine
 
     connection = capability_engine("owner").connect()
+    if isolation_level is not None:
+        connection = connection.execution_options(isolation_level=isolation_level)
     transaction = connection.begin()
     scoped = SessionType(bind=connection)
     try:
@@ -510,6 +516,27 @@ def project(session):
     """
 
     return synthetic_project(session)
+
+
+@pytest.fixture
+def member_project(session):
+    """Build one synthetic Project whose roster already carries a principal.
+
+    Seventeen modules declared a ``project`` fixture that did nothing but this:
+    construct the project, then seed the one membership the #331 access gate
+    requires before a project surface will answer. Only the acting principal
+    varied, so only the principal stays an argument; a module that wants two
+    member projects calls this twice and gets two fresh slugs.
+    """
+
+    from access_support import seed_membership
+
+    def member(principal, **membership):
+        row = synthetic_project(session)
+        seed_membership(session, row, principal, **membership)
+        return row
+
+    return member
 
 
 def _harness_migrated_template(config) -> str | None:

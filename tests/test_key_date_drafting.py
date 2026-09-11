@@ -33,14 +33,6 @@ from corridor.principals import HumanPrincipal
 RECORDER = HumanPrincipal("local:key-date-draft-test")
 
 
-@pytest.fixture
-def project(session):
-    project = Project(slug="key-date-drafts", name="Key date drafts", is_synthetic=True)
-    session.add(project)
-    session.flush()
-    return project
-
-
 def _source(session, project, *, text: str, sha: str | None = None):
     document = Document(
         project_id=project.id,

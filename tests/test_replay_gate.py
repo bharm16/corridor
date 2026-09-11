@@ -14,7 +14,6 @@ from corridor.models import (
     EventAdmissionActivation,
     OrganizationIdentityActivation,
     PolicyActivation,
-    Project,
     ScheduleLinkActivation,
     UnreadableCellAdmissionActivation,
 )
@@ -41,14 +40,6 @@ from corridor.replay_gate import (
 
 FINGERPRINT = RuleFingerprint("schedule-conflict-link-v1", "a" * 64)
 CHANGED = RuleFingerprint("schedule-conflict-link-v1", "b" * 64)
-
-
-@pytest.fixture
-def project(session):
-    p = Project(slug="replay-gate", name="Replay Gate", is_synthetic=True)
-    session.add(p)
-    session.flush()
-    return p
 
 
 # --- The comparison that is the test --------------------------------------- #

@@ -18,7 +18,6 @@ from corridor.milestones import import_xer, preview_import
 from corridor.models import DocPage, Document, Milestone, MilestoneRegistration, Project
 from corridor.principals import HumanPrincipal
 from corridor.web.app import app, get_human_principal, get_session
-from access_support import seed_membership
 
 TEST_PRINCIPAL = HumanPrincipal("local:test-reviewer")
 
@@ -57,12 +56,8 @@ def client_without_session(session):
 
 
 @pytest.fixture
-def project(session):
-    p = Project(slug="kd-web", name="Key Dates Web", is_synthetic=True)
-    session.add(p)
-    session.flush()
-    seed_membership(session, p, TEST_PRINCIPAL)
-    return p
+def project(member_project):
+    return member_project(TEST_PRINCIPAL)
 
 
 def codes(session, project):

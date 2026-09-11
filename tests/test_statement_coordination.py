@@ -57,7 +57,6 @@ from corridor.models import (
 from corridor.milestones import import_csv
 from corridor.models import DependencyEventTiming
 from corridor.principals import HumanPrincipal
-from access_support import seed_membership
 from corridor.schedule_linking import flow_through_revisions, resolve_link
 from corridor.statement_lifecycle import (
     current_lineage_statement,
@@ -119,16 +118,8 @@ _PAGE_IMAGE_BYTES = base64.b64decode(
 
 
 @pytest.fixture
-def project(session):
-    project = Project(
-        slug="guided-statement-coordination-test",
-        name="Guided statement coordination test",
-        is_synthetic=True,
-    )
-    session.add(project)
-    session.flush()
-    seed_membership(session, project, RECORDER)
-    return project
+def project(member_project):
+    return member_project(RECORDER)
 
 
 @pytest.fixture

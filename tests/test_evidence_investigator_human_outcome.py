@@ -69,16 +69,8 @@ INSTANTS = ("now", "cutoff after every act")
 
 
 @pytest.fixture
-def project(session):
-    project = Project(
-        slug=f"human-outcome-{uuid4().hex}",
-        name="Human outcome test",
-        is_synthetic=True,
-    )
-    session.add(project)
-    session.flush()
-    seed_membership(session, project, RECORDER)
-    return project
+def project(member_project):
+    return member_project(RECORDER)
 
 
 def _as_of(instant):

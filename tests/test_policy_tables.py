@@ -20,18 +20,7 @@ from corridor.models import (
     EventAdmissionOutcome,
     PolicyApproval,
     PolicyRun,
-    Project,
 )
-
-
-@pytest.fixture
-def project(session):
-    p = Project(
-        slug="policy-tables-test", name="Policy Tables Test", is_synthetic=True
-    )
-    session.add(p)
-    session.flush()
-    return p
 
 
 def _approval(session, project, family):

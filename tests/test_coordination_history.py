@@ -6,8 +6,9 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 
+from conftest import rollback_scoped_session
+
 from corridor.coordination_history import migrate_coordination_history, read_coordination_record, read_coordination_record_as_of_revision
-from corridor.db import Session, engine
 from corridor.legacy_history import capture_history, inventory_history, reverse_history
 from corridor.models import Dependency, Project, ProjectRosterEntry, WorkDecision
 from corridor.principals import HumanPrincipal
@@ -19,22 +20,10 @@ from corridor.work_decisions import (
 
 @pytest.fixture
 def session():
-    connection = engine.connect().execution_options(isolation_level="READ COMMITTED")
-    transaction = connection.begin()
-    scoped = Session(bind=connection)
-    yield scoped
-    scoped.close()
-    if transaction.is_active:
-        transaction.rollback()
-    connection.close()
+    """The shared rollback-scoped session, at READ COMMITTED."""
 
-
-@pytest.fixture
-def project(session):
-    value = Project(slug="native-coordination", name="Native coordination", is_synthetic=True)
-    session.add(value)
-    session.flush()
-    return value
+    with rollback_scoped_session(isolation_level="READ COMMITTED") as scoped:
+        yield scoped
 
 
 @pytest.fixture

@@ -88,7 +88,6 @@ from corridor.web.follow_up_view import (
     copy_ready_brief,
 )
 
-from access_support import seed_membership
 from packet_review_support import (
     Rendition,
     accept_baseline_fact,
@@ -127,16 +126,8 @@ _BUNDLE_KEY = re.compile(r'data-bundle-key="([^"]*)"')
 
 
 @pytest.fixture
-def project(session: Session) -> Project:
-    row = Project(
-        slug=f"chase-screen-{uuid4().hex[:8]}",
-        name="Ridge Road",
-        is_synthetic=True,
-    )
-    session.add(row)
-    session.flush()
-    seed_membership(session, row, COORDINATOR)
-    return row
+def project(member_project) -> Project:
+    return member_project(COORDINATOR)
 
 
 @pytest.fixture

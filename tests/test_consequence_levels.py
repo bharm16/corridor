@@ -92,7 +92,6 @@ from corridor.web.app import (
 
 from fastapi.testclient import TestClient
 
-from access_support import seed_membership
 from packet_review_support import (
     CHASE_RENDERER,
     REPORT_RENDERER,
@@ -168,16 +167,8 @@ LABEL_POLICY = DecisionBlockingPolicy(
 
 
 @pytest.fixture
-def project(session: Session) -> Project:
-    row = Project(
-        slug=f"consequence-{uuid4().hex[:8]}",
-        name="Consequence Levels",
-        is_synthetic=True,
-    )
-    session.add(row)
-    session.flush()
-    seed_membership(session, row, COORDINATOR, designations=[access.COORDINATION])
-    return row
+def project(member_project) -> Project:
+    return member_project(COORDINATOR, designations=[access.COORDINATION])
 
 
 @pytest.fixture
