@@ -36,6 +36,16 @@ one are both un-offerable for the same reason and by the same authority: what
 stands in the way is bound into the candidate's own identity, so it is cleared
 by preparing a fresh candidate and never by pressing anything here.
 
+**The files themselves are reachable, and reaching them approves nothing**
+(#830). Every candidate artifact and every approved artifact is served by its
+own read-only download, which resolves the retained identity on the server and
+verifies the digest through the store on the way out; the section prints the
+artifact type the download is named by and never a storage key. A stale or
+superseded candidate's files are reachable for exactly the same reason its
+coverage is printed — it is history, and history nobody can open is a claim
+rather than a record — and none of that changes whether the approval is
+offered, which is still #529's answer alone.
+
 **A candidate the project moved past stays on the page.**
 ``FRESH_PREPARATION`` promises that an un-offerable candidate "stays listed here
 as it was prepared, so what was proposed to the customer and refused is not
@@ -121,6 +131,7 @@ from corridor.release_authorization import (
     SealedArtifact,
     candidate_set,
     disclosed_exceptions,
+    package_set,
 )
 from corridor.release_candidate import (
     authorization_blockers,
@@ -148,7 +159,7 @@ STATE_LABELS: dict[str, StateLabel] = {
     NOTHING_PREPARED: StateLabel("neutral", "Nothing prepared yet"),
     AUTHORIZABLE: StateLabel("neutral", "Ready for your approval"),
     NOT_AUTHORIZABLE: StateLabel("attention", "Cannot be approved as it stands"),
-    ALREADY_AUTHORIZED: StateLabel("settled", "Approved and sent as this issue"),
+    ALREADY_AUTHORIZED: StateLabel("settled", "Approved for sharing"),
     PREPARING: StateLabel("neutral", "Preparing this issue"),
 }
 
@@ -205,22 +216,37 @@ class PackageReference:
     ``issue_number`` is the package's position in the project's release chain,
     which is what a person means by "the third issue". The receipt's own row id
     and digest identity are internal identifiers and are deliberately absent.
+
+    ``artifacts`` is the set this package sealed, read from the package's own
+    rows rather than from the candidate beside it: the two hold the same set
+    today because #533 seals the candidate it revalidated, and naming one
+    package's downloads from another record's rows would be a claim rather
+    than a reading (#830). It is empty for a predecessor, which this section
+    names but does not list.
     """
 
     issue_number: int
     accepted_revision_id: int
     authorized_at: datetime
     authorized_by_principal: str
+    artifacts: tuple[ArtifactRow, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
 class ArtifactRow:
-    """One member of the set as the section's table reads it."""
+    """One member of the set as the section's table reads it.
+
+    ``artifact_type`` is the retained identifier, carried so the row can name
+    the one download that serves it. It is the closed vocabulary #641 already
+    publishes, never a storage key: where the bytes are kept is resolved on
+    the server from the candidate's or the receipt's own rows (#830).
+    """
 
     words: str
     produced_by: str
     content_sha256: str
     byte_count: int
+    artifact_type: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -240,6 +266,13 @@ class SupersededCandidate:
     moment that has gone, and printing today's answer against yesterday's
     candidate would describe a state that never existed. What became of it is a
     fact — a package names it, or a later candidate replaced it.
+
+    ``artifacts`` is the set that candidate actually sealed, read out of its
+    own rows the way its coverage identity is, so "what was proposed to the
+    customer and refused is not lost" extends to the files themselves and not
+    only to a line about them (#830). It is a listing and a download and never
+    an act: a control offered against a superseded candidate is the duplicate
+    action ADR-0085's exactly-once rule refuses.
     """
 
     candidate_id: int
@@ -248,6 +281,7 @@ class SupersededCandidate:
     coverage_identity: str
     accepted_revision_id: int
     outcome: str
+    artifacts: tuple[ArtifactRow, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -439,21 +473,13 @@ class IssueView:
     def artifact_words(self) -> tuple[str, ...]:
         """Each configured artifact in the plain words #641 already spells."""
 
-        return tuple(_words(one.artifact_type) for one in self.artifacts)
+        return tuple(artifact_words(one.artifact_type) for one in self.artifacts)
 
     @property
     def artifact_rows(self) -> tuple[ArtifactRow, ...]:
         """The set as a table reads it, in the order the content digest binds."""
 
-        return tuple(
-            ArtifactRow(
-                words=_words(one.artifact_type),
-                produced_by=f"{one.renderer_identity} {one.renderer_version}",
-                content_sha256=one.content_sha256,
-                byte_count=one.byte_count,
-            )
-            for one in self.artifacts
-        )
+        return _artifact_rows(self.artifacts)
 
     # The sentences and the one label the section prints beside its own
     # controls, reached through the view so the template holds no wording of
@@ -533,8 +559,8 @@ def issue_view(session: Session, *, project_id: int, as_of: datetime) -> IssueVi
         blockers=blockers,
         stale_reasons=stale_reasons,
         blocked=candidate.readiness == BLOCKED,
-        predecessor=_reference(previous),
-        authorized=_reference(package),
+        predecessor=_reference(session, previous),
+        authorized=_reference(session, package, with_artifacts=True),
         coverage=coverage,
         preparation=preparation,
         accepted_revision_id=accepted_revision_id,
@@ -576,8 +602,9 @@ def _superseded(
             prepared_by_principal=one.prepared_by_principal,
             coverage_identity=one.coverage_identity,
             accepted_revision_id=int(one.accepted_revision_id),
+            artifacts=_artifact_rows(candidate_set(session, one)),
             outcome=(
-                f"approved and sent as issue {authorized[int(one.id)]}"
+                f"approved for sharing as issue {authorized[int(one.id)]}"
                 if int(one.id) in authorized
                 else "never approved; a later candidate replaced it"
             ),
@@ -630,7 +657,12 @@ def _package(session: Session, package_id: Any) -> ReleasePackage | None:
     return session.get(ReleasePackage, int(package_id))
 
 
-def _reference(package: ReleasePackage | None) -> PackageReference | None:
+def _reference(
+    session: Session,
+    package: ReleasePackage | None,
+    *,
+    with_artifacts: bool = False,
+) -> PackageReference | None:
     if package is None:
         return None
     return PackageReference(
@@ -638,6 +670,9 @@ def _reference(package: ReleasePackage | None) -> PackageReference | None:
         accepted_revision_id=int(package.accepted_revision_id),
         authorized_at=package.authorized_at,
         authorized_by_principal=package.authorized_by_principal,
+        artifacts=(
+            _artifact_rows(package_set(session, package)) if with_artifacts else ()
+        ),
     )
 
 
@@ -652,12 +687,29 @@ COVERAGE_WORDS: dict[str, str] = {
 }
 
 
-def _words(artifact_type: str) -> str:
+def _artifact_rows(artifacts: tuple[SealedArtifact, ...]) -> tuple[ArtifactRow, ...]:
+    """One sealed set as a table reads it, in the order it was bound."""
+
+    return tuple(
+        ArtifactRow(
+            words=artifact_words(one.artifact_type),
+            produced_by=f"{one.renderer_identity} {one.renderer_version}",
+            content_sha256=one.content_sha256,
+            byte_count=one.byte_count,
+            artifact_type=one.artifact_type,
+        )
+        for one in artifacts
+    )
+
+
+def artifact_words(artifact_type: str) -> str:
     """The words one configured artifact goes by, in #641's own spelling.
 
     ``ARTIFACT_WORDS`` is the vocabulary the issue content already publishes,
     including for the mandatory workbook. Respelling it here would be a second
-    name for one thing on one more screen, which ADR-0048 exists to stop.
+    name for one thing on one more screen, which ADR-0048 exists to stop --
+    which is also why the Record view's package history reaches this same
+    function rather than spelling the words a third time (#830).
     """
 
     return ARTIFACT_WORDS.get(artifact_type, artifact_type)

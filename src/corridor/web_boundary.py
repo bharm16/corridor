@@ -339,6 +339,55 @@ PILOT_ROUTES: dict[tuple[str, str], PilotRoute] = {
             }
         ),
     ),
+    (
+        "GET",
+        "/work/{slug}/issue/candidates/{candidate_id}/artifacts/{artifact_type}",
+    ): PilotRoute(
+        why=(
+            "#830 read back the exact bytes one prepared candidate retained. "
+            "It resolves the candidate within the project and the artifact "
+            "within the candidate, so it reaches the candidate's own rows and "
+            "the membership gate and nothing else"
+        ),
+        relations=frozenset(
+            {
+                "projects",
+                "project_roster_entries",
+                "release_candidates",
+                "release_candidate_artifacts",
+            }
+        ),
+    ),
+    (
+        "GET",
+        "/work/{slug}/issue/packages/{issue_number}/artifacts/{artifact_type}",
+    ): PilotRoute(
+        why=(
+            "#830 read back the exact bytes one approved issue sealed"
+        ),
+        relations=frozenset(
+            {
+                "projects",
+                "project_roster_entries",
+                "release_packages",
+                "release_package_artifacts",
+            }
+        ),
+    ),
+    ("GET", "/work/{slug}/issue/packages/{issue_number}/bundle"): PilotRoute(
+        why=(
+            "#830 read back one approved issue as the single set ADR-0086 "
+            "makes it"
+        ),
+        relations=frozenset(
+            {
+                "projects",
+                "project_roster_entries",
+                "release_packages",
+                "release_package_artifacts",
+            }
+        ),
+    ),
     ("GET", "/record/{slug}"): PilotRoute(
         why=(
             "#642 the read-only record and history investigation"
@@ -382,6 +431,10 @@ PILOT_ROUTES: dict[tuple[str, str], PilotRoute] = {
                 "project_roster_entries",
                 "projects",
                 "proposed_deltas",
+                # #830: the approved packages the same view now lists beside
+                # the legacy report releases above.
+                "release_package_artifacts",
+                "release_packages",
                 "source_segments",
                 "support_assessment_sources",
                 "support_assessments",

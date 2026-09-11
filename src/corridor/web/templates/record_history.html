@@ -75,7 +75,7 @@
       <li><a href="#values-heading">Accepted values</a></li>
       <li><a href="#deltas-heading">Proposed changes and how they were settled</a></li>
       <li><a href="#revisions-heading">Revisions of this record</a></li>
-      <li><a href="#releases-heading">What was released to the customer</a></li>
+      <li><a href="#releases-heading">What was approved for sharing</a></li>
       <li><a href="#audit-heading">Audit trail</a></li>
     </ol>
   </nav>
@@ -370,8 +370,82 @@
     {%- endif %}
   {% endcall %}
 
-  {% call ui.region("releases", "What was released to the customer", focus) %}
+  {#
+    Two release models, told apart rather than mixed (#830).
+
+    This section used to read only `external_report_releases`, so an adopted
+    project that had approved three issues was told nothing had ever been
+    released to its customer. The approved packages are the current model
+    (ADR-0086) and come from the release reader's own `release_history`; the
+    legacy single-report releases are a different, closed family that binds no
+    accepted revision, and they stay visible under their own heading for the
+    legacy projects that hold them rather than being merged into the table
+    above or quietly dropped.
+
+    The downloads here are the same read-only routes the Issue section links
+    to. This page still carries no control that changes anything: a download
+    is a GET that hands back retained bytes and writes nothing.
+  #}
+  {% call ui.region("releases", "What was approved for sharing", focus) %}
+    <p class="quiet">
+      Approved for sharing is an approval, not a delivery. Corridor sends
+      nothing to anybody; these are the exact files that were approved, for
+      whoever shares them.
+    </p>
+    {%- if history.packages %}
+    {% call ui.record_table(
+         "Every issue approved for sharing from this project, most recent first",
+         ["Issue", "From record revision", "Approved by", "Approved at",
+          "Sources captured up to", "Configured to issue",
+          "The issue before this one", "The files"]) %}
+      {%- for package in history.packages|reverse %}
+      <tr>
+        <th scope="row">Issue {{ package.issue_number }}</th>
+        <td>{{ package.accepted_revision_id }}</td>
+        <td>{{ package.authorized_by_principal }}</td>
+        <td>{{ package.authorized_at }}</td>
+        <td>{{ package.source_cutoff }}</td>
+        <td>{{ package.issue_profile_identity }} version {{ package.issue_profile_version }}</td>
+        <td>
+          {%- if package.previous_issue_number -%}
+          Issue {{ package.previous_issue_number }}
+          {%- else -%}
+          None — this was this project&#39;s first issue
+          {%- endif -%}
+        </td>
+        <td>
+          <a href="/work/{{ project.slug }}/issue/packages/{{ package.issue_number }}/bundle"
+             download>All of issue {{ package.issue_number }} as one file</a>
+          <ul>
+            {%- for artifact in package.artifacts %}
+            <li>
+              <a href="/work/{{ project.slug }}/issue/packages/{{ package.issue_number }}/artifacts/{{ artifact.artifact_type }}"
+                 download>{{ artifact_words(artifact.artifact_type) }}</a>
+              <details>
+                <summary>Exactly which bytes</summary>
+                {{ ui.fact_list([
+                     ("Exact bytes (SHA-256)", artifact.content_sha256),
+                     ("Produced by", artifact.renderer_identity ~ " " ~ artifact.renderer_version),
+                     ("Size", artifact.byte_count ~ " bytes"),
+                   ]) }}
+              </details>
+            </li>
+            {%- endfor %}
+          </ul>
+        </td>
+      </tr>
+      {%- endfor %}
+    {% endcall %}
+    {%- elif not history.releases %}
+    <p>Nothing has been approved for sharing from this project yet.</p>
+    {%- endif %}
     {%- if history.releases %}
+    <h3>Earlier single-report releases</h3>
+    <p class="quiet">
+      The report release this project used before the approved issue above. It
+      names no accepted record revision, so it is kept as its own history and
+      is never treated as the issue before an approved one.
+    </p>
     {% call ui.record_table(
          "Every release of this project's report, most recent first",
          ["Released at", "File", "Released by", "Evaluated on",
@@ -387,12 +461,10 @@
       </tr>
       {%- endfor %}
     {% endcall %}
-    {%- else %}
-    <p>Nothing has been released to the customer from this project yet.</p>
     {%- endif %}
     <p class="quiet">
-      Approving a release happens where releases are approved. This is the
-      record of what was already approved, and it cannot approve anything.
+      Approving an issue happens where issues are approved. This is the record
+      of what was already approved, and it cannot approve anything.
     </p>
     {% if history.publication_support or history.publication_support_as_of or history.publication_support_gaps %}
     <h3>Publication support from the native record</h3>
@@ -438,6 +510,27 @@
       </tr>
       {%- endfor %}
     {% endcall %}
+    {#
+      The one reading on this page no search narrows, so the page says when it
+      has been cut and offers the entries before the oldest one shown rather
+      than stopping silently at a number nobody was told about (#830). The
+      search terms travel with the link, so paging the trail does not undo the
+      question the rest of the page is answering.
+    #}
+    {%- if history.audit_has_older %}
+    <p>{{ ui.state(state_label("attention",
+        "Only the most recent " ~ history.audit|length ~ " entries are shown.")) }}</p>
+    <p>
+      <a href="/record/{{ project.slug }}?{{ audit_query }}&amp;audit_before={{ history.audit[-1].entry_id }}">
+        Entries recorded before this one &rarr;</a>
+    </p>
+    {%- endif %}
+    {%- if history.audit_before %}
+    <p><a href="/record/{{ project.slug }}?{{ audit_query }}">&larr; Back to the most recent entries</a></p>
+    {%- endif %}
+    {%- elif history.audit_before %}
+    <p>There is no audit entry older than the page you came from.</p>
+    <p><a href="/record/{{ project.slug }}?{{ audit_query }}">&larr; Back to the most recent entries</a></p>
     {%- else %}
     <p>No project-scoped audit entry has been recorded yet.</p>
     {%- endif %}

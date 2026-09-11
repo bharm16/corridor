@@ -343,15 +343,42 @@
       {%- if issue.prepared %}
       {{ ui.fact_list(issue.facts) }}
 
+      {#
+        The set, and the way to each file in it (#830).
+
+        The digest and the renderer are folded into a detail rather than
+        dropped: they are how a person proves a file is the one that was
+        sealed, and they are not what a person reads the table for. The link
+        names the artifact type and never a storage key -- the server resolves
+        the retained identity from the candidate's own rows and the store
+        verifies the digest on the way out, so a file that no longer hashes to
+        what was recorded is not served at all.
+
+        Opening a file is not approving one. This table is rendered for every
+        prepared candidate, including one that cannot be approved as it
+        stands; whether the approval is offered is `issue.may_authorize`, and
+        nothing here asks that question a second way.
+      #}
       {% call ui.record_table(
            "Everything the customer receives in this issue, in the order it is sealed",
-           ["What it is", "Produced by", "Exact bytes (SHA-256)", "Size"]) %}
+           ["What it is", "Size", "Exactly which bytes", "The file"]) %}
         {%- for row in issue.artifact_rows %}
         <tr>
           <th scope="row">{{ row.words }}</th>
-          <td>{{ row.produced_by }}</td>
-          <td>{{ row.content_sha256 }}</td>
           <td>{{ row.byte_count }} bytes</td>
+          <td>
+            <details>
+              <summary>Digest and renderer</summary>
+              {{ ui.fact_list([
+                   ("Exact bytes (SHA-256)", row.content_sha256),
+                   ("Produced by", row.produced_by),
+                 ]) }}
+            </details>
+          </td>
+          <td>
+            <a href="/work/{{ project.slug }}/issue/candidates/{{ issue.candidate.id }}/artifacts/{{ row.artifact_type }}"
+               download>Download {{ row.words }}</a>
+          </td>
         </tr>
         {%- endfor %}
       {% endcall %}
@@ -405,6 +432,33 @@
            ("Approved by", issue.authorized.authorized_by_principal),
            ("Approved at", issue.authorized.authorized_at.isoformat()),
          ]) }}
+      {#
+        The approved set as one thing, because ADR-0086 makes the set the
+        external issue unit: collecting the files by hand and hoping you
+        finished is not the same act. The bundle is written only after every
+        member has been read back and verified against the receipt.
+
+        Approved for sharing is not sent. Corridor transmits nothing, and the
+        Follow-up section above already says so; this is the file the person
+        who shares it takes away.
+      #}
+      <p>
+        <a href="/work/{{ project.slug }}/issue/packages/{{ issue.authorized.issue_number }}/bundle"
+           download>Download issue {{ issue.authorized.issue_number }} as one file</a>
+      </p>
+      {% call ui.record_table(
+           "The approved issue, file by file",
+           ["What it is", "The file"]) %}
+        {%- for row in issue.authorized.artifacts %}
+        <tr>
+          <th scope="row">{{ row.words }}</th>
+          <td>
+            <a href="/work/{{ project.slug }}/issue/packages/{{ issue.authorized.issue_number }}/artifacts/{{ row.artifact_type }}"
+               download>Download {{ row.words }}</a>
+          </td>
+        </tr>
+        {%- endfor %}
+      {% endcall %}
       {%- endif %}
 
       {#
@@ -421,7 +475,7 @@
       <h4>Earlier candidates for this issue, kept as history</h4>
       {% call ui.record_table(
            "Every candidate this project has moved past, newest first",
-           ["Prepared", "Prepared by", "From record revision", "Coverage it was prepared under", "What became of it"]) %}
+           ["Prepared", "Prepared by", "From record revision", "Coverage it was prepared under", "What became of it", "What it contained"]) %}
         {%- for one in issue.superseded %}
         <tr>
           <th scope="row">{{ one.prepared_at.isoformat() }}</th>
@@ -429,6 +483,16 @@
           <td>{{ one.accepted_revision_id }}</td>
           <td>{{ one.coverage_identity }}</td>
           <td>{{ one.outcome }}</td>
+          <td>
+            <ul>
+              {%- for row in one.artifacts %}
+              <li>
+                <a href="/work/{{ project.slug }}/issue/candidates/{{ one.candidate_id }}/artifacts/{{ row.artifact_type }}"
+                   download>{{ row.words }}</a>
+              </li>
+              {%- endfor %}
+            </ul>
+          </td>
         </tr>
         {%- endfor %}
       {% endcall %}
