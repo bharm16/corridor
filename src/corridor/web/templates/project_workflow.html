@@ -236,14 +236,19 @@
           <input type="text" id="deferred-{{ held.delta_id }}-reason"
                  name="scheduling_reason" value="">
           {% endcall %}
-          {% call ui.sticky_actions("Scheduling for " ~ held.subject_name ~ " — " ~ held.field_name) %}
-          <button type="submit" name="scheduling" value="reschedule">
-            Change the date this comes back
-          </button>
-          <button type="submit" name="scheduling" value="open_now">
-            Bring this back now
-          </button>
-          {% endcall %}
+          {#- Deliberately not `sticky_actions`: that pins one item's actions
+              to the bottom of the viewport, which is right for the one item a
+              coordinator has opened and wrong for a list where every row would
+              pin its own bar over the last. Each button names its own act and
+              the section heading above names which change it acts on. #}
+          <p>
+            <button type="submit" name="scheduling" value="reschedule">
+              Change the date this comes back
+            </button>
+            <button type="submit" name="scheduling" value="open_now">
+              Bring this back now
+            </button>
+          </p>
         </form>
       </section>
       {%- endfor %}
