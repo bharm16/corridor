@@ -105,6 +105,30 @@ Three consequences follow, and they are narrow on purpose:
   determines each partner's actual configured set, templates, approval path,
   and delivery destination.
 
+### The customer journey is four classes of work, not one gate
+
+#820 carries the supported customer journey from an unadopted project and a
+person who has not signed in, through to an approved, downloadable issue. Its
+children are **not** all pilot-entry gates, and the distinction is the point of
+recording it here: treating every child as a universal gate would make the
+pilot wait on work that only a particular partner's declared scope needs, and
+would hide which failures actually stop a measured week from starting. #820's
+own "Supported scope and classes" table is the authority for which child sits
+in which class; this is that table with the reason each class exists.
+
+| Class | What it means | Children |
+|---|---|---|
+| **Core journey acceptance** | The journey itself. Every one of these is on the path from sign-in to a downloaded package, so a failure here is a failure of the supported journey for every partner. | #821, #822, #823, #824, #825, #826, #827, #828, #830, #831, #832, #834, #835, #836, #839, #840, #841, #843, #844, #848, #849 |
+| **Required when selected** | A capability the journey needs **only when a partner's declared scope selects it**. It is a gate for that partner and for nobody else, and it joins the acceptance harness through its own ticket when the declared demo or pilot scope enables it. | #847 machine or mail intake, #833 minutes questions, #837 response tracking, #838 exact contacts |
+| **Measured-pilot readiness** | Needed before the first *measured* week, not before the journey works. These make the measurement interpretable and usable rather than making the product run. | #845, #846; #706 human accessibility validation |
+| **Operations support** | Work Corridor operations performs around the journey — provisioning, disposition, repair. A person can complete the journey while these are staff-run procedures, so they are not gates on it. | #829, #842; #489 and #514 provisioning and disposition |
+
+None of these four classes adds anything to the pilot-entry list above. That
+list is closed — "nothing else may be added to this list without a recorded
+reason" — so a #820 child blocks the pilot starting only where the pilot-entry
+table names it or names the requirement it completes. Everywhere else the class
+says what the child is for, and the child's own ticket says what it must do.
+
 ## Open human decisions
 
 The program map in #459 carries the same list, and these are the questions no
