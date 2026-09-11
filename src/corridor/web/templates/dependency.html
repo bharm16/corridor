@@ -450,7 +450,7 @@
       {% if f.name in disputes %}
         {% set assessment = dispute_assessments.get(f.name) %}
         {% set timeline = dispute_timelines.get(f.name) %}
-        <section class="dispute-summary" aria-label="Source discrepancy summary">
+        <section class="dispute-summary" aria-label="Sources disagree summary">
           <h3>Sources disagree — choose the project record conclusion</h3>
           {% if assessment %}<p class="why">Why this remains contested: {{ assessment.why }}</p>{% endif %}
           <p class="muted">This affects the record field {{ field_label(f.name) }}. A person records the conclusion; source claims stay preserved.</p>
