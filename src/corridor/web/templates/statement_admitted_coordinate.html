@@ -1,3 +1,30 @@
+{#
+  Every fact on this page comes from `corridor.web.statement_view`; the handler
+  passes that one reading and adds only the refusal sentence its own write path
+  raised. `reading.admitted` is `statement_coordination.AdmittedStatementCoordination`
+  itself, so the accepted Commitment's facts are bound here straight off the
+  reading that owns them rather than through a dict that restated their names.
+#}
+{% set candidate = reading.candidate %}
+{% set admitted = reading.admitted %}
+{% set event = admitted.event %}
+{% set affected_party_name = admitted.affected_party_name %}
+{% set lineage = admitted.lineage %}
+{% set scope = admitted.scope %}
+{% set policy_run = admitted.policy_run %}
+{% set evidence = admitted.evidence %}
+{% set scope_dependencies = admitted.scope_dependencies %}
+{% set roster = admitted.roster %}
+{% set decision = admitted.next_decision %}
+{% set authority_gap = admitted.authority_gap %}
+{% set next_action_choices = admitted.next_action_choices %}
+{% set next_action_decision = admitted.next_action_decision %}
+{% set deferral_decision = admitted.deferral_decision %}
+{% set can_close_next_action = admitted.can_close_next_action %}
+{% set plan_unknown_date_reasons = reading.plan_unknown_date_reasons %}
+{% set plan_no_follow_up_reasons = reading.plan_no_follow_up_reasons %}
+{% set plan_cancellation_reasons = reading.plan_cancellation_reasons %}
+{% set plan_deferral_reasons = reading.plan_deferral_reasons %}
 <!doctype html>
 <meta charset="utf-8">
 <title>Coordinate recorded Commitment — {{ project.name }}</title>
