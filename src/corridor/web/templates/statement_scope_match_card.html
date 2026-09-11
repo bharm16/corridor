@@ -1,3 +1,11 @@
+{#
+  The matcher's own narrowed-set card, as it recorded it (#370, ADR-0054).
+  Nothing is preselected and nothing is re-derived here.
+
+  Use:  {% import "statement_scope_match_card.html" as scope_match %}
+        {{ scope_match.card(reading.scope_match_card, reading.candidate_evidence) }}
+#}
+{% macro card(scope_match_card, candidate_evidence) %}
 <section class="scope-match-card" aria-labelledby="scope-match-heading">
   <h3 id="scope-match-heading">Several constraints match this statement</h3>
   <p class="muted">Corridor narrowed the choices from the statement's own identifying language. It has not selected one; no choice is preselected.</p>
@@ -42,3 +50,4 @@
     if (allListed) allListed.addEventListener('click', () => choose(allListed.dataset.scopeMatchAll.split(',')));
   })();
 </script>
+{% endmacro %}
