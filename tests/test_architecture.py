@@ -1022,6 +1022,166 @@ def test_a_test_module_writes_an_accepted_authority_row_only_through_the_harness
     )
 
 
+def _enclosing_definition(source, node: ast.AST) -> str:
+    """The innermost function a node sits in, or `<module>`.
+
+    By line range rather than by a parent map, because `read_python` hands
+    back a flat walk and a second pass to rebuild parenthood would be the
+    more expensive half of this scan.
+    """
+    innermost = "<module>"
+    start = -1
+    for definition in source.nodes:
+        if not isinstance(definition, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if definition.lineno <= node.lineno <= (definition.end_lineno or node.lineno):
+            if definition.lineno > start:
+                start, innermost = definition.lineno, definition.name
+    return innermost
+
+
+# Every place in `tests/` that still builds an Extracted Proposal by naming
+# `Candidate` itself, as `(module, the function that names it)`. The list may
+# fall and may never rise (`assert_ratchet`): a new fixture calls
+# `proposal_support.proposal`, which is `corridor.candidates.propose` with test
+# defaults, and never appears here.
+#
+# Two of these are not proposals at all and stay: `test_work_list.py`'s
+# accepted commitment carries no payload, because that screen reads the
+# commitment rather than the row it came from, and `test_statement_screens.py`
+# names a detached `Candidate` as a view-model stub with no payload and no
+# Session. Everything else is a fixture that predates the seam.
+TEST_PROPOSAL_CONSTRUCTORS = frozenset({
+    ("evidence_outcome_support.py", "accepted_case_with_scope"),
+    ("evidence_outcome_support.py", "unplaced_statement"),
+    ("m8_acceptance_support.py", "_capture_extractor"),
+    ("test_admission.py", "_conflict"),
+    ("test_admission.py", "_statement"),
+    ("test_audit.py", "make_candidate"),
+    ("test_automatic_carry_forward.py", "_candidate"),
+    ("test_candidate_model.py", "_candidate"),
+    ("test_candidate_statement_facts.py", "_candidate_with_page"),
+    ("test_cohort.py", "_run"),
+    ("test_current_record.py", "record_case"),
+    ("test_delta_generation_runtime.py", "_accept_by_policy"),
+    ("test_demo.py", "make_candidate"),
+    ("test_dependency_admission.py", "_candidate"),
+    ("test_disputes.py", "test_a_settlement_prediction_is_scored_against_the_human_conclusion"),
+    ("test_document_notifications.py", "_candidate_row"),
+    ("test_document_notifications.py", "_coordinate_commitment"),
+    ("test_event_cohort.py", "_candidate"),
+    ("test_evidence_investigator.py", "_unplaced_statement"),
+    ("test_experimental_database.py", "test_extraction_measurement_runs_through_the_real_guarded_entry_point"),
+    ("test_export.py", "project"),
+    ("test_external_statements.py", "test_shared_writer_refuses_a_guided_resolution_bound_to_different_facts"),
+    ("test_external_statements.py", "test_shared_writer_refuses_cross_project_evidence_in_a_guided_resolution"),
+    ("test_extract_batch.py", "_to_candidate"),
+    ("test_extract_batch.py", "test_candidate_presence_alone_does_not_mark_a_document_done"),
+    ("test_extract_batch.py", "test_new_prompt_version_appends_history_without_replacing_the_active_run"),
+    ("test_extract_project.py", "candidate"),
+    ("test_extraction_runs.py", "test_attached_candidate_lineage_rejects_mutation_delete_and_truncate"),
+    ("test_extraction_runs.py", "test_demo_run_receipts_remain_deletable_for_reset"),
+    ("test_extraction_runs.py", "test_null_or_ambiguous_lineage_is_not_active"),
+    ("test_extraction_runs.py", "test_run_input_snapshot_precedes_later_candidate_edits"),
+    ("test_extraction_runs.py", "test_run_receipt_carries_provenance_and_owns_its_candidates"),
+    ("test_extraction_runs.py", "test_run_receipt_rejects_cross_project_or_duplicate_candidates"),
+    ("test_extraction_runs.py", "test_run_receipt_rejects_missing_or_already_owned_candidate_inputs"),
+    ("test_fact_decisions.py", "decision_case"),
+    ("test_fact_values.py", "accepted_record"),
+    ("test_gold.py", "add_candidate"),
+    ("test_human_principals.py", "make_candidate"),
+    ("test_internal_report.py", "_accept_dependency"),
+    ("test_lane.py", "_candidate"),
+    ("test_lane.py", "test_the_key_compares_as_text_so_a_number_matches_its_string"),
+    ("test_ledger.py", "make_candidate"),
+    ("test_legacy_ledger_archive.py", "legacy_ledger"),
+    ("test_legacy_ledger_archive.py", "test_plan_fails_closed_on_a_mixed_human_and_legacy_ledger"),
+    ("test_legacy_ledger_archive.py", "test_retired_reference_codes_are_never_reused"),
+    ("test_legacy_ledger_archive.py", "test_unrelated_candidate_backlog_does_not_change_digest_or_block_retirement"),
+    ("test_legacy_ledger_archive_cli.py", "legacy_project"),
+    ("test_legacy_ledger_archive_cli.py", "test_plan_fails_cleanly_on_a_mixed_human_and_legacy_ledger"),
+    ("test_native_reference.py", "test_changing_scored_candidates_cannot_change_reference_authoring"),
+    ("test_operating_mode.py", "_matrix_candidate"),
+    ("test_operative_support.py", "_candidate"),
+    ("test_organization_identity.py", "candidate"),
+    ("test_policy_tables.py", "test_a_reconciled_admission_run_passes_the_deferred_check"),
+    ("test_product_proving_execution.py", "_candidate"),
+    ("test_product_proving_execution.py", "matrix_run"),
+    ("test_product_proving_frontend_capture.py", "_extraction_run"),
+    ("test_production_run_explanation.py", "test_explanation_declares_nothing_and_leaves_declaration_to_the_operator"),
+    ("test_project_processing.py", "_conflict"),
+    ("test_project_processing_runtime.py", "_conflict"),
+    ("test_prose_facts.py", "test_mixed_event_proposals_append_only_contract_eligible_wording"),
+    ("test_reader_segments.py", "test_statement_wording_must_resolve_to_one_exact_reader_span"),
+    ("test_report.py", "_critical_dependency"),
+    ("test_report.py", "project_with_two_dependencies"),
+    ("test_report.py", "test_the_report_states_what_it_does_not_cover"),
+    ("test_report_diff_reference.py", "_row"),
+    ("test_revision_change_explanation.py", "_candidate"),
+    ("test_revision_comparison.py", "_run"),
+    ("test_revision_comparison.py", "test_nonzero_legacy_run_without_exact_inputs_fails_closed"),
+    ("test_revision_processing.py", "_candidate"),
+    ("test_revision_processing_cli.py", "_candidate"),
+    ("test_revision_reconciliation.py", "_candidate"),
+    ("test_revision_reconciliation_runtime.py", "_candidate"),
+    ("test_sh99_shared_admission_seal.py", "test_exact_ordinary_load_is_one_statement_then_zero_new_outcomes"),
+    ("test_source_intake.py", "extract"),
+    ("test_statement_scope_matching.py", "_event_candidate"),
+    ("test_statement_screens.py", "_reading"),
+    ("test_statement_suggestions.py", "_statement_with_constraint"),
+    ("test_storage_baseline.py", "_seed_representative_state"),
+    ("test_support_assessments.py", "_rendition"),
+    ("test_support_update_routing.py", "_candidate"),
+    ("test_work_list.py", "test_coordinator_home_links_an_accepted_commitment_to_its_guided_plan"),
+})
+
+
+def test_a_test_module_builds_an_extracted_proposal_through_the_shared_constructor():
+    """`corridor.candidates` settles this payload, and `tests/` went around it.
+
+    The source rule is `candidates.py`'s own: the proposal's key set "is
+    settled here rather than per extractor", so a reader "does not have to know
+    which extractor produced a row to know what it can ask". The test tree held
+    105 hand-written `payload_json` literals across 64 modules against three
+    modules that imported `propose` -- and they were not merely verbose, they
+    were shapes no extractor emits. `propose` always writes
+    `unmapped_columns`, `tier` and `text_source`; four, six and twenty of those
+    105 did. `corridor.facts` reads all three back through `.get(...)`, so a
+    reader that began telling an absent key from an empty value would have
+    passed every one of them and failed on a real extraction.
+
+    `tests/proposal_support.py` is `propose` with the defaults a fixture wants,
+    and it writes no payload key itself, so the extractors' shape is the
+    suite's shape. This holds that: naming `Candidate` in a test is now a
+    recorded exception rather than the ordinary way.
+
+    Measured over every `Candidate(...)` construction rather than only the ones
+    carrying a dict literal, because building the same payload in a local
+    variable first is the same act.
+    """
+
+    constructors = set()
+    for path in _module_paths(TEST_ROOT):
+        source = read_python(path)
+        for node in source.nodes:
+            if not isinstance(node, ast.Call):
+                continue
+            named = (
+                node.func.id
+                if isinstance(node.func, ast.Name)
+                else node.func.attr if isinstance(node.func, ast.Attribute) else None
+            )
+            if named == "Candidate":
+                constructors.add((path.name, _enclosing_definition(source, node)))
+
+    assert_ratchet(
+        "tests/test_architecture.py:TEST_PROPOSAL_CONSTRUCTORS",
+        measured=constructors,
+        recorded=TEST_PROPOSAL_CONSTRUCTORS,
+        as_measured=lambda listed: {tuple(entry) for entry in listed},
+    )
+
+
 def test_model_output_schemas_carry_references_not_values():
     """A strict model output holds ids, enumerations, and dispositions only (#446).
 
