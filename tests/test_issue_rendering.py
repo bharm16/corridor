@@ -762,6 +762,7 @@ def test_unaccepted_deltas_never_appear_as_changes_but_stay_distinguishable(
         delta_id=deferred.id,
         deferred_at=datetime(2026, 8, 30, tzinfo=timezone.utc),
         scheduled_by_principal="local:alice",
+        request_identity="schedule:awaiting-reply",
         deferred_until=datetime(2026, 10, 1, tzinfo=timezone.utc),
         wake_condition="awaiting the utility's reply",
     )
@@ -1763,6 +1764,7 @@ def test_a_deferral_is_neither_a_decision_nor_actionable_work(session, project):
         delta_id=deferred.id,
         deferred_at=datetime(2026, 8, 30, tzinfo=timezone.utc),
         scheduled_by_principal="local:alice",
+        request_identity="schedule:awaiting-reply",
         deferred_until=datetime(2026, 10, 1, tzinfo=timezone.utc),
         wake_condition="awaiting the utility's reply",
     )
@@ -1824,6 +1826,7 @@ def test_a_deferral_whose_return_date_has_passed_is_open_again(session, project)
         delta_id=returned.id,
         deferred_at=datetime(2026, 8, 1, tzinfo=timezone.utc),
         scheduled_by_principal="local:alice",
+        request_identity="schedule:promised-reply-date",
         deferred_until=datetime(2026, 8, 20, tzinfo=timezone.utc),
         wake_condition="the promised reply date",
     )

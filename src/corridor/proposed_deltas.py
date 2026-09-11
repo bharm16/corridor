@@ -273,9 +273,11 @@ def record_delta_deferral(
     delta_id: int,
     deferred_at: datetime,
     scheduled_by_principal: str,
+    request_identity: str,
     deferred_until: datetime | None = None,
     wake_condition: str | None = None,
     reason: str | None = None,
+    supersedes_deferral_id: int | None = None,
 ) -> DeltaDeferral:
     """Schedule delta on Work List with wake condition (delta remains open).
 
@@ -283,6 +285,15 @@ def record_delta_deferral(
     role's command (#519): the runtime capabilities hold no write on
     ``delta_deferrals`` and a guard trigger refuses one that does not arrive
     through the command.
+
+    ``request_identity`` is what the caller says this request is, and it is
+    required because there is no honest default for it (#903): with the delta
+    it decides whether a second call is a replay of this one or an act of its
+    own.  A replay asking for anything different is refused rather than
+    answered with this receipt.  ``supersedes_deferral_id`` is the receipt the
+    caller believed was in force; naming one that has since been replaced is
+    refused, and naming none claims nothing, which is what a first Defer of an
+    unscheduled change is.
     """
 
     deferral_id = session.execute(
@@ -295,6 +306,8 @@ def record_delta_deferral(
                 deferred_until,
                 wake_condition,
                 reason,
+                request_identity,
+                supersedes_deferral_id,
             )
         )
     ).scalar_one()

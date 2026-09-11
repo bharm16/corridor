@@ -406,6 +406,12 @@ class DeltaStanding:
     band: str | None = None
     attention_reasons: tuple[str, ...] = ()
     item_key: str | None = None
+    # The scheduling receipt in force on a deferred delta (#903).  A caller
+    # that means to *replace* a schedule names the one it was looking at, so
+    # the receipt has to travel with the standing that says it is deferred
+    # rather than be re-read at the moment of writing, when it can only ever
+    # be current.
+    deferral_id: int | None = None
     returns_at: datetime | None = None
     wake_condition: str | None = None
     superseded_by_delta_id: int | None = None
@@ -1089,6 +1095,7 @@ def read_open_deltas(
                 DeltaStanding(
                     delta_id=delta.id,
                     standing=DEFERRED,
+                    deferral_id=int(schedule.id),
                     returns_at=schedule.deferred_until,
                     wake_condition=schedule.wake_condition,
                 )

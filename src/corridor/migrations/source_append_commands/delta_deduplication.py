@@ -34,10 +34,21 @@ constraint, so a duplicate stops being unlikely and becomes unrepresentable.
     ``include_structured_cell_fact_decision``'s replay read
     (``where revision_id = …``) was reading a set it assumed was a row.  The
     dated Work List deferral of ADR-0084 had no identity at all: it is
-    scheduling rather than a record decision, so it carries no idempotency
-    key, and a retried Defer wrote a second receipt for the same act.  Its
-    natural key is the one it already stores — the delta, the instant it was
-    scheduled at, and the person who scheduled it.
+    scheduling rather than a record decision, so it carries no Project Record
+    idempotency key, and a retried Defer wrote a second receipt for the same
+    act.  #457 made its identity the delta, the instant it was scheduled at,
+    and the person who scheduled it, which was wrong in both directions
+    (#903): inside one instant a caller asking for a *different* return date
+    was answered with the old receipt as a success, and a deliberate second
+    reschedule inside that same instant could not be recorded at all.  A
+    timestamp says when an act happened; it is not how two intentional acts
+    are told apart.  So the caller names its own request instead, the delta
+    and that name are the identity, and the command compares the payload the
+    replay carries against the receipt it would converge on: equal is the same
+    act and returns it, different is a contradiction and is refused.  A
+    genuine reschedule is a *fresh* request that names the receipt it expects
+    to replace, so a submission composed against a schedule someone else has
+    already moved is refused rather than silently replacing theirs.
 
   * **Project Record revisions.**  ``(project_id, idempotency_key)`` was
     already unique and correctly scoped.  What was missing is that the key
@@ -117,10 +128,10 @@ DEDUPLICATION_REFUSALS = (
         "   group by revision_id, fact_id having count(*) > 1) duplicated",
     ),
     (
-        "Work List deferrals repeating one scheduling act",
+        "Work List deferrals repeating one scheduling request",
         "select coalesce(sum(extra), 0) from ("
         "  select count(*) - 1 as extra from delta_deferrals"
-        "   group by delta_id, deferred_at, scheduled_by_principal"
+        "   group by delta_id, request_identity"
         "  having count(*) > 1) duplicated",
     ),
     (
@@ -170,8 +181,12 @@ alter table public.fact_decisions
     add constraint uq_fact_decisions_revision_fact unique (revision_id, fact_id);
 
 alter table public.delta_deferrals
-    add constraint uq_delta_deferrals_occurrence
-    unique (delta_id, deferred_at, scheduled_by_principal);
+    add constraint uq_delta_deferrals_request
+    unique (delta_id, request_identity);
+
+alter table public.delta_deferrals
+    add constraint ck_delta_deferrals_request_identity
+    check (length(btrim(request_identity)) > 0);
 
 alter table public.project_record_revisions
     add constraint ck_project_record_revisions_idempotency_key
@@ -230,7 +245,9 @@ alter table public.push_deliveries
 alter table public.project_record_revisions
     drop constraint if exists ck_project_record_revisions_idempotency_key;
 alter table public.delta_deferrals
-    drop constraint if exists uq_delta_deferrals_occurrence;
+    drop constraint if exists ck_delta_deferrals_request_identity;
+alter table public.delta_deferrals
+    drop constraint if exists uq_delta_deferrals_request;
 alter table public.fact_decisions
     drop constraint if exists uq_fact_decisions_revision_fact;
 alter table public.delta_groups
@@ -371,13 +388,17 @@ create function public.defer_proposed_delta(
     p_deferred_at timestamp with time zone,
     p_deferred_until timestamp with time zone,
     p_wake_condition character varying,
-    p_reason text
+    p_reason text,
+    p_request_identity character varying,
+    p_supersedes bigint
 ) returns bigint
     language plpgsql security definer
     set search_path to 'public'
     as $$
         declare
             deferral_id bigint;
+            asked delta_deferrals%rowtype;
+            in_force bigint;
         begin
             if p_principal is null or length(btrim(p_principal)) = 0 then
                 raise exception 'resolve_delta:missing_principal a deferral names the person scheduling it'
@@ -391,6 +412,10 @@ create function public.defer_proposed_delta(
                 raise exception 'resolve_delta:missing_wake_condition a deferral carries a return date or a wake condition'
                     using errcode='23514';
             end if;
+            if p_request_identity is null or length(btrim(p_request_identity)) = 0 then
+                raise exception 'resolve_delta:missing_request_identity a deferral names the request that asked for it'
+                    using errcode='23514';
+            end if;
             if not exists (
                 select 1 from proposed_deltas
                  where id = p_delta_id and project_id = p_project_id
@@ -398,21 +423,37 @@ create function public.defer_proposed_delta(
                 raise exception 'resolve_delta:cross_project_delta Proposed Delta % is not this project''s to defer', p_delta_id
                     using errcode='23514';
             end if;
-            -- Scheduling writes no revision (ADR-0084), so the act carries no
-            -- idempotency key of its own; the delta, the instant it was
-            -- scheduled at, and the person who scheduled it are its identity,
-            -- and a retry returns the receipt already written (#457).
-            select id into deferral_id from delta_deferrals
-             where delta_id = p_delta_id
-               and deferred_at = p_deferred_at
-               and scheduled_by_principal = p_principal;
-            if found then
-                return deferral_id;
-            end if;
             -- One delta carries at most one terminal relationship, and a
             -- concurrent competing act serialises here rather than each
-            -- reading an empty table (ADR-0101).
+            -- reading an empty table (ADR-0101).  It is taken before the
+            -- replay read below as well, so two submissions racing on the
+            -- same schedule cannot both find it unreplaced (#903).
             perform public.lock_proposed_delta_terminal(p_delta_id);
+            -- Scheduling writes no revision (ADR-0084), so the act carries no
+            -- Project Record idempotency key; the delta and the identity the
+            -- caller gave its request are what make two calls one act (#903).
+            -- The instant is deliberately not part of that: it records when
+            -- the act happened, and a retry that arrived a microsecond later
+            -- would otherwise become a new act simply by being later.
+            select * into asked from delta_deferrals
+             where delta_id = p_delta_id
+               and request_identity = p_request_identity;
+            if found then
+                -- The same request asking for something else is not a replay
+                -- of this receipt, and answering with it would report success
+                -- for a schedule the record does not hold (#903).  What the
+                -- caller wants is a fresh request naming this receipt as the
+                -- one it expects to replace.
+                if asked.scheduled_by_principal is distinct from p_principal
+                   or asked.deferred_until is distinct from p_deferred_until
+                   or asked.wake_condition is distinct from p_wake_condition
+                   or asked.reason is distinct from p_reason
+                   or asked.supersedes_deferral_id is distinct from p_supersedes then
+                    raise exception 'resolve_delta:schedule_bound_to_other_content this request was already recorded asking for something else, so nothing was recorded a second time; open the week again and make the change you want'
+                        using errcode='23514';
+                end if;
+                return asked.id;
+            end if;
             if exists (
                 select 1 from delta_dispositions where delta_id = p_delta_id
             ) then
@@ -431,11 +472,39 @@ create function public.defer_proposed_delta(
                 raise exception 'resolve_delta:capture_corrected_delta Proposed Delta % left Review because its source reading was corrected, so there is nothing to schedule a return to', p_delta_id
                     using errcode='23514';
             end if;
+            -- A new request that means to *replace* a schedule names the
+            -- receipt it believed was in force, and it has to still be in
+            -- force (#903).  That is the whole difference between a deliberate
+            -- second reschedule and a submission composed against a reading
+            -- someone else has already moved: both carry a fresh identity, and
+            -- only the one that names what actually stands is carried out.
+            -- A null predecessor claims nothing, which is what a first Defer
+            -- of an unscheduled change is; the readable half is the one that
+            -- knows whether a schedule stands, and refuses the reschedule of a
+            -- change that is not deferred before this command is reached.
+            if p_supersedes is not null then
+                select id into in_force from delta_deferrals
+                 where delta_id = p_delta_id
+                   and id not in (
+                        select child.deferral_id
+                          from delta_review_packet_children child
+                          join delta_review_packet_reversals reversal
+                            on reversal.receipt_id = child.receipt_id
+                         where child.deferral_id is not null)
+                 order by id desc
+                 limit 1;
+                if in_force is distinct from p_supersedes then
+                    raise exception 'resolve_delta:stale_schedule the schedule this request expected to replace is not the one in force for Proposed Delta %, so nothing was recorded; open the week again to see the return date that stands', p_delta_id
+                        using errcode='23514';
+                end if;
+            end if;
             insert into delta_deferrals (
-                project_id, delta_id, deferred_at, deferred_until,
+                project_id, delta_id, request_identity, supersedes_deferral_id,
+                deferred_at, deferred_until,
                 wake_condition, scheduled_by_principal, reason
             ) values (
-                p_project_id, p_delta_id, p_deferred_at, p_deferred_until,
+                p_project_id, p_delta_id, p_request_identity, p_supersedes,
+                p_deferred_at, p_deferred_until,
                 p_wake_condition, p_principal, p_reason
             ) returning id into deferral_id;
             return deferral_id;

@@ -190,6 +190,9 @@ class DeferredWork:
     delta_id: int
     subject_name: str
     field_name: str
+    #: The receipt in force, so the form this page renders can name the
+    #: schedule it is asking to replace (#903).
+    deferral_id: int
     returns_at: date | None
     wake_condition: str | None
 
@@ -367,6 +370,7 @@ def deferred_work(
     return tuple(
         DeferredWork(
             delta_id=standing.delta_id,
+            deferral_id=standing.deferral_id,
             subject_name=names.get(
                 (project_id, delta.target_subject_identity),
                 delta.target_subject_identity,

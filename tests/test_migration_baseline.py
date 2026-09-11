@@ -184,7 +184,17 @@ EXPECTED_SCHEMA_SHA256 = (
     # the digest moves; no relation or sequence is added, so both counts are
     # unchanged. Recomputed against a fresh disposable database with template
     # reuse off.
-    "8620cbdb372b4e00f44e9727d20346b98d57e5eda47e4fbd2d13a7608e870ac9"
+    # #903 replaces the Work List deferral's identity: `request_identity`, what
+    # the caller says its request is, joins the delta in
+    # `uq_delta_deferrals_request` and the instant leaves it, and
+    # `supersedes_deferral_id` records the schedule each act replaced, unique
+    # because one schedule is replaced at most once. Two columns, two
+    # constraints, a check that a request identity is not blank, and a
+    # `defer_proposed_delta` that takes two more arguments -- all of them on
+    # relations and commands that already exist, so the digest moves and
+    # neither count does. Recomputed against a fresh disposable database with
+    # template reuse off.
+    "d5a29688d34b05f90840e2eb97c34df20952a04e07b6b88fe1474cdb729642f3"
 )
 
 pytestmark = [pytest.mark.slow, pytest.mark.migration]
@@ -1959,13 +1969,13 @@ def test_the_deduplication_transition_carries_identified_rows_across_unchanged()
                     "   'ck_project_record_revisions_idempotency_key', "
                     "   'uq_delta_groups_source_change', "
                     "   'uq_fact_decisions_revision_fact', "
-                    "   'uq_delta_deferrals_occurrence', "
+                    "   'uq_delta_deferrals_request', "
                     "   'uq_push_deliveries_envelope', "
                     "   'uq_source_deliveries_observation') order by conname"
                 )
             ).all() == [
                 ("ck_project_record_revisions_idempotency_key", "c"),
-                ("uq_delta_deferrals_occurrence", "u"),
+                ("uq_delta_deferrals_request", "u"),
                 ("uq_delta_groups_source_change", "u"),
                 ("uq_fact_decisions_revision_fact", "u"),
                 ("uq_facts_content_sha256", "u"),
@@ -2015,7 +2025,7 @@ def test_the_deduplication_transition_carries_identified_rows_across_unchanged()
                     "select count(*) from pg_constraint "
                     " where conname in ('uq_facts_content_sha256', "
                     "   'ck_project_record_revisions_idempotency_key', "
-                    "   'uq_delta_deferrals_occurrence', "
+                    "   'uq_delta_deferrals_request', "
                     "   'uq_push_deliveries_envelope', "
                     "   'uq_source_deliveries_observation')"
                 )

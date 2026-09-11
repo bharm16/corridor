@@ -799,12 +799,21 @@ def _commit_child(
         )
     deferral = child.request.deferral
     assert deferral is not None
+    # The packet act is the request that asked for this schedule, so the child
+    # key a replayed submission would compose again is what makes the replay
+    # the same scheduling act rather than a second one (#903) -- the same key
+    # a semantic child carries. A packet Defer replaces no schedule: a change
+    # the coordinator has already deferred is not offered on the review screen
+    # (ADR-0085), so it names no predecessor.
     receipt = record_delta_deferral(
         session,
         project_id=request.project_id,
         delta_id=child.request.delta_id,
         deferred_at=request.decided_at.astimezone(timezone.utc),
         scheduled_by_principal=request.principal.subject,
+        request_identity=child_idempotency_key(
+            request.idempotency_key, child.request.delta_id
+        ),
         deferred_until=deferral.deferred_until,
         wake_condition=deferral.wake_condition,
         reason=deferral.reason,

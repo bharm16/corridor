@@ -26,6 +26,7 @@ still the only thing that can take an acceptance back.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import html
 import pathlib
@@ -35,6 +36,7 @@ from uuid import uuid4
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
 import corridor.web.app
@@ -54,6 +56,7 @@ from corridor.models import (
     Project,
     ProjectRecordRevision,
 )
+from corridor.proposed_deltas import record_delta_deferral
 from corridor.review_packets import packet_reversal
 from corridor.operating_mode import adopt_project_baseline
 from corridor.packet_review import read_review_items
@@ -65,6 +68,8 @@ from corridor.review_packet_reading import (
     RETURNED_WAKE_CONDITION,
 )
 from corridor.web.app import (
+    OPEN_NOW,
+    RESCHEDULE,
     app,
     get_human_principal,
     get_review_clock,
@@ -266,6 +271,100 @@ def _defer(
     assert response.status_code == 200, response.text
 
 
+def _schedule_form(client, project: Project, delta_id: int) -> dict[str, str]:
+    """The hidden fields the week's own reschedule form carries for one change.
+
+    Read off the rendered page rather than composed here (#903).  What makes a
+    resent submission one act with the first is that the browser sends back
+    exactly what this form emitted, so a test that made up its own values
+    would be proving something no browser does.
+    """
+
+    markup = client.get(f"/work/{project.slug}").text
+    for form in re.findall(
+        r'<form[^>]*action="[^"]*/schedule">(.*?)</form>', markup, re.S
+    ):
+        fields = dict(re.findall(r'name="(\w+)"\s+value="([^"]*)"', form))
+        if fields.get("delta_id") == str(delta_id):
+            return fields
+    raise AssertionError(f"the week renders no scheduling form for {delta_id}")
+
+
+def _schedule(
+    client,
+    project: Project,
+    delta_id: int,
+    *,
+    form: dict[str, str],
+    scheduling: str = RESCHEDULE,
+    returns_on: str | None = None,
+    reason: str | None = None,
+):
+    """Submit the week's scheduling form, as the page it was read from left it."""
+
+    data = {
+        "delta_id": str(delta_id),
+        "scheduling": scheduling,
+        "request_identity": form["request_identity"],
+        "in_force_receipt": form["in_force_receipt"],
+    }
+    if returns_on is not None:
+        data["returns_on"] = returns_on
+    if reason is not None:
+        data["scheduling_reason"] = reason
+    return client.post(f"/work/{project.slug}/schedule", data=data)
+
+
+@dataclass(frozen=True, slots=True)
+class _CommittedDeferral:
+    """One project, one open change and one schedule, all already committed."""
+
+    project_id: int
+    delta_id: int
+    deferral_id: int
+
+
+def _committed_deferral(factory) -> _CommittedDeferral:
+    """The week two competing submissions both read, in its own transaction."""
+
+    with factory() as setup:
+        project = Project(
+            slug=f"deferred-{uuid4().hex[:8]}", name="Deferred", is_synthetic=True
+        )
+        setup.add(project)
+        setup.flush()
+        seed_membership(setup, project, COORDINATOR)
+        delta_id = _one_change(setup, project)
+        receipt = record_delta_deferral(
+            setup,
+            project_id=project.id,
+            delta_id=delta_id,
+            deferred_at=FIRST_VISIT,
+            scheduled_by_principal=COORDINATOR.subject,
+            request_identity="schedule:the-defer-both-tabs-read",
+            deferred_until=RETURNS_ON,
+        )
+        committed = _CommittedDeferral(
+            project_id=int(project.id),
+            delta_id=int(delta_id),
+            deferral_id=int(receipt.id),
+        )
+        setup.commit()
+    return committed
+
+
+def _receipts(session: Session, delta_id: int) -> list[DeltaDeferral]:
+    """Every scheduling receipt this change carries, oldest first."""
+
+    return list(
+        session.scalars(
+            select(DeltaDeferral)
+            .where(DeltaDeferral.delta_id == delta_id)
+            .order_by(DeltaDeferral.id)
+        ).all()
+    )
+
+
 def _revision_count(session: Session, project: Project) -> int:
     return session.scalar(
         select(func.count()).where(ProjectRecordRevision.project_id == project.id)
@@ -332,15 +431,15 @@ def test_changing_the_return_date_is_attributable_and_writes_no_revision(
     revisions = _revision_count(session, project)
 
     clock.advance_to(SECOND_VISIT)
+    form = _schedule_form(client, project, delta_id)
     with nothing_written(session, project.id, apart_from=SCHEDULING_WRITES):
-        response = client.post(
-            f"/work/{project.slug}/schedule",
-            data={
-                "delta_id": str(delta_id),
-                "scheduling": "reschedule",
-                "returns_on": "2026-11-15",
-                "scheduling_reason": "the meeting moved",
-            },
+        response = _schedule(
+            client,
+            project,
+            delta_id,
+            form=form,
+            returns_on="2026-11-15",
+            reason="the meeting moved",
         )
     assert response.status_code == 201, response.text
     session.expire_all()
@@ -373,10 +472,10 @@ def test_opening_a_deferred_change_early_writes_no_revision_either(
     revisions = _revision_count(session, project)
 
     clock.advance_to(SECOND_VISIT)
+    form = _schedule_form(client, project, delta_id)
     with nothing_written(session, project.id, apart_from=SCHEDULING_WRITES):
-        response = client.post(
-            f"/work/{project.slug}/schedule",
-            data={"delta_id": str(delta_id), "scheduling": "open_now"},
+        response = _schedule(
+            client, project, delta_id, form=form, scheduling=OPEN_NOW
         )
     assert response.status_code == 201, response.text
     session.expire_all()
@@ -402,14 +501,17 @@ def test_the_week_cannot_start_a_deferral_it_only_reschedules_one(
 
     delta_id = _one_change(session, project)
 
+    # The week renders no scheduling form for a change it has not deferred,
+    # so this submission is composed by hand. The two fields the form would
+    # have carried are present and well formed: what is refused is the act,
+    # not the shape of the request.
     with nothing_written(session, project.id, apart_from=A_PAGE_VIEW_WRITES):
-        response = client.post(
-            f"/work/{project.slug}/schedule",
-            data={
-                "delta_id": str(delta_id),
-                "scheduling": "reschedule",
-                "returns_on": "2026-11-15",
-            },
+        response = _schedule(
+            client,
+            project,
+            delta_id,
+            form={"request_identity": "schedule:by-hand", "in_force_receipt": "0"},
+            returns_on="2026-11-15",
         )
     assert response.status_code == 409
     assert "not deferred under this reading" in _text(response.text)
@@ -422,11 +524,9 @@ def test_a_reschedule_with_no_date_is_refused_and_records_nothing(
     _defer(session, client, clock, project, delta_id, until="2026-10-01")
     session.expire_all()
 
+    form = _schedule_form(client, project, delta_id)
     with nothing_written(session, project.id, apart_from=A_PAGE_VIEW_WRITES):
-        response = client.post(
-            f"/work/{project.slug}/schedule",
-            data={"delta_id": str(delta_id), "scheduling": "reschedule"},
-        )
+        response = _schedule(client, project, delta_id, form=form)
     assert response.status_code == 400
     assert "Give the date this change should come back on" in _text(response.text)
 
@@ -573,13 +673,13 @@ def test_a_change_brought_back_early_says_who_brought_it_back(
     session.expire_all()
 
     clock.advance_to(SECOND_VISIT)
-    response = client.post(
-        f"/work/{project.slug}/schedule",
-        data={
-            "delta_id": str(delta_id),
-            "scheduling": "open_now",
-            "scheduling_reason": "the utility called",
-        },
+    response = _schedule(
+        client,
+        project,
+        delta_id,
+        form=_schedule_form(client, project, delta_id),
+        scheduling=OPEN_NOW,
+        reason="the utility called",
     )
     assert response.status_code == 201, response.text
     session.expire_all()
@@ -679,13 +779,12 @@ def test_a_reschedule_moves_the_visit_the_change_comes_back_on(
     session.expire_all()
 
     clock.advance_to(SECOND_VISIT)
-    moved = client.post(
-        f"/work/{project.slug}/schedule",
-        data={
-            "delta_id": str(delta_id),
-            "scheduling": "reschedule",
-            "returns_on": "2026-12-01",
-        },
+    moved = _schedule(
+        client,
+        project,
+        delta_id,
+        form=_schedule_form(client, project, delta_id),
+        returns_on="2026-12-01",
     )
     assert moved.status_code == 201, moved.text
     session.expire_all()
@@ -702,36 +801,207 @@ def test_a_reschedule_moves_the_visit_the_change_comes_back_on(
     ).reading.actionable_delta_ids == (delta_id,)
 
 
-def test_a_retried_schedule_says_so_rather_than_announcing_a_date_twice(
+# --- what a replayed or overtaken scheduling submission is (#903) -----------
+#
+# A resent form, a contradicted one, a deliberate second reschedule inside one
+# instant, and a submission composed against a schedule that has since moved.
+# All four turn on the same choice: what the caller says its *request* is, not
+# when the request arrived, is what makes two calls one act.  The instant is
+# held still in three of them precisely so it cannot be doing the work.
+
+
+def test_an_exactly_resent_schedule_returns_the_act_already_recorded(
     session, project, clock, client
 ):
-    """The command is idempotent on the act's identity, and the page says so.
+    """The browser sends the same form twice; the record holds one schedule.
 
-    ``defer_proposed_delta`` returns the receipt already written when the same
-    person schedules the same delta at the same recorded instant (#457), and
-    records nothing.  A page that announced the date it asked for would then
-    state a schedule the record does not hold.
+    The second submission carries the identity the page minted for the first,
+    asks for the same date, and is answered with the receipt already written
+    -- so the page announcing that date is telling the truth, and nothing is
+    recorded a second time.  It is the same answer as the first submission
+    because it is the same act.
     """
 
     delta_id = _one_change(session, project)
     _defer(session, client, clock, project, delta_id, until="2026-10-01")
     session.expire_all()
 
+    clock.advance_to(SECOND_VISIT)
+    form = _schedule_form(client, project, delta_id)
+    first = _schedule(client, project, delta_id, form=form, returns_on="2026-11-15")
+    assert first.status_code == 201, first.text
+    session.expire_all()
+    recorded = _receipts(session, delta_id)
+
     with nothing_written(session, project.id, apart_from=A_PAGE_VIEW_WRITES):
-        response = client.post(
-            f"/work/{project.slug}/schedule",
-            data={
-                "delta_id": str(delta_id),
-                "scheduling": "reschedule",
-                "returns_on": "2026-11-15",
-            },
+        resent = _schedule(
+            client, project, delta_id, form=form, returns_on="2026-11-15"
         )
-    assert response.status_code == 200
-    assert "already the schedule this change is under" in _text(response.text)
+
+    assert resent.status_code == 201, resent.text
+    assert "comes back on 2026-11-15" in _text(resent.text)
+    session.expire_all()
+    assert [receipt.id for receipt in _receipts(session, delta_id)] == [
+        receipt.id for receipt in recorded
+    ]
+
+
+def test_a_resent_schedule_asking_for_another_date_is_refused(
+    session, project, clock, client
+):
+    """The case #903 was filed for, answered by refusing rather than lying.
+
+    Same request identity, different return date.  Before, the command
+    returned the receipt already written as a success and the requested date
+    was dropped on the floor; the route papered over it by comparing receipt
+    ids.  Now the contradiction is refused in the command, nothing is
+    recorded, and the schedule in force is still the one the first submission
+    asked for.
+    """
+
+    delta_id = _one_change(session, project)
+    _defer(session, client, clock, project, delta_id, until="2026-10-01")
+    session.expire_all()
+
+    clock.advance_to(SECOND_VISIT)
+    form = _schedule_form(client, project, delta_id)
+    first = _schedule(client, project, delta_id, form=form, returns_on="2026-11-15")
+    assert first.status_code == 201, first.text
+    session.expire_all()
+
+    with nothing_written(session, project.id, apart_from=A_PAGE_VIEW_WRITES):
+        contradicted = _schedule(
+            client, project, delta_id, form=form, returns_on="2026-12-20"
+        )
+
+    assert contradicted.status_code == 409
+    words = _text(contradicted.text)
+    assert "already recorded asking for something else" in words
+    # The machine token the two halves of the rule agree on is not a sentence,
+    # and a coordinator never reads one.
+    assert "resolve_delta:" not in words
     session.expire_all()
     assert read_project_workflow(
-        session, project_id=project.id, as_of=FIRST_VISIT
-    ).deferred[0].returns_at.isoformat() == "2026-10-01"
+        session, project_id=project.id, as_of=SECOND_VISIT
+    ).deferred[0].returns_at.isoformat() == "2026-11-15"
+    assert len(_receipts(session, delta_id)) == 2
+
+
+def test_a_second_reschedule_at_the_very_same_instant_is_a_second_act(
+    session, project, clock, client
+):
+    """Two deliberate reschedules, one declared instant, two receipts.
+
+    The clock does not move between them, which is what #457's identity could
+    not survive: it made the instant the thing that told two acts apart, so
+    the second was silently answered with the first's receipt.  Each act now
+    carries the identity its own page minted, and names the receipt it means
+    to replace, so both are recorded and the later one is in force.
+    """
+
+    delta_id = _one_change(session, project)
+    _defer(session, client, clock, project, delta_id, until="2026-10-01")
+    session.expire_all()
+
+    clock.advance_to(SECOND_VISIT)
+    first = _schedule(
+        client,
+        project,
+        delta_id,
+        form=_schedule_form(client, project, delta_id),
+        returns_on="2026-11-15",
+    )
+    assert first.status_code == 201, first.text
+    session.expire_all()
+
+    # The same instant, and the coordinator changes their mind on the page the
+    # first act rendered.
+    again = _schedule(
+        client,
+        project,
+        delta_id,
+        form=_schedule_form(client, project, delta_id),
+        returns_on="2026-12-20",
+    )
+    assert again.status_code == 201, again.text
+    session.expire_all()
+
+    receipts = _receipts(session, delta_id)
+    assert len(receipts) == 3, "the first Defer and both reschedules"
+    assert [receipt.deferred_at for receipt in receipts[1:]] == [
+        SECOND_VISIT,
+        SECOND_VISIT,
+    ]
+    assert receipts[-1].supersedes_deferral_id == receipts[-2].id
+    assert read_project_workflow(
+        session, project_id=project.id, as_of=SECOND_VISIT
+    ).deferred[0].returns_at.isoformat() == "2026-12-20"
+
+
+@pytest.mark.slow
+def test_a_submission_composed_against_a_moved_schedule_is_refused(
+    runtime_database,
+):
+    """Two submissions read the same week; only the first one changes it.
+
+    This cannot be proved inside one rollback-scoped transaction, because what
+    the second submission must see is a receipt another transaction *committed*
+    after its own page was rendered.  So the harness's own isolated database
+    runs three real transactions: the two submissions carry their own fresh
+    request identities and both name the receipt their shared reading showed,
+    and the second is refused because that receipt is no longer the schedule in
+    force.  Nothing about it is a retry -- it is a distinct act composed
+    against a record that moved under it.
+    """
+
+    factory = runtime_database.session_factory
+    scenario = _committed_deferral(factory)
+
+    with factory() as first:
+        recorded = record_delta_deferral(
+            first,
+            project_id=scenario.project_id,
+            delta_id=scenario.delta_id,
+            deferred_at=SECOND_VISIT,
+            scheduled_by_principal=COORDINATOR.subject,
+            request_identity="schedule:first-tab",
+            deferred_until=datetime(2026, 11, 15, tzinfo=timezone.utc),
+            supersedes_deferral_id=scenario.deferral_id,
+        )
+        moved_to = int(recorded.id)
+        first.commit()
+
+    with factory() as second:
+        with pytest.raises(DBAPIError) as refused:
+            record_delta_deferral(
+                second,
+                project_id=scenario.project_id,
+                delta_id=scenario.delta_id,
+                deferred_at=SECOND_VISIT,
+                scheduled_by_principal=COORDINATOR.subject,
+                request_identity="schedule:second-tab",
+                deferred_until=datetime(2026, 12, 20, tzinfo=timezone.utc),
+                supersedes_deferral_id=scenario.deferral_id,
+            )
+        second.rollback()
+
+    message = str(refused.value)
+    assert "resolve_delta:stale_schedule" in message
+    assert "is not the one in force" in message
+
+    with factory() as reading:
+        receipts = reading.scalars(
+            select(DeltaDeferral)
+            .where(DeltaDeferral.delta_id == scenario.delta_id)
+            .order_by(DeltaDeferral.id)
+        ).all()
+        assert [receipt.id for receipt in receipts] == [
+            scenario.deferral_id,
+            moved_to,
+        ]
+        assert receipts[-1].deferred_until == datetime(
+            2026, 11, 15, tzinfo=timezone.utc
+        )
 
 
 # --- the Needs coordination walk, and what #837 still owes it --------------

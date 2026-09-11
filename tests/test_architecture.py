@@ -3494,14 +3494,15 @@ DEDUPLICATION_IDENTITIES = {
     "delta_groups": "uq_delta_groups_source_change",
     # Decisions: the revision an inclusion decision belongs to decides its
     # Fact once; a Resolve Delta decision, a Follow-up Plan, a packet act and
-    # its Undo each carry their command's key; a dated deferral is the delta,
-    # the instant, and the person who scheduled it (ADR-0084).
+    # its Undo each carry their command's key; a dated deferral is the delta
+    # and the identity its caller gave the request that asked for it, which is
+    # deliberately not the instant it was scheduled at (ADR-0084, #903).
     "fact_decisions": "uq_fact_decisions_revision_fact",
     "delta_record_decisions": "uq_delta_record_decisions_key",
     "delta_follow_up_plans": "uq_delta_follow_up_plans_key",
     "delta_review_packet_receipts": "uq_delta_review_packet_receipts_key",
     "delta_review_packet_reversals": "uq_delta_review_packet_reversals_key",
-    "delta_deferrals": "uq_delta_deferrals_occurrence",
+    "delta_deferrals": "uq_delta_deferrals_request",
     # Project Record revisions: the command's idempotency key, per project.
     "project_record_revisions": "uq_project_record_revision_key",
     # Connector deliveries: ADR-0083's envelope identity, structurally, so

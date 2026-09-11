@@ -239,6 +239,19 @@
         <form method="post" action="/work/{{ project.slug }}/schedule">
           {{ csrf_field() }}
           <input type="hidden" name="delta_id" value="{{ held.delta_id }}">
+          {#- What this submission *is*, minted when this page was rendered,
+              and the schedule it was rendered against (#903). A browser that
+              sends this form twice sends the same request identity both
+              times, so the second is the same act and records nothing; a
+              deliberate second reschedule is made on a page rendered after
+              the first, so it carries an identity of its own. The receipt id
+              is what the person was looking at, so a submission composed
+              against a schedule that has since moved is refused instead of
+              silently replacing the one now in force. #}
+          <input type="hidden" name="request_identity"
+                 value="{{ scheduling_request_identity }}">
+          <input type="hidden" name="in_force_receipt"
+                 value="{{ held.deferral_id }}">
           {% call ui.field(
                "deferred-" ~ held.delta_id ~ "-returns-on",
                "A different date for this to come back on") %}

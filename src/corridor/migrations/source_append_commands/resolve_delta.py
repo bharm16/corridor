@@ -40,16 +40,17 @@ from corridor.migrations.source_append_commands.roles import (
 )
 
 
-# Every refusal the statements below raise, listed once.  The plpgsql is the
-# authority and its tokens are its own words; this list exists so the agreement
-# with the readable half is *declared* rather than discovered when the two
-# vocabularies drift.  `corridor.delta_refusals` declares each of these codes
-# with the outcome status a screen routes on and which half may raise it, and
-# `tests/test_delta_resolution.py` parses the `resolve_delta:<code>` tokens out
-# of this module with the runtime's own expression and fails if this list, the
-# declared vocabulary, or the statements disagree.  Nothing reads this constant
-# at run time: adding a name to it grants no refusal, and removing a raise from
-# a statement is what actually retires one.
+# Every refusal this family's statements raise, listed once.  The plpgsql is
+# the authority and its tokens are its own words; this list exists so the
+# agreement with the readable half is *declared* rather than discovered when
+# the two vocabularies drift.  `corridor.delta_refusals` declares each of these
+# codes with the outcome status a screen routes on and which half may raise it,
+# and `tests/test_delta_resolution.py` parses the `resolve_delta:<code>` tokens
+# out of this module *and* `delta_deduplication`, which replaces the bodies of
+# two of these commands, with the runtime's own expression, and fails if this
+# list, the declared vocabulary, or the statements disagree.  Nothing reads
+# this constant at run time: adding a name to it grants no refusal, and
+# removing a raise from a statement is what actually retires one.
 RESOLVE_DELTA_REFUSAL_CODES = (
     "already_effective",
     "already_resolved",
@@ -66,9 +67,12 @@ RESOLVE_DELTA_REFUSAL_CODES = (
     "missing_idempotency_key",
     "missing_principal",
     "missing_record_effect",
+    "missing_request_identity",
     "missing_support",
     "missing_wake_condition",
+    "schedule_bound_to_other_content",
     "stale_accepted_revision",
+    "stale_schedule",
     "subject_mismatch",
     "superseded_delta",
     "unauthorized_writer",
@@ -601,7 +605,9 @@ create function public.defer_proposed_delta(
     p_deferred_at timestamp with time zone,
     p_deferred_until timestamp with time zone,
     p_wake_condition character varying,
-    p_reason text
+    p_reason text,
+    p_request_identity character varying,
+    p_supersedes bigint
 ) returns bigint
     language plpgsql security definer
     set search_path to 'public'
@@ -648,10 +654,12 @@ create function public.defer_proposed_delta(
                     using errcode='23514';
             end if;
             insert into delta_deferrals (
-                project_id, delta_id, deferred_at, deferred_until,
+                project_id, delta_id, request_identity, supersedes_deferral_id,
+                deferred_at, deferred_until,
                 wake_condition, scheduled_by_principal, reason
             ) values (
-                p_project_id, p_delta_id, p_deferred_at, p_deferred_until,
+                p_project_id, p_delta_id, p_request_identity, p_supersedes,
+                p_deferred_at, p_deferred_until,
                 p_wake_condition, p_principal, p_reason
             ) returning id into deferral_id;
             return deferral_id;
@@ -660,7 +668,8 @@ create function public.defer_proposed_delta(
 
 DEFER_PROPOSED_DELTA_SIGNATURE = (
     "(bigint, bigint, character varying, timestamp with time zone, "
-    "timestamp with time zone, character varying, text)"
+    "timestamp with time zone, character varying, text, character varying, "
+    "bigint)"
 )
 
 RESOLVE_DELTA_COMMANDS = {

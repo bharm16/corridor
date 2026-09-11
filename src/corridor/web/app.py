@@ -543,10 +543,7 @@ from corridor.record_history import (
     read_record_history,
     readable_terms,
 )
-from corridor.review_packet_reading import (
-    SHARED_COMMITMENT,
-    live_deferrals_by_project,
-)
+from corridor.review_packet_reading import SHARED_COMMITMENT
 from corridor.review_packets import (
     APPLY,
     DEFER,
@@ -4208,6 +4205,13 @@ def _project_workflow_response(
             # about what just happened.
             "scheduled": scheduled,
             "schedule_refusal": schedule_refusal,
+            # What a scheduling act made from *this* rendering of the page is,
+            # minted here so a resent form is one act and a deliberate second
+            # reschedule -- which is made on the page this response renders --
+            # is another (#903). One value serves every deferred change on the
+            # page, because the change being scheduled is already half of the
+            # receipt's identity.
+            "scheduling_request_identity": f"schedule:{uuid4().hex}",
             # #835's plan lifecycle, kept apart from the scheduling act above
             # and from both issue outcomes: it retired or replaced an outside
             # ask and decided nothing about the project record.
@@ -4399,6 +4403,8 @@ def reschedule_deferred_change(
     slug: str,
     delta_id: int = Form(...),
     scheduling: str = Form(...),
+    request_identity: str = Form(...),
+    in_force_receipt: int = Form(...),
     returns_on: str = Form(""),
     scheduling_reason: str = Form(""),
     principal: HumanPrincipal = Depends(get_human_principal),
@@ -4478,15 +4484,6 @@ def reschedule_deferred_change(
         if scheduling == OPEN_NOW
         else datetime.combine(return_date, time(0, 0), tzinfo=timezone.utc)
     )
-    # The receipt in force before this act, read from the same function the
-    # reading above read it with. It is needed because the scheduling command
-    # is idempotent on the delta, the instant and the person (#457): a retried
-    # act returns the receipt already written and records nothing, and a page
-    # that announced the date it *asked* for would then state a schedule the
-    # record does not hold.
-    in_force = live_deferrals_by_project(session, (project.id,))[project.id].get(
-        delta_id
-    )
     outcome = resolve_delta(
         session,
         ChildDecisionRequest(
@@ -4494,11 +4491,16 @@ def reschedule_deferred_change(
             delta_id=delta_id,
             action=DEFER,
             principal=principal,
-            # Scheduling carries no idempotency key -- the delta, the instant
-            # and the person are the receipt's identity (ADR-0084, #457) --
-            # and `defer_delta` never reads this one. It is filled with what
-            # the act was so a replayed request is legible in a log.
-            idempotency_key=f"schedule:{delta_id}:{now.isoformat()}",
+            # What this submission is, as the page that rendered the form
+            # minted it (#903). The command converges a replay of it on the
+            # receipt it already wrote and refuses a replay that asks for
+            # something else, so this page can announce the date it asked for:
+            # a success here means the record holds it.
+            idempotency_key=request_identity,
+            # And the schedule the person was looking at. Naming one that has
+            # since been replaced is refused by the command, which is why this
+            # route no longer compares receipt ids to tell the truth (#903).
+            supersedes_deferral_id=in_force_receipt,
             decided_at=now,
             deferred_until=returns_at,
             # A reschedule changes the date and keeps whatever the coordinator
@@ -4515,19 +4517,11 @@ def reschedule_deferred_change(
     if outcome.status != DEFERRED_STATUS:
         return answer(
             refused=(
-                outcome.refusal.detail
+                refusal_words(outcome.refusal)
                 if outcome.refusal is not None
                 else "The change could not be rescheduled."
             ),
             status_code=409,
-        )
-    if in_force is not None and outcome.deferral_id == in_force.id:
-        return answer(
-            scheduled=(
-                "That is already the schedule this change is under, so "
-                "nothing was recorded a second time."
-            ),
-            status_code=200,
         )
     session.commit()
     return answer(

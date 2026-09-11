@@ -483,6 +483,7 @@ def test_work_list_scheduling_stays_outside_operating_mode_authority(
         delta_id=delta.id,
         deferred_at=datetime(2027, 2, 1, tzinfo=timezone.utc),
         scheduled_by_principal="local:coordinator",
+        request_identity="schedule:operating-mode",
         wake_condition="newer_source_version",
     )
 

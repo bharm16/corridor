@@ -49,7 +49,7 @@ from datetime import datetime
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from corridor.delta_refusals import REVIEW_PACKET_TOKEN
+from corridor.delta_refusals import REFUSAL_TOKEN, REVIEW_PACKET_TOKEN
 from corridor.delta_resolution import Refusal
 from corridor.follow_up_plan_lifecycle import ClosureRefusal
 from corridor.models import (
@@ -189,6 +189,13 @@ def refusal_words(refusal: Refusal | ClosureRefusal) -> str:
     Both refusal shapes of this family reach here: the packet's, which is about
     a Proposed Delta, and #835's closure, which is about a Follow-up Plan.
     Only the sentence is read, and the sentence is the command's either way.
+
+    Either family's token is stripped, because a refusal a screen prints can
+    come from either: the Work List scheduling refusals of #903 are
+    ``resolve_delta`` codes raised by the command under the lock it holds, so
+    they reach a page with no readable-half sentence in front of them.
     """
 
-    return REVIEW_PACKET_TOKEN.sub("", refusal.detail).strip()
+    return REFUSAL_TOKEN.sub(
+        "", REVIEW_PACKET_TOKEN.sub("", refusal.detail)
+    ).strip()

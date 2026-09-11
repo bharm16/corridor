@@ -772,12 +772,22 @@ create table public.delta_deferrals (
     id bigserial primary key,
     project_id bigint not null references public.projects (id),
     delta_id bigint not null,
+    -- What the caller says this request is (#903).  The instant records when
+    -- the act happened and is deliberately not the identity: a retry with a
+    -- changed date would otherwise become a new act simply by being later.
+    request_identity character varying(128) not null,
+    -- The receipt the caller believed was in force when they asked.  Null on
+    -- a first Defer, which replaces nothing; unique because one schedule is
+    -- replaced at most once, so two submissions composed against the same
+    -- reading cannot both succeed.
+    supersedes_deferral_id bigint references public.delta_deferrals (id),
     deferred_at timestamp with time zone not null,
     deferred_until timestamp with time zone,
     wake_condition character varying(128),
     scheduled_by_principal character varying(128) not null,
     reason text,
     recorded_at timestamp with time zone not null default now(),
+    constraint uq_delta_deferrals_supersedes unique (supersedes_deferral_id),
     constraint fk_delta_deferrals_delta
         foreign key (project_id, delta_id)
         references public.proposed_deltas (project_id, id)

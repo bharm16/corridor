@@ -293,6 +293,10 @@ def test_public_fingerprint_discovers_all_current_tables_and_sequences_read_only
     # bigserial: two tables, two sequences. Its command, the two helper
     # functions every terminal writer calls, and the guards that refuse every
     # other write are schema objects the digest reads and neither count does.
+    # #903 gives the Work List deferral the identity its caller names, and the
+    # schedule each act replaced, as two columns and three constraints on
+    # `delta_deferrals`. A column is not a relation and carries no sequence of
+    # its own, so it moves the digest and neither count.
     assert fingerprint.table_count == 235
     assert fingerprint.sequence_count == 214
     assert fingerprint.schema_object_count > 0
