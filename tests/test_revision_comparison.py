@@ -561,9 +561,10 @@ def test_consecutive_nhhip_runs_persist_an_exact_reviewer_readable_receipt(
 _PREDECESSOR_ROW_BASE = 1
 _SUCCESSOR_ROW_BASE = 11
 
-# Station alone, so a case can put a chosen edge and its competitor either side
-# of the assignment threshold without every other signal moving too.
-_STATION_ONLY_WEIGHTS = {
+# The released thresholds, restated, with station the only signal carrying
+# weight -- so a case can put a chosen edge and its competitor either side of
+# the assignment threshold without every other signal moving too.
+_STATION_ONLY_SCORING = {
     "minimum_score": 0.60,
     "ambiguity_margin": 0.04,
     "weights": {
@@ -874,7 +875,7 @@ _ROW_CORRESPONDENCE_CASES = [
             }
         ],
         [("dropped", (1,), ()), ("added", (), (1,))],
-        _STATION_ONLY_WEIGHTS,
+        _STATION_ONLY_SCORING,
         id="lone_below_threshold_edge_remains_added_and_dropped",
     ),
     # A stronger edge is irrelevant when forcing it loses cardinality.
@@ -1270,7 +1271,7 @@ def test_near_threshold_alternative_is_preserved_as_ambiguity():
             {"utility_id": "A", "station_from": "101+95"},
             {"utility_id": "A", "station_from": "102+05"},
         ],
-        _STATION_ONLY_WEIGHTS,
+        _STATION_ONLY_SCORING,
     )
 
     assert finding.state == "ambiguous"
