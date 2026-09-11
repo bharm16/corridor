@@ -4368,7 +4368,7 @@ def test_a_contested_disagreement_is_a_summary_with_a_bounded_timeline(
 
     page = client.get(f"/ledger/{project.slug}/{dependency.id}").text
 
-    assert "Source discrepancy summary" in page
+    assert "Sources disagree summary" in page
     assert "Why this remains contested" in page
     assert "Timeline — machine reading, not a conclusion" in page
     assert "Page image unavailable; cited text shown." in page
@@ -4465,7 +4465,7 @@ def test_a_graphical_claim_renders_its_plan_images_primary(
 
     page = client.get(f"/ledger/{project.slug}/{dependency.id}").text
 
-    assert "Source discrepancy summary" in page
+    assert "Sources disagree summary" in page
     assert f'<img src="/page-image/{plan.id}/1"' in page
     # The image-less plan claim is stated honestly, not faked.
     assert "page image unavailable" in page
@@ -4499,7 +4499,7 @@ def test_a_stale_agreement_page_shows_amendment_work_not_a_settle_form(
     assert "Recorded value: 16-inch" in page
     # Never a pick-one card: no settle control renders for the field.
     assert "Record the conclusion for this field" not in page
-    assert "Source discrepancy summary" not in page
+    assert "Sources disagree summary" not in page
 
 
 def test_directive_text_inside_a_cited_quote_renders_inert(
@@ -4571,7 +4571,7 @@ def test_needs_clarification_records_the_follow_up_and_keeps_the_dispute_open(
     assert len(session.scalars(select(WorkDecision)).all()) == 2
     # The discrepancy stays open: the follow-up is not a settlement.
     page = client.get(f"/ledger/{project.slug}/{dependency.id}").text
-    assert "Source discrepancy summary" in page
+    assert "Sources disagree summary" in page
 
 
 def test_a_rejected_clarification_writes_nothing(session, client, project):

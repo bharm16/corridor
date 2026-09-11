@@ -33,6 +33,14 @@ text, and ``src/corridor/migrations/versions`` holds inert source bytes retained
 for released policy fingerprints. So the migration package keeps its own copies,
 and ``test_migration_role_constants_do_not_drift`` asserts the copies are equal
 instead of asserting there is one.
+
+One vocabulary is owned outside the code entirely. A customer label is adopted
+in the Project Record glossary (ADR-0047, ADR-0048), and ``presentation._LABELS``
+holds the bytes a screen prints for it -- a copy in the same sense a migration's
+role name is a copy, and paired here the same way. ``source_discrepancy`` had
+drifted to the internal term's own spelling while the adopted label is
+"Sources disagree", so one screen read differently from the three surfaces that
+already print the adopted words (#862).
 """
 
 from __future__ import annotations
@@ -49,6 +57,7 @@ from corridor import (
     control_plane_schema,
     db_roles,
     operating_mode,
+    presentation,
     statement_values,
 )
 from scripts import container_entrypoint
@@ -64,6 +73,7 @@ DB_ROLES_OWNER = CORRIDOR / "db_roles.py"
 CONTROL_PLANE_OWNER = CORRIDOR / "control_plane_schema.py"
 OPERATING_MODE_OWNER = CORRIDOR / "operating_mode.py"
 UNKNOWN_SCOPE_OWNER = CORRIDOR / "statement_values.py"
+PROJECT_RECORD_GLOSSARY = ROOT / "CONTEXT.md"
 
 
 # Each entry says which module may restate a name and why it is not a
@@ -113,6 +123,22 @@ def _whole_string_constants(path: Path, wanted: frozenset[str]) -> list[tuple[in
 
 def _relative(path: Path) -> str:
     return str(path.relative_to(SRC))
+
+
+def _glossary_entry(term: str) -> str:
+    """One term's block in the Project Record glossary."""
+    parts = PROJECT_RECORD_GLOSSARY.read_text().split(f"**{term}**:\n")
+    assert len(parts) == 2, f"CONTEXT.md must define {term} exactly once"
+    return parts[1].split("\n\n")[0]
+
+
+def _adopted_customer_label(entry: str) -> str:
+    """The words a glossary entry adopts for what a customer reads."""
+    adopted = [
+        line for line in entry.splitlines() if line.startswith("_Customer label_:")
+    ]
+    assert len(adopted) == 1, entry
+    return adopted[0].removeprefix("_Customer label_:").strip()
 
 
 def test_every_allowlist_entry_states_a_reason():
@@ -305,6 +331,25 @@ def test_unknown_scope_label_lives_with_its_detector():
         "import UNKNOWN_SCOPE_LABEL from corridor.statement_values instead:\n"
         + "\n".join(restated)
     )
+
+
+def test_the_printed_source_discrepancy_label_is_the_one_the_glossary_adopted():
+    """The glossary owns the customer words; ``_LABELS`` holds the printed copy.
+
+    ``source_discrepancy`` is an internal key and stays one, as do
+    ``CONTRADICTION``, every column, and every retained receipt that records
+    the concept. What a customer reads is the adopted label, and that decision
+    is already made and recorded: **Sources disagree**. ``_LABELS`` printed the
+    internal term's own spelling instead, alone in doing so -- the Constraint
+    alert, the Attention Reason sentence, and the Constraint screen's pill all
+    print the adopted words, so one screen would have read differently from
+    three (#862).
+    """
+    entry = _glossary_entry("Source Discrepancy")
+    adopted = _adopted_customer_label(entry)
+
+    assert adopted == "Sources disagree", entry
+    assert presentation.label("source_discrepancy") == adopted
 
 
 def test_no_module_reads_a_naive_clock():
