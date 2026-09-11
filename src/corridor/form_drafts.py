@@ -67,10 +67,11 @@ from datetime import datetime, timedelta, timezone
 # because a draft is unreviewed input rather than anything anyone relies on.
 DRAFT_TTL = timedelta(minutes=30)
 
-# What one process holds at once.  Nothing in this product sweeps per-person
-# state on a schedule, so the bound is enforced where drafts are kept rather
-# than by a job that may never run: keeping one discards what has expired, and
-# then the oldest of whatever is still over the bound.
+# What one process holds at once.  The product's one per-person sweep,
+# `sign_in_retention` (#907, ADR-0102), covers relations and still runs on no
+# schedule, so the bound here is enforced where drafts are kept rather than by a
+# job that may never run: keeping one discards what has expired, and then the
+# oldest of whatever is still over the bound.
 KEPT_AT_ONCE = 256
 
 

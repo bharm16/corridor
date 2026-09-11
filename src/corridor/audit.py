@@ -95,7 +95,9 @@ ENTITY_TYPES = frozenset(
 )
 
 # `person_identities.id` is a bigserial, so 0 is unreachable and can stand for
-# "this act names a principal that no verified email is bound to".
+# "this act names a principal that no verified email is bound to", and for the
+# one act that names no principal at all: `EXPIRE_SIGN_IN_RECORDS` sweeps rows
+# belonging to many people and to callers who never became one.
 UNBOUND_IDENTITY = 0
 
 # Every act this system records against the Ledger. `entity_type` was
@@ -246,10 +248,18 @@ DEPROVISION_PROJECT_MEMBER = "deprovision_project_member"
 # that made it, and an export that could not name that person any more would be
 # a worse record, not a safer one (#503, ADR-0081).
 DEPROVISION_PRINCIPAL = "deprovision_principal"
+# One pass of the sign-in record expiry (#907, ADR-0102).  It names no person:
+# the rows it removes are the sign-in machinery, keyed by a session hash, a
+# token hash, an email or a client address, and a single pass crosses all of
+# them.  The act is still about people rather than about a project, which is
+# why it is recorded here beside sign-in, sign-out and offboarding rather than
+# in a per-project receipt family.
+EXPIRE_SIGN_IN_RECORDS = "expire_sign_in_records"
 
 AUTOMATIC_CARRY_FORWARD_ACTOR = "corridor:automatic-carry-forward"
 DEPENDENCY_ADMISSION_ACTOR = "corridor:dependency-admission"
 ACTIVE_RUN_DECLARATION_ACTOR = "corridor:active-run-declaration"
+SIGN_IN_RECORD_EXPIRY_ACTOR = "corridor:sign-in-record-expiry"
 
 ACTIONS = frozenset(
     {
@@ -310,6 +320,7 @@ ACTIONS = frozenset(
         SIGN_OUT,
         DEPROVISION_PROJECT_MEMBER,
         DEPROVISION_PRINCIPAL,
+        EXPIRE_SIGN_IN_RECORDS,
         FLAG_INCORRECT_ASSIGNMENT,
     }
 )

@@ -8,6 +8,7 @@ amends:
   - ADR-0032
 amended_by:
   - ADR-0083
+  - ADR-0102
 migration: no retention schedule, legal-hold registry, disposition approval, dry-run manifest, or deletion receipt exists; Class A data has no disposition path.
 ---
 
