@@ -90,20 +90,22 @@ def disposable_provisioner(
     repo_root: Path,
     label: str,
     migration_revision: str = "head",
-    reuse_migrated_template: bool = False,
+    reuse_migrated_template: bool = True,
 ) -> DatabaseProvisioner:
     """One rehearsal's own labeled disposable-database namespace.
 
     Every harness built this partial application itself; the label, the name and
     the refusal belong to ``m8_acceptance_database``, and choosing the namespace
-    is the only decision left.
+    is the only decision left. Only a keyword that differs from that module's
+    own default is passed on, so this wrapper cannot pin a stale default in
+    front of it.
     """
 
     keywords: dict[str, Any] = {"repo_root": repo_root, "label": label}
     if migration_revision != "head":
         keywords["migration_revision"] = migration_revision
-    if reuse_migrated_template:
-        keywords["reuse_migrated_template"] = True
+    if not reuse_migrated_template:
+        keywords["reuse_migrated_template"] = False
     return partial(provision_disposable_postgres, **keywords)
 
 

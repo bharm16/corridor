@@ -1,6 +1,7 @@
 """Public test-harness contract for xdist worker database isolation."""
 
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 import fcntl
 import os
 from pathlib import Path
@@ -11,6 +12,7 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.engine import Engine, make_url
+from sqlalchemy.pool import NullPool
 
 import conftest as harness
 from corridor.db import engine
@@ -553,3 +555,145 @@ def test_provisioning_re_entered_by_its_own_migration_refuses_instead_of_hanging
     assert state.failed is True
     assert state._provisioning_thread is None
     assert ("migrate", f"corridor_pytest_{RUN_ID}_gw0") in calls
+
+
+def _provisioned_url(database) -> str:
+    return database.session_factory.kw["bind"].url.render_as_string(
+        hide_password=False
+    )
+
+
+def _schema_census(database_url: str) -> list[tuple[str, str, str]]:
+    """Every public relation in one database, and the columns on each."""
+
+    probe = create_engine(database_url, poolclass=NullPool)
+    try:
+        with probe.connect() as connection:
+            return [
+                tuple(row)
+                for row in connection.execute(
+                    text(
+                        "select c.relkind, c.relname, coalesce(a.attname, '') "
+                        "from pg_class c "
+                        "join pg_namespace n on n.oid = c.relnamespace "
+                        "left join pg_attribute a on a.attrelid = c.oid "
+                        "  and a.attnum > 0 and not a.attisdropped "
+                        "where n.nspname = 'public' "
+                        "  and c.relkind in ('r', 'p', 'v', 'm', 'S', 'f', 'i') "
+                        "order by 1, 2, 3"
+                    )
+                )
+            ]
+    finally:
+        probe.dispose()
+
+
+def test_the_one_template_this_run_migrated_is_what_a_fixture_copies(
+    tmp_path, monkeypatch
+):
+    """The harness publishes one migrated schema; nothing else migrates a second.
+
+    `m8_acceptance_database` keeps its own per-process template for a caller
+    outside this harness, and that is the fallback below. Inside a coordinated
+    run the template already exists, so reaching for it must not build a worker
+    database or migrate anything a second time.
+    """
+
+    calls = _record_provisioning(monkeypatch)
+    state = harness.LazyWorkerDatabase(
+        make_url(SOURCE_URL), f"corridor_pytest_{RUN_ID}_gw0", TEMPLATE, tmp_path
+    )
+
+    published = harness._harness_migrated_template(
+        SimpleNamespace(_corridor_pytest_database=state)
+    )
+
+    assert published == TEMPLATE
+    assert [call for call in calls if call[0] == "migrate"] == [("migrate", TEMPLATE)]
+    assert not state.provisioned
+    assert not state.cleanup_needed
+
+    uncoordinated = harness.LazyWorkerDatabase(
+        make_url(SOURCE_URL), f"corridor_pytest_{RUN_ID}_gw0", "", None
+    )
+    assert harness._harness_migrated_template(SimpleNamespace()) is None
+    assert harness._harness_migrated_template(
+        SimpleNamespace(_corridor_pytest_database=uncoordinated)
+    ) is None
+
+
+def test_an_isolated_database_fixture_asks_for_a_copy_of_that_template(
+    provision_isolated_database, request, monkeypatch
+):
+    """The label is the only thing a fixture still decides for itself."""
+
+    from corridor import m8_acceptance_database
+
+    seen = {}
+
+    @contextmanager
+    def record(admin_url, **keywords):
+        seen.update(keywords, admin_url=admin_url)
+        yield "provisioned"
+
+    monkeypatch.setattr(
+        m8_acceptance_database, "provision_disposable_postgres", record
+    )
+
+    with provision_isolated_database("harness_seam_proof") as database:
+        assert database == "provisioned"
+
+    template = harness._harness_migrated_template(request.config)
+    assert seen["label"] == "harness_seam_proof"
+    assert seen["template_database"] == template
+    assert "reuse_migrated_template" not in seen
+    if template is not None:
+        assert re.fullmatch(r"corridor_pytest_[1-9][0-9]*_[0-9a-f]{8}_tmpl", template)
+
+
+@pytest.mark.slow
+def test_an_isolated_database_carries_the_schema_a_replay_would_have_built(
+    provision_isolated_database, monkeypatch
+):
+    """A copied schema is the migrated schema, and an asked-for replay still replays.
+
+    Every isolated-database fixture now takes a copy of the one template this
+    run migrated, so a copy that silently lost a relation would leave those
+    fixtures testing a schema nothing else in the suite has. The census is
+    taken from a copied database and from one that `reuse_migrated_template=
+    False` actually migrated; the recorded Alembic calls prove which database
+    each of the two paths ran the chain against.
+    """
+
+    import corridor.m8_acceptance_database as acceptance_database
+    from corridor.config import settings
+
+    # Whichever template is in play -- this run's, or the per-process one a
+    # serial pytest builds instead -- exists before the recorder is installed.
+    with provision_isolated_database("harness_copy_warm"):
+        pass
+
+    replayed = []
+    real_migration = acceptance_database.apply_schema_migrations
+
+    def record(database_url, **kwargs):
+        replayed.append(make_url(str(database_url)).database)
+        return real_migration(database_url, **kwargs)
+
+    monkeypatch.setattr(acceptance_database, "apply_schema_migrations", record)
+
+    with provision_isolated_database("harness_copy_proof") as copied:
+        assert replayed == []
+        copied_census = _schema_census(_provisioned_url(copied))
+
+    with acceptance_database.provision_disposable_postgres(
+        settings.database_url,
+        repo_root=harness.ROOT,
+        label="harness_replay_proof",
+        reuse_migrated_template=False,
+    ) as migrated:
+        assert replayed == [migrated.name]
+        migrated_census = _schema_census(_provisioned_url(migrated))
+
+    assert ("r", "projects", "slug") in copied_census
+    assert copied_census == migrated_census
