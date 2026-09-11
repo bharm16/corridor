@@ -20,6 +20,7 @@ Nothing reads a clock: the request instant is declared through
 from __future__ import annotations
 
 from contextlib import ExitStack
+from dataclasses import dataclass
 from hashlib import sha256
 from datetime import datetime, timezone
 import html
@@ -31,7 +32,13 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
-from corridor.access import COORDINATION, TECHNICAL_OPERATIONS, enroll_member
+from corridor.access import (
+    COORDINATION,
+    EXTERNAL_RELEASE,
+    TECHNICAL_OPERATIONS,
+    enroll_member,
+)
+from corridor.accepted_field_reading import read_accepted_field_population
 from corridor.baseline_adoption import effective_baseline_formats
 from corridor.field_mapping_manifest import (
     COMBINED_RANGE,
@@ -44,21 +51,33 @@ from corridor.models import (
     BaselineFormatManifest,
     BaselineFormatObject,
     Project,
+    ReleasePackage,
 )
 from corridor.object_storage import content_store
 from corridor.principals import HumanPrincipal
+from corridor.release_authorization import (
+    authorize_release_package,
+    package_set,
+    retrieve_released_artifact,
+)
 from corridor.web import auth
 from corridor.web.app import app, get_review_clock, get_session
 
 from browser_session_support import form_fields, sign_in, submit_form
 from record_counts import nothing_written
 from later_revision_support import BASELINE_ROWS, HEADINGS, adopt, workbook_bytes
+from test_issue_section import (
+    Adopted as PreparedProject,
+    configure as configure_issued_set,
+    prepare as prepare_candidate,
+)
 
 
 COORDINATOR = HumanPrincipal("local:coordinator")
 OPERATOR = HumanPrincipal("local:operator")
 MEMBER = HumanPrincipal("local:member")
 ENROLLER = HumanPrincipal("local:enroller")
+RELEASER = HumanPrincipal("local:releaser")
 
 NOW = datetime(2026, 3, 2, 8, 0, tzinfo=timezone.utc)
 
@@ -94,8 +113,17 @@ def shifted_headings():
     return headings
 
 
+@dataclass(frozen=True)
+class Adoption:
+    """One adopted project, and what a later issue is prepared from."""
+
+    project: Project
+    revision_id: int
+    template_bytes: bytes
+
+
 @pytest.fixture
-def adopted(session, tmp_path):
+def adoption(session, tmp_path):
     """One adopted project and the three standings this page distinguishes.
 
     The coordinator holds both designations, because one rollback-scoped
@@ -132,8 +160,16 @@ def adopted(session, tmp_path):
             designations=designations,
             operator=ENROLLER,
         )
-    adopt(session, row, workbook_bytes(tmp_path / "ucm.xlsx", BASELINE_ROWS), tmp_path)
-    return row
+    body = workbook_bytes(tmp_path / "ucm.xlsx", BASELINE_ROWS)
+    revision_id, _ = adopt(session, row, body, tmp_path)
+    return Adoption(project=row, revision_id=revision_id, template_bytes=body)
+
+
+@pytest.fixture
+def adopted(adoption) -> Project:
+    """The adopted project itself, which is all most of this file needs."""
+
+    return adoption.project
 
 
 @pytest.fixture
@@ -478,10 +514,105 @@ def test_the_coordinator_approves_the_link_operations_handed_them(
     assert len(registrations(session, adopted, "field_mapping")) == 2
 
 
+def accepted_record(session, project) -> tuple:
+    """Every accepted value of this project, with the identity that decided it.
+
+    The fingerprint the population carries and then every field in it, because
+    the fingerprint says two readings differ and this says which value moved.
+    """
+
+    population = read_accepted_field_population(session, project.id)
+    return (
+        population.fingerprint,
+        population.revision_id,
+        tuple(
+            sorted(
+                (
+                    field.fact_subject_key,
+                    field.fact_type,
+                    str(field.value),
+                    field.fact_id,
+                    field.decision_id,
+                    field.revision_id,
+                )
+                for record in population.records
+                for field in record.fields.values()
+            )
+        ),
+    )
+
+
+def issued_state(session, package) -> dict:
+    """What an approved package says: its receipt, its digests and its bytes.
+
+    ``retrieve_released_artifact`` reads through the content-addressed store,
+    which verifies the digest on the way out, so a retained object rewritten
+    behind the store's back raises here rather than comparing unequal (#830).
+    """
+
+    session.expire(package)
+    sealed = package_set(session, package)
+    return {
+        "identity": package.package_identity,
+        "accepted_revision_id": int(package.accepted_revision_id),
+        "output_template_format_id": int(package.output_template_format_id),
+        "field_mapping_format_id": int(package.field_mapping_format_id),
+        "sealed": tuple(
+            (one.artifact_type, one.content_sha256, one.storage_key, one.byte_count)
+            for one in sealed
+        ),
+        "bytes": {
+            one.artifact_type: retrieve_released_artifact(
+                session, package, one.artifact_type
+            )
+            for one in sealed
+        },
+    }
+
+
+def approve_an_issue(session, adoption: Adoption):
+    """One approved issue of this project, rendered through the mapping in force.
+
+    Built through #529's and #533's own fixtures rather than reconstructed
+    here, because an issue this test claims a replacement cannot reach is only
+    that claim if it is the issue the authorization command would accept.
+    """
+
+    enroll_member(
+        session,
+        project_id=adoption.project.id,
+        email="releaser@example.test",
+        principal=RELEASER,
+        display_name="Releaser",
+        designations=[EXTERNAL_RELEASE],
+        operator=ENROLLER,
+    )
+    prepared = PreparedProject(
+        project=adoption.project,
+        revision_id=adoption.revision_id,
+        template_bytes=adoption.template_bytes,
+    )
+    configure_issued_set(session, prepared)
+    candidate = prepare_candidate(session, prepared, content_store())
+    authorize_release_package(
+        session,
+        project_id=adoption.project.id,
+        candidate_id=candidate.id,
+        releaser=RELEASER,
+        authorized_at=NOW,
+    )
+    session.flush()
+    return session.scalars(
+        select(ReleasePackage).where(
+            ReleasePackage.project_id == adoption.project.id
+        )
+    ).one()
+
+
 def test_registering_a_replacement_changes_no_accepted_value(
-    session, adopted, browser, tmp_path
+    session, adoption, adopted, browser, tmp_path
 ):
-    """#829's second criterion, proved by counting rather than by one value.
+    """#829's second criterion, over the values themselves and the row counts.
 
     ADR-0076 records the template and mapping identities apart from the adopted
     data baseline exactly so a layout change cannot move the record.
@@ -491,7 +622,20 @@ def test_registering_a_replacement_changes_no_accepted_value(
     source row rewritten would each change a count whichever value it touched.
     The two tables the registration writes on purpose are named; the other two
     hundred stay guarded.
+
+    A count is not the whole proof, because it sees no value changed in place
+    and no same-count substitution. So beside it: every accepted value of this
+    project with the Fact, decision and revision that made it effective, read
+    before and after; and an issue already approved through the mapping being
+    replaced, whose receipt, sealed digests and retrieved bytes are read the
+    same way -- through the store that verifies them (#830).
     """
+
+    package = approve_an_issue(session, adoption)
+    issued = issued_state(session, package)
+    assert issued["bytes"], "the approved issue sealed no artifact to compare"
+    before = accepted_record(session, adopted)
+    assert before[2], "this project accepted no value for a replacement to move"
 
     successor = workbook_bytes(tmp_path / "combined.xlsx", combined_rows())
     coordinator = browser("coordinator@example.test")
@@ -519,6 +663,12 @@ def test_registering_a_replacement_changes_no_accepted_value(
         },
     ):
         assert approve(coordinator, adopted, handed.text).status_code == 201
+
+    # The values themselves, not only how many rows hold them.
+    assert accepted_record(session, adopted) == before
+    # And the issue already approved through the replaced mapping: the same
+    # receipt, the same sealed digests, the same bytes.
+    assert issued_state(session, package) == issued
 
 
 def test_a_conforming_successor_template_is_registered_over_its_exact_bytes(

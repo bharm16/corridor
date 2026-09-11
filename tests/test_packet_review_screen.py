@@ -32,13 +32,25 @@ from corridor.models import (
     DeltaReviewPacketReceipt,
     Project,
     ProjectRecordRevision,
+    ReleasePackage,
 )
+from corridor.issue_rendering import NO_PRIOR_COMPARISON_STATEMENT
 from corridor.native_follow_up_reading import undone_follow_up_plan_ids
 from corridor.packet_review import (
     CUSTOMER_WORKBOOK,
     read_review_items,
 )
 from corridor.principals import HumanPrincipal
+from corridor.release_authorization import (
+    authorize_release_package,
+    package_set,
+    retrieve_released_artifact,
+)
+from corridor.release_candidate import (
+    attach_candidate,
+    bind_preparation,
+    render_candidate_artifacts,
+)
 from corridor.review_packet_reading import (
     HELD_OUT_OWNER_MISMATCH,
     SOURCE_REVISION,
@@ -59,12 +71,15 @@ from corridor.web.ui_primitives import FOCUS_IDS
 
 from browser_session_support import page_without_shell
 from access_support import seed_membership
+from coverage_support import declare_coverage
 from harness_support import move_accepted_value
+from later_revision_support import BASELINE_ROWS, adopt, workbook_bytes
 from record_counts import nothing_written
 from packet_review_support import (
     Rendition,
     accept_baseline_fact,
     append_deltas,
+    configure_issue,
     modify,
     new_subject,
     register_baseline,
@@ -73,6 +88,8 @@ from packet_review_support import (
     subject,
     support,
 )
+
+from test_issue_section import TEMPLATE
 
 COORDINATOR = HumanPrincipal("local:coordinator")
 NOW = datetime(2026, 9, 3, 12, 0, tzinfo=timezone.utc)
@@ -1145,20 +1162,166 @@ def test_undo_surfaces_the_commands_own_refusal_when_a_later_act_depends(
     assert packet_reversal(session, receipt_id) is None
 
 
+def _adopted_with_one_change(session, project: Project, tmp_path) -> bytes:
+    """One project adopted through the real importer, and one proposed change.
+
+    Not this file's own hand-registered baseline: an approved issue is the
+    customer's own form written back, so the template and mapping a
+    preparation renders through have to be the ones adoption registered, and a
+    record subject has to be the row of that form it came from. Returns the
+    adopted workbook's bytes, which are the approved output template.
+    """
+
+    body = workbook_bytes(tmp_path / "ucm.xlsx", BASELINE_ROWS)
+    revision_id, _ = adopt(session, project, body, tmp_path)
+    rendition = Rendition(session=session, project=project, name="ucm-2026-09.xlsx")
+    fact, segment = rendition.capture(
+        fact_type="committed_date", value="2026-12-15", subject_key=subject(3)
+    )
+    support(session, project, fact, segment)
+    append_deltas(
+        session,
+        project,
+        rendition,
+        source_revision="2026-09",
+        values=[
+            modify(
+                subject_key=subject(3),
+                field_name="committed_date",
+                accepted_value="2026-03-01",
+                proposed_value="2026-12-15",
+                baseline_revision=revision_id,
+            )
+        ],
+    )
+    session.expire_all()
+    return body
+
+
+def _approve_an_issue(
+    session, project: Project, template_bytes: bytes, *, revision_id: int
+):
+    """One approved issue package of this project, bound to ``revision_id``.
+
+    #533's own command rather than the Issue section's route, because this
+    transaction spends its one project-authorization scope on the review
+    requests the test is about. What adoption did not already register -- the
+    issue profile and a confirmed coverage reading -- is registered here, and
+    the one mandatory artifact is rendered and retained through #529's three
+    phases exactly as a preparation does.
+    """
+
+    configure_issue(session, project, principal=COORDINATOR, effective_from=NOW)
+    coverage = declare_coverage(
+        session, project, cutoff=NOW, principal=COORDINATOR, confirmed_at=NOW
+    )
+    arguments = {
+        "project_id": project.id,
+        "preparation": {
+            "schema_version": "report-preparation-result-v1",
+            "project_id": project.id,
+            "configuration_version": "report-preparation-v1",
+            "observed_at": NOW.isoformat(),
+            "health": "healthy",
+            "window_start": "",
+            "through_delta_id": 10**9,
+            "through_disposition_id": 10**9,
+            "accepted_revision_id": revision_id,
+            "resolved_accepted": 0,
+            "resolved_edited": 0,
+            "resolved_rejected": 0,
+            "proposed_new": 0,
+            "open_actionable": 0,
+            "open_deferred": 0,
+            "superseded": 0,
+        },
+        "source_cutoff": NOW,
+        "prepared_at": NOW,
+        "coverage_declaration_id": coverage.id,
+        "templates": TEMPLATE,
+        "first_issue_behavior": NO_PRIOR_COMPARISON_STATEMENT,
+        "template_bytes": template_bytes,
+    }
+    bound = bind_preparation(session, **arguments)
+    rendered = render_candidate_artifacts(
+        bound, template_bytes=template_bytes, session=session
+    )
+    candidate = attach_candidate(
+        session,
+        bound,
+        rendered,
+        prepared_by=COORDINATOR,
+        preparation=arguments["preparation"],
+        templates=TEMPLATE,
+        first_issue_behavior=NO_PRIOR_COMPARISON_STATEMENT,
+        template_bytes=template_bytes,
+    )
+    session.flush()
+    authorize_release_package(
+        session,
+        project_id=project.id,
+        candidate_id=candidate.id,
+        releaser=COORDINATOR,
+        authorized_at=NOW,
+    )
+    session.flush()
+    return session.scalars(
+        select(ReleasePackage).where(ReleasePackage.project_id == project.id)
+    ).one()
+
+
+def _issued_state(session, package: ReleasePackage) -> dict:
+    """What an approved package says, read the way a customer reads it.
+
+    The receipt's own identity and bindings, the digest of every sealed
+    member, and the bytes ``retrieve_released_artifact`` hands back -- which
+    the content-addressed store verifies on the way out, so a member whose
+    retained object moved raises here rather than comparing unequal (#830).
+    """
+
+    session.expire(package)
+    sealed = package_set(session, package)
+    return {
+        "identity": package.package_identity,
+        "accepted_revision_id": int(package.accepted_revision_id),
+        "sequence_number": int(package.sequence_number),
+        "candidate_id": int(package.candidate_id),
+        "authorized_at": package.authorized_at,
+        "sealed": tuple(
+            (one.artifact_type, one.content_sha256, one.storage_key, one.byte_count)
+            for one in sealed
+        ),
+        "bytes": {
+            one.artifact_type: retrieve_released_artifact(
+                session, package, one.artifact_type
+            )
+            for one in sealed
+        },
+    }
+
+
 def test_undo_reaches_no_record_beyond_the_compensation_it_appends(
-    session: Session, project: Project, client
+    session: Session, project: Project, client, tmp_path
 ):
     """Criterion 2: an approved issue package is not something Undo can alter.
 
     ADR-0086 binds an approved package to the accepted revision it released,
     and that binding is a row Undo never reaches: the compensation appends one
     new revision and its decisions beside the released one, so the package goes
-    on saying exactly what it said. This is the whole reach of the act, read
-    over every table the project graph holds rather than the handful a test
-    would otherwise pick.
+    on saying exactly what it said.
+
+    There is a real approved package here, bound to the very revision the
+    packet made effective, because counting rows cannot tell a package nothing
+    touched from a package that was never there -- and a count sees neither a
+    value changed in place, nor a same-count substitution, nor a retained
+    object rewritten behind the store's back. So the count stays, watching the
+    two hundred tables nothing below names, and beside it the package says
+    what it said: the same receipt identity and bindings, the same digest for
+    every sealed member, and the same bytes handed back through the reader
+    that verifies them on the way out (#830).
     """
 
-    _revision(session, project, changes=2)
+    template_bytes = _adopted_with_one_change(session, project, tmp_path)
     key = _batch_key(session, project)
     ids = _delta_ids(session, project)
     saved = client.post(
@@ -1172,6 +1335,12 @@ def test_undo_reaches_no_record_beyond_the_compensation_it_appends(
     url, receipt_id = _receipt_link(saved)
     released = session.get(DeltaReviewPacketReceipt, receipt_id).revision_id
     as_released = session.get(ProjectRecordRevision, released).command_type
+    package = _approve_an_issue(
+        session, project, template_bytes, revision_id=released
+    )
+    assert int(package.accepted_revision_id) == released
+    issued = _issued_state(session, package)
+    assert issued["bytes"], "the approved package sealed no artifact to compare"
 
     with nothing_written(
         session,
@@ -1189,6 +1358,9 @@ def test_undo_reaches_no_record_beyond_the_compensation_it_appends(
     # said; the compensation is a new one appended beside it.
     assert session.get(ProjectRecordRevision, released).command_type == as_released
     assert packet_reversal(session, receipt_id).revision_id != released
+    # And the package itself: the same receipt, the same sealed digests, and
+    # the same bytes, read back through the store that verifies them.
+    assert _issued_state(session, package) == issued
 
 
 def test_undo_reaches_the_follow_up_plan_compensation_the_command_proves(
