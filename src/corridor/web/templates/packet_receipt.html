@@ -1,0 +1,129 @@
+{% import "_primitives.html" as ui -%}
+{#
+  One recorded decision, read back from the act that made it (#834).
+
+  The saved result on the review screen links here, because a Project Record
+  revision is not always available to link to: a packet of dated Defers writes
+  no revision at all (ADR-0084), and the act is the only thing that always
+  exists. From here every child the coordinator decided is listed with the
+  outcome its own row records, which is how the pilot's "identify every
+  child's outcome without support" criterion is met from the action itself.
+
+  `Review Packet` is an internal name and never appears here: the act is named
+  by when it was decided and by the changes it decided.
+
+  Undo is ADR-0035's, offered in history and bounded by the command that
+  performs it. The page never decides whether an act may be reversed; it shows
+  the button, and `reverse_review_packet` answers. A refusal is that command's
+  own sentence, rendered through the shared refusal primitive.
+
+  There is no script. Everything visible comes from `_primitives.html` or is
+  ordinary prose, and no class on this page paints a state.
+#}
+<!doctype html>
+<meta charset="utf-8">
+<title>A recorded decision — {{ project.name }}</title>
+<style>
+  :root { --line:#e2e2e2; --muted:#666; }
+  * { box-sizing:border-box; }
+  body { margin:0; color:#111; background:#fff; font:15px/1.5 system-ui,sans-serif; }
+  a { color:#06c; }
+  header { display:flex; justify-content:space-between; align-items:baseline;
+           padding:.8rem 1.2rem; border-bottom:1px solid var(--line); }
+  main { max-width:60rem; margin:2rem auto; padding:0 1.2rem 4rem; }
+  h1 { font-size:1.55rem; margin:0 0 .25rem; }
+  h2 { font-size:1.05rem; margin:1.4rem 0 .3rem; }
+  .lead { color:var(--muted); margin:0 0 1.5rem; }
+  .act { border:1px solid var(--line); border-radius:7px;
+         padding:.9rem 1.1rem; margin:1rem 0; }
+  .act dl.facts { display:grid; grid-template-columns:auto 1fr; gap:.15rem .8rem;
+                  margin:.4rem 0 .6rem; }
+  .act dl.facts dt { color:var(--muted); }
+  .act dl.facts dd { margin:0; font-variant-numeric:tabular-nums; }
+  .quiet { color:var(--muted); font-size:.9rem; }
+  button { font:inherit; padding:.4rem .7rem; border:1px solid var(--line);
+           border-radius:4px; background:#fafafa; cursor:pointer; }
+</style>
+{{ ui.styles() }}
+
+<header>
+  <b>A recorded decision — {{ project.name }}</b>
+  <span><a href="/review/{{ project.slug }}">source changes to review &rarr;</a></span>
+</header>
+
+<main>
+  <h1>What this decision recorded</h1>
+  <p class="lead">
+    This is the act itself: the changes one person decided at one moment, and
+    what each of them became. Nothing on this page changes the record.
+  </p>
+
+  {%- if undone %}
+  {% call ui.outcome("saved", undone.heading, focus) %}
+    <p>{{ undone.detail }}</p>
+  {% endcall %}
+  {%- endif %}
+
+  {%- if refusal %}
+  {% call ui.outcome("refused", refusal.heading, focus) %}
+    <p>{{ refusal.detail }}</p>
+  {% endcall %}
+  {%- endif %}
+
+  <section class="act"{{ ui.anchor(focus_ids["item"], focus) }}
+           aria-label="The recorded decision and each change it decided">
+    {{ ui.fact_list(receipt_facts) }}
+
+    {%- if receipt.revision_id %}
+    <p>
+      Every decision below is recorded separately inside that one Project
+      Record revision. <a href="/record/{{ project.slug }}?revision={{ receipt.revision_id }}">Read
+      the accepted record as that revision left it</a>.
+    </p>
+    {%- else %}
+    <p>
+      This decision is Work List scheduling:
+      it recorded no Project Record revision,
+      the proposed changes stay open, and the accepted record is unchanged.
+    </p>
+    {%- endif %}
+
+    <h2>What each change became</h2>
+    {% call ui.record_table(
+         "Every change this decision settled, in the order it was decided",
+         ["Utility Conflict", "Field", "Source", "Outcome"]) %}
+      {%- for child in receipt.children %}
+      <tr>
+        <th scope="row">{{ child.subject_name if child.subject_name else not_recorded }}</th>
+        <td>{{ child.field_name }}</td>
+        <td>{{ child.source }}</td>
+        <td>{{ child.outcome_words }}</td>
+      </tr>
+      {%- endfor %}
+    {% endcall %}
+
+    <h2>Undo this decision</h2>
+    {%- if receipt.undone %}
+    <p>
+      This decision was already undone by {{ receipt.reversed_by }} on
+      {{ receipt.reversed_at }}. The original decision and everything it
+      recorded stay exactly as they were; the compensating act was recorded
+      beside them.
+    </p>
+    {%- else %}
+    <p>
+      Undo records a compensating decision that puts the accepted record back
+      where this act found it. It deletes nothing: this decision, its Follow-up
+      Plans, and its deferrals all stay in history. It is refused outright if a
+      later decision already depends on a result of this one, and a decision
+      already shared in an approved issue package stays exactly as it was
+      shared.
+    </p>
+    <form method="post"
+          action="/review/{{ project.slug }}/packet/{{ receipt.receipt_id }}/undo">
+      {{ csrf_field() }}
+      <button type="submit">Undo this decision</button>
+    </form>
+    {%- endif %}
+  </section>
+</main>

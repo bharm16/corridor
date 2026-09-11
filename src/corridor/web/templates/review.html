@@ -84,6 +84,8 @@
   {%- if saved %}
   {% call ui.outcome("saved", saved.heading, focus) %}
     <p>{{ saved.detail }}</p>
+    <p><a href="/review/{{ project.slug }}/packet/{{ saved.receipt_id }}">See what each
+      change became, and undo this decision if it was a mistake</a></p>
   {% endcall %}
   {%- endif %}
 
@@ -425,15 +427,22 @@
              aria-describedby="{{ view.id }}-defer-until-hint">
       {% endcall %}
 
+      {#- No count on an action. The number was rendered once, by the server,
+          from the selection the reading arrived with, and a checkbox the
+          coordinator ticks afterwards does not change it; a button that says
+          "Apply 3 selected changes" beside four ticked boxes is worse than one
+          that names its scope in words. Each checkbox states its own selected
+          or held-out state above, which is where the selection is actually
+          readable (#834). #}
       {% call ui.sticky_actions("Decisions for " ~ view.item.headline) %}
         <button type="submit" name="outcome" value="apply" accesskey="a">
-          {{ ui.shortcut("a", "Apply " ~ view.item.selected_count ~ " selected " ~ ("change" if view.item.selected_count == 1 else "changes")) }}
+          {{ ui.shortcut("a", "Apply the selected changes") }}
         </button>
         <button type="submit" name="outcome" value="keep_current" accesskey="k">
-          {{ ui.shortcut("k", "Keep current for " ~ view.item.selected_count ~ " selected " ~ ("change" if view.item.selected_count == 1 else "changes")) }}
+          {{ ui.shortcut("k", "Keep current for the selected changes") }}
         </button>
         <button type="submit" name="outcome" value="defer" accesskey="d">
-          {{ ui.shortcut("d", "Defer " ~ view.item.selected_count ~ " selected " ~ ("change" if view.item.selected_count == 1 else "changes") ~ " until the date above") }}
+          {{ ui.shortcut("d", "Defer the selected changes until the date above") }}
         </button>
       {% endcall %}
     </form>
