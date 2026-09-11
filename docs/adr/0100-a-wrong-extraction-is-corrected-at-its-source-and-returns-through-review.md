@@ -6,6 +6,7 @@ amends:
   - ADR-0085
 amended_by:
   - ADR-0101
+  - ADR-0103
 migration: nothing here is built. #836 carries the correction request on the focused Review form, #842 performs the receipted operations re-capture, and #833's reason-to-action matrix routes an incorrect extraction to this path.
 ---
 
