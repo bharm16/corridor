@@ -8,6 +8,7 @@ on the template that would actually be deployed rather than on the Python.
 import json
 import pathlib
 import re
+import sys
 
 import aws_cdk as cdk
 import pytest
@@ -20,6 +21,18 @@ from corridor_infra.control_plane_stack import CorridorControlPlaneStack
 from corridor_infra.data_stack import CorridorDataStack
 from corridor_infra.network_stack import CorridorNetworkStack
 from scripts import container_entrypoint
+
+# The deployment contract the release and the disposition provider read off
+# these stacks. `scripts/` is a regular package that imports the standard
+# library only, so this environment can read it without the application's
+# dependencies -- which is also why the config-name tests below read
+# `src/corridor/config.py` by path rather than importing pydantic-settings.
+sys.path.insert(0, str(pathlib.Path(__file__).parents[2]))
+from scripts.release_contract import (  # noqa: E402
+    MIGRATION_CONTAINER_NAME,
+    RELEASE_STACK_OUTPUTS,
+    STACK_OUTPUT_READERS,
+)
 
 ENV = cdk.Environment(account="111111111111", region="us-east-2")
 
@@ -1190,3 +1203,90 @@ def test_the_batch_role_may_still_replace_and_delete(stacks):
             granted.update([action] if isinstance(action, str) else action)
     assert any(a.lower().startswith("s3:deleteobject") for a in granted), granted
     assert any(a.startswith("s3:PutObject") for a in granted), granted
+
+
+# --- the contract a release reads off the deployed stacks ---------------
+# `scripts/release_contract.py` is the only declaration of these names. The
+# release workflow reads it at run time; these assertions read it at synthesis
+# time, so a renamed output fails here instead of in the middle of a release.
+
+# The fixture's own short stack ids, against the names CloudFormation and the
+# contract module know the same stacks by.
+CONTRACT_STACK_NAMES = {
+    "foundation": "CorridorAccountFoundation",
+    "network": "CorridorNetwork",
+    "control": "CorridorControlPlane",
+    "data": "CorridorData",
+    "application": "CorridorApplication",
+}
+
+
+def _authored_outputs(template) -> dict:
+    """The outputs the stacks declare, without CDK's cross-stack plumbing.
+
+    CDK synthesises one `ExportsOutput...` output per value another stack
+    references and gives it an `Export`. Those names encode construct logical
+    ids, nobody reads them, and they appear and vanish as references change.
+    No authored `CfnOutput` here sets an export name, so requiring both marks
+    before dropping an output identifies the generated ones exactly.
+    """
+    return {
+        key: value
+        for key, value in template.to_json().get("Outputs", {}).items()
+        if not (key.startswith("ExportsOutput") and "Export" in value)
+    }
+
+
+def test_the_release_stack_emits_every_output_the_release_reads(stacks):
+    emitted = set(_authored_outputs(stacks["application"]))
+    missing = sorted(set(RELEASE_STACK_OUTPUTS) - emitted)
+    assert not missing, (
+        f"the release resolves {missing} off CorridorApplication and the stack "
+        "no longer emits them; it would fail after the environment approval"
+    )
+
+
+def test_the_migration_container_is_named_what_the_release_overrides(stacks):
+    """`aws ecs run-task --overrides` names the container by string. ECS
+    refuses an override naming a container the task definition does not have,
+    so a rename stops the release at the schema step with both services at
+    zero."""
+    template = stacks["application"].to_json()
+    logical_id = template["Outputs"]["MigrationTaskDefinitionArn"]["Value"]["Ref"]
+    migration = template["Resources"][logical_id]
+    assert migration["Type"] == "AWS::ECS::TaskDefinition"
+    names = [
+        container["Name"]
+        for container in migration["Properties"]["ContainerDefinitions"]
+    ]
+    assert MIGRATION_CONTAINER_NAME in names, (
+        f"the release overrides {MIGRATION_CONTAINER_NAME!r}; the migration "
+        f"task definition names {names}"
+    )
+
+
+def test_every_stack_output_is_declared_with_what_reads_it(stacks):
+    """Half of these reach no program at all: `infra-deploy.yml` puts the whole
+    outputs document in the deployment's run summary, and an operator reads one
+    there during an incident. That is a reader, so they are kept and kept
+    declared -- but a new output has to say who reads it before it can exist."""
+    emitted = {
+        (CONTRACT_STACK_NAMES[stack], key)
+        for stack, template in stacks.items()
+        for key in _authored_outputs(template)
+    }
+    declared = {
+        (stack, key)
+        for stack, readers in STACK_OUTPUT_READERS.items()
+        for key in readers
+    }
+    undeclared = sorted(emitted - declared)
+    assert not undeclared, (
+        f"{undeclared} say nothing about what reads them; declare them in "
+        "scripts/release_contract.py or delete them"
+    )
+    stale = sorted(declared - emitted)
+    assert not stale, (
+        f"scripts/release_contract.py declares {stale}, which the stacks no "
+        "longer emit"
+    )
