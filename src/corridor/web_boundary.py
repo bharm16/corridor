@@ -80,7 +80,10 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import Enum
 
-from corridor.db_roles import WEB_CAPABILITY_LOGIN
+from sqlalchemy.engine import make_url
+
+from corridor.config import settings
+from corridor.db_roles import LEGACY_DEV_ROLE, WEB_CAPABILITY_LOGIN
 from corridor import access
 
 
@@ -625,10 +628,50 @@ def unprotected_route_relations() -> tuple[str, ...]:
 # as. That is the same fact the revoke was aimed at, so the two cannot drift,
 # and it is read off the session's bind rather than queried, so deciding it
 # issues no statement of any kind.
+#
+# #822 fixed the default that question carried. There is a third answer — the
+# reader could not inspect the bind at all, or inspected it and found a login
+# this build cannot name — and #694 filed all three under "not ``corridor_web``,
+# therefore the legacy clone". A deployment nobody can identify is not
+# evidence that nothing was taken away from it, so the legacy answer is now a
+# named list (``legacy_capabilities``) and everything outside it is
+# inconsistent.
 
 # The login the migration revoked. A deployment reading as this one has the
 # database half of the boundary applied to it whatever the flag says.
 LIVE_PILOT_WEB_CAPABILITY = WEB_CAPABILITY_LOGIN
+
+
+def legacy_capabilities() -> frozenset[str]:
+    """The logins that may still run the frozen legacy surfaces, by name (#822).
+
+    #694 asked one question of the reading login — "is this ``corridor_web``?"
+    — and treated every other answer as the legacy development deployment.
+    Every other answer includes the two the reader cannot vouch for: a bind it
+    could not inspect, and a login this build has never heard of. Reading
+    either as "nothing was taken away" picks the more permissive of the two
+    deployments it might be, which is the one that serves another customer's
+    rows.
+
+    So the permission is a list rather than a fallback. The revoke names
+    ``corridor_web`` alone, and exactly two capabilities are left holding the
+    blanket read: the opt-in login ADR-0081 keeps for a legacy development
+    deployment, and the schema owner that migrations, the test harness and
+    local tooling connect as. Both are deployment configuration a person
+    selected; neither is inferred from a failure to look. Anything else is an
+    inconsistent configuration and refuses.
+
+    The owner's name is the deployment's own to choose, so unlike the two
+    capability logins it cannot be a constant; it is read off the configured
+    schema-owner URL here rather than imported from ``corridor.db``, which
+    would close an import cycle ``tests/test_architecture.py`` rejects. An
+    owner URL carrying no username contributes no name, so an unreadable
+    capability -- which answers with the same empty string -- cannot match it.
+    """
+
+    owner = make_url(settings.database_url).username or ""
+    return frozenset({LEGACY_DEV_ROLE, owner}) - {""}
+
 
 # The stable internal reason, carried by both the refusal and the readiness
 # probe so an operator greps one string. It names no relation and no
@@ -651,13 +694,14 @@ class BoundaryState(Enum):
     #: The flag is declared. The pilot set is the surface; everything else is
     #: refused as missing.
     ENFORCED = "enforced"
-    #: The flag is off and this deployment's web login kept the blanket read.
-    #: Nothing was taken away, so nothing is refused: the frozen legacy
-    #: surfaces run as they always have.
+    #: The flag is off and this deployment's web login is one of the named
+    #: capabilities that kept the blanket read. Nothing was taken away, so
+    #: nothing is refused: the frozen legacy surfaces run as they always have.
     NOT_DECLARED = "not_declared"
-    #: The two halves disagree — either the flag is off while the reads run as
-    #: the revoked live-pilot capability, or an enabled route needs a relation
-    #: the revoke takes away. Refuse rather than let PostgreSQL answer.
+    #: The two halves disagree — the flag is off while the reads run as the
+    #: revoked live-pilot capability, or as a capability this build cannot
+    #: name at all, or an enabled route needs a relation the revoke takes
+    #: away. Refuse rather than let PostgreSQL answer.
     INCONSISTENT = "inconsistent"
 
 
@@ -670,18 +714,25 @@ class RouteRefusal:
 
 
 def boundary_state(*, declared: bool, web_capability: str) -> BoundaryState:
-    """The deployment's state, from the declared flag and the reading login."""
+    """The deployment's state, from the declared flag and the reading login.
+
+    ``declared`` has to be the boolean itself, not merely something truthy: a
+    boundary configured with a value nobody parsed is a configuration nobody
+    declared, and ``"false"`` is truthy (#822). The settings field is typed
+    ``bool``, so a malformed value is rejected before a process starts; this
+    is what the state says when it arrives from somewhere else anyway.
+    """
 
     if unprotected_route_relations():
         # An enabled route needs a relation the revoke takes away. `make check`
         # fails on this, so reaching it at runtime means the build guard was
         # bypassed; refuse anyway rather than serve half a page.
         return BoundaryState.INCONSISTENT
-    if declared:
+    if declared is True:
         return BoundaryState.ENFORCED
-    if web_capability == LIVE_PILOT_WEB_CAPABILITY:
-        return BoundaryState.INCONSISTENT
-    return BoundaryState.NOT_DECLARED
+    if web_capability in legacy_capabilities():
+        return BoundaryState.NOT_DECLARED
+    return BoundaryState.INCONSISTENT
 
 
 def health_detail(state: BoundaryState) -> str:
