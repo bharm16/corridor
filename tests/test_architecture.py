@@ -2149,13 +2149,6 @@ WORKFLOW_ROOT = REPO_ROOT / ".github" / "workflows"
 # directions, so an entry that gains a caller, loses its file, or states no
 # reason fails here rather than ageing quietly.
 RETAINED_WITHOUT_CALLER: dict[str, str] = {
-    "scripts/sh99-cohort-wizard.sh": (
-        "ADR-0027 superseded the operator step it walks, so nothing calls it, "
-        "and its forty stages are the repository's only copy of sixty-five "
-        "dated SH 99 commitment sentences quoted from the meeting minutes "
-        "with their parties named. Deleting the file deletes customer "
-        "commitment text; that is a decision to state, not a side effect."
-    ),
     "scripts/test_feedback.py": (
         "the strict local verdict on a timing report, stricter than the "
         "advisory merge gate (ADR-0097). It is reachable only by typing its "
@@ -2360,6 +2353,61 @@ def test_every_file_under_scripts_is_reachable_or_retained_with_a_reason():
         problems[relative] = "is retained but no longer exists; delete its line"
 
     assert problems == {}
+
+
+# --- A retired script's bytes, kept where they can still be read ------------
+#
+# `scripts/sh99-cohort-wizard.sh` sat on the list above because deleting it
+# looked like deleting customer commitment text: its forty stages quote
+# sixty-five dated SH 99 commitment sentences, and no other file in the tree
+# held them. Reading the file settled it (#861). The sentences are display
+# excerpts truncated mid-word from a query run on one day, which is the only
+# reason each one is unique here, so the events the query read are the record
+# and the file is a dated snapshot of them. A snapshot is worth keeping and
+# worth being honest about, so its bytes moved to `docs/history/scripts/` with
+# their digest, where they came from, and the warning that they are not ground
+# truth. The executable location is retired: ADR-0027 superseded the operator
+# step it walked.
+
+ARCHIVED_SCRIPTS = REPO_ROOT / "docs" / "history" / "scripts"
+ARCHIVED_SCRIPT_REGISTRY = ARCHIVED_SCRIPTS / "retained.json"
+
+
+def test_every_archived_script_is_registered_with_the_bytes_it_was_retired_at():
+    """An archived copy is only evidence while it still says where it came from.
+
+    Both halves, because either alone rots: bytes with no entry are a
+    quotation with no provenance, and an entry whose file has been edited
+    records a digest of something that is no longer there.
+    """
+
+    registered = json.loads(ARCHIVED_SCRIPT_REGISTRY.read_text())["retained"]
+    present = sorted(
+        path.name
+        for path in ARCHIVED_SCRIPTS.iterdir()
+        if not path.name.startswith(".")
+        and path.name != ARCHIVED_SCRIPT_REGISTRY.name
+    )
+
+    assert present == sorted(registered), (
+        "an archived script is listed in retained.json or it is not archived"
+    )
+    wrong = []
+    for name, entry in registered.items():
+        digest = hashlib.sha256((ARCHIVED_SCRIPTS / name).read_bytes()).hexdigest()
+        if digest != entry["sha256"]:
+            wrong.append(
+                f"{name}: hashes to {digest}, not the bytes it was retired at"
+            )
+        if (REPO_ROOT / entry["original_path"]).exists():
+            wrong.append(
+                f"{name}: {entry['original_path']} is back; a retired script has "
+                "one copy, and this one is inert"
+            )
+        if not (REPO_ROOT / entry["superseded_by"]).is_file():
+            wrong.append(f"{name}: superseded_by names no file")
+
+    assert wrong == []
 
 
 def test_database_upgrade_tests_are_one_explicitly_marked_baseline_contract():
