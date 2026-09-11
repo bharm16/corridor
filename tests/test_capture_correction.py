@@ -4,9 +4,11 @@ ADR-0100 adds one ancillary action to the focused Review form and is explicit
 about what it may not become.  The properties under test are the four clauses
 that decision turns on:
 
-* the control is offered only where no alternative captured value exists, and
-  it is not a fifth primary decision -- it cannot be submitted as an answer,
-  and recording one resolves nothing;
+* the control reaches every change a Review item decides against a capture --
+  a batch's own change included, and whether or not another source captured a
+  usable value -- while one delta is still offered it by exactly one item; and
+  it is not a fifth primary decision: it cannot be submitted as an answer, and
+  recording one resolves nothing;
 * the request names the **exact** capture, proved the way ADR-0100 states it:
   a second capture of the same document and field arrives afterwards, the
   reading moves to it, and opening the request still shows the original
@@ -19,8 +21,11 @@ that decision turns on:
 
 The fixture is an organization change, which the partition holds out of its
 source revision's batch.  That makes it a focused item carrying exactly one
-captured source value and no alternative to apply instead -- the shape the
-correction request exists for.
+captured source value and no alternative to apply instead -- ADR-0100's own
+worked case.  ``ordinary_change`` adds a second change of the same revision
+beside it, which is the other half of the availability rule: that one is
+decided inside the revision's batch, and the organization change is listed
+there read-only by the item that does not decide it.
 
 Nothing here reads a clock.  Every cutoff and instant is declared.
 """
@@ -45,6 +50,7 @@ from corridor.capture_correction import (
     CORRECTION_CONTROL,
     CORRECTION_SUPPORTING_TEXT,
     NO_CHANGE_EXIT_UNAVAILABLE,
+    PASSAGE_MATCH_LIMIT,
     CaptureCorrectionRefused,
     build_correction_request,
     challenged_capture,
@@ -118,9 +124,17 @@ class Misread:
     ``incoming`` is the revised workbook the capture came from, so a test that
     needs a *second* capture of the same document and field appends it to this
     same rendition.
+
+    ``ordinary_change`` appends a second change of that same revision, whose
+    shape the partition does not hold out.  The revision then has both an
+    item that batches its ordinary change and an item that decides the
+    organization change on its own, which is the reading the availability
+    rule and ADR-0085's exactly-once rule are both read against.
     """
 
-    def __init__(self, session: Session, project: Project):
+    def __init__(
+        self, session: Session, project: Project, *, ordinary_change: bool = False
+    ):
         self.session = session
         self.project = project
         self.adopted = Rendition(session, project, "ucm-2026-08.xlsx")
@@ -144,21 +158,46 @@ class Misread:
             subject_key=subject(1),
         )
         support(session, project, self.fact, self.segment)
+        values = [
+            modify(
+                subject_key=subject(1),
+                field_name="external_org",
+                accepted_value="AT&T Texas",
+                proposed_value="AT&T Texas (SWBT)",
+                baseline_revision=None,
+            )
+        ]
+        self.batched_fact: Fact | None = None
+        if ordinary_change:
+            self.batched_fact, batched_segment = self.incoming.capture(
+                fact_type="station_from", value="1002+00", subject_key=subject(1)
+            )
+            support(session, project, self.batched_fact, batched_segment)
+            values.append(
+                modify(
+                    subject_key=subject(1),
+                    field_name="station_from",
+                    accepted_value="1001+00",
+                    proposed_value="1002+00",
+                    baseline_revision=revision,
+                )
+            )
         append_deltas(
             session,
             project,
             self.incoming,
             source_revision="2026-09",
-            values=[
-                modify(
-                    subject_key=subject(1),
-                    field_name="external_org",
-                    accepted_value="AT&T Texas",
-                    proposed_value="AT&T Texas (SWBT)",
-                    baseline_revision=None,
-                )
-            ],
+            values=values,
         )
+
+    def batch(self):
+        """The revision's own batch, which decides the ordinary change."""
+
+        reading = read_review_items(
+            self.session, project_id=self.project.id, as_of=CUTOFF
+        )
+        (item,) = [row for row in reading.items if row.batched]
+        return reading, item
 
     def item(self):
         """The held-out organization change, and the reading that carries it."""
@@ -253,20 +292,70 @@ def test_the_control_is_offered_where_no_other_captured_value_exists(
     assert "does not change the record" in CORRECTION_SUPPORTING_TEXT
 
 
-def test_the_control_is_not_offered_where_another_source_already_captured_one(
+def test_the_control_is_offered_although_another_source_captured_a_value(
     session: Session, project: Project
 ):
-    """Edit and apply is the act here, so the correction request is withheld."""
+    """Another usable value does not make a misread capture right (2026-09-11).
+
+    Edit and apply is available here and is still the act for "another source
+    already carries the right value". It answers what the record should show;
+    it does not report that Corridor read this document wrong, and applying it
+    would leave the misreading captured exactly as it is.
+    """
 
     _, item = _cross_source(session, project)
 
     for child in item.children:
         assert item.alternatives_for(child.delta_id) != ()
-        assert offers_correction(item, child) is False
-        with pytest.raises(CaptureCorrectionRefused) as refused:
-            challenged_capture(session, item, child)
-        assert refused.value.reason == "not_offered"
-        assert refused.value.delta_id == child.delta_id
+        assert offers_correction(item, child) is True
+        assert challenged_capture(session, item, child).fact_id is not None
+
+
+def test_a_change_this_item_does_not_decide_carries_no_control_here(
+    session: Session, project: Project
+):
+    """ADR-0085's exactly-once rule, kept by the item that decides the change.
+
+    The batch lists the held-out organization change read-only and names the
+    item that decides it. Neither the read-only row nor the deciding item's
+    own row is offered the control by the batch, so widening the control to a
+    batch's changes gives one delta one control on one page rather than two.
+    """
+
+    built = Misread(session, project, ordinary_change=True)
+    _, batch = built.batch()
+    _, held_out = built.item()
+    (decided_elsewhere,) = held_out.children
+    (listed_read_only,) = [
+        row
+        for row in batch.held_out_children
+        if row.delta_id == decided_elsewhere.delta_id
+    ]
+
+    assert offers_correction(held_out, decided_elsewhere) is True
+    assert offers_correction(batch, listed_read_only) is False
+    # The same change, by the row the item that decides it carries: still not
+    # this item's to report, because this item does not decide it.
+    assert offers_correction(batch, decided_elsewhere) is False
+    with pytest.raises(CaptureCorrectionRefused) as refused:
+        challenged_capture(session, batch, decided_elsewhere)
+    assert refused.value.reason == "not_offered"
+
+
+def test_a_batched_change_is_reportable_on_the_batch_that_decides_it(
+    session: Session, project: Project
+):
+    """An individual change inside a source revision's batch (2026-09-11)."""
+
+    built = Misread(session, project, ordinary_change=True)
+    _, batch = built.batch()
+    (child,) = batch.children
+
+    assert batch.batched is True and batch.focused is False
+    assert offers_correction(batch, child) is True
+    capture = challenged_capture(session, batch, child)
+    assert capture.fact_id == built.batched_fact.id
+    assert capture.field == "station_from"
 
 
 # --- an ancillary action, never a fifth primary decision -------------------
@@ -621,13 +710,68 @@ def test_the_passages_offered_are_this_sources_own_with_the_cited_one_marked(
     _, item = built.item()
     (child,) = item.children
 
-    choices = passage_choices(session, challenged_capture(session, item, child))
+    offered = passage_choices(session, challenged_capture(session, item, child))
 
-    assert [choice.exact_text for choice in choices] == [
+    assert [choice.exact_text for choice in offered.choices] == [
         "AT&T Texas (SWBT)",
         "AT&T Texas",
     ]
-    assert [choice.cited for choice in choices] == [True, False]
+    assert [choice.cited for choice in offered.choices] == [True, False]
+    assert (offered.searched, offered.not_shown) == ("", 0)
+
+
+def test_a_search_reaches_a_passage_the_opening_window_does_not(
+    session: Session, project: Project
+):
+    """A misread usually lands beside the right cell; when it does not, this.
+
+    The window the picker opens on is bounded on purpose, so a legitimate cell
+    thirty rows away is not in it.  Searching this document's own retained
+    passages reaches it, by the words it holds or by the place the picker
+    prints it under, which is what stops a coordinator having to name a
+    passage by its identifier to select it.
+    """
+
+    built = Misread(session, project)
+    for number in range(2, 32):
+        built.incoming.segment(f"row {number} of this sheet", cell=f"D{number}")
+    distant = built.incoming.segment("AT&T Texas, per the owner column", cell="D40")
+    _, item = built.item()
+    (child,) = item.children
+    capture = challenged_capture(session, item, child)
+
+    opening = passage_choices(session, capture)
+    by_words = passage_choices(session, capture, matching="per the owner column")
+    by_place = passage_choices(session, capture, matching="cell D40")
+
+    assert distant.id not in [choice.source_segment_id for choice in opening.choices]
+    assert [choice.source_segment_id for choice in by_words.choices] == [distant.id]
+    assert [choice.source_segment_id for choice in by_place.choices] == [distant.id]
+    assert (by_words.searched, by_words.not_shown) == ("per the owner column", 0)
+
+    missing = passage_choices(session, capture, matching="a column nobody wrote")
+    assert missing.choices == ()
+    assert "No passage this source retained mentions" in missing.offered_words
+
+
+def test_a_search_that_matches_more_than_it_offers_says_how_many_it_left_out(
+    session: Session, project: Project
+):
+    """A cut list is said to be cut, rather than shown as the whole answer."""
+
+    built = Misread(session, project)
+    for number in range(2, PASSAGE_MATCH_LIMIT + 12):
+        built.incoming.segment(f"owner column row {number}", cell=f"D{number}")
+    _, item = built.item()
+    (child,) = item.children
+
+    found = passage_choices(
+        session, challenged_capture(session, item, child), matching="owner column"
+    )
+
+    assert len(found.choices) == PASSAGE_MATCH_LIMIT
+    assert found.not_shown == 10
+    assert "10 further matches are not listed" in found.offered_words
 
 
 # --- the screen ------------------------------------------------------------
@@ -672,17 +816,49 @@ def test_the_control_renders_outside_the_answers_form_and_says_what_it_is_not(
     assert CORRECTION_CONTROL not in body[outcome : body.index("</select>", outcome)]
 
 
-def test_the_control_is_absent_where_another_source_already_captured_a_value(
+def test_the_control_renders_where_another_source_captured_a_value(
     session: Session, project: Project, web
 ):
-    """Edit and apply is the act there, so the report is not offered."""
+    """Both sources' captures are reportable, each on its own change."""
 
     _, item = _cross_source(session, project)
 
     body = _open(web, project, item.item_key).text
 
-    assert CORRECTION_CONTROL not in body
-    assert f'action="/review/{project.slug}/correction"' not in body
+    assert CORRECTION_CONTROL in body
+    for child in item.children:
+        assert f'name="correction_delta" value="{child.delta_id}"' in body
+
+
+def test_a_batch_offers_its_changes_and_reports_the_one_that_was_asked_for(
+    session: Session, project: Project, web
+):
+    """One control for one capture, on a screen that decides many at once."""
+
+    built = Misread(session, project, ordinary_change=True)
+    _, batch = built.batch()
+    (child,) = batch.children
+    (held_out,) = built.item()[1].children
+    action = f'action="/review/{project.slug}/correction"'
+
+    listed = _open(web, project, batch.item_key).text
+    # Nothing was asked about yet: the changes are offered, and no capture is
+    # reported against until one of them is chosen.
+    assert CORRECTION_CONTROL in listed
+    assert f'<option value="{child.delta_id}"' in listed
+    # And it does not offer the change this batch only lists: that one is
+    # decided, and reported, on the item that holds it.
+    assert f'<option value="{held_out.delta_id}"' not in listed
+    assert action not in listed
+
+    asked = web.get(
+        f"/review/{project.slug}"
+        f"?item={quote(batch.item_key, safe='')}&correction={child.delta_id}"
+    ).text
+
+    assert asked.count(action) == 1
+    assert f'name="correction_delta" value="{child.delta_id}"' in asked
+    assert f'name="correction_delta" value="{held_out.delta_id}"' not in asked
 
 
 def test_the_screen_records_a_report_and_leaves_every_change_open(
@@ -752,6 +928,45 @@ def test_an_incomplete_report_names_the_control_and_keeps_what_was_typed(
     # and the page is right to escape it.
     assert EXPECTED in html.unescape(refused.text)
     assert not session.scalars(select(CaptureCorrectionRequest.id)).all()
+
+
+def test_the_screen_finds_a_distant_passage_and_reports_the_capture_against_it(
+    session: Session, project: Project, web
+):
+    """The act end to end, with the passage reached by reading rather than by id."""
+
+    built = Misread(session, project)
+    for number in range(2, 32):
+        built.incoming.segment(f"row {number} of this sheet", cell=f"D{number}")
+    distant = built.incoming.segment("AT&T Texas, per the owner column", cell="D40")
+    _, item = built.item()
+    (child,) = item.children
+    opened = quote(item.item_key, safe="")
+
+    before = _open(web, project, item.item_key).text
+    found = web.get(
+        f"/review/{project.slug}?item={opened}"
+        f"&correction={child.delta_id}&search=per+the+owner+column"
+    ).text
+
+    assert f'<option value="{distant.id}"' not in before
+    assert f'<option value="{distant.id}"' in found
+    # And the picker says which passages it is offering, so a shortened list
+    # is never presented as everything this source holds.
+    assert 'that mention "per the owner column"' in html.unescape(found)
+
+    fields = form_fields(found, f"/review/{project.slug}/correction")
+    fields["correction_passage"] = str(distant.id)
+    fields["correction_interpretation"] = EXPECTED
+    saved = submit_form(web, f"/review/{project.slug}/correction", fields)
+
+    assert saved.status_code == 200
+    (recorded,) = session.scalars(select(CaptureCorrectionRequest)).all()
+    assert recorded.selected_source_segment_id == distant.id
+    # The passages the coordinator was reading are still the ones on the page,
+    # because the search came back with the report rather than resetting to
+    # the window the chosen passage is not in.
+    assert "per the owner column" in saved.text
 
 
 def test_the_form_the_page_renders_is_the_one_the_route_accepts(

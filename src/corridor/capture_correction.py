@@ -36,13 +36,32 @@ identity and never re-runs the query.  ADR-0100 states the test:
 document and field after the request and proves the request still shows the
 original capture and its original evidence while the reading has moved on.
 
+**Every change a Review item decides carries the control, not only the ones
+with nothing else to apply.**  ADR-0100's worked example is the case where
+Edit and apply has nothing to choose, and #915 read that example as the rule:
+the control appeared only on a focused item, and only while no other source
+offered a usable value.  The maintainer settled it the other way on
+2026-09-11.  A misreading is a defect about *this* capture, and another source
+happening to carry a usable value neither makes the misread capture right nor
+makes the defect unreportable -- a coordinator who applies the other source's
+value has decided what the record should show and has still left Corridor
+reading this document wrong.  One change inside a source revision's batch is
+reportable for the same reason: a batch says its changes are decided together,
+not that each of them was read correctly.  What the control does still require
+is a capture to challenge and an item that decides the change.
+
 **The passage the coordinator selects is a passage of the same retained
 source.**  Operations corrects a capture against bytes that are already
-retained; it does not settle what a different document says.  A coordinator
-who believes another document already carries the right value has Edit and
-apply, and the case this act exists for is exactly the one where that is
-unavailable.  A selected segment outside the challenged capture's own document
-is refused here rather than discovered by operations.
+retained; it does not settle what a different document says.  A passage from
+another document is an alternative source or a new capture rather than proof
+that this document was read wrong, so a selected segment outside the
+challenged capture's own document is refused here rather than discovered by
+operations.  Reaching a *distant* passage of that same document is an ordinary
+act on the form rather than a reason to relax the rule: the picker opens on
+the passages around the cited one, and a search over the same document's
+retained passages -- their words, and the place each was read from -- reaches
+every other one, so nobody has to hand-submit a segment identifier to name a
+legitimate far-away cell.
 
 **Where a report lives.**  ``capture_correction_requests`` holds one row per
 report, written only through ``report_capture_correction``, the record-decision
@@ -118,6 +137,7 @@ __all__ = [
     "CorrectionRequest",
     "NO_CHANGE_EXIT_UNAVAILABLE",
     "PassageChoice",
+    "PassageChoices",
     "ReportedCorrection",
     "build_correction_request",
     "challenged_capture",
@@ -146,8 +166,8 @@ CORRECTION_SUPPORTING_TEXT = (
 # Why one request could not be built, in the same voice as the rest of the
 # screen's refusals.  Each names a shape the coordinator can correct.
 NOT_OFFERED_HERE = (
-    "Report an extraction error is offered only where this change has no "
-    "other captured source value to apply instead."
+    "Report an extraction error is offered against the capture a change is "
+    "showing, on the item that decides that change."
 )
 NEEDS_PASSAGE = (
     "Reporting an extraction error records which passage of this source the "
@@ -286,20 +306,30 @@ def _capture_of(
 
 
 def offers_correction(item: ItemReading, child: ChildReading) -> bool:
-    """Whether this focused item's child carries the correction control.
+    """Whether this item's change carries the correction control.
 
-    Offered only where the coordinator has a capture to challenge and no other
-    captured source value to apply instead -- which is the case ADR-0084's
-    constrained edit leaves them with nothing to choose in.  A child another
-    item owns carries no control here at all, because ADR-0085's exactly-once
-    rule is kept by the item that decides it.
+    Three things are asked, and the first is what keeps ADR-0085's
+    exactly-once rule now that a batch's own changes are offered it too: the
+    change has to be one *this* item decides.  Every kind of item also lists
+    changes it does not decide -- a batch lists its revision's held-out
+    siblings, a coordination question lists everything else bearing on the
+    same subject and field, a commitment lists the conflicts that left its
+    scope -- and each of those is listed read-only in ``held_out_children``
+    with the item that does decide it named.  So one delta is offered this
+    control by exactly one item however many items show it, and a caller
+    holding the deciding item's own row cannot borrow it onto another item.
+
+    The other two ask whether there is a capture to challenge at all: a row
+    this item shows read-only is not its to report, and a change showing no
+    captured Source Fact has nothing to report against.  Whether another
+    source captured a usable value is not asked; see the module docstring.
     """
 
+    decided_here = any(row.delta_id == child.delta_id for row in item.children)
     return (
-        item.focused
+        decided_here
         and child.held_out_reason is None
         and child.incoming_fact_id is not None
-        and not item.alternatives_for(child.delta_id)
     )
 
 
@@ -464,14 +494,18 @@ def withdraw_for_no_change(request: CorrectionRequest) -> None:
 # --- Recording one, and reading back what stands ---------------------------
 
 
-#: How many retained passages either side of the cited one the form offers as
-#: choices. It bounds the *picker*, never the rule: a misread almost always
-#: lands next to the cell it should have read, and a workbook rendition can
-#: retain thousands of cells, so a select listing every one of them is a list
-#: nobody can use. ``report_capture_correction`` still accepts any passage of
-#: the capture's own document, and the exact-source view (#831) is where a
-#: coordinator reads one outside this window.
+#: How many retained passages either side of the cited one the picker opens
+#: on. It bounds what is offered first, never the rule: a misread almost
+#: always lands next to the cell it should have read, and a workbook rendition
+#: can retain thousands of cells, so a select listing every one of them is a
+#: list nobody can use. A passage outside this window is reached by searching
+#: the same document rather than by typing its identifier.
 PASSAGE_CHOICE_WINDOW = 12
+
+#: How many matching passages one search offers at once. The same reasoning
+#: bounds the answer as bounds the opening window, and what the cap left out
+#: is counted and said rather than silently dropped.
+PASSAGE_MATCH_LIMIT = 50
 
 
 @dataclass(frozen=True, slots=True)
@@ -482,6 +516,53 @@ class PassageChoice:
     locator: str
     exact_text: str
     cited: bool
+
+
+@dataclass(frozen=True, slots=True)
+class PassageChoices:
+    """What the picker is offering for one capture, and why those passages.
+
+    ``searched`` is the words the coordinator asked for, empty where the
+    picker is showing the passages around the cited one.  ``not_shown`` is how
+    many further matches the cap left out, so the screen can say that rather
+    than presenting a cut list as the whole answer.
+    """
+
+    choices: tuple[PassageChoice, ...]
+    searched: str = ""
+    not_shown: int = 0
+
+    @property
+    def offered_words(self) -> str:
+        """Why these passages and not others, in one sentence for the picker.
+
+        What the picker is showing changes with what was asked of it, and the
+        sentence that says so is chosen here, beside the state that decides
+        it, rather than assembled by the screen that renders it.
+        """
+
+        if not self.searched:
+            return (
+                "The passages this source retained, around the one the "
+                "capture cited. Search above for a passage elsewhere in the "
+                "same file."
+            )
+        if not self.choices:
+            return (
+                f'No passage this source retained mentions "{self.searched}". '
+                "Search again, or empty the search to return to the passages "
+                "around the cited one."
+            )
+        found = (
+            f'The passages of this source that mention "{self.searched}", in '
+            "the order the source presents them."
+        )
+        if not self.not_shown:
+            return found
+        return (
+            f"{found} {self.not_shown} further matches are not listed; a "
+            "narrower search reaches them."
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -504,16 +585,26 @@ class ReportedCorrection:
 
 
 def passage_choices(
-    session: Session, capture: ChallengedCapture
-) -> tuple[PassageChoice, ...]:
-    """The retained passages of this capture's own source, around the cited one.
+    session: Session, capture: ChallengedCapture, *, matching: str = ""
+) -> PassageChoices:
+    """The retained passages of this capture's own source the form offers.
 
-    Ordered as the source presents them, so a coordinator reads down the rows
+    With nothing searched for this is the window around the cited passage, in
+    the order the source presents them, so a coordinator reads down the rows
     of the sheet or the spans of the page rather than down a list of ids.
+
+    ``matching`` is how they reach the rest of the same document when the
+    passage that should have been read is not beside the one that was.  The
+    words are looked for in each retained passage's own text and in the
+    printed location the picker shows it under, so "AT&T", "cell D14" and
+    "page 3" each find their passages.  Searching widens what is *offered*
+    and never what may be selected: every passage either way belongs to this
+    capture's own document, which ``report_capture_correction``'s composite
+    foreign keys make structural rather than conventional.
     """
 
     if capture.document_id is None:
-        return ()
+        return PassageChoices(())
     found = list(
         session.scalars(
             select(SourceSegment)
@@ -524,6 +615,14 @@ def passage_choices(
             .order_by(SourceSegment.ordinal, SourceSegment.id)
         )
     )
+    words = matching.strip()
+    if words:
+        matched = [row for row in found if _mentions(words, row)]
+        return PassageChoices(
+            tuple(_offered(row, capture) for row in matched[:PASSAGE_MATCH_LIMIT]),
+            searched=words,
+            not_shown=max(0, len(matched) - PASSAGE_MATCH_LIMIT),
+        )
     positions = [
         index
         for index, row in enumerate(found)
@@ -536,14 +635,32 @@ def passage_choices(
         ]
     else:
         found = found[: PASSAGE_CHOICE_WINDOW * 2 + 1]
-    return tuple(
-        PassageChoice(
-            source_segment_id=int(row.id),
-            locator=source_segment_locator_words(row),
-            exact_text=row.exact_text,
-            cited=row.id == capture.source_segment_id,
-        )
-        for row in found
+    return PassageChoices(tuple(_offered(row, capture) for row in found))
+
+
+def _mentions(words: str, segment: SourceSegment) -> bool:
+    """Whether one retained passage answers the words a coordinator typed.
+
+    The locator is searched as the words the picker prints it under, not as
+    its columns, so what a coordinator reads on the screen is what they can
+    type back at it.
+    """
+
+    needle = words.casefold()
+    return (
+        needle in segment.exact_text.casefold()
+        or needle in source_segment_locator_words(segment).casefold()
+    )
+
+
+def _offered(segment: SourceSegment, capture: ChallengedCapture) -> PassageChoice:
+    """One retained passage as the picker offers it."""
+
+    return PassageChoice(
+        source_segment_id=int(segment.id),
+        locator=source_segment_locator_words(segment),
+        exact_text=segment.exact_text,
+        cited=segment.id == capture.source_segment_id,
     )
 
 

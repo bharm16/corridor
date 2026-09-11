@@ -5612,6 +5612,13 @@ def _review_context(
 ) -> dict:
     reading = read_review_items(session, project_id=project.id, as_of=now)
     binding = binding_for_session(session)
+    # Which change the correction control is being used on, and the words the
+    # coordinator searched this source's passages for. Both arrive the same way
+    # whether the page was asked for them or a refusal handed them back, so the
+    # control survives a round trip either way (#836).
+    asked = str((correction or {}).get("delta", "")).strip()
+    asked_about = int(asked) if asked.isdigit() else None
+    searched = str((correction or {}).get("search", ""))
     opened = reading.item(opened_key) if opened_key else None
     landing = opened or (reading.items[0] if reading.items else None)
     # A restored draft is announced as the refusal it is: the submission was
@@ -5642,7 +5649,17 @@ def _review_context(
                 # change, and an item nobody opened has no control to read it
                 # for (#836).
                 "corrections": (
-                    _correction_views(session, project, shown) if is_open else {}
+                    _correction_views(
+                        session,
+                        project,
+                        shown,
+                        asked_about=asked_about,
+                        searched=searched,
+                    )
+                    if is_open
+                    # An item nobody opened carries no control, in the shape
+                    # an opened one has.
+                    else {"offered": {}, "choices": ()}
                 ),
                 # The pilot's interrupting-packet sample is exactly the items
                 # Corridor placed at "Must handle before this issue"; the level
@@ -5686,36 +5703,63 @@ def _review_context(
 
 # --- ADR-0100's ancillary action about a capture (#836) --------------------
 #
-# The control is offered per change and only where ADR-0084's constrained edit
-# leaves the coordinator nothing to choose, so whether it appears is the
-# domain module's answer and never the template's. What the template gets is
-# the capture the change is showing, the retained passages of that capture's
-# own source to pick from, and every report that already stands -- so a
-# coordinator returning to an item can see the defect was already reported
-# rather than reporting it twice.
+# Whether a change carries the control is the domain module's answer and never
+# the template's. What the template gets is the capture the change is showing,
+# the retained passages of that capture's own source to pick from, and every
+# report that already stands -- so a coordinator returning to an item can see
+# the defect was already reported rather than reporting it twice.
+#
+# A focused item carries a handful of changes and shows them all. A source
+# revision's batch can carry hundreds, and a capture, its passages and the
+# reports standing against it are a screen's worth each, so the batch offers
+# its reportable changes as choices and builds the report for the one the
+# coordinator asked about. That is also what keeps the reading cheap: the
+# per-change reads happen for what is shown, not for the whole revision.
 
+def _correction_views(
+    session: Session,
+    project: Project,
+    item,
+    *,
+    asked_about: int | None = None,
+    searched: str = "",
+) -> dict:
+    """What this item's report control has to render.
 
-def _correction_views(session: Session, project: Project, item) -> dict:
-    """Per change: whether the control is offered, and what it needs."""
+    ``offered`` is the capture, the passages to pick from and the reports
+    already standing, for each change the page is showing the control on.
+    ``choices`` is every change that could be reported here, which a batch
+    offers so the coordinator can ask about one of them.
+    """
 
-    if not item.focused:
-        return {}
+    offered = tuple(
+        child for child in item.children if offers_correction(item, child)
+    )
+    shown = (
+        tuple(child for child in offered if child.delta_id == asked_about)
+        if item.batched
+        else offered
+    )
     standing = reported_corrections(
         session,
         project_id=project.id,
-        delta_ids=[child.delta_id for child in item.children],
+        delta_ids=[child.delta_id for child in shown],
     )
     views = {}
-    for child in item.children:
-        if not offers_correction(item, child):
-            continue
+    for child in shown:
         capture = challenged_capture(session, item, child)
         views[child.delta_id] = {
             "capture": capture,
-            "passages": passage_choices(session, capture),
+            "passages": passage_choices(
+                session,
+                capture,
+                # One search belongs to the change it was made on; the other
+                # changes on a focused item keep their own opening window.
+                matching=searched if child.delta_id == asked_about else "",
+            ),
             "reported": standing.get(child.delta_id, ()),
         }
-    return views
+    return {"offered": views, "choices": offered if item.batched else ()}
 
 
 def _review_guidance(item) -> str:
@@ -5923,6 +5967,8 @@ def review_source_changes(
     request: Request,
     slug: str,
     item: str = "",
+    correction: str = "",
+    search: str = "",
     principal: HumanPrincipal = Depends(get_human_principal),
     session: Session = Depends(get_session),
     clock=Depends(get_review_clock),
@@ -5936,6 +5982,12 @@ def review_source_changes(
     rendered on a form carrying a new request-forgery token beside what moved
     under it, for the coordinator to submit again themselves. Nothing is
     applied here and no submission is replayed.
+
+    `correction` and `search` are the two things the report control asks the
+    page for and nothing else reads: which change it is being used on, and the
+    words to look for in that change's own source. Both are questions about
+    what to show, so they are asked by opening the page again rather than by
+    posting; neither records anything (#836).
     """
 
     project = _project(session, slug, principal)
@@ -5945,6 +5997,7 @@ def review_source_changes(
         project,
         now=now,
         opened_key=item,
+        correction={"delta": correction, "search": search},
         **_restore_expired_draft(
             session, project, principal, drafts, now=now, opened_key=item
         ),
@@ -6503,6 +6556,7 @@ def report_extraction_error(
     item_key: str = Form(...),
     correction_delta: str = Form(...),
     correction_passage: str = Form(""),
+    correction_search: str = Form(""),
     correction_interpretation: str = Form(""),
     principal: HumanPrincipal = Depends(get_human_principal),
     session: Session = Depends(get_session),
@@ -6515,6 +6569,10 @@ def report_extraction_error(
     typed = {
         "delta": correction_delta,
         "passage": correction_passage,
+        # The search the picker was showing when this was submitted, so a
+        # refusal hands back the list the passage was chosen from rather than
+        # the opening window it is not in.
+        "search": correction_search,
         "interpretation": correction_interpretation,
     }
     reading = read_review_items(session, project_id=project.id, as_of=now)
@@ -6594,6 +6652,10 @@ def report_extraction_error(
         principal=principal,
         now=now,
         opened_key=item_key,
+        # Still on the change they reported, showing the report now standing
+        # against it. A batch would otherwise fold the control back to its
+        # list of changes and leave the coordinator to find this one again.
+        correction={"delta": str(child.delta_id), "search": correction_search},
         saved={
             "heading": "Reported an extraction error",
             "detail": (
