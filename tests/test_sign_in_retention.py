@@ -450,18 +450,29 @@ def test_an_idle_pass_writes_no_audit_event_but_still_reports_a_run(session):
     }
 
 
-def test_the_command_needs_no_argument_and_prints_its_run(session, capsys):
+def test_the_command_needs_no_argument_and_prints_its_run(
+    session, capsys, monkeypatch
+):
     """A scheduled invocation runs a fixed command line and cannot pass a clock.
 
     The printed payload is the run record ADR-0102 relies on, so this pins both
     halves: the command runs with no argument, and every run says what it did.
+
+    The empty human principal is *set* here rather than read, because it is the
+    condition being tested and not an ambient fact. A deployment running this on
+    a schedule configures no ``CORRIDOR_HUMAN_PRINCIPAL`` -- no person performs
+    this act, which is why its actor is ``SIGN_IN_RECORD_EXPIRY_ACTOR`` -- and
+    before this change the command built a ``HumanPrincipal`` unconditionally
+    and raised on the empty string, so the scheduled run would have crashed.
+    Reading the ambient value instead would pass on a developer's machine and
+    fail under CI, which configures one; it did exactly that.
     """
 
     @contextmanager
     def factory():
         yield session
 
-    assert settings.human_principal == ""
+    monkeypatch.setattr(settings, "human_principal", "")
     assert retention_main(["expire-sign-in-records"], session_factory=factory) == 0
 
     printed = capsys.readouterr().out
