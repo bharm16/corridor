@@ -10,6 +10,7 @@ from collections import defaultdict
 from pathlib import Path
 
 from corridor.migrations import policy
+from ratchet_support import assert_ratchet
 from source_scan_support import (  # noqa: F401
     callers_of,
     imported_names,
@@ -513,11 +514,14 @@ def test_source_module_dependencies_are_acyclic():
 
 
 def test_the_declared_cycle_edges_are_exactly_the_cycles_that_exist():
-    """The ratchet, exact in both directions.
+    """The ratchet, exact in both directions and against the merge base.
 
     An import that closes a new cycle fails here rather than hiding inside a
     component that was already tangled, and an edge that stops closing one has
-    to leave the list, so the list can only shrink and only honestly.
+    to leave the list. `assert_ratchet` is what makes "the list can only
+    shrink" a rule rather than a claim: editing the allowlist in the same
+    commit no longer buys the edge, because the merge base still records the
+    list without it.
     """
 
     edges = [(source, target) for source, target, _ in CYCLE_EDGE_ALLOWLIST]
@@ -568,6 +572,13 @@ def test_the_declared_cycle_edges_are_exactly_the_cycles_that_exist():
             )
 
     assert problems == {}
+
+    assert_ratchet(
+        "tests/test_architecture.py:CYCLE_EDGE_ALLOWLIST",
+        measured=found,
+        recorded=declared,
+        as_measured=lambda listed: {(source, target) for source, target, _ in listed},
+    )
 
 
 # The modules between a Source Segment and a Source Fact value, and the
@@ -1126,6 +1137,11 @@ def test_the_legacy_table_consumer_list_may_fall_and_may_never_rise():
     consuming one has to be deleted from the list, so a repaired reader cannot
     pay for a new consumer somewhere else. Stage 4 exits when every tuple is
     empty.
+
+    The list has risen before -- 160 to 162 in one commit -- because equality
+    against a constant the same commit may edit cannot see direction.
+    `assert_ratchet` reads the list back out of the merge base and names the
+    consumer that joined.
     """
 
     listed = {name: tuple(sorted(modules)) for name, modules in LEGACY_TABLE_CONSUMERS.items()}
@@ -1153,6 +1169,16 @@ def test_the_legacy_table_consumer_list_may_fall_and_may_never_rise():
             )
 
     assert problems == {}
+
+    pairs = lambda listed: {
+        (name, module) for name, modules in listed.items() for module in modules
+    }
+    assert_ratchet(
+        "tests/test_architecture.py:LEGACY_TABLE_CONSUMERS",
+        measured={(name, module) for name in listed for module in found[name]},
+        recorded=pairs(listed),
+        as_measured=pairs,
+    )
 
 
 def test_every_frozen_relation_is_declared_in_the_legacy_family_and_nowhere_else():
@@ -2146,7 +2172,9 @@ def test_the_uncovered_list_may_fall_and_may_never_rise():
     Naming a hole is how it gets closed, not a place to put the next one. A
     change that partitions a relation lowers the ceiling and holds the gain; a
     change that adds a project-scoped relation cannot pay for it by widening
-    the list.
+    the list -- and cannot pay for it by raising the ceiling in the same
+    commit either, because `assert_ratchet` reads the ceiling recorded at the
+    merge base.
     """
 
     from corridor import access
@@ -2161,6 +2189,11 @@ def test_the_uncovered_list_may_fall_and_may_never_rise():
     assert outstanding >= access.NOT_YET_PARTITIONED_CEILING, (
         f"the list is down to {outstanding}; lower "
         "NOT_YET_PARTITIONED_CEILING in corridor.access to hold the gain"
+    )
+    assert_ratchet(
+        "src/corridor/access.py:NOT_YET_PARTITIONED_CEILING",
+        measured=outstanding,
+        recorded=access.NOT_YET_PARTITIONED_CEILING,
     )
 
 

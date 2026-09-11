@@ -42,6 +42,7 @@ from alembic.script import ScriptDirectory
 from corridor.migrations import policy
 from corridor.product_proving_database import fingerprint_database_url
 from corridor.report_release import retrieve_released_external_report
+from ratchet_support import assert_ratchet
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -141,7 +142,8 @@ def test_the_executable_migration_window_matches_the_recorded_policy():
         f"unrelated executable history remains: {sorted(unreachable)}"
     )
 
-    # The ratchet. `UNRELEASED_EDGES` may fall and must never rise; a change
+    # The ratchet. `UNRELEASED_EDGES` may fall and must never rise -- against
+    # the number the merge base records, so bumping it here buys nothing. A change
     # needing another revision folds into the current unreleased transition,
     # or consolidates the chain and lowers the recorded number.
     # `iterate_revisions` excludes its lower bound, so the reachable set is
@@ -160,6 +162,11 @@ def test_the_executable_migration_window_matches_the_recorded_policy():
     )
     assert policy.UNRELEASED_EDGE_TARGET == 1, (
         "ADR-0065's window is one supported transition; the target does not move"
+    )
+    assert_ratchet(
+        "src/corridor/migrations/policy.py:UNRELEASED_EDGES",
+        measured=edges,
+        recorded=policy.UNRELEASED_EDGES,
     )
 
 
