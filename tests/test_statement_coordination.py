@@ -5,6 +5,7 @@ from dataclasses import replace
 from datetime import date
 import base64
 import hashlib
+import json
 
 import pytest
 from fastapi.testclient import TestClient
@@ -3785,6 +3786,190 @@ def test_http_admitted_close_refuses_a_stale_or_malformed_submission(
 
     subject = CoordinationSubject.statement(coordination.lineage.id)
     assert current_next_action_decision(session, subject).after_value is not None
+
+
+def _next_action_text(decision) -> str:
+    """The action a Next Action decision records, out of its composite value."""
+    return json.loads(decision.after_value)["action"]
+
+
+def _admitted_close_submissions(expected: str | None) -> dict[str, dict[str, str]]:
+    """One submission per closing act, differing only in the predecessor field.
+
+    `expected` of `None` omits the field entirely; every other value is sent
+    verbatim, including the empty string, so an absent predecessor and a blank
+    one can be compared against each other rather than assumed equivalent.
+    """
+    submissions = {
+        "complete": {"no_follow_up_reason": "no_immediate_follow_up"},
+        "cancel": {
+            "no_follow_up_reason": "no_immediate_follow_up",
+            "cancellation_reason": "no_longer_needed",
+        },
+        "defer": {
+            "deferral_reason": "waiting_for_external_party",
+            "return_date": "2025-06-01",
+        },
+    }
+    if expected is not None:
+        for submission in submissions.values():
+            submission["expected_next_action_decision_id"] = expected
+    return submissions
+
+
+def test_http_admitted_close_and_defer_refuse_a_blank_predecessor_exactly_as_an_absent_one(
+    session, project, party, roster_entry
+):
+    """A blank predecessor is malformed, not a statement that none was seen.
+
+    The three closing acts each require the coordinator to name the Next Action
+    they were looking at.  An empty field is the browser's way of sending
+    nothing, so it has to refuse for the same reason an omitted field does; the
+    `None` that means "this surface saw no Next Action" is a separate answer
+    these forms never have occasion to give, because a statement with no live
+    action carries no close control at all.
+    """
+    candidate = _admitted_commitment(session, project, party)
+    coordination = _plan_the_admitted_commitment(
+        session,
+        project,
+        candidate,
+        roster_entry,
+        "Confirm the stated timing with the organization",
+    )
+    subject = CoordinationSubject.statement(coordination.lineage.id)
+    live = current_next_action_decision(session, subject)
+
+    app.dependency_overrides[get_session] = lambda: session
+    app.dependency_overrides[get_human_principal] = lambda: RECORDER
+    try:
+        with TestClient(app) as client:
+            for route, form in _admitted_close_submissions(None).items():
+                absent = client.post(
+                    f"/statements/{project.slug}/{candidate.id}/admitted/{route}",
+                    data=form,
+                    follow_redirects=False,
+                )
+                assert absent.status_code == 400, route
+            for route, form in _admitted_close_submissions("").items():
+                blank = client.post(
+                    f"/statements/{project.slug}/{candidate.id}/admitted/{route}",
+                    data=form,
+                    follow_redirects=False,
+                )
+                assert blank.status_code == 400, route
+    finally:
+        app.dependency_overrides.clear()
+
+    # Six refused submissions, and the action they named is untouched.
+    still_live = current_next_action_decision(session, subject)
+    assert still_live.id == live.id
+    assert still_live.after_value is not None
+
+
+def test_http_admitted_close_and_defer_refuse_another_subjects_predecessor(
+    session, project, party, roster_entry
+):
+    """A real decision id from another Work Item is not this one's predecessor.
+
+    The id exists and is the tail of its own chain, so a check that only asked
+    whether the decision could be found would accept it and close an action the
+    coordinator never saw.  What binds the act is the tail of *this* subject.
+    """
+    candidate = _admitted_commitment(session, project, party)
+    coordination = _plan_the_admitted_commitment(
+        session,
+        project,
+        candidate,
+        roster_entry,
+        "Confirm the stated timing with the organization",
+    )
+    subject = CoordinationSubject.statement(coordination.lineage.id)
+    live = current_next_action_decision(session, subject)
+
+    dependency = _dependency(session, project, party, "UT-90", "Gas main crossing")
+    stranger = set_next_action(
+        session,
+        CoordinationSubject.dependency(dependency.id),
+        "Chase the encroachment permit",
+        due_date=date(2025, 7, 1),
+        principal=RECORDER,
+    )
+    assert stranger.id != live.id
+
+    app.dependency_overrides[get_session] = lambda: session
+    app.dependency_overrides[get_human_principal] = lambda: RECORDER
+    try:
+        with TestClient(app) as client:
+            for route, form in _admitted_close_submissions(str(stranger.id)).items():
+                borrowed = client.post(
+                    f"/statements/{project.slug}/{candidate.id}/admitted/{route}",
+                    data=form,
+                    follow_redirects=False,
+                )
+                assert borrowed.status_code == 409, route
+    finally:
+        app.dependency_overrides.clear()
+
+    # Neither Work Item moved: no partial write on either side of the mix-up.
+    assert current_next_action_decision(session, subject).id == live.id
+    assert current_next_action_decision(session, subject).after_value is not None
+    borrowed_tail = current_next_action_decision(
+        session, CoordinationSubject.dependency(dependency.id)
+    )
+    assert borrowed_tail.id == stranger.id
+    assert _next_action_text(borrowed_tail) == "Chase the encroachment permit"
+
+
+def test_http_admitted_close_and_defer_refuse_a_superseded_predecessor(
+    session, project, party, roster_entry
+):
+    """An earlier decision on this same chain is stale, not merely unrecognized."""
+    candidate = _admitted_commitment(session, project, party)
+    coordination = _plan_the_admitted_commitment(
+        session,
+        project,
+        candidate,
+        roster_entry,
+        "Confirm the stated timing with the organization",
+    )
+    subject = CoordinationSubject.statement(coordination.lineage.id)
+    superseded = current_next_action_decision(session, subject)
+    live = set_next_action(
+        session,
+        subject,
+        "Coordinate the selected constraints",
+        due_date=date(2025, 8, 1),
+        principal=RECORDER,
+    )
+    assert live.id != superseded.id
+
+    app.dependency_overrides[get_session] = lambda: session
+    app.dependency_overrides[get_human_principal] = lambda: RECORDER
+    try:
+        with TestClient(app) as client:
+            for route, form in _admitted_close_submissions(str(superseded.id)).items():
+                stale = client.post(
+                    f"/statements/{project.slug}/{candidate.id}/admitted/{route}",
+                    data=form,
+                    follow_redirects=False,
+                )
+                assert stale.status_code == 409, route
+
+            # The current predecessor is accepted from the same forms, so the
+            # refusals above are about which action was named, not about shape.
+            permitted = client.post(
+                f"/statements/{project.slug}/{candidate.id}/admitted/defer",
+                data=_admitted_close_submissions(str(live.id))["defer"],
+                follow_redirects=False,
+            )
+            assert permitted.status_code == 303
+    finally:
+        app.dependency_overrides.clear()
+
+    tail = current_next_action_decision(session, subject)
+    assert tail.id == live.id
+    assert _next_action_text(tail) == "Coordinate the selected constraints"
 
 
 def test_a_pending_statement_cannot_acquire_a_close_control(
