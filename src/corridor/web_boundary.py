@@ -546,11 +546,16 @@ PILOT_ROUTES: dict[tuple[str, str], PilotRoute] = {
             "there again and a different one -- the repair receipt operations "
             "leaves against a blocked source, selected by this project's own "
             "document ids, so a row that names an owner also says what has "
-            "been done about it"
+            "been done about it. #900 added the project-level banner above "
+            "the table, and it reads `current_project_processing_pass` rather "
+            "than the scheduler: the two relations under that view stay "
+            "revoked, so this route can say a pass is claimed without holding "
+            "a claim token or any write path into the runtime"
         ),
         relations=frozenset(
             {
                 "audit_log",
+                "current_project_processing_pass",
                 "delta_dispositions",
                 "delta_groups",
                 "delta_supersessions",

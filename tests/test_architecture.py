@@ -3695,6 +3695,7 @@ def test_no_new_relation_copies_quote_field_map_or_snapshot_state():
 UNMAPPED_WEB_READABLE_RELATIONS = frozenset(
     {
         "current_coordination_record",
+        "current_project_processing_pass",
         "current_project_record",
         "retired_automatic_carry_forward_policy_activations",
     }

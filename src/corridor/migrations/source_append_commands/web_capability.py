@@ -542,6 +542,121 @@ end $$;
 """
 
 
+# --- #900 The banner's projection, and the grant it does *not* need --------
+#
+# The source register shows a project-level banner saying whether a worker has
+# claimed this project's document-processing pass. The only record of that is
+# `due_work_occurrences`, and #900's first draft proposed reaching it the
+# obvious way: partition `due_work_schedules` and `due_work_occurrences`, and
+# hand `corridor_web` back the grants the blanket revoke took.
+#
+# That is too broad in two independent ways, and both matter.
+#
+# **The grant.** A SELECT on `due_work_occurrences` is a SELECT on
+# `claim_token` — the value the runtime finalizes an attempt against — and on
+# `owner`, `last_error_code` and `attempt_count` besides. A banner needs none
+# of them. `due_work_schedules` carries the whole gate-7 declaration, its
+# configuration digests and its budgets. Restoring the default privileges
+# would have handed back INSERT, UPDATE and DELETE on the scheduler as well:
+# the human web capability would have been able to release another worker's
+# lease. So both relations stay exactly where #680 left them — revoked, and
+# recorded as unpartitioned in `corridor.access` — and the page reads a view.
+#
+# **The reading.** #918 established that a claimed occurrence is not proof a
+# worker still owns the pass: `claim_due_work`'s candidate predicate
+# deliberately includes `state = 'claimed' and lease_expires_at <= now`, an
+# expired lease stops counting toward `concurrency_limit`, and nothing fences
+# the original worker, which never re-checks its claim token. So the view
+# carries `lease_expires_at` beside the state and the reader above it decides
+# what can honestly be said, rather than reading `state = 'claimed'` as "a
+# worker is running".
+#
+# **Why a view, and why it is not the `current_project_record` mistake.**
+# `current_project_record` is owned by the schema owner, so row-level security
+# on the tables under it was evaluated as *the owner*, who bypasses it, and
+# #657 had to set `security_invoker` on it to make the partition mean
+# anything. `security_invoker` is the right answer when the base tables are
+# partitioned and granted; it is the wrong answer here, because it would
+# require granting `corridor_web` the base tables this block is refusing to
+# grant. This view therefore carries the partition predicate *in its own
+# body* — the same `current_project_partition()` every policy tests — and is
+# granted where the tables under it are not. A caller that has declared no
+# partition reads no rows, which is the safe direction: every project surface
+# declares one in `_authorize` before it reads anything.
+#
+# `distinct on` gives the project one row: a claim whose lease is still in
+# force first, then an expired one, then the most recently due occurrence. The
+# selection is here rather than in Python so two readers cannot disagree about
+# which occurrence the project's banner is about.
+PROJECT_PROCESSING_PASS_VIEW = """
+create view public.current_project_processing_pass as
+select distinct on (s.project_id)
+       s.project_id       as project_id,
+       o.state            as occurrence_state,
+       o.claimed_at       as claimed_at,
+       o.lease_expires_at as lease_expires_at
+  from public.due_work_occurrences o
+  join public.due_work_schedules s
+    on s.id = o.scheduled_job_id
+ where s.handler_key = 'project_processing'
+   and s.project_id = any(public.current_project_partition())
+ order by s.project_id,
+          (o.state = 'claimed') desc,
+          o.lease_expires_at desc nulls last,
+          o.due_at desc,
+          o.id desc;
+
+comment on view public.current_project_processing_pass is
+    'The one source-processing occurrence a project banner is about (#900): '
+    'its state, when it was claimed and when that claim lapses. It carries no '
+    'claim token, no owner and no declaration, and it says nothing about which '
+    'document is being read -- no record carries that.';
+"""
+
+# The schema owner's `alter default privileges ... on tables` reaches views as
+# well as tables, so creating this one hands every runtime login select,
+# insert, update and delete on it. Take all of that back first and grant only
+# the reading, to the two logins that serve the source register: the live
+# pilot's `corridor_web`, and the opt-in `corridor_legacy_dev` a legacy
+# development deployment reaches the frozen surfaces through (ADR-0081). The
+# revoke covers PUBLIC too, because #693's rule is that no application
+# relation carries a privilege granted to nobody in particular.
+PROJECT_PROCESSING_PASS_VIEW_GRANT = """
+do $$
+declare
+    v_roles text;
+begin
+    revoke all on public.current_project_processing_pass from public;
+    select string_agg(quote_ident(rolname), ', ' order by rolname)
+      into v_roles
+      from pg_roles
+     where rolname in (
+        'corridor_web', 'corridor_worker', 'corridor_legacy_dev'
+     );
+    if v_roles is not null then
+        execute format(
+            'revoke all on public.current_project_processing_pass from %s',
+            v_roles
+        );
+    end if;
+    select string_agg(quote_ident(rolname), ', ' order by rolname)
+      into v_roles
+      from pg_roles
+     where rolname in ('corridor_web', 'corridor_legacy_dev');
+    if v_roles is not null then
+        execute format(
+            'grant select on public.current_project_processing_pass to %s',
+            v_roles
+        );
+    end if;
+end $$;
+"""
+
+PROJECT_PROCESSING_PASS_VIEW_DOWN = """
+drop view if exists public.current_project_processing_pass;
+"""
+
+
 def upgrade(op) -> None:
     # Last, because it partitions relations blocks above create and revokes
     # privileges on every relation any of them left with the schema owner's
@@ -555,6 +670,11 @@ def upgrade(op) -> None:
     # they are not in the denied list that statement sweeps, and taking their
     # grants is a separate decision from taking an unpartitioned relation away.
     op.execute(WEB_CAPABILITY_PARTITIONED_REVOKE)
+    # Last of all: the projection reads two relations the revoke above
+    # leaves denied, so it is created once they are certain to be denied
+    # rather than in a window where the view and a grant both answered.
+    op.execute(PROJECT_PROCESSING_PASS_VIEW)
+    op.execute(PROJECT_PROCESSING_PASS_VIEW_GRANT)
 
 
 def downgrade(op) -> None:
@@ -563,6 +683,7 @@ def downgrade(op) -> None:
     # the policies come off after it so no window exists where a relation is
     # readable again and still partitioned against a partition no caller
     # declared.
+    op.execute(PROJECT_PROCESSING_PASS_VIEW_DOWN)
     op.execute(WEB_CAPABILITY_PARTITIONED_RESTORE)
     op.execute(WEB_CAPABILITY_RESTORE)
     op.execute(WEB_DOCUMENT_CHILD_PARTITION_POLICIES_DOWN)
