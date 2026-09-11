@@ -63,6 +63,7 @@ from corridor.work_decisions import (
     current_next_action_decision,
 )
 from access_support import seed_membership
+from supersession_support import SupersededChain, superseded_chain
 
 TEST_PRINCIPAL = HumanPrincipal("local:test-reviewer")
 PLAN_ACTION = FOLLOW_UP_NEXT_ACTION_CHOICES[0]
@@ -794,26 +795,6 @@ def test_merge_suggestions_appear_once_a_dependency_exists(
     assert "station" in r.text and "text" in r.text
 
 
-def _document_with_registry_id(session, project, *, registry_id, filename, doc_date):
-    document = Document(
-        project_id=project.id,
-        sha256=_document_sha(project.id, f"{registry_id}:{filename}"),
-        filename=filename,
-        doc_type="matrix",
-        parse_status="parsed",
-        doc_date=doc_date,
-        pages=3,
-        registry_id=str(registry_id),
-    )
-    session.add(document)
-    session.flush()
-    return document
-
-
-def _supersession_module():
-    return __import__("corridor.supersession", fromlist=["*"])
-
-
 def _seed_supersession_chain(
     session,
     project,
@@ -825,193 +806,109 @@ def _seed_supersession_chain(
     include_successor_candidate=True,
     successor_failed=False,
     register=True,
-):
-    supersession = _supersession_module()
-    Declaration = supersession.SupersessionDeclaration
+) -> SupersededChain:
+    """A declared revision pair the queue must route, with the successor unread."""
 
-    source_pointer = _document_with_registry_id(
+    chain = superseded_chain(
         session,
         project,
-        registry_id="RID-INDEX",
-        filename="rid-index.xlsx",
-        doc_date=date(2010, 1, 1),
+        principal=TEST_PRINCIPAL,
+        predecessor_registry_id=predecessor_registry_id,
+        successor_registry_id=successor_registry_id,
+        index_registry_id="RID-INDEX",
+        index_text="RID index page 4",
+        source_page=4,
+        predecessor_text=f"{predecessor_uid} AT&T Texas (SWBT)",
+        successor_text=f"{successor_uid} AT&T Texas (SWBT)",
+        replacement_date=date(2026, 2, 13),
+        predecessor_date=date(2025, 10, 1),
+        successor_date=date(2026, 1, 1),
+        register=False,
     )
-    session.add_all(
-        [
-            DocPage(document_id=source_pointer.id, page_no=1, text="RID index page 1"),
-            DocPage(document_id=source_pointer.id, page_no=4, text="RID index page 4"),
-        ]
-    )
-
-    predecessor = _document_with_registry_id(
-        session,
-        project,
-        registry_id=predecessor_registry_id,
-        filename="rev-01.pdf",
-        doc_date=date(2025, 10, 1),
-    )
-    successor = _document_with_registry_id(
-        session,
-        project,
-        registry_id=successor_registry_id,
-        filename="rev-02.pdf",
-        doc_date=date(2026, 1, 1),
-    )
-    session.add_all(
-        [
-            DocPage(
-                document_id=predecessor.id,
-                page_no=1,
-                text=f"{predecessor_uid} AT&T Texas (SWBT)",
-            ),
-            DocPage(
-                document_id=successor.id,
-                page_no=1,
-                text=f"{successor_uid} AT&T Texas (SWBT)",
-            ),
-        ]
-    )
-    session.flush()
-
-    predecessor_candidate = make_candidate(
-        session,
-        project,
-        predecessor,
-        uid=predecessor_uid,
-        model="gpt-4o-mini",
-        auto_active_run=False,
-    )
-    predecessor_run = record_extraction_run(
-        session,
-        predecessor,
-        prompt_version="txdot_ucm_v1",
-        candidate_count=1,
-        page_errors=0,
-        candidates=(predecessor_candidate,),
-        model="gpt-4o-mini",
-        allow_unsealed_legacy=True,
-    )
-    declare_active_run(
-        session, predecessor.id, predecessor_run.id, principal=TEST_PRINCIPAL
-    )
-
-    successor_candidate = None
-    if successor_failed:
-        assert not include_successor_candidate
-        successor_run = record_extraction_run(
-            session,
-            successor,
-            prompt_version="txdot_ucm_v1",
-            candidate_count=0,
-            page_errors=1,
-            outcome="failed",
-            model="gpt-4o-mini",
-            error_detail="page extraction failed",
-            allow_unsealed_legacy=True,
-        )
-    elif include_successor_candidate:
-        successor_candidate = make_candidate(
+    chain = chain.extracted(
+        chain.predecessor,
+        make_candidate(
             session,
             project,
-            successor,
-            uid=successor_uid,
+            chain.predecessor,
+            uid=predecessor_uid,
             model="gpt-4o-mini",
             auto_active_run=False,
-        )
-        successor_run = record_extraction_run(
-            session,
-            successor,
-            prompt_version="txdot_ucm_v1",
-            candidate_count=1,
-            page_errors=0,
-            candidates=(successor_candidate,),
-            model="gpt-4o-mini",
-            allow_unsealed_legacy=True,
-        )
-    else:
-        successor_run = record_extraction_run(
-            session,
-            successor,
-            prompt_version="txdot_ucm_v1",
-            candidate_count=0,
-            page_errors=0,
-            model="gpt-4o-mini",
-            allow_unsealed_legacy=True,
-        )
-
-    declaration = Declaration(
-        predecessor_registry_id=predecessor.registry_id,
-        successor_registry_id=successor.registry_id,
-        replacement_date=date(2026, 2, 13),
-        source_registry_id=source_pointer.registry_id,
-        source_page=4,
+        ),
     )
 
-    def register_supersession():
-        return supersession.register_supersessions(session, [declaration])
+    # The successor's run is recorded but never declared operative here: what
+    # the queue does before a human declares an Active Run is the subject.
+    if successor_failed:
+        assert not include_successor_candidate
+        chain = chain.extracted(
+            chain.successor,
+            active=False,
+            outcome="failed",
+            page_errors=1,
+            error_detail="page extraction failed",
+            prompt_version="txdot_ucm_v1",
+            model="gpt-4o-mini",
+        )
+    elif include_successor_candidate:
+        chain = chain.extracted(
+            chain.successor,
+            make_candidate(
+                session,
+                project,
+                chain.successor,
+                uid=successor_uid,
+                model="gpt-4o-mini",
+                auto_active_run=False,
+            ),
+            active=False,
+        )
+    else:
+        chain = chain.extracted(
+            chain.successor,
+            active=False,
+            prompt_version="txdot_ucm_v1",
+            model="gpt-4o-mini",
+        )
 
     if register:
-        register_supersession()
-
-    return {
-        "predecessor": predecessor,
-        "successor": successor,
-        "predecessor_candidate": predecessor_candidate,
-        "successor_candidate": successor_candidate
-        if include_successor_candidate
-        else None,
-        "successor_run": successor_run,
-        "register_supersession": register_supersession,
-        "activate_successor": lambda: declare_active_run(
-            session, successor.id, successor_run.id, principal=TEST_PRINCIPAL
-        ),
-    }
+        chain.register()
+    return chain
 
 
-def _seed_reconfirmation_ready_chain(session, project):
+def _seed_reconfirmation_ready_chain(session, project) -> SupersededChain:
+    """The same chain, carried to the point where reconfirmation is available."""
+
     chain = _seed_supersession_chain(
         session,
         project,
         predecessor_uid="FOC1-1",
         successor_uid="FOC1-1",
     )
-    accept_candidate(
-        session,
-        chain["predecessor_candidate"],
-        principal=TEST_PRINCIPAL,
-        historical_document_id=chain["predecessor"].id,
-    )
-    dependency = session.scalars(
-        select(Dependency).where(Dependency.project_id == project.id)
-    ).one()
-    publication = session.scalars(
-        select(EvidenceLink).where(EvidenceLink.dependency_id == dependency.id)
-    ).one()
+    chain = chain.accepted(historical=True)
     designate_publication_support(
         session,
-        dependency.id,
-        publication.id,
+        chain.dependency.id,
+        chain.old_evidence.id,
         principal=TEST_PRINCIPAL,
     )
     mark_satisfies(
         session,
-        dependency.id,
-        publication.id,
+        chain.dependency.id,
+        chain.old_evidence.id,
         principal=TEST_PRINCIPAL,
     )
-    chain["activate_successor"]()
+    chain.activate_successor()
     comparison = create_revision_comparison(
         session,
-        predecessor_extraction_run_id=chain["predecessor_candidate"].extraction_run_id,
-        successor_extraction_run_id=chain["successor_run"].id,
+        predecessor_extraction_run_id=chain.predecessor_proposal.extraction_run_id,
+        successor_extraction_run_id=chain.successor_run.id,
         matcher_version="revision-correspondence-v2",
     )
-    [finding] = read_revision_comparison(session, comparison.id).findings
-    [review] = build_reviewer_worklist(session, project.id).reconfirmation
-    chain["dependency"] = dependency
-    chain["comparison"] = comparison
-    chain["finding"] = finding
-    chain["review"] = review
+    # One comparison finding and one review, or the chain is not the scenario
+    # these tests name.
+    [_finding] = read_revision_comparison(session, comparison.id).findings
+    [_review] = build_reviewer_worklist(session, project.id).reconfirmation
     return chain
 
 
@@ -1024,7 +921,7 @@ def test_queue_selection_changes_immediately_when_successor_is_registered(
     assert before.status_code == 200
     assert "PRE-ONLY" in before.text
 
-    chain["register_supersession"]()
+    chain.register()
 
     after = client.get(f"/queue/{project.slug}")
     assert after.status_code == 200
@@ -1058,7 +955,7 @@ def test_queue_stays_empty_when_successor_extraction_failed(client, session, pro
 
 def test_queue_selects_successor_when_active_run_is_declared(client, session, project):
     chain = _seed_supersession_chain(session, project)
-    chain["activate_successor"]()
+    chain.activate_successor()
     r = client.get(f"/queue/{project.slug}?mode=review")
     assert r.status_code == 200
     assert "SUCC-ONLY" in r.text
@@ -1113,13 +1010,13 @@ def test_direct_post_cannot_admit_a_reconfirmation_only_candidate(
     chain = _seed_reconfirmation_ready_chain(session, project)
 
     response = client.post(
-        f"/candidates/{chain['successor_candidate'].id}/accept",
+        f"/candidates/{chain.successor_proposal.id}/accept",
         data={"slug": project.slug},
         follow_redirects=False,
     )
 
     assert response.status_code == 409
-    assert chain["successor_candidate"].state == "pending"
+    assert chain.successor_proposal.state == "pending"
 
 
 def test_exact_unchanged_support_moves_through_the_automatic_path(
@@ -1129,7 +1026,7 @@ def test_exact_unchanged_support_moves_through_the_automatic_path(
     from corridor.operative_support import resolve_operative_support
 
     chain = _seed_reconfirmation_ready_chain(session, project)
-    before = client.get(f"/ledger/{project.slug}/{chain['dependency'].id}")
+    before = client.get(f"/ledger/{project.slug}/{chain.dependency.id}")
     assert "Supporting document replaced" in before.text
 
     # No customer confirmation and no ceremony: the managed automatic path
@@ -1138,23 +1035,23 @@ def test_exact_unchanged_support_moves_through_the_automatic_path(
     session.flush()
 
     assert len(result.carried) == 1
-    support = resolve_operative_support(session, (chain["dependency"].id,))[
-        chain["dependency"].id
+    support = resolve_operative_support(session, (chain.dependency.id,))[
+        chain.dependency.id
     ]
-    assert support.publication.document_id == chain["successor"].id
+    assert support.publication.document_id == chain.successor.id
     ordinary_after = client.get(f"/queue/{project.slug}?lane=candidate")
     assert "Proposed constraints (0)" in ordinary_after.text
     assert "FOC1-1" not in ordinary_after.text
-    detail = client.get(f"/ledger/{project.slug}/{chain['dependency'].id}")
+    detail = client.get(f"/ledger/{project.slug}/{chain.dependency.id}")
     assert "Supporting document replaced" not in detail.text
-    assert chain["successor"].filename in detail.text
+    assert chain.successor.filename in detail.text
 
 
 def test_retired_reconfirm_post_route_no_longer_exists(client, session, project):
     chain = _seed_reconfirmation_ready_chain(session, project)
 
     response = client.post(
-        f"/supersession-review/{chain['dependency'].id}/reconfirm",
+        f"/supersession-review/{chain.dependency.id}/reconfirm",
         data={"slug": project.slug},
         follow_redirects=False,
     )
@@ -1162,7 +1059,7 @@ def test_retired_reconfirm_post_route_no_longer_exists(client, session, project)
     # The direct customer reconfirmation request is gone; there is no way to
     # bypass the specific decision authority (ADR-0037).
     assert response.status_code in (404, 405)
-    detail = client.get(f"/ledger/{project.slug}/{chain['dependency'].id}")
+    detail = client.get(f"/ledger/{project.slug}/{chain.dependency.id}")
     assert "Confirm replacement supporting document" not in detail.text
 
 
@@ -1173,7 +1070,7 @@ def test_queue_uses_the_declared_successor_run_not_a_newer_experiment(
     experimental = make_candidate(
         session,
         project,
-        chain["successor"],
+        chain.successor,
         uid="EXPERIMENTAL",
         prompt_version="txdot_ucm_experiment",
         model="gpt-4o-mini",
@@ -1181,7 +1078,7 @@ def test_queue_uses_the_declared_successor_run_not_a_newer_experiment(
     )
     record_extraction_run(
         session,
-        chain["successor"],
+        chain.successor,
         prompt_version="txdot_ucm_experiment",
         candidate_count=1,
         page_errors=0,
@@ -1189,7 +1086,7 @@ def test_queue_uses_the_declared_successor_run_not_a_newer_experiment(
         model="gpt-4o-mini",
         allow_unsealed_legacy=True,
     )
-    chain["activate_successor"]()
+    chain.activate_successor()
 
     r = client.get(f"/queue/{project.slug}?mode=review")
     assert r.status_code == 200
@@ -1201,18 +1098,18 @@ def test_queue_prefers_historical_document_when_override_is_set(
     client, session, project
 ):
     chain = _seed_supersession_chain(session, project)
-    chain["activate_successor"]()
+    chain.activate_successor()
     active = client.get(f"/queue/{project.slug}?mode=review")
     assert "SUCC-ONLY" in active.text
     assert "PRE-ONLY" not in active.text
 
     r = client.get(
-        f"/queue/{project.slug}?historical_document_id={chain['predecessor'].id}"
+        f"/queue/{project.slug}?historical_document_id={chain.predecessor.id}"
     )
     assert "PRE-ONLY" in r.text
     assert "Queue empty" not in r.text
     assert 'name="historical_document_id"' in r.text
-    assert f'value="{chain["predecessor"].id}"' in r.text
+    assert f'value="{chain.predecessor.id}"' in r.text
 
 
 @pytest.mark.parametrize(
@@ -1230,20 +1127,20 @@ def test_direct_post_cannot_mutate_a_historical_candidate_by_default(
     chain = _seed_supersession_chain(session, project)
 
     response = client.post(
-        f"/candidates/{chain['predecessor_candidate'].id}/{action}",
+        f"/candidates/{chain.predecessor_proposal.id}/{action}",
         data={"slug": project.slug, **extra_form},
         follow_redirects=False,
     )
 
     assert response.status_code == 409
-    assert chain["predecessor_candidate"].state == "pending"
+    assert chain.predecessor_proposal.state == "pending"
 
 
 def test_authoritative_mutation_apis_reject_historical_candidate_bypass(
     session, project
 ):
     chain = _seed_supersession_chain(session, project)
-    candidate = chain["predecessor_candidate"]
+    candidate = chain.predecessor_proposal
     target = Dependency(
         project_id=project.id,
         ref_code="DEP-SCOPE",
@@ -1287,7 +1184,7 @@ def test_authoritative_mutation_api_rejects_an_inactive_successor_run(session, p
     with pytest.raises(InvalidCandidateScope):
         accept_candidate(
             session,
-            chain["successor_candidate"],
+            chain.successor_proposal,
             principal=TEST_PRINCIPAL,
         )
 
@@ -1298,18 +1195,18 @@ def test_explicit_historical_override_makes_that_exact_candidate_actionable(
     chain = _seed_supersession_chain(session, project)
 
     response = client.post(
-        f"/candidates/{chain['predecessor_candidate'].id}/accept",
+        f"/candidates/{chain.predecessor_proposal.id}/accept",
         data={
             "slug": project.slug,
-            "historical_document_id": str(chain["predecessor"].id),
+            "historical_document_id": str(chain.predecessor.id),
         },
         follow_redirects=False,
     )
 
     assert response.status_code == 303
-    assert chain["predecessor_candidate"].state == "accepted"
+    assert chain.predecessor_proposal.state == "accepted"
     assert (
-        f"historical_document_id={chain['predecessor'].id}"
+        f"historical_document_id={chain.predecessor.id}"
         in response.headers["location"]
     )
 
@@ -1320,7 +1217,7 @@ def test_zero_row_successor_run_does_not_fall_back_to_predecessor_by_default(
     chain = _seed_supersession_chain(
         session, project, include_successor_candidate=False
     )
-    chain["activate_successor"]()
+    chain.activate_successor()
 
     r = client.get(f"/queue/{project.slug}")
     assert r.status_code == 200
@@ -5783,42 +5680,35 @@ def test_frontend_request_subject_refuses_non_positive_integer_ids(invalid_id):
         FrontendRequestSubject(project_id=invalid_id).as_json()  # type: ignore[arg-type]
 
 
-def _seed_changed_support_chain(session, project):
+def _seed_changed_support_chain(session, project) -> SupersededChain:
     """A superseded Constraint whose newer revision states a different value."""
-    predecessor = _document_with_registry_id(
-        session, project, registry_id="CHG-PRE",
-        filename="chg-rev-01.pdf", doc_date=date(2025, 10, 1),
+    chain = superseded_chain(
+        session, project,
+        principal=TEST_PRINCIPAL,
+        predecessor_registry_id="CHG-PRE",
+        successor_registry_id="CHG-SUC",
+        index_registry_id="CHG-IDX",
+        index_text="CHG index",
+        predecessor_text="FOC1-1 AT&T Texas (SWBT) 1149+00",
+        successor_text="FOC1-1 AT&T Metro (SWBT) 1149+00",
+        replacement_date=date(2026, 2, 13),
+        predecessor_date=date(2025, 10, 1),
+        successor_date=date(2026, 1, 1),
+        register=False,
     )
-    successor = _document_with_registry_id(
-        session, project, registry_id="CHG-SUC",
-        filename="chg-rev-02.pdf", doc_date=date(2026, 1, 1),
-    )
-    index = _document_with_registry_id(
-        session, project, registry_id="CHG-IDX",
-        filename="chg-index.xlsx", doc_date=date(2010, 1, 1),
-    )
-    session.add_all([
-        DocPage(document_id=index.id, page_no=1, text="CHG index"),
-        DocPage(document_id=predecessor.id, page_no=1,
-                text="FOC1-1 AT&T Texas (SWBT) 1149+00"),
-        DocPage(document_id=successor.id, page_no=1,
-                text="FOC1-1 AT&T Metro (SWBT) 1149+00"),
-    ])
-    session.flush()
-    predecessor_candidate = make_candidate(
-        session, project, predecessor, uid="FOC1-1", station_from="1149+00",
-        prompt_version="txdot_ucm_v1",
+    chain = chain.extracted(
+        chain.predecessor,
+        make_candidate(
+            session, project, chain.predecessor, uid="FOC1-1",
+            station_from="1149+00", prompt_version="txdot_ucm_v1",
+            auto_active_run=False,
+        ),
     )
     # Accept while the predecessor is still current, then supersede it below.
-    accept_candidate(session, predecessor_candidate, principal=TEST_PRINCIPAL)
-    dependency = session.scalars(
-        select(Dependency).where(Dependency.project_id == project.id)
-    ).one()
-    publication = session.scalars(
-        select(EvidenceLink).where(EvidenceLink.dependency_id == dependency.id)
-    ).first()
+    chain = chain.accepted()
     designate_publication_support(
-        session, dependency.id, publication.id, principal=TEST_PRINCIPAL,
+        session, chain.dependency.id, chain.old_evidence.id,
+        principal=TEST_PRINCIPAL,
     )
     successor_candidate = Candidate(
         project_id=project.id, kind="dependency",
@@ -5827,46 +5717,27 @@ def _seed_changed_support_chain(session, project):
             "fields": {"utility_id": "FOC1-1",
                        "external_org": "AT&T Metro (SWBT)",
                        "station_from": "1149+00"},
-            "citations": [{"document_id": successor.id, "page": 1,
+            "citations": [{"document_id": chain.successor.id, "page": 1,
                            "quote": "FOC1-1 AT&T Metro (SWBT)",
                            "verified": True, "whole_row": True}],
         },
-        source_document_id=successor.id, source_pages=[1], confidence=1.0,
+        source_document_id=chain.successor.id, source_pages=[1], confidence=1.0,
         prompt_version="txdot_ucm_v1", citations_verified=True,
     )
-    session.add(successor_candidate)
-    session.flush()
-    successor_run = record_extraction_run(
-        session, successor, prompt_version="txdot_ucm_v1", candidate_count=1,
-        page_errors=0, candidates=(successor_candidate,),
-        allow_unsealed_legacy=True,
-    )
-    declare_active_run(
-        session, successor.id, successor_run.id, principal=TEST_PRINCIPAL
-    )
-    register_supersessions(
-        session,
-        [SupersessionDeclaration(
-            predecessor_registry_id=predecessor.registry_id,
-            successor_registry_id=successor.registry_id,
-            replacement_date=date(2026, 2, 13),
-            source_registry_id=index.registry_id, source_page=1)],
-        project_id=project.id,
-    )
+    chain = chain.extracted(chain.successor, successor_candidate)
+    chain.register()
     create_revision_comparison(
         session,
-        predecessor_extraction_run_id=predecessor_candidate.extraction_run_id,
-        successor_extraction_run_id=successor_run.id,
+        predecessor_extraction_run_id=chain.predecessor_proposal.extraction_run_id,
+        successor_extraction_run_id=chain.successor_run.id,
         matcher_version="revision-correspondence-v2",
     )
-    session.flush()
     # Confirm the seed produced the changed row the routing depends on.
-    [review] = [
+    [_review] = [
         r for r in build_reviewer_worklist(session, project.id).ordinary
-        if r.dependency_id == dependency.id and r.status == "changed"
+        if r.dependency_id == chain.dependency.id and r.status == "changed"
     ]
-    return {"dependency": dependency, "predecessor": predecessor,
-            "successor": successor, "review": review}
+    return chain
 
 
 def test_changed_support_appears_once_on_the_work_list(client, session, project):
@@ -5887,12 +5758,12 @@ def test_changed_support_shows_before_and_after_on_the_dependency_page(
 ):
     chain = _seed_changed_support_chain(session, project)
 
-    detail = client.get(f"/ledger/{project.slug}/{chain['dependency'].id}")
+    detail = client.get(f"/ledger/{project.slug}/{chain.dependency.id}")
 
     assert detail.status_code == 200
     assert "A newer document needs attention" in detail.text
-    assert "chg-rev-01.pdf" in detail.text
-    assert "chg-rev-02.pdf" in detail.text
+    assert chain.predecessor.filename in detail.text
+    assert chain.successor.filename in detail.text
     assert "AT&amp;T Texas (SWBT)" in detail.text
     assert "AT&amp;T Metro (SWBT)" in detail.text
     assert "Resolve the source discrepancy" in detail.text

@@ -49,6 +49,7 @@ from corridor.revision_comparison import (
 )
 from corridor.supersession import SupersessionDeclaration, register_supersessions
 from committed_scenario_support import delete_committed_project
+from supersession_support import superseded_chain
 
 
 @pytest.fixture
@@ -60,42 +61,17 @@ def consecutive_nhhip_documents(session):
     )
     session.add(project)
     session.flush()
-
-    source = _document(
+    chain = superseded_chain(
         session,
         project,
-        registry_id="nhhip-rid-index-2026-05-01",
-        filename="nhhip-rid-index.pdf",
-        doc_type="other",
+        predecessor_registry_id="nhhip-ucm-2025-06-20",
+        successor_registry_id="nhhip-ucm-2025-07-22",
+        index_registry_id="nhhip-rid-index-2026-05-01",
+        index_text="RID index",
+        source_page=4,
+        replacement_date=date(2025, 7, 22),
     )
-    session.add(DocPage(document_id=source.id, page_no=4, text="RID index"))
-    predecessor = _document(
-        session,
-        project,
-        registry_id="nhhip-ucm-2025-06-20",
-        filename="nhhip-utilities-inventory-2025-06-20.pdf",
-    )
-    successor = _document(
-        session,
-        project,
-        registry_id="nhhip-ucm-2025-07-22",
-        filename="nhhip-utility-conflict-matrix-2025-07-22.pdf",
-    )
-    session.flush()
-    register_supersessions(
-        session,
-        [
-            SupersessionDeclaration(
-                predecessor_registry_id=predecessor.registry_id,
-                successor_registry_id=successor.registry_id,
-                replacement_date=date(2025, 7, 22),
-                source_registry_id=source.registry_id,
-                source_page=4,
-            )
-        ],
-        project_id=project.id,
-    )
-    return project, predecessor, successor
+    return project, chain.predecessor, chain.successor
 
 
 def _document(
