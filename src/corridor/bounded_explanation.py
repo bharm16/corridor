@@ -4,8 +4,14 @@ Production-run explanations, revision-change explanations, extraction-failure
 diagnoses, and source-intake drafts all need the same cage: refuse before spend when input exceeds the
 declared budget, perform one external request with no retry, re-check the frozen
 reading afterward, validate the structured result deterministically, and retain
-redacted execution lineage.  Their source snapshots, schemas, validators, stale
+redacted execution lineage.  Their source snapshots, validators, stale
 reasons, and durable receipt rows remain domain-specific.
+
+The prompt arrives as the identity `prompt_library` resolved -- version, exact
+bytes, digest and the output schema those bytes promise -- rather than as a
+`str` beside an unrelated `schema` dict.  Four families used to read the file
+themselves and pass the two separately, so nothing said which schema a given
+prompt version promised and no digest was taken at all.
 """
 
 from __future__ import annotations
@@ -15,6 +21,7 @@ import time
 from typing import Any, Callable
 
 from corridor import digests
+from corridor.prompt_library import Prompt
 
 
 @dataclass(frozen=True)
@@ -36,9 +43,8 @@ class BoundedExplanationPlan:
 
     configuration: Any
     client_factory: Callable[[Any], object]
-    system_prompt: str
+    prompt: Prompt
     user_message: str
-    schema: dict
     is_current: Callable[[], bool]
     stale_reason: str
     validate: Callable[[object], tuple[dict | None, str | None]]
@@ -83,7 +89,7 @@ def execute_bounded_explanation(
 ) -> BoundedExplanationOutcome:
     """Execute one declared request and return exactly one terminal outcome."""
     estimated_input_tokens = (
-        len(plan.system_prompt) + len(plan.user_message) + 3
+        len(plan.prompt.text) + len(plan.user_message) + 3
     ) // 4
     initial_usage = {"estimated_input_tokens": estimated_input_tokens}
     if estimated_input_tokens > plan.configuration.max_input_tokens:
@@ -112,9 +118,9 @@ def execute_bounded_explanation(
     started = time.monotonic()
     try:
         result = client.complete(
-            system=plan.system_prompt,
+            system=plan.prompt.text,
             user=plan.user_message,
-            schema=plan.schema,
+            schema=plan.prompt.schema,
         )
     except TimeoutError as exc:
         return BoundedExplanationOutcome(
@@ -140,7 +146,7 @@ def execute_bounded_explanation(
     lineage = {
         "adapter": adapter,
         "adapter_contract_version": adapter_contract_version,
-        "request_sha256": content_sha256([plan.system_prompt, plan.user_message]),
+        "request_sha256": content_sha256([plan.prompt.text, plan.user_message]),
         "result_sha256": content_sha256(result),
         "elapsed_ms": int((time.monotonic() - started) * 1000),
     }

@@ -44,12 +44,13 @@ from corridor.typed_output import (
     strict_output_schema,
     validate_typed_output,
 )
+from corridor.prompt_library import installed_prompt
 from corridor.prose_spans import prose_segment_filter
 
 
 PROMPT_VERSION = "prose_interpretation_v1"
+PROMPT = installed_prompt(PROMPT_VERSION)
 SCHEMA_VERSION = "prose_interpretation_output_v2"
-PROMPT_PATH = Path("prompts/prose_interpretation_v1.md")
 
 
 class SegmentReference(StrictOutputModel):
@@ -155,7 +156,7 @@ def interpret_prose_document(
         session, document.project_id
     )
     schema = strict_output_schema(ProseInterpretationOutput)
-    system = PROMPT_PATH.read_text()
+    system = PROMPT.text
     user = json.dumps(
         {
             "document_id": document.id,

@@ -25,6 +25,7 @@ from corridor.extractor_lineage import injected_extractor_config, token_usage_de
 from corridor.materializer import materialize_prose_wording, materialize_prose_scope, materialize_typed_satellite
 from corridor.models import (Document, Fact, FactSource, MinutesCapture, Project, ProjectRecordRevision, SourceDelivery, SourceSegment)
 from corridor.operating_mode import is_adopted_baseline
+from corridor.prompt_library import installed_prompt
 from corridor.prose_interpretation import read_typed_prose
 from corridor.prose_spans import prose_segment_filter
 from corridor.project_lock import lock_project
@@ -41,8 +42,8 @@ from corridor.typed_output import StrictOutputModel, strict_output_schema
 
 
 PROMPT_VERSION = "minutes_spine_v1"
+PROMPT = installed_prompt(PROMPT_VERSION)
 SCHEMA_VERSION = "minutes-five-fields-v1"
-PROMPT_PATH = Path(__file__).resolve().parents[2] / "prompts/minutes_spine_v1.md"
 MAX_SEGMENTS = 500
 MAX_CHARACTERS = 120_000
 
@@ -121,7 +122,7 @@ def minutes_extractor_config(client):
 
     return injected_extractor_config(extractor="minutes_spine", prompt_version=PROMPT_VERSION,
         model=getattr(client, "model", None), schema_version=SCHEMA_VERSION,
-        prompt_bytes=PROMPT_PATH.read_bytes(), schema=strict_output_schema(MinutesOutput),
+        prompt_bytes=PROMPT.data, schema=strict_output_schema(MinutesOutput),
         postprocessor_bytes=Path(__file__).read_bytes() + Path(materializer.__file__).read_bytes()
             + Path(statement_timing_parser.__file__).read_bytes() + Path(statement_values.__file__).read_bytes(),
         request_controls={"api": "structured_client", "strict": True, "store": False,
@@ -202,7 +203,7 @@ def capture_minutes(session, document, *, client, source_family: str | None = No
         draft = any(span.role == "draft" for span in spans)
         before = usage_snapshot(client)
         output = (MinutesOutput(read_segment_ids=tuple(span_by_id), statements=()) if draft else
-            read_typed_prose(client, system=PROMPT_PATH.read_text(), user=json.dumps(context), output_type=MinutesOutput))
+            read_typed_prose(client, system=PROMPT.text, user=json.dumps(context), output_type=MinutesOutput))
         if len(output.read_segment_ids) != len(set(output.read_segment_ids)) or set(output.read_segment_ids) != set(span_by_id):
             raise MinutesCaptureRefused("minutes reader must account for every bounded source segment")
         identifiers = [statement.wording_segment_id for statement in output.statements]

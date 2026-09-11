@@ -206,7 +206,7 @@ def deployed_extractor_config(
             prompt_version=module.PROMPT_VERSION,
             model=_configuration(client).model,
             schema_version=module.PROMPT_VERSION,
-            prompt_bytes=(_REPO_ROOT / module.PROMPT_PATH).read_bytes(),
+            prompt_bytes=module.PROMPT.data,
             schema=module.SCHEMA,
             request_controls=_model_request_controls(
                 client,
@@ -222,7 +222,7 @@ def deployed_extractor_config(
             prompt_version=extract_agreement.PROMPT_VERSION,
             model=_configuration(client).model,
             schema_version=extract_agreement.PROMPT_VERSION,
-            prompt_bytes=(_REPO_ROOT / extract_agreement.PROMPT_PATH).read_bytes(),
+            prompt_bytes=extract_agreement.PROMPT.data,
             schema=extract_agreement.SCHEMA,
             request_controls=_model_request_controls(
                 client,

@@ -39,6 +39,7 @@ from corridor.models import (
     SpendAuthorization,
 )
 from corridor.principals import HumanPrincipal, require_human_principal
+from corridor.prompt_library import require_installed_prompt
 from corridor.project_reading import freeze_project_reading
 from corridor.spend_authorization import (
     RETENTION_POLICY,
@@ -111,10 +112,9 @@ def declare_configuration(
         raise InvalidSummaryConfiguration(
             "source scope must be all_sources or documents_only"
         )
-    if prompt_version != PROMPT_VERSION:
-        raise InvalidSummaryConfiguration(
-            "the configured prompt is not the installed Coordination Summary prompt"
-        )
+    require_installed_prompt(
+        prompt_version, installed=PROMPT, error=InvalidSummaryConfiguration, family="Coordination Summary"
+    )
     authorization = declare_spend_authorization(
         session,
         project_id=project_id,
@@ -277,7 +277,7 @@ def request_summary(
         return receipt
     # Conservative token accounting.  The exact input survives in the receipt,
     # and a request over the declared budget is refused before an adapter exists.
-    estimated_input_tokens = (len(PROMPT.read_text()) + len(user_message) + 3) // 4
+    estimated_input_tokens = (len(PROMPT.text) + len(user_message) + 3) // 4
     if estimated_input_tokens > configuration.max_input_tokens:
         receipt = _receipt(
             project_id=project_id,
@@ -299,27 +299,9 @@ def request_summary(
     client = client_factory(configuration)
     try:
         result = client.complete(
-            system=PROMPT.read_text(),
+            system=PROMPT.text,
             user=user_message,
-            schema={
-                "type": "object",
-                "additionalProperties": False,
-                "required": ["sentences"],
-                "properties": {
-                    "sentences": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "additionalProperties": False,
-                            "required": ["text", "cites"],
-                            "properties": {
-                                "text": {"type": "string"},
-                                "cites": {"type": "array", "items": {"type": "string"}},
-                            },
-                        },
-                    }
-                },
-            },
+            schema=PROMPT.schema,
         )
     except TimeoutError as exc:
         status, reason = (
