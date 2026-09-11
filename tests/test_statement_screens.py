@@ -26,10 +26,10 @@ from corridor.statement_coordination import (
     AdmittedStatementCoordination,
     STATEMENT_NEXT_ACTION_CHOICES,
 )
-from corridor.web.app import (
+from corridor.web.app import TEMPLATES
+from corridor.web.statement_view import (
     ADMITTED_TEMPLATE,
     PROPOSED_TEMPLATE,
-    TEMPLATES,
     StatementCoordinationView,
 )
 from corridor.web.statement_forms import CandidateStatementEvidenceView

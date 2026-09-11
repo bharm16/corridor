@@ -1224,7 +1224,11 @@ LEGACY_TABLE_CONSUMERS: dict[str, tuple[str, ...]] = {
         # it resolves the one Constraint whose coordination strip is open, in
         # this project and inside the pinned lane. It reads through the legacy
         # readers rather than widening them, and retires with them.
-        "web.queue", "web.queue_view", "work_decisions", "work_list",
+        "web.queue", "web.queue_view",
+        # The statement coordination screens' reading, moved out of `web.app`
+        # for the same reason (#857): this project's open Constraints, in the
+        # order the scope choices are offered. Same reads, a different file.
+        "web.statement_view", "work_decisions", "work_list",
     ),
     # dependency_events
     "ExternalPartyStatement": (
@@ -1278,7 +1282,10 @@ LEGACY_TABLE_CONSUMERS: dict[str, tuple[str, ...]] = {
         # Same move: the queue reading names the Extracted Proposal it opens
         # and the sibling revisions offered as merges. Nothing new is built on
         # the table; the read left `web.app` and did not grow.
-        "web.queue_view", "web.statement_forms", "work_list",
+        "web.queue_view", "web.statement_forms",
+        # Same move: the reading names the Extracted Proposal whose
+        # coordination screen it is, and the facts its source supports.
+        "web.statement_view", "work_list",
     ),
     # commitment_lineages
     "CommitmentLineage": (
@@ -1286,7 +1293,10 @@ LEGACY_TABLE_CONSUMERS: dict[str, tuple[str, ...]] = {
         "event_admission_acceptance", "external_statements", "notifications",
         "product_proving_execution", "sh99_admission_acceptance",
         "sh99_coordinator_rehearsal", "statement_coordination", "verbal",
-        "web.app", "work_decisions", "work_list",
+        "web.app",
+        # Same move: the residual screen's reading resolves the Commitment
+        # line the statement's active grouping receipt points at.
+        "web.statement_view", "work_decisions", "work_list",
     ),
     # dependency_dismissals
     "DependencyDismissal": (
@@ -1318,7 +1328,38 @@ LEGACY_TABLE_CONSUMERS: dict[str, tuple[str, ...]] = {
 # the source reading no longer holds the dependency, the evidence check stops
 # passing, and the line has to go -- the destination is an ordinary consumer
 # from then on.
-RELOCATED_LEGACY_READINGS: tuple[Relocation, ...] = ()
+RELOCATED_LEGACY_READINGS: tuple[Relocation, ...] = (
+    # The statement coordination screens' reading left `web.app` for
+    # `web/statement_view.py` (#857). Card G-01 had already made it a named
+    # reading -- `StatementCoordinationView`, carrying its own template name --
+    # and what it could not do was give it a module, because three frozen
+    # classes arriving in a new file is exactly what the census cannot tell
+    # from three new dependencies.
+    #
+    # Two declarations for one extraction, because the unit the merge base can
+    # prove is an implementation and no single implementation in `web.app`
+    # named all three. The reading itself names `Candidate` (the proposal it
+    # is the screen for) and `CommitmentLineage` (the line its active grouping
+    # receipt points at); `Dependency` is read one call down, in the Constraint
+    # ordering the scope choices are offered in. One line claiming all three
+    # would be an overclaim, and `assert_reviewed_relocations` refuses it.
+    Relocation(
+        source="web.app",
+        source_reading="_read_statement_coordination",
+        destination="web.statement_view",
+        destination_reading="read_statement_coordination",
+        models=("Candidate", "CommitmentLineage"),
+        card="#857",
+    ),
+    Relocation(
+        source="web.app",
+        source_reading="_ordered_scope_dependencies",
+        destination="web.statement_view",
+        destination_reading="_ordered_scope_dependencies",
+        models=("Dependency",),
+        card="#857",
+    ),
+)
 
 
 def _legacy_table_consumers() -> dict[str, tuple[str, ...]]:
