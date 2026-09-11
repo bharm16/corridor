@@ -51,7 +51,7 @@ _LABELS = {
     # The key is the internal term and stays one; the value is the label
     # CONTEXT.md adopted, which is not a restatement of the term (#862).
     "source_discrepancy": "Sources disagree",
-    "discrepancy_resolution": "Discrepancy resolution",
+    "discrepancy_resolution": "Record conclusion",
     "record_conclusion": "Record conclusion",
     "supporting_documents": "Supporting documents",
     "evidence": "Supporting documents",

@@ -352,6 +352,27 @@ def test_the_printed_source_discrepancy_label_is_the_one_the_glossary_adopted():
     assert presentation.label("source_discrepancy") == adopted
 
 
+def test_the_printed_discrepancy_resolution_label_is_the_one_the_glossary_adopted():
+    """The second half of #862: the conclusion has an adopted label too.
+
+    ``Discrepancy Resolution`` is the internal term, and the glossary records
+    what a customer reads instead: **Record conclusion**. ``_LABELS`` already
+    carries those words under ``record_conclusion``, and printed the internal
+    term's own spelling under ``discrepancy_resolution`` -- so the same act had
+    two printed names depending on which key a screen happened to ask for.
+
+    The key stays. A mapping is not dead because no literal ``label("...")``
+    call names it today; it is the printed spelling of an internal term, and
+    the term is still in the product.
+    """
+    entry = _glossary_entry("Discrepancy Resolution")
+    adopted = _adopted_customer_label(entry)
+
+    assert adopted == "Record conclusion", entry
+    assert presentation.label("discrepancy_resolution") == adopted
+    assert presentation.label("record_conclusion") == adopted
+
+
 def test_no_module_reads_a_naive_clock():
     """``datetime.now()`` with no timezone reads the machine's local wall clock.
 
