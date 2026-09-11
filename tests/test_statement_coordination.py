@@ -109,6 +109,8 @@ from corridor.presentation import GuidedSaveOffer
 from corridor.web.app import app, get_human_principal, get_session
 from corridor.web.statement_forms import supporting_statement_evidence
 
+from proposal_support import proposal
+
 
 RECORDER = HumanPrincipal("local:statement-coordinator")
 _PAGE_IMAGE_BYTES = base64.b64decode(
@@ -183,21 +185,14 @@ def _candidate(
     quote: str,
     fields: dict[str, str],
 ) -> Candidate:
-    candidate = Candidate(
-        project_id=project.id,
+    candidate = proposal(
+        document,
         kind="event",
-        payload_json={"kind": "event", "fields": fields, "citations": [{
-            "document_id": document.id,
-            "page": 1,
-            "quote": quote,
-            "verified": True,
-        }]},
-        source_document_id=document.id,
-        source_pages=[1],
+        fields=fields,
+        quote=quote,
         confidence=0.9,
         prompt_version="guided-statement-test",
         model="test-model",
-        citations_verified=True,
     )
     run = record_extraction_run(
         session,

@@ -69,6 +69,8 @@ from corridor.work_decisions import (
 )
 from corridor.web.app import app, get_human_principal, get_session
 
+from proposal_support import proposal
+
 
 RECORDER = HumanPrincipal("local:work-list-coordinator")
 
@@ -171,27 +173,15 @@ def _record_pending_statement_candidates(session, project, specifications):
             fields["conflict_ref"] = specification["conflict_ref"]
         if "stated_party" in specification:
             fields["stated_party"] = specification["stated_party"]
-        candidate = Candidate(
-            project_id=project.id,
+        candidate = proposal(
+            document,
             kind="event",
-            payload_json={
-                "kind": "event",
-                "fields": fields,
-                "citations": [
-                    {
-                        "document_id": document.id,
-                        "page": page_no,
-                        "quote": quote,
-                        "verified": True,
-                    }
-                ],
-            },
-            source_document_id=document.id,
-            source_pages=[page_no],
+            fields=fields,
+            quote=quote,
+            page_no=page_no,
             confidence=specification.get("confidence", 0.5),
             prompt_version="bounded-work-list-test",
             model="test-model",
-            citations_verified=True,
         )
         candidates.append(candidate)
 
@@ -250,31 +240,18 @@ def _record_pending_dependency_candidates(session, project, specifications):
     for page_no, specification in enumerate(specifications, start=1):
         quote = specification["quote"]
         session.add(DocPage(document_id=document.id, page_no=page_no, text=quote))
-        candidate = Candidate(
-            project_id=project.id,
-            kind="dependency",
-            payload_json={
-                "kind": "dependency",
-                "fields": {
-                    "conflict_ref": specification["conflict_ref"],
-                    "external_org": specification["external_org"],
-                    "description": specification["description"],
-                },
-                "citations": [
-                    {
-                        "document_id": document.id,
-                        "page": page_no,
-                        "quote": quote,
-                        "verified": True,
-                    }
-                ],
+        candidate = proposal(
+            document,
+            fields={
+                "conflict_ref": specification["conflict_ref"],
+                "external_org": specification["external_org"],
+                "description": specification["description"],
             },
-            source_document_id=document.id,
-            source_pages=[page_no],
+            quote=quote,
+            page_no=page_no,
             confidence=0.9,
             prompt_version="dependency-work-list-test",
             model="test-model",
-            citations_verified=True,
         )
         candidates.append(candidate)
 
@@ -1427,21 +1404,14 @@ def test_coordinator_home_renders_the_public_work_list_and_guided_statement_link
     session.flush()
     quote = "A statement awaiting guided coordination."
     session.add(DocPage(document_id=document.id, page_no=1, text=quote))
-    candidate = Candidate(
-        project_id=project.id,
+    candidate = proposal(
+        document,
         kind="event",
-        payload_json={"kind": "event", "fields": {}, "citations": [{
-            "document_id": document.id,
-            "page": 1,
-            "quote": quote,
-            "verified": True,
-        }]},
-        source_document_id=document.id,
-        source_pages=[1],
+        fields={},
+        quote=quote,
         confidence=0.9,
         prompt_version="work-list-test",
         model="test-model",
-        citations_verified=True,
     )
     run = record_extraction_run(
         session,

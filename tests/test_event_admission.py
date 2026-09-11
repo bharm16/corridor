@@ -90,6 +90,7 @@ from corridor.models import (
 )
 from corridor.principals import HumanPrincipal, InvalidHumanPrincipal
 from committed_scenario_support import delete_committed_project
+from proposal_support import proposal
 
 OPERATOR = HumanPrincipal("local:event-admission-operator")
 PIPELINE = "Event Admission Pipeline Co"
@@ -135,30 +136,16 @@ def _document(session, project, *, filename, doc_type):
 
 def _candidate(document, *, kind, fields, verified=True):
     quote = " | ".join(str(v) for v in fields.values() if v is not None)
-    return Candidate(
-        project_id=document.project_id,
+    return proposal(
+        document,
         kind=kind,
-        payload_json={
-            "kind": kind,
-            "fields": fields,
-            "citations": [
-                {
-                    "document_id": document.id,
-                    "page": 1,
-                    "quote": quote,
-                    "verified": verified,
-                    "whole_row": True,
-                }
-            ],
-            "dedupe_hint": quote,
-            "text_source": "text_layer",
-        },
-        source_document_id=document.id,
-        source_pages=[1],
+        fields=fields,
+        quote=quote,
+        quote_verified=verified,
         confidence=0.99,
         prompt_version="minutes_v1",
+        dedupe=quote,
         model="gpt-test",
-        citations_verified=verified,
     )
 
 
