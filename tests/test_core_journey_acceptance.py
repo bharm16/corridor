@@ -3,8 +3,8 @@
 #849 is the journey this file walks: *a provisioned but unadopted project and a
 person who has not signed in* at one end, *that person retrieving the exact
 approved package and coming back for the next cycle* at the other. Every step
-between them is written out below in the order the audit wrote it, whether or
-not the product can do it yet.
+between them is written out below in the order the audit wrote it, and the
+walk now runs all of them.
 
 **The environment is the deployment's, not a test's.** The application answers
 on the enforced live-pilot boundary, reading as the real ``corridor_web``
@@ -23,43 +23,50 @@ overrides identity to do so. It is not replaced by this file and must not be:
 until the steps below reach that segment through the product, it is the only
 proof that segment works at all. #849 is where the two become one walk.
 
-**Where this run stops today, and why nothing here is marked as allowed to
-fail.** Every ticket #849 was blocked by has merged, so a step that does not
-pass is no longer a ticket outstanding -- it is a defect in something that was
-delivered, and marking it expected-to-fail would file it under a ticket that is
-closed. Three were found by walking this journey as the deployed web login,
-and each is invisible to the tests that own its seam because those tests
-replace the identity, the session, or both:
+**The walk runs whole, and nothing here is marked as allowed to fail.** Every
+ticket #849 was blocked by has merged, so a step that does not pass is no
+longer a ticket outstanding -- it is a defect in something that was delivered,
+and marking it expected-to-fail would file it under a ticket that is closed.
+The first run of this file as the deployed web login found four such defects,
+each invisible to the tests that own its seam because those tests replace the
+identity, the session, or both, and all four are fixed:
 
-1. ``POST /projects/{slug}/baseline/prepare`` answers 500 on an enforcing
-   deployment. ``baseline_adoption._refuse_nonempty_project_record`` counts
-   legacy ``dependencies`` rows (``src/corridor/baseline_adoption.py`` 1349),
-   and the boundary revokes that relation from ``corridor_web``
-   (``src/corridor/web_boundary.py`` 56). The route is in the pilot manifest
-   (``web_boundary.py`` 1202) and its recorded relation set does not name
-   ``dependencies``. This is where the walk below stops.
-2. No page in the product renders a control for that route. ``onboarding.html``
-   links to the upload and, once a reading exists, renders the adoption form;
-   nothing offers the act in between, though ``onboarding_view`` computes
-   ``may_prepare`` (``src/corridor/web/onboarding_view.py`` 250) and no
-   template reads it.
-3. ``POST /review/{slug}/correction`` answers 500 for a report it recorded.
-   The route commits (``src/corridor/web/app.py`` 6673) and then reads
-   ``recorded.id`` to compose the receipt sentence (``app.py`` 6690); the
-   project partition is declared with ``set_config(..., true)`` and is
-   therefore transaction-local (``src/corridor/access.py`` 1944), so after the
-   commit the row is invisible and SQLAlchemy raises ``ObjectDeletedError``.
+1. ``POST /projects/{slug}/baseline/prepare`` answered 500 on an enforcing
+   deployment, twice over. The adoption guard counted legacy ``dependencies``
+   rows the boundary revokes from ``corridor_web``, and it now asks the
+   record-decision role's ``project_accepted_record_decision_count`` command
+   for both halves of that count instead (#933). And the bounded read
+   registered its workbook with the generic parse, which writes a ``doc_pages``
+   projection the web capability holds nothing on; it registers the way the web
+   confirmation registers a later revision and appends the workbook's own cells
+   (#893's arrangement, applied here).
+2. No page in the product rendered a control for that route, though
+   ``onboarding_view`` computed ``may_prepare`` and no template read it. The
+   onboarding page now names what has been supplied and offers the reading to
+   whoever that predicate admits (#934).
+3. ``POST /review/{slug}/correction`` answered 500 for a report it had
+   recorded, and the intake preview on an adopted project rendered a
+   confirmation form its own route refuses with 400. Both were one defect: the
+   route commits and then keeps working, and the project partition is
+   transaction-local, so the second transaction of the request read the empty
+   partition. ``access.keep_partition_declared`` makes the declaration last as
+   long as the request that made it, and ``tests/test_architecture.py`` fails
+   if a web surface declares a partition and does not keep it (#935, #936).
 
-A fourth is user-visible but not fatal to the walk: on an adopted project the
-intake preview renders a confirmation form carrying only its six hidden
-fields, and ``POST /projects/{slug}/sources/confirm`` refuses exactly that
-payload with 400 ``completeness must be one of [...]``. The steps below supply
-the declaration a person would type, and say so where they do.
+**What the walk found and did not fix.** A project configured with the
+standing schedules a deployment configures has *two* producers of Proposed
+Deltas over one delivery, and both run: the later-revision comparison, which
+names the registered source family, and ``delta_generation``'s own pass, whose
+``_lineage`` falls back to ``document:N`` because the Document carries no
+registry identity. So this revision's three changed rows arrive as six
+proposals in two Delta Groups over the same document and the same source
+revision, and every conflict below reads as "two retained sources disagree"
+when one file arrived. The steps are written on what the product shows rather
+than around it, which is why they open an item expecting more than one child.
 
-**How to read a run.** The report prints one sentence per step, and a step the
-product cannot do yet names the ticket that owes it. ``-rP`` is what shows it
-on a passing run -- xdist keeps a worker's output to itself otherwise -- and a
-failing run carries the whole report in its message:
+**How to read a run.** The report prints one sentence per step. ``-rP`` is what
+shows it on a passing run -- xdist keeps a worker's output to itself otherwise
+-- and a failing run carries the whole report in its message:
 
     TEST_WORKERS=2 make test-focused \\
       ARGS="tests/test_core_journey_acceptance.py -rP"
@@ -85,6 +92,11 @@ from sqlalchemy.orm import Session as OrmSession
 from sqlalchemy.pool import NullPool
 
 from corridor import access, capture_correction, processing_holds, source_register
+from corridor.capture_correction_retirement import (
+    CORRECTED_READING,
+    NO_CHANGE,
+    STILL_DIFFERS,
+)
 from corridor.baseline_adoption import BASELINE_DOC_TYPE
 from corridor.config import settings
 from corridor.delta_generation import (
@@ -93,6 +105,7 @@ from corridor.delta_generation import (
 )
 from corridor.due_work import (
     HANDLER_RELEASE_PREPARATION,
+    HANDLER_REPORT_PREPARATION,
     ProjectProcessingDeclaration,
     ReleasePreparationDeclaration,
     ReportPreparationDeclaration,
@@ -104,10 +117,12 @@ from corridor.models import (
     DocPage,
     Document,
     Project,
+    ProjectRecordRevision,
     ReleaseCandidate,
     ReleasePackage,
 )
 from corridor.object_storage import content_store
+from corridor.operations_repair import correct_captured_reading
 from corridor.onboarding_authorization import (
     ADOPT_BASELINE,
     ONBOARDING_OPERATIONS,
@@ -150,7 +165,13 @@ WEB_PASSWORD = os.environ.get("CORRIDOR_WEB_DB_PASSWORD") or "corridor_web"
 # One declared timeline. Nothing below reads a wall clock: the cutoff, every
 # request instant and every runtime tick come from the controlled clock.
 SIGN_IN_AT = datetime(2026, 4, 6, 8, 0, tzinfo=timezone.utc)
-WORKER_AT = datetime(2026, 4, 6, 9, 0, tzinfo=timezone.utc)
+#: The customer's week closes and the standing weekly reading runs. It is
+#: after the coordinator's decisions on purpose and not by arrangement: a
+#: current accepted revision needs its own retained reading, so an issue
+#: prepared from a reading taken before those decisions is refused by name --
+#: "one issue is one accepted record, never two".
+WEEK_CLOSES_AT = datetime(2026, 4, 8, 8, 0, tzinfo=timezone.utc)
+WORKER_AT = datetime(2026, 4, 8, 9, 0, tzinfo=timezone.utc)
 NEXT_CYCLE_AT = datetime(2026, 4, 13, 8, 0, tzinfo=timezone.utc)
 
 # When this project's standing schedules begin.
@@ -159,17 +180,43 @@ SCHEDULES_FROM = datetime(2026, 4, 1, 0, 0, tzinfo=timezone.utc)
 # The date the coordinator says they will come back to the change they defer.
 RETURN_DATE = date(2026, 5, 4)
 
-#: The later revision the customer sends: the same three conflicts, with an
-#: ordinary change to the size recorded on two of them. Two is the smallest
-#: number this journey can walk on -- one change is decided in Review and the
-#: other is the capture an extraction error is reported against, and a
-#: coordinator who had to settle a change before they could say Corridor read
-#: it wrong would have no way to report one at all. A burst of them belongs to
-#: the ticket that batches one (#527).
+#: A fourth ordinary conflict, this journey's own. The shared fixture's three
+#: are enough to review and to decide, and not enough to *correct*: a
+#: correction re-reads the retained passage a coordinator points at, so the
+#: sheet has to carry a passage for the last conflict to point at as well.
+#: Nothing else about it is special -- it is one more row of the same form,
+#: and its size never changes.
+FOURTH_CONFLICT = [
+    "UC-4", "Oncor", "Electric", "6 in", "Copper", "SR-BL",
+    "1190+00", "1191+00", "Relocate", "2026-06-01", "", "", "UCM-1004", "",
+]
+
+#: The customer's own record, as this journey's project adopts it.
+JOURNEY_BASELINE_ROWS = [*BASELINE_ROWS, FOURTH_CONFLICT]
+
+#: The later revision the customer sends, and the one thing wrong with it.
+#:
+#: The size column on this sheet is a row out: every conflict's size sits on
+#: the row below its own. That is one ordinary spreadsheet fault, and it is
+#: what makes both of ADR-0101's source-grounded outcomes reachable through
+#: the product rather than only in a fixture, because a correction re-reads
+#: the passage the coordinator points at and each conflict's real size is a
+#: retained passage of this same revision:
+#:
+#:   UC-1  12 in -> 16 in   the change decided in Review, and undone
+#:   UC-2   8 in -> 10 in   corrected to the 8 in below it: matches the record
+#:   UC-3   4 in ->  8 in   corrected to the 6 in below it: still differs
+#:   UC-4   6 in            unchanged, and the passage UC-3 is corrected to
+#:
+#: Three changed rows is the smallest this journey can walk on: one change is
+#: decided in Review, and a coordinator who had to settle a change before they
+#: could say Corridor read it wrong would have no way to report one at all. A
+#: burst of them belongs to the ticket that batches one (#527).
 LATER_ROWS = [
     [*BASELINE_ROWS[0][:3], "16 in", *BASELINE_ROWS[0][4:]],
     [*BASELINE_ROWS[1][:3], "10 in", *BASELINE_ROWS[1][4:]],
-    *BASELINE_ROWS[2:],
+    [*BASELINE_ROWS[2][:3], "8 in", *BASELINE_ROWS[2][4:]],
+    FOURTH_CONFLICT,
 ]
 
 #: And next cycle's, so the second reporting cycle reads a revision rather
@@ -177,17 +224,8 @@ LATER_ROWS = [
 SECOND_LATER_ROWS = [
     [*BASELINE_ROWS[0][:3], "18 in", *BASELINE_ROWS[0][4:]],
     *BASELINE_ROWS[1:],
+    FOURTH_CONFLICT,
 ]
-
-#: What only the coordinator can say about a later revision, chosen from the
-#: choices the confirmation offers. A complete enumeration that replaces the
-#: revision before it is what a customer's weekly UCM export is.
-REVISION_DECLARATION = {
-    "revision_identity": "UCM workbook revision D",
-    "completeness": COMPLETE_ENUMERATION,
-    "revision_relationship": REPLACES,
-}
-
 
 # --- the journey's own context ---------------------------------------------
 
@@ -276,11 +314,15 @@ def form_on(journey: Journey, path: str, action_suffix: str) -> tuple[str, dict[
     return page.text, fields
 
 
-def deliver(journey: Journey, name: str, rows) -> dict[str, str]:
+def deliver(journey: Journey, name: str, rows) -> tuple[str, dict[str, str]]:
     """Hand a workbook over through the one control the product offers.
 
-    Returns the confirmation form the preview page rendered, which carries the
-    staged digest every later act names the bytes by.
+    Returns the preview page and the confirmation form it rendered. The form
+    carries the staged digest every later act names the bytes by; the page is
+    returned with it because on an adopted project the confirmation is not
+    only those hidden fields -- it also asks what only a person can say about
+    the file, and a step that posted the hidden fields alone would be refused
+    exactly as a browser would be.
     """
 
     path = journey.workbook.parent / name
@@ -305,7 +347,59 @@ def deliver(journey: Journey, name: str, rows) -> dict[str, str]:
         "the preview of what was delivered offers nothing to confirm, so the "
         "bytes stay staged and no document is ever registered"
     )
-    return confirmation
+    return submitted.text, confirmation
+
+
+_SELECT_CONTROL = re.compile(
+    r'<select[^>]*name="(?P<name>[^"]*)"[^>]*>(?P<body>.*?)</select>', re.S
+)
+_TEXT_CONTROL = re.compile(
+    r'<input[^>]*id="ask-[^"]*"[^>]*type="text"[^>]*name="(?P<name>[^"]*)"'
+)
+
+#: What the person delivering a customer's weekly UCM export says about it,
+#: named by the value the page's own option carries. A complete enumeration
+#: that replaces the revision before it is what that export is.
+DECLARED = {
+    "completeness": COMPLETE_ENUMERATION,
+    "revision_relationship": REPLACES,
+}
+
+
+def declaration_on(body: str, *, revision_identity: str) -> dict[str, str]:
+    """Answer "what only you can say about this file" from the page's own controls.
+
+    The section exists only on an adopted project, and the confirmation route
+    refuses a payload without it, so a preview that renders no section is a
+    page offering a form its own route will not accept (#936). Every answer
+    below is one the page printed: a choice is asserted to be among the
+    options offered for that control before it is chosen, and the one free
+    answer is the customer's own name for the revision, which is exactly the
+    thing nothing but a person can supply.
+    """
+
+    assert "What only you can say about this file" in prose(body), (
+        "the preview asks nothing about a file it is about to register on an "
+        "adopted project, and the confirmation refuses exactly that payload"
+    )
+    answers: dict[str, str] = {}
+    for name, inner in _SELECT_CONTROL.findall(body):
+        offered = _OPTION.findall(inner)
+        chosen_value = DECLARED.get(name)
+        assert chosen_value is not None, (
+            f"the page asks {name!r}, which this journey has no answer for"
+        )
+        assert chosen_value in offered, (
+            f"the page does not offer {chosen_value!r} for {name!r}: {offered}"
+        )
+        answers[name] = chosen_value
+    for name in _TEXT_CONTROL.findall(body):
+        answers[name] = revision_identity if name == "revision_identity" else ""
+    assert "completeness" in answers, (
+        "the preview never asks whether the file lists every current row, so "
+        "a row missing from it could be read as a removal"
+    )
+    return answers
 
 
 def run_the_worker(journey: Journey) -> list[str]:
@@ -335,25 +429,28 @@ def run_the_worker(journey: Journey) -> list[str]:
     raise AssertionError("the runtime never ran out of due work")
 
 
-def open_the_item(journey: Journey) -> str:
-    """The Review reading, with its one item opened, as a person opens it.
+def open_the_item(journey: Journey, index: int = 0) -> str:
+    """The Review reading, with one of its items opened, as a person opens it.
 
     Review lists items and opens one at a time on purpose, so everything a
     step below reads -- the exact-source links, the answers, the
-    extraction-error control -- exists only on an opened item.
+    extraction-error control -- exists only on an opened item. ``index`` is
+    which of the listed items, in the order Review lists them; a step that
+    means one conflict rather than whichever is first says which.
     """
 
     review = journey.client.get(f"/review/{journey.slug}", follow_redirects=False)
     assert review.status_code == 200, review.text
-    link = re.search(
+    links = re.findall(
         rf'href="(/review/{re.escape(journey.slug)}\?item=[^"]+)"', review.text
     )
-    assert link is not None, (
-        "Review offers no item to open, so the revision proposed no change "
-        f"a coordinator could review. What it says: {prose(review.text)[:500]}"
+    assert len(links) > index, (
+        f"Review lists {len(links)} items to open and this step means the one "
+        f"at {index}, so the revision proposed less than it states. What it "
+        f"says: {prose(review.text)[:500]}"
     )
     opened = journey.client.get(
-        html.unescape(link.group(1)), follow_redirects=False
+        html.unescape(links[index]), follow_redirects=False
     )
     assert opened.status_code == 200, opened.text
     return opened.text
@@ -362,7 +459,7 @@ def open_the_item(journey: Journey) -> str:
 _OPTION = re.compile(r'<option value="(?P<value>[^"]*)"')
 
 
-def answer_fields(body: str) -> dict[str, object]:
+def answer_fields(body: str, *, defer_all: bool = False) -> dict[str, object]:
     """The answers form as a browser would submit it.
 
     Every control on this form repeats once per child, so the answers travel
@@ -386,7 +483,9 @@ def answer_fields(body: str) -> dict[str, object]:
         "the answers form asks about a different number of changes than it "
         "offers outcomes for"
     )
-    outcomes = ["apply" if index == 0 else "defer" for index in range(len(deltas))]
+    outcomes = [
+        "defer" if defer_all or index else "apply" for index in range(len(deltas))
+    ]
     for outcome, choices in zip(outcomes, offered):
         assert outcome in choices, (
             f"the page does not offer {outcome!r} for this change"
@@ -456,48 +555,47 @@ def step_read_onboarding_state(journey: Journey) -> None:
 
 
 def step_supply_the_baseline(journey: Journey) -> None:
-    confirmation = deliver(journey, "baseline-ucm.xlsx", BASELINE_ROWS)
+    _preview, confirmation = deliver(journey, "baseline-ucm.xlsx", JOURNEY_BASELINE_ROWS)
     journey.carried["baseline"] = confirmation
 
 
 def step_operations_resolves_mechanics(journey: Journey) -> None:
     """Technical Operations reads the supplied workbook and settles its shape.
 
-    This is the one request in the journey composed rather than taken from a
-    rendered form, and the reason is a finding rather than a convenience: no
-    page in the product prints a control whose action is
-    ``/projects/{slug}/baseline/prepare``. ``onboarding.html`` offers the
-    upload link and, once a reading exists, the adoption form; nothing offers
-    the act in between, though ``onboarding_view`` computes ``may_prepare``
-    for it and never renders it. So the route is reached the way the route is
-    defined, and the step below asserts what the coordinator's page says
-    afterwards, which is the part a person does see.
+    Through the page's own control, like every other act in this journey.
+    Until #934 there was none: ``onboarding.html`` offered the upload link
+    and, once a reading existed, the adoption form, and nothing offered the
+    act in between -- so this step had to compose the request itself and said
+    so. The control is rendered from the ``may_prepare`` the view already
+    computed, which is why Technical Operations sees it here at all.
     """
 
     baseline = journey.carried["baseline"]
     sign_in_as(journey, OPERATOR_EMAIL)
-    prepared = journey.client.post(
-        f"/projects/{journey.slug}/baseline/prepare",
-        data={
-            auth.CSRF_FIELD: journey.client.cookies.get(auth.CSRF_COOKIE, ""),
-            "sha256": baseline["sha256"],
-            "filename": baseline["filename"],
-            "source_identity": "UCM workbook revision A",
-            "customer": "Lone Star Transit Authority",
-        },
-        follow_redirects=False,
+    page = journey.client.get(f"/work/{journey.slug}", follow_redirects=False)
+    assert page.status_code == 200, page.text
+    assert baseline["filename"] in prose(page.text), (
+        "the workbook the coordinator supplied is not named on the page the "
+        f"next person opens. What it says: {prose(page.text)[:400]}"
     )
+    reading = form_fields(page.text, "/baseline/prepare")
+    assert reading is not None, (
+        "nothing in the product offers the act between supplying the workbook "
+        "and adopting it, so this delivery can only be read by composing the "
+        "request the route defines"
+    )
+    assert reading["sha256"] == baseline["sha256"], (
+        "the control offers a different file than the one that was delivered"
+    )
+
+    prepared = submit_form(
+        journey.client, f"/projects/{journey.slug}/baseline/prepare", reading
+    )
+
     assert prepared.status_code == 201, (
         "the supplied workbook cannot be read for adoption on an enforcing "
         f"deployment: the route answered {prepared.status_code}. "
-        "baseline_adoption._refuse_nonempty_project_record counts legacy "
-        "`dependencies` rows (src/corridor/baseline_adoption.py 1349) and the "
-        "boundary revokes that relation from corridor_web "
-        "(src/corridor/web_boundary.py 56), so this route raises "
-        "InsufficientPrivilege. Its recorded relation set in the pilot "
-        "manifest (web_boundary.py 1202) does not name `dependencies`, which "
-        "is why nothing caught it: every other test of this route reads as "
-        f"the schema owner. What the route answered: {prepared.text[:200]}"
+        f"What the route answered: {prepared.text[:300]}"
     )
     readable = prose(prepared.text)
     assert "What adopting this would accept" in readable, readable[:400]
@@ -581,11 +679,14 @@ def step_approve_the_issue_configuration(journey: Journey) -> None:
 
 
 def step_submit_a_later_revision(journey: Journey) -> None:
-    confirmation = deliver(journey, "later-ucm.xlsx", LATER_ROWS)
+    preview, confirmation = deliver(journey, "later-ucm.xlsx", LATER_ROWS)
     registered = submit_form(
         journey.client,
         f"/projects/{journey.slug}/sources/confirm",
-        {**confirmation, **REVISION_DECLARATION},
+        {
+            **confirmation,
+            **declaration_on(preview, revision_identity="UCM workbook revision D"),
+        },
     )
     assert registered.status_code == 303, registered.text
     journey.carried["later"] = confirmation
@@ -625,12 +726,14 @@ def step_a_held_source_is_not_read_and_says_so(journey: Journey) -> None:
     would pass the first half and fail the customer.
     """
 
-    confirmation = deliver(journey, "held-ucm.xlsx", SECOND_LATER_ROWS)
+    preview, confirmation = deliver(journey, "held-ucm.xlsx", SECOND_LATER_ROWS)
     submitted = submit_form(
         journey.client,
         f"/projects/{journey.slug}/sources/confirm",
-        {**confirmation, **REVISION_DECLARATION,
-         "revision_identity": "UCM workbook revision D2"},
+        {
+            **confirmation,
+            **declaration_on(preview, revision_identity="UCM workbook revision D2"),
+        },
     )
     assert submitted.status_code == 303, submitted.text
 
@@ -724,40 +827,177 @@ def step_review_routine_changes(journey: Journey) -> None:
     journey.carried["receipt_url"] = receipt.group(1)
 
 
-def step_report_an_extraction_error(journey: Journey) -> None:
-    opened = open_the_item(journey)
-    assert capture_correction.CORRECTION_CONTROL in prose(opened), (
-        "there is no way to say a capture is wrong at the source, so a wrong "
-        "extraction can only be worked around"
+_CORRECTION_FORM = re.compile(
+    r'<form[^>]*action="[^"]*/correction"[^>]*>(?P<body>.*?)</form>', re.S
+)
+_PASSAGE_OPTION = re.compile(
+    r'<option value="(?P<id>\d+)"[^>]*>(?P<label>.*?)</option>', re.S
+)
+
+
+def ordered_deltas(body: str) -> list[str]:
+    """The changes this item holds, in the order the page prints them."""
+
+    return re.findall(r'name="answer_delta" value="([^"]*)"', body)
+
+
+def correction_form_for(body: str, delta_id: str) -> dict[str, str] | None:
+    """The extraction-error form the page renders beside one change."""
+
+    for match in _CORRECTION_FORM.finditer(body):
+        fields = {
+            name: html.unescape(value)
+            for name, value in _REPEATED.findall(match.group("body"))
+        }
+        if fields.get("correction_delta") == delta_id:
+            return fields
+    return None
+
+
+def passages_for(body: str, delta_id: str) -> list[tuple[str, str]]:
+    """Every passage of this source the page offers for one change."""
+
+    for match in _CORRECTION_FORM.finditer(body):
+        fields = {
+            name: html.unescape(value)
+            for name, value in _REPEATED.findall(match.group("body"))
+        }
+        if fields.get("correction_delta") != delta_id:
+            continue
+        return [
+            (found.group("id"), html.unescape(found.group("label")).strip())
+            for found in _PASSAGE_OPTION.finditer(match.group("body"))
+        ]
+    return []
+
+
+def find_the_passage(
+    journey: Journey, *, item_key: str, delta_id: str, words: str
+) -> tuple[str, str]:
+    """Search this source for the passage a capture should have been read from.
+
+    Through the page's own "Find another passage of this source" control,
+    because the passages a report may name are the ones the product offers:
+    the window it opens on is the cited passage's neighbourhood, and a
+    coordinator who believes the value is somewhere else looks for it.
+    """
+
+    found = journey.client.get(
+        f"/review/{journey.slug}",
+        params={"item": item_key, "correction": delta_id, "search": words},
+        follow_redirects=False,
     )
-    report = form_fields(opened, "/correction")
-    assert report is not None, "the opened item renders no extraction-error form"
-    passage = re.search(
-        r'<select[^>]*name="correction_passage".*?<option value="(\d+)"[^>]*selected',
-        opened,
-        re.S,
+    assert found.status_code == 200, found.text
+    offered = [
+        (segment_id, label)
+        for segment_id, label in passages_for(found.text, delta_id)
+        if label.endswith(f": {words}")
+    ]
+    assert offered, (
+        f"searching this source for {words!r} offered no passage saying it: "
+        f"{passages_for(found.text, delta_id)}"
     )
-    assert passage is not None, (
-        "the report offers no passage of this source to point the capture at"
+    return found.text, offered[0][0]
+
+
+def report_the_extraction_error(
+    journey: Journey, *, delta_id: str, words: str, interpretation: str,
+    item: int = 0,
+) -> int:
+    """Say that one capture was read from the wrong passage of its source.
+
+    Returns the report's own identity, read out of the receipt the product
+    printed rather than out of the database: the number operations is given to
+    act on is the number the coordinator was shown.
+    """
+
+    opened = open_the_item(journey, item)
+    item_key = form_fields(opened, "/answers")["item_key"]
+    searched, passage_id = find_the_passage(
+        journey, item_key=item_key, delta_id=delta_id, words=words
+    )
+    report = correction_form_for(searched, delta_id)
+    assert report is not None, (
+        "the page offers no extraction-error form beside this change"
     )
     reported = journey.client.post(
         f"/review/{journey.slug}/correction",
         data={
             **report,
-            "correction_passage": passage.group(1),
-            "correction_interpretation": (
-                "this row's size column reads the value the record already holds"
-            ),
+            "correction_passage": passage_id,
+            "correction_interpretation": interpretation,
         },
         follow_redirects=False,
     )
-    assert reported.status_code == 200, reported.text
+    assert reported.status_code == 200, (
+        "reporting an extraction error answered "
+        f"{reported.status_code}: {reported.text[:400]}"
+    )
     readable = prose(reported.text)
     assert "are retained as report" in readable, (
         f"the report was not receipted to its reporter: {readable[:500]}"
     )
     assert "The record is unchanged" in readable, (
         "reporting an extraction error was described as changing something"
+    )
+    numbered = re.search(r"are retained as report (\d+)", readable)
+    assert numbered is not None, (
+        f"the receipt names no report to act on: {readable[:500]}"
+    )
+    return int(numbered.group(1))
+
+
+def operations_corrects_the_capture(journey: Journey, request_id: int):
+    """The runbook hop, run as the runbook runs it.
+
+    No HTTP route performs a correction and that is deliberate: the re-capture
+    is a managed technical operation, and
+    ``src/corridor/operations_repair_cli.py`` says a staff-only runbook may
+    perform it so long as it is attributable and repeatable. So this calls
+    what the runbook's ``correct-capture`` calls, as the person holding the
+    technical-operations designation, in its own committed transaction.
+    """
+
+    with journey.factory() as operations:
+        with operations.begin():
+            return correct_captured_reading(
+                operations,
+                request_id=request_id,
+                principal=OPERATOR,
+                performed_at=journey.clock.now(),
+            )
+
+
+def step_report_an_extraction_error(journey: Journey) -> None:
+    """The coordinator says one capture was read from the wrong passage.
+
+    The passage they name is the size cell one row down, which is the shift
+    this revision really has: every size on the sheet is a row out. Reporting
+    it settles nothing and decides nothing -- what the record holds is
+    untouched, and the change stays theirs to decide.
+    """
+
+    opened = open_the_item(journey)
+    assert capture_correction.CORRECTION_CONTROL in prose(opened), (
+        "there is no way to say a capture is wrong at the source, so a wrong "
+        "extraction can only be worked around"
+    )
+    # The conflict this item is about is the one whose accepted size the sheet
+    # still states, one row down from where it was read.
+    dated = ordered_deltas(opened)
+    assert dated, (
+        "the item the coordinator dated holds no change they could report an "
+        "extraction error against"
+    )
+    journey.carried["dated_deltas"] = dated
+    journey.carried["no_change_report"] = report_the_extraction_error(
+        journey,
+        delta_id=dated[0],
+        words="8 in",
+        interpretation=(
+            "the size column on this sheet is a row out: this conflict's size "
+            "is the cell below the one that was read, and it still says 8 in"
+        ),
     )
 
 
@@ -780,7 +1020,177 @@ def step_undo_one_decision(journey: Journey) -> None:
     )
 
 
+def record_revisions(journey: Journey) -> int:
+    """How many revisions this project's accepted record has been through.
+
+    A correction never writes one, and counting them is the shortest true
+    statement of "no accepted value changed": the accepted record changes only
+    by a Project Record revision, so a path that writes none changed nothing.
+    """
+
+    with journey.factory() as reading:
+        return int(
+            reading.scalar(
+                select(func.count())
+                .select_from(ProjectRecordRevision)
+                .where(
+                    ProjectRecordRevision.project_id
+                    == journey.carried["project_id"]
+                )
+            )
+        )
+
+
+def record_rows(journey: Journey) -> str:
+    """The Record view, which is where a change's whole standing is printed."""
+
+    record = journey.client.get(f"/record/{journey.slug}", follow_redirects=False)
+    assert record.status_code == 200, record.text
+    return prose(record.text)
+
+
+def step_a_corrected_capture_that_still_differs_replaces_the_proposal(
+    journey: Journey,
+) -> None:
+    """Operations re-reads the passage, and the record still differs from it.
+
+    The first of ADR-0101's two source-grounded outcomes. Corridor's reading
+    was wrong and the corrected reading is still not what the record holds, so
+    the obsolete proposal is retired and a corrected one is raised in its
+    place -- a replacement, not a newer source version superseding an older
+    one, because the cause is a correction.
+    """
+
+    # The next conflict down, where the same fault puts the real size on a row
+    # whose value the record has never held.
+    next_item = open_the_item(journey, index=1)
+    changes = ordered_deltas(next_item)
+    assert changes, "the second item Review lists holds no change to correct"
+    report = report_the_extraction_error(
+        journey,
+        item=1,
+        delta_id=changes[0],
+        words="6 in",
+        interpretation=(
+            "the size column on this sheet is a row out: this conflict's size "
+            "is the cell below the one that was read, and it says 6 in"
+        ),
+    )
+
+    outcome = operations_corrects_the_capture(journey, report)
+
+    assert outcome.outcome == STILL_DIFFERS, outcome
+    assert outcome.retired, (
+        "a corrected capture established a different reading and the proposal "
+        "it made obsolete is still in Review"
+    )
+
+    readable = record_rows(journey)
+    assert CORRECTED_READING in readable, (
+        "the record does not say Corridor corrected its reading of this "
+        f"source. What it says: {readable[:700]}"
+    )
+    assert (
+        "The original proposed change has been replaced by a corrected "
+        "proposal. Review the corrected proposal before changing the accepted "
+        "record." in readable
+    ), (
+        "the retired proposal does not say a corrected one replaced it: "
+        f"{readable[:900]}"
+    )
+    # And the corrected proposal is a change a coordinator can still open,
+    # stating what the corrected passage says rather than what was misread.
+    assert outcome.replacement_delta_id is not None, (
+        "a corrected reading that still differs raised no corrected proposal"
+    )
+    corrected = open_the_item(journey, index=1)
+    assert str(outcome.replacement_delta_id) in ordered_deltas(corrected), (
+        "the corrected proposal is not a change this item offers to answer, "
+        "so nobody can decide what the corrected reading established"
+    )
+    assert "6 in" in prose(corrected), (
+        "the corrected proposal does not state the words of the passage it "
+        f"was re-read from. What the item says: {prose(corrected)[:700]}"
+    )
+
+
+def step_a_deferred_proposal_is_retired_by_a_corrected_capture(
+    journey: Journey,
+) -> None:
+    """The other outcome, on a change the coordinator had put a date on.
+
+    Three things at once, and all three are the point. A corrected reading
+    that *matches* the accepted record retires the obsolete proposal and
+    changes no accepted value. A proposal a coordinator deferred is retired
+    without being woken. And the scheduling receipt they wrote survives it:
+    the record still says when they meant to come back, beside the reason the
+    change left Review rather than instead of it (ADR-0101).
+    """
+
+    deferred = journey.carried["dated_deltas"][0]
+    opened = open_the_item(journey)
+    assert deferred in ordered_deltas(opened), (
+        "the change this step dates is not one this item still holds"
+    )
+    answers = answer_fields(opened, defer_all=True)
+    saved = journey.client.post(
+        f"/review/{journey.slug}/answers", data=answers, follow_redirects=False
+    )
+    assert saved.status_code in (200, 201), saved.text
+    # A packet of dated Defers writes no Project Record revision, and the
+    # page says exactly that rather than naming one (ADR-0084).
+    assert (
+        "the proposed changes stay open and the accepted record is unchanged"
+        in prose(saved.text)
+    ), (
+        "the dated return was not recorded as scheduling: "
+        f"{prose(saved.text)[-1500:]}"
+    )
+    before = record_revisions(journey)
+
+    outcome = operations_corrects_the_capture(
+        journey, journey.carried["no_change_report"]
+    )
+
+    assert outcome.outcome == NO_CHANGE, outcome
+    assert outcome.retired, (
+        "a corrected capture matching the accepted record left its obsolete "
+        "proposal in Review"
+    )
+    assert record_revisions(journey) == before, (
+        "correcting a capture wrote a Project Record revision, and this path "
+        "never changes an accepted value"
+    )
+
+    readable = record_rows(journey)
+    assert CORRECTED_READING in readable, readable[:700]
+    assert "No accepted value changed." in readable, (
+        "the record does not say that nothing it holds changed: "
+        f"{readable[:900]}"
+    )
+    assert f"Deferred until {RETURN_DATE.isoformat()}." in readable, (
+        "the dated return the coordinator recorded did not survive the "
+        f"retirement of the change it was about: {readable[:900]}"
+    )
+
+
 def step_prepare_the_issue(journey: Journey) -> None:
+    """The week closes, its reading is taken, and the coordinator asks.
+
+    The reading is the deployment's own standing weekly pass, not an
+    arrangement this file makes: an issue is prepared from the retained
+    reading of the week it covers, and that reading has to count against the
+    accepted revision the coordinator confirmed. The decisions above moved
+    that revision, so a reading taken before them describes a different
+    accepted record and the preparation refuses in exactly those words.
+    """
+
+    journey.clock.advance_to(WEEK_CLOSES_AT)
+    assert HANDLER_REPORT_PREPARATION in run_the_worker(journey), (
+        "the week closed and the standing weekly reading never ran, so there "
+        "is nothing for an issue to be prepared from"
+    )
+
     page = journey.client.get(f"/work/{journey.slug}", follow_redirects=False)
     assert page.status_code == 200, page.text
     confirmation = form_fields(page.text, "/issue/prepare")
@@ -900,12 +1310,16 @@ def step_download_the_approved_package(journey: Journey) -> None:
 def step_submit_a_second_revision(journey: Journey) -> None:
     journey.clock.advance_to(NEXT_CYCLE_AT)
     sign_in_as(journey, COORDINATOR_EMAIL)
-    confirmation = deliver(journey, "second-later-ucm.xlsx", SECOND_LATER_ROWS)
+    preview, confirmation = deliver(
+        journey, "second-later-ucm.xlsx", SECOND_LATER_ROWS
+    )
     registered = submit_form(
         journey.client,
         f"/projects/{journey.slug}/sources/confirm",
-        {**confirmation, **REVISION_DECLARATION,
-         "revision_identity": "UCM workbook revision E"},
+        {
+            **confirmation,
+            **declaration_on(preview, revision_identity="UCM workbook revision E"),
+        },
     )
     assert registered.status_code == 303, registered.text
 
@@ -1013,6 +1427,20 @@ CORE_JOURNEY_STEPS: tuple[Step, ...] = (
         sentence="They undo one decision they had just recorded",
         owner="#834",
         run=step_undo_one_decision,
+    ),
+    Step(
+        name="a_corrected_capture_that_still_differs_replaces_the_proposal",
+        sentence="A corrected capture that still differs retires the "
+        "proposal it made obsolete and raises the corrected one",
+        owner="#836 and #842",
+        run=step_a_corrected_capture_that_still_differs_replaces_the_proposal,
+    ),
+    Step(
+        name="a_deferred_proposal_is_retired_by_a_corrected_capture",
+        sentence="A corrected capture matching the record retires a change "
+        "they had dated, changes no accepted value, and the date survives",
+        owner="#836 and #842",
+        run=step_a_deferred_proposal_is_retired_by_a_corrected_capture,
     ),
     Step(
         name="prepare_the_issue",
@@ -1219,9 +1647,9 @@ def journey(
     app.dependency_overrides[auth.get_email_sender] = lambda: sender
     app.dependency_overrides[get_review_clock] = lambda: clock.now
     workbook = tmp_path / "baseline-ucm.xlsx"
-    workbook_bytes(workbook, BASELINE_ROWS)
+    workbook_bytes(workbook, JOURNEY_BASELINE_ROWS)
     with TestClient(
-        app, base_url="https://testserver", raise_server_exceptions=False
+        app, base_url="https://testserver", raise_server_exceptions=True
     ) as client:
         yield Journey(
             client=client,
@@ -1263,21 +1691,21 @@ def test_the_core_customer_journey_runs_under_the_declared_seams(journey):
     assert report.outcome_of("find_the_project") == PASSED
 
     # The report is the deliverable, so its shape is asserted rather than
-    # assumed: every declared step appears once, in order, and the walk stops
-    # at exactly one waiting step with the rest reported as not reached.
+    # assumed: every declared step appears once, in order, and the walk runs
+    # to its end. Nothing is marked as waiting and nothing is reported as not
+    # reached -- the journey is walked whole, which is what #849 asks for.
     assert [one.step.name for one in report.results] == [
         step.name for step in CORE_JOURNEY_STEPS
     ]
-    waiting = [one for one in report.results if one.outcome == EXPECTED_FAIL]
-    assert len(waiting) == 1, (
-        "the journey stops at the first step whose ticket has not landed, and "
-        "reports every later step as not reached:\n" + report.render()
+    assert [one for one in report.results if one.outcome == EXPECTED_FAIL] == [], (
+        "no step of this journey is waiting on a ticket any more:\n"
+        + report.render()
     )
-    assert all(
-        waiting[0].step.owner in one.detail
-        for one in report.results
-        if one.outcome == BLOCKED
-    ), "a step that was not reached does not name what stopped the journey"
+    assert [one for one in report.results if one.outcome == BLOCKED] == [], (
+        "the walk stopped somewhere and the steps after it were never run:\n"
+        + report.render()
+    )
+    assert all(one.outcome == PASSED for one in report.results), report.render()
 
 
 # --- the matrix, checked against this scenario ------------------------------

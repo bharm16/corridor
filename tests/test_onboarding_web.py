@@ -31,7 +31,7 @@ from corridor.onboarding_authorization import (
 )
 from corridor.operating_mode import ADOPTED_BASELINE, project_operating_mode
 from corridor.principals import HumanPrincipal
-from corridor.source_intake import validate_and_stage
+from corridor.source_intake import receive_upload, validate_and_stage
 from corridor.web import auth
 from corridor.web.app import app, get_review_clock, get_session
 
@@ -214,6 +214,102 @@ def test_the_page_offers_no_adoption_control_before_a_reading_is_prepared(
     page = client.get(f"/work/{project.slug}", follow_redirects=False)
 
     assert form_fields(page.text, "/baseline/adopt") is None
+
+
+def test_a_supplied_workbook_is_offered_the_control_that_reads_it(
+    browser, provisioned, tmp_path
+):
+    """#934: supplying the workbook and reading it are two acts, and both are offered.
+
+    Before this the page linked to the upload and, once a reading existed,
+    rendered the adoption form -- and offered nothing at all in between, so a
+    coordinator who followed the one control the page carried landed back on a
+    page still asking them to supply the workbook.
+    """
+
+    project, _ = provisioned
+    client = browser(COORDINATOR_EMAIL)
+    name = "supplied-ucm.xlsx"
+    body = workbook(tmp_path, name=name)
+    upload = client.get(
+        f"/projects/{project.slug}/sources/upload", follow_redirects=False
+    )
+    client.post(
+        f"/projects/{project.slug}/sources/upload",
+        data={**(form_fields(upload.text, "/sources/upload") or {}), "doc_type": "matrix"},
+        files={"upload": (name, body)},
+        follow_redirects=False,
+    )
+
+    page = client.get(f"/work/{project.slug}", follow_redirects=False)
+
+    assert page.status_code == 200, page.text
+    readable = prose(page.text)
+    assert name in readable, (
+        "the page does not say the workbook was supplied at all"
+    )
+    assert "Read the workbook that was supplied" in readable, (
+        "the page still asks for a workbook it has already been given: "
+        + readable[:400]
+    )
+    offered = form_fields(page.text, "/baseline/prepare")
+    assert offered is not None, "no control on the page reaches the reading"
+    assert auth.CSRF_FIELD in offered, (
+        "the rendered form carries no request-forgery token, so a real "
+        "browser submission is refused"
+    )
+
+    prepared = submit_form(
+        client, f"/projects/{project.slug}/baseline/prepare", offered
+    )
+
+    assert prepared.status_code == 201, prepared.text
+    assert "What adopting this would accept" in prose(prepared.text)
+
+
+def test_a_member_who_may_not_prepare_is_not_offered_the_control(
+    session, browser, provisioned, tmp_path
+):
+    """Rendered from ``may_prepare``, so the page and the rule cannot disagree."""
+
+    project, _ = provisioned
+    bystander = HumanPrincipal("local:web-onboarding-bystander")
+    access.enroll_member(
+        session,
+        project_id=project.id,
+        email="bystander@onboarding.test",
+        principal=bystander,
+        display_name="bystander",
+        designations=[],
+        operator=HumanPrincipal("local:provisioner"),
+    )
+    # Delivered before this person opens the page rather than through a second
+    # browser: one rollback-scoped transaction may declare one person's
+    # partition, and two people signing in against it is the scope conflict
+    # #662 refuses, not anything this test is about.
+    name = "supplied-ucm.xlsx"
+    receive_upload(
+        session,
+        project=project,
+        body=workbook(tmp_path, name=name),
+        filename=name,
+        principal=COORDINATOR,
+        customer=settings.customer_id,
+    )
+    session.flush()
+
+    page = browser("bystander@onboarding.test").get(
+        f"/work/{project.slug}", follow_redirects=False
+    )
+
+    assert page.status_code == 200, page.text
+    assert name in prose(page.text), (
+        "the state of the project is readable by every member; only the act "
+        "is designated"
+    )
+    assert form_fields(page.text, "/baseline/prepare") is None, (
+        "someone who cannot prepare the reading was offered the control for it"
+    )
 
 
 # --- the two acts -----------------------------------------------------------

@@ -1380,7 +1380,11 @@ LEGACY_TABLE_CONSUMERS: dict[str, tuple[str, ...]] = {
     # Named by ADR-0081 stage 1's exit criterion and by its freeze.
     # dependencies
     "Dependency": (
-        "adjudicate", "baseline_adoption", "briefing", "condition_tracking",
+        # `baseline_adoption` is gone from this list, not overlooked: Adopt
+        # Baseline's guard used to count `dependencies` rows through the ORM,
+        # and now asks the record-decision role's own command for that count
+        # instead, so the module names the legacy class nowhere (#933).
+        "adjudicate", "briefing", "condition_tracking",
         "demo", "dependency_admission", "dependency_events", "dispute_timeline",
         "disputes", "document_notifications", "documentation_checklist",
         "email_intake", "event_admission", "event_admission_acceptance",
@@ -3297,6 +3301,66 @@ def test_every_authenticated_form_carries_the_forgery_field():
         f"{offenders}: a state-changing form omits "
         "`{{ csrf_field() }}`, so a signed-in person clicking it is refused "
         "with 403. Emit the field as the first thing inside the form"
+    )
+
+
+# --- A request's declared partition lasts as long as the request (#935) ------
+#
+# The project partition is transaction-local by construction, and a request is
+# not a transaction: a route that commits and then keeps working opens a second
+# transaction with no partition declared, and every partitioned relation then
+# answers as if the project were empty.  That is what made the intake preview
+# offer a confirmation form its own route refuses (#936) and what made
+# reporting an extraction error answer 500 for a report it had recorded (#935),
+# and neither was visible to the tests that own those seams, because both
+# replace the session with the schema owner's.
+#
+# `access.keep_partition_declared` is the fix, and this is the rule that keeps
+# it applied: every partition the web layer declares is kept for the request
+# that declared it.  A new surface that opens one and forgets fails here rather
+# than in production, which is the half a fix at a single call site does not
+# buy.
+
+
+def _partition_declaring_functions() -> dict[str, set[str]]:
+    """Every web-layer function that declares a partition, and what it calls."""
+
+    declaring: dict[str, set[str]] = {}
+    for path in python_files(SOURCE_ROOT / "web"):
+        for node in ast.walk(_tree(path)):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            called = {
+                inner.func.attr
+                for inner in ast.walk(node)
+                if isinstance(inner, ast.Call)
+                and isinstance(inner.func, ast.Attribute)
+            }
+            if called & {
+                "open_project_partition",
+                "open_member_project_partition",
+            }:
+                declaring[f"{path.name}:{node.name}"] = called
+    return declaring
+
+
+def test_every_partition_the_web_layer_declares_is_kept_for_the_request():
+    declaring = _partition_declaring_functions()
+
+    assert declaring, (
+        "nothing in the web layer declares a project partition any more; this "
+        "rule is looking at the wrong seam"
+    )
+    forgetful = sorted(
+        name
+        for name, called in declaring.items()
+        if "keep_partition_declared" not in called
+    )
+    assert forgetful == [], (
+        f"{forgetful}: this declares a project partition and does not call "
+        "`access.keep_partition_declared`, so the declaration ends at the "
+        "first commit the request makes and every partitioned relation then "
+        "answers as if the project were empty (#935, #936)"
     )
 
 

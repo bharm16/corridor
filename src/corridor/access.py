@@ -69,7 +69,7 @@ from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 import secrets
 
-from sqlalchemy import func, select, update
+from sqlalchemy import event, func, select, update
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
@@ -1963,6 +1963,9 @@ def open_project_partition(
         raise PartitionRefused(
             f"no active membership of project {project_id}"
         ) from error
+    _remember_partition(
+        session, func.open_project_partition(principal_subject, project_id)
+    )
     return int(scoped)
 
 
@@ -1996,6 +1999,9 @@ def open_member_project_partition(
         raise PartitionRefused(
             "the cross-project partition was refused"
         ) from error
+    _remember_partition(
+        session, func.open_member_project_partition(principal_subject)
+    )
     return tuple(int(value) for value in (scoped or ()))
 
 
@@ -2007,7 +2013,11 @@ def close_project_partition(session: Session) -> None:
     reopened as another project's or another person's, because closing is a
     caller saying it is finished — not a caller acquiring permission to start
     somewhere else (#662).
+
+    Giving it up also stops ``keep_partition_declared`` from taking it up
+    again on the next transaction: a caller that says it is finished means it.
     """
+    session.info.pop(_KEPT_PARTITION, None)
     session.execute(select(func.close_project_partition()))
 
 
@@ -2031,3 +2041,79 @@ def current_project_partition(session: Session) -> tuple[int, ...] | None:
     if scoped is None:
         return None
     return tuple(int(value) for value in scoped)
+
+
+# --- Keeping one request's declared partition for the whole request --------
+#
+# The declaration is transaction-local by construction (``set_config(...,
+# true)``) and that is deliberate: a pooled connection must not carry one
+# request's partition into the next.  But a *request* is not a transaction.
+# A route that commits and then keeps working -- to re-render what now stands,
+# to compose a receipt, to read what the act it just committed means -- starts
+# a second transaction with no declared partition at all, and every partitioned
+# relation then answers as if the project were empty.
+#
+# That is not a theoretical hazard.  It is what made the intake preview offer a
+# confirmation form its own route refuses (#936): the upload route commits the
+# delivery, then asks whether the project has adopted a baseline, and
+# ``project_baseline_adoptions`` is partitioned, so the answer came back
+# "legacy" for an adopted project and the declaration section was never
+# rendered.  And it is what made reporting an extraction error answer 500 for a
+# report it had recorded (#935): the commit expired the recorded row, and the
+# refresh SQLAlchemy issued for its id read the empty partition.
+#
+# Fixing either call site leaves the next one to find.  So the declaration is
+# made to last as long as the thing it authorizes: the caller that declared a
+# partition for a request asks here to have it re-declared on every transaction
+# that session opens afterwards.  Nothing is remembered in the database and
+# nothing outlives the ``Session`` object, which the web layer creates per
+# request -- and every re-declaration runs the same command, which proves the
+# roster entry again, so a person offboarded mid-request is refused rather than
+# carried.
+_KEPT_PARTITION = "corridor.kept_partition"
+_KEPT_PARTITION_BUSY = "corridor.kept_partition_busy"
+_KEPT_PARTITION_LISTENING = "corridor.kept_partition_listening"
+
+
+def keep_partition_declared(session: Session) -> None:
+    """Re-declare this session's partition on every transaction it opens next.
+
+    Call it after ``open_project_partition`` or
+    ``open_member_project_partition`` when the caller's unit of work is wider
+    than one transaction -- an HTTP request that commits and then keeps
+    reading.  It re-runs the same declaration command, so nothing is trusted
+    across the commit that was not proved before it.
+
+    Declaring a different scope later replaces what is kept; the scope-change
+    rules are unchanged, because the replacement happens through the same
+    commands that refuse an illegitimate change.
+    """
+
+    if session.info.get(_KEPT_PARTITION_LISTENING):
+        return
+    session.info[_KEPT_PARTITION_LISTENING] = True
+    event.listen(session, "after_begin", _redeclare_kept_partition)
+
+
+def _remember_partition(session: Session, declaration) -> None:
+    """Record what ``keep_partition_declared`` would re-declare."""
+
+    session.info[_KEPT_PARTITION] = declaration
+
+
+def _redeclare_kept_partition(session: Session, transaction, connection) -> None:
+    """Re-declare the kept partition at the start of a new transaction.
+
+    Runs on ``connection`` rather than through the ``Session`` so it cannot
+    re-enter this listener, and guards itself anyway: a savepoint opened while
+    the declaration is in flight fires this event again.
+    """
+
+    declaration = session.info.get(_KEPT_PARTITION)
+    if declaration is None or session.info.get(_KEPT_PARTITION_BUSY):
+        return
+    session.info[_KEPT_PARTITION_BUSY] = True
+    try:
+        connection.execute(select(declaration))
+    finally:
+        session.info[_KEPT_PARTITION_BUSY] = False

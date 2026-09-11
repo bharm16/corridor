@@ -84,7 +84,6 @@ from corridor.models import (
     BaselineFormatObject,
     BaselineSource,
     BaselineSourceRow,
-    Dependency,
     Document,
     FactDecision,
     OnboardingPreview,
@@ -107,6 +106,7 @@ from corridor.source_intake import (
     confirm_intake,
     preview_intake,
 )
+from corridor.source_segments import append_ingested_source_segments
 from corridor.storage import staged_file
 from corridor.support_assessments import FactProposition, record_support_assessment
 
@@ -1337,19 +1337,22 @@ def _refuse_nonempty_project_record(session: Session, project: Project) -> None:
     adoption command checks: the spine's effective decisions, and the legacy
     Constraint Records the frozen admission paths still write. Checking only
     one of them would let the other be silently adopted over.
+
+    The count comes from ``project_accepted_record_decision_count``, the
+    command the record-decision role owns, rather than from two selects issued
+    here (#933). The legacy half reads ``dependencies``, which the live-pilot
+    boundary revokes from ``corridor_web``, so a coordinator preparing a
+    baseline reading in the product met ``permission denied`` and a 500 where
+    they should have met this refusal or nothing at all. Asking the role that
+    already holds the read keeps both halves of the guard and leaves the
+    boundary exactly as narrow as it was.
     """
 
-    decided = session.scalar(
-        select(func.count())
-        .select_from(FactDecision)
-        .where(
-            FactDecision.project_id == project.id,
-            FactDecision.superseded_by.is_(None),
+    decided = int(
+        session.scalar(
+            select(func.project_accepted_record_decision_count(project.id))
         )
-    ) + session.scalar(
-        select(func.count())
-        .select_from(Dependency)
-        .where(Dependency.project_id == project.id)
+        or 0
     )
     if decided:
         raise BaselineAdoptionRefused(
@@ -1705,6 +1708,17 @@ def prepare_baseline_reading(
         )
         intake = preview_intake(session, project, staged, BASELINE_DOC_TYPE)
         try:
+            # Registered without the generic read, exactly as the web
+            # confirmation registers a later revision (#893). The read this
+            # act needs is the workbook's own: the cells the captures below
+            # cite. The generic one additionally writes a `doc_pages`
+            # projection per worksheet, and the live-pilot boundary leaves the
+            # web capability holding nothing on that relation, so preparing a
+            # baseline in the product answered `permission denied for table
+            # doc_pages` on an enforcing deployment while every test of this
+            # seam read as the schema owner and saw it work (#933). The
+            # standing project-processing pass writes the projection later, as
+            # the worker, which is where #893 put it.
             confirmation = confirm_intake(
                 session,
                 project=project,
@@ -1714,9 +1728,15 @@ def prepare_baseline_reading(
                 binding_fingerprint=intake.binding_fingerprint,
                 principal=actor,
                 images_dir=images_dir,
+                parse=False,
             )
         except IntakeConflict as exc:
             raise BaselineAdoptionRefused(str(exc)) from exc
+        append_ingested_source_segments(
+            session,
+            session.get_one(Document, confirmation.document_id),
+            staged.stored_path,
+        )
         # The capture, here rather than in the approval request. ADR-0076
         # already separates capture from decision -- these Facts are statements
         # about the workbook, and only the adoption command makes them the

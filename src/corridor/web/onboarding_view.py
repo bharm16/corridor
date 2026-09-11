@@ -41,6 +41,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from corridor.access import COORDINATION, TECHNICAL_OPERATIONS, MembershipAccess
@@ -52,6 +53,7 @@ from corridor.baseline_adoption import (
     latest_baseline_reading,
 )
 from corridor.format_replacement import ValidationFinding
+from corridor.models import SourceDelivery
 from corridor.onboarding_authorization import (
     ADOPT_BASELINE,
     INSPECT_COMPATIBILITY,
@@ -117,6 +119,22 @@ class ReadingPanel:
 
 
 @dataclass(frozen=True, slots=True)
+class SuppliedSource:
+    """One file already handed over on this project, and not yet read (#934).
+
+    The page needs it because supplying the workbook and reading it are two
+    acts: a coordinator who has just uploaded one lands back here, and until
+    #934 the page still asked them to supply it. The digest and the name are
+    what ``/projects/{slug}/baseline/prepare`` takes, so the control the page
+    prints carries exactly what the route reads and nothing composed for it.
+    """
+
+    content_sha256: str
+    filename: str
+    delivered_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
 class PausedPanel:
     """Why onboarding is paused, and what is still available. Nothing wider.
 
@@ -151,6 +169,7 @@ class OnboardingView:
     operations: OperationsPanel | None
     findings: tuple[ValidationFinding, ...]
     paused: PausedPanel | None
+    supplied: tuple[SuppliedSource, ...]
     may_adopt: bool
     may_prepare: bool
     standing: OnboardingStanding
@@ -238,6 +257,12 @@ def onboarding_view(
             ValidationFinding(code=standing.reason, sentence=_standing_sentence(standing))
         )
 
+    supplied = (
+        ()
+        if adopted is not None or retained is not None
+        else _supplied(session, project_id)
+    )
+
     return OnboardingView(
         project_slug=project_slug,
         project_name=project_name,
@@ -246,11 +271,46 @@ def onboarding_view(
         operations=None,
         findings=tuple(findings),
         paused=paused,
+        supplied=supplied,
         may_adopt=membership.has(COORDINATION),
         may_prepare=membership.has(TECHNICAL_OPERATIONS) or membership.has(COORDINATION),
         standing=standing if adopted is None else preparing,
-        next_action=_next_action(adopted, retained, standing, paused),
+        next_action=_next_action(adopted, retained, standing, paused, supplied),
     )
+
+
+def _supplied(session: Session, project_id: int) -> tuple[SuppliedSource, ...]:
+    """Every file this project has taken delivery of, newest first.
+
+    Only the deliveries that were actually stored: a refused upload and a
+    transport failure are both rows in the same ledger, and neither is a
+    workbook anybody can read. The page offers the file rather than checking
+    the content store for it, because the bytes can be swept between the page
+    and the click and the route already answers that in its own words.
+    """
+
+    rows = session.scalars(
+        select(SourceDelivery)
+        .where(
+            SourceDelivery.project_id == project_id,
+            SourceDelivery.disposition == "stored",
+        )
+        .order_by(SourceDelivery.received_at.desc(), SourceDelivery.id.desc())
+    ).all()
+    seen: set[str] = set()
+    supplied: list[SuppliedSource] = []
+    for row in rows:
+        if row.content_sha256 in seen:
+            continue
+        seen.add(row.content_sha256)
+        supplied.append(
+            SuppliedSource(
+                content_sha256=row.content_sha256,
+                filename=str(row.metadata_json.get("filename") or row.external_identity),
+                delivered_at=row.received_at,
+            )
+        )
+    return tuple(supplied)
 
 
 def _reading(retained: RetainedPreview) -> ReadingPanel:
@@ -297,6 +357,7 @@ def _next_action(
     retained: RetainedPreview | None,
     standing: OnboardingStanding,
     paused: PausedPanel | None,
+    supplied: tuple[SuppliedSource, ...] = (),
 ) -> str:
     """One sentence naming what happens next, never a list of possibilities."""
 
@@ -307,6 +368,11 @@ def _next_action(
     if not standing.permitted:
         return _standing_sentence(standing)
     if retained is None:
+        if supplied:
+            return (
+                "Read the workbook that was supplied, so this project can see "
+                "what adopting it would accept."
+            )
         return "Supply the customer's UCM workbook as this project's baseline."
     if not retained.operations_resolved:
         return "Corridor operations is resolving how this workbook is shaped."

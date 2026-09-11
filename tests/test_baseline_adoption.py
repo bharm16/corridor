@@ -72,9 +72,11 @@ from corridor.operating_mode import (
     project_operating_mode,
 )
 from corridor.principals import HumanPrincipal
+from corridor.fact_decisions import record_human_fact_decision
 from corridor.source_intake import validate_and_stage
 from corridor.support_assessments import FactProposition, current_support_assessments
 from record_counts import nothing_written, project_record_counts
+from source_capture_support import Rendition
 
 
 PRINCIPAL = HumanPrincipal("local:coordinator")
@@ -837,9 +839,17 @@ def test_a_second_different_baseline_is_refused(session, project, tmp_path, stor
         _adopt(session, later, tmp_path, key="adopt-2")
 
 
-def test_a_nonempty_project_record_is_not_silently_adopted_over(
+def test_a_nonempty_legacy_project_record_is_not_silently_adopted_over(
     session, project, tmp_path, store
 ):
+    """The legacy half of the guard: the Constraint Records already accepted.
+
+    This half is the one the live-pilot boundary revokes from ``corridor_web``,
+    so it is asked through the record-decision role's own command now (#933).
+    The refusal it produces is unchanged, which is the whole point of moving
+    the read rather than dropping it.
+    """
+
     staged = _stage(_workbook_bytes(tmp_path))
     session.add(
         Dependency(
@@ -879,6 +889,46 @@ def test_a_nonempty_project_record_is_not_silently_adopted_over(
         with session.begin_nested():
             _adopt(session, preview, tmp_path, key="adopt-race")
     assert project_record_counts(session, fresh.id)["project_record_revisions"] == 0
+
+
+def test_a_nonempty_spine_project_record_is_not_silently_adopted_over(
+    session, project, tmp_path, store
+):
+    """The other half: one effective decision on the spine, and no legacy row.
+
+    Both halves have their own test because the guard's whole claim is that it
+    checks both. A guard that counted only the legacy tables would pass the
+    test above and adopt a baseline straight over an accepted record written
+    the way the product writes one today.
+    """
+
+    staged = _stage(_workbook_bytes(tmp_path))
+    rendition = Rendition(session=session, project=project, name="accepted.xlsx")
+    fact, _segment = rendition.capture(fact_type="material", value="Steel")
+    record_human_fact_decision(
+        session,
+        fact,
+        principal=PRINCIPAL,
+        command_type="resolve_discrepancy",
+        idempotency_key="accepted-before-any-baseline",
+    )
+    session.flush()
+    assert session.scalar(
+        select(func.count())
+        .select_from(FactDecision)
+        .where(
+            FactDecision.project_id == project.id,
+            FactDecision.superseded_by.is_(None),
+        )
+    ) == 1
+    assert session.scalar(
+        select(func.count()).select_from(Dependency).where(
+            Dependency.project_id == project.id
+        )
+    ) == 0
+
+    with pytest.raises(BaselineAdoptionRefused, match="accepted record decisions"):
+        _preview(session, project, staged)
 
 
 def test_the_database_itself_refuses_adoption_over_an_accepted_record(

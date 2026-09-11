@@ -764,6 +764,84 @@ def test_a_second_principal_cannot_take_over_a_declared_transaction(
     web_connection.rollback()
 
 
+# --- One request is wider than one transaction (#935, #936) ----------------
+#
+# A route that commits and then keeps working opens a second transaction, and
+# the declaration went with the first one. These two tests are the same walk
+# with and without the request asking to keep it, so what is being proved is
+# the mechanism rather than the happy path.
+
+
+def test_a_commit_ends_the_declaration_when_nothing_asked_to_keep_it(
+    two_projects, pooled_web_engine
+):
+    """The defect, stated as a fact of the seam rather than as a story.
+
+    This is exactly what the upload route met: it committed the delivery, then
+    asked whether the project had adopted a baseline, and read the empty
+    partition (#936).
+    """
+
+    ours, _theirs = two_projects
+    with OrmSession(bind=pooled_web_engine) as web:
+        access.open_project_partition(
+            web, principal_subject=LEAVER.subject, project_id=ours
+        )
+        assert [
+            row.exact_text for row in web.scalars(select(SourceSegment)).all()
+        ] == ["ours-UC-1"]
+
+        web.commit()
+
+        assert web.scalars(select(SourceSegment)).all() == []
+        assert access.current_project_partition(web) is None
+        web.rollback()
+
+
+def test_a_kept_declaration_is_taken_up_again_after_the_request_commits(
+    two_projects, pooled_web_engine
+):
+    """And the same walk, once the request says its unit of work is wider.
+
+    The re-declaration runs the same command, so the roster entry is proved
+    again on the new transaction rather than carried across the commit.
+    """
+
+    ours, _theirs = two_projects
+    with OrmSession(bind=pooled_web_engine) as web:
+        access.open_project_partition(
+            web, principal_subject=LEAVER.subject, project_id=ours
+        )
+        access.keep_partition_declared(web)
+
+        web.commit()
+
+        assert [
+            row.exact_text for row in web.scalars(select(SourceSegment)).all()
+        ] == ["ours-UC-1"]
+        assert access.current_project_partition(web) == (ours,)
+        web.rollback()
+
+
+def test_giving_the_partition_up_stops_it_being_taken_up_again(
+    two_projects, pooled_web_engine
+):
+    """Closing means finished, even for a session that asked to keep it."""
+
+    ours, _theirs = two_projects
+    with OrmSession(bind=pooled_web_engine) as web:
+        access.open_project_partition(
+            web, principal_subject=LEAVER.subject, project_id=ours
+        )
+        access.keep_partition_declared(web)
+        access.close_project_partition(web)
+
+        web.commit()
+
+        assert web.scalars(select(SourceSegment)).all() == []
+        web.rollback()
+
+
 def test_a_new_transaction_is_the_boundary_for_changing_scope(
     member_of_both, web_connection
 ):
