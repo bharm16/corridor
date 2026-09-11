@@ -96,7 +96,7 @@
           "artifacts/product-proving/sh99-8da8568-extraction-repeatability-failed/receipt.json",
           "artifacts/product-proving/sh99-8da8568-extraction-repeatability-failed/canonical-content.json"
         ],
-        "finding": "Recovered, by computation and not by label. Framing the two retained components under the repository paths above reproduces 4b2ba15c... exactly -- the prompt_sha256 the sh99-9a4342d receipt records for baseline run 214183 and fresh run 216732, and the prompt run 206506 of the sh99-8da8568 receipt read under the same version. Both retained files are byte-identical to the prompts/ files #768 deleted (blobs dcb2c222 and f0e65da5), and neither path ever held any other bytes. Exact prompt replay for those runs is available."
+        "finding": "Recovered, by computation and not by label. Framing the two retained components under the repository paths above reproduces 4b2ba15c... exactly -- the prompt_sha256 the sh99-9a4342d receipt records for baseline run 214183 and fresh run 216732, and the prompt run 206506 of the sh99-8da8568 receipt read under the same version. Both retained files are byte-identical to the prompts/ files #768 deleted (blobs dcb2c222 and f0e65da5), and neither path ever held any other bytes. Exact prompt input reconstruction is available for the identified v3 runs -- runs 214183, 216732 and 206506, named above. That is the recovered bytes fed to the model, not a claim that re-running them reproduces their output."
       }
     }
   }
