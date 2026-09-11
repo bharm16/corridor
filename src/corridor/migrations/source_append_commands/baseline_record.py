@@ -513,7 +513,7 @@ REGISTER_BASELINE_FORMAT_SIGNATURE = (
 # does (#492, ADR-0081).  It returns a count and nothing else, so it discloses
 # strictly less than the adoption command the same capability may already run.
 #
-# **"Only a number" is still that project's number (#937).**  As first written
+# **"Only a number" is still that project's number (#933).**  As first written
 # the command took any ``p_project_id``, ran as an unpartitioned owner, and
 # answered.  A ``SECURITY DEFINER`` command steps outside row-level security by
 # construction, so moving the read behind one did not keep the project
@@ -625,7 +625,7 @@ def upgrade(op) -> None:
         # it: a coordinator meets the refusal in the product, and the
         # command-line adoption path meets the same one. Holding it is not
         # holding it over every project -- the web half of that grant is
-        # bounded by the sealed partition inside the command itself (#937),
+        # bounded by the sealed partition inside the command itself (#933),
         # and the worker half is the separately justified operations reading
         # that carries no person's authorization to bound.
         op.execute(

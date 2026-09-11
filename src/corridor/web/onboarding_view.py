@@ -130,7 +130,7 @@ class SuppliedSource:
     composed for it.
 
     The delivery id is on the control because the reading is an act on *this
-    delivery*, not on whichever row happens to share its digest (#937). Two
+    delivery*, not on whichever row happens to share its digest (#933). Two
     deliveries of one workbook -- a connector pull and a person's upload an
     hour later -- carry the same bytes and are different acts under different
     authority, so a route given only a digest cannot say which one it read.
@@ -272,7 +272,7 @@ def onboarding_view(
     ):
         # A project whose compatibility permission has lapsed while its
         # adoption permission still stands is exactly the case that produced a
-        # button and then a refusal, so the page says why instead (#937). The
+        # button and then a refusal, so the page says why instead (#934). The
         # two standings usually fail for the same recorded reason, and saying
         # it twice would read as two problems.
         findings.append(
@@ -306,9 +306,9 @@ def onboarding_view(
 
 
 def _may_prepare(membership: MembershipAccess, preparing: OnboardingStanding) -> bool:
-    """Whether this person may ask for the reading, right now (#934, #937).
+    """Whether this person may ask for the reading, right now (#934).
 
-    Two conditions, and until #937 only the first was read. **Who**: requesting
+    Two conditions, and until #934 only the first was read. **Who**: requesting
     an existing, supported preview is Project Coordination's or Technical
     Operations', and neither is implied by membership. **Whether Corridor may**:
     the compatibility permission ADR-0099 grants is per-project, versioned and
@@ -419,7 +419,7 @@ def _next_action(
             if preparing is not None and not preparing.permitted:
                 # The act this page would otherwise name is one Corridor may
                 # not perform on this project right now, so the sentence is
-                # why, not an invitation (#937).
+                # why, not an invitation (#934).
                 return _standing_sentence(preparing)
             return (
                 "Prepare a preview of the values this workbook would "

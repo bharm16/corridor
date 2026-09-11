@@ -9880,7 +9880,7 @@ def prepare_baseline(
     source; neither consumes anything, so it can be run again after a mapping
     changes.
 
-    `source_delivery_id` is required, not optional (#937). The reading is an
+    `source_delivery_id` is required, not optional (#933). The reading is an
     act on one delivery -- the receipt the source register is built around --
     and a request that names only a digest cannot say which of two deliveries
     of the same workbook it read. It arrives as a claim on a form and is

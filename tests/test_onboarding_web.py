@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from contextlib import ExitStack
 from datetime import datetime, timedelta, timezone
+import hashlib
 import html
 import re
 from uuid import uuid4
@@ -22,7 +23,7 @@ from sqlalchemy import select
 
 from corridor import access
 from corridor.config import settings
-from corridor.models import Project
+from corridor.models import Document, Project
 from corridor.onboarding_authorization import (
     ADOPT_BASELINE,
     INSPECT_COMPATIBILITY,
@@ -35,6 +36,11 @@ from corridor.onboarding_authorization import (
 )
 from corridor.operating_mode import ADOPTED_BASELINE, project_operating_mode
 from corridor.principals import HumanPrincipal
+from corridor.source_delivery import (
+    DeliveryBinding,
+    DeliveryObservation,
+    take_delivery,
+)
 from corridor.source_intake import receive_upload
 from corridor.web import auth
 from corridor.web.app import app, get_review_clock, get_session
@@ -143,7 +149,7 @@ def stage(session, project, tmp_path, name="ucm.xlsx"):
     """Hand the workbook over the way the product does, and keep the receipt.
 
     Staging the bytes alone is not supplying a workbook: the reading is an act
-    on the delivery those bytes arrived on (#937), and a request that names
+    on the delivery those bytes arrived on (#933), and a request that names
     only a digest cannot say which delivery it read. So these scenarios take
     delivery through the same call the upload route makes, and carry the
     delivery id the page's own control carries.
@@ -284,7 +290,7 @@ def test_a_supplied_workbook_is_offered_the_control_that_reads_it(
         "the rendered form carries no request-forgery token, so a real "
         "browser submission is refused"
     )
-    # The control names the delivery it acts on, not only the bytes (#937):
+    # The control names the delivery it acts on, not only the bytes (#933):
     # two deliveries of one workbook share a digest, so a form that carried
     # only the digest left the route unable to say which one it read.
     assert offered["source_delivery_id"], (
@@ -297,6 +303,110 @@ def test_a_supplied_workbook_is_offered_the_control_that_reads_it(
 
     assert prepared.status_code == 201, prepared.text
     assert "What adopting this would accept" in prose(prepared.text)
+
+
+def test_two_deliveries_of_one_workbook_leave_the_page_choosing_by_recency(
+    session, browser, provisioned, tmp_path
+):
+    """Established, not assumed: which of two identical-byte deliveries wins.
+
+    Two deliveries of one workbook are two acts. This project took the same
+    bytes twice -- first pulled from a shared-files connector under its own
+    configuration and authenticated by nothing but that configuration, then
+    uploaded an hour later by a signed-in coordinator. Same digest, different
+    channel, different submitter, different authority.
+
+    The page's own contract says the reading is an act on *this delivery*,
+    "not on whichever row happens to share its digest". The downstream checks
+    #947 added hold that line at every stage after the form. **The form is
+    where the choice is made, and the choice is made by recency**:
+    `_supplied` at `src/corridor/web/onboarding_view.py:346` de-duplicates
+    stored deliveries by `content_sha256`, keeps the newest, and returns the
+    rest to nobody. So the coordinator is offered one control, cannot tell
+    that a second delivery exists, and cannot say which one they are reading.
+
+    This test fixes that behaviour rather than blessing it. The template
+    already renders one control per supplied delivery, so what would change is
+    the de-duplication and what each row has to say to be told apart -- both
+    the maintainer's call, and this assertion is what moves when it is made.
+    """
+
+    project, _ = provisioned
+    name = "supplied-ucm.xlsx"
+    body = workbook(tmp_path, name=name)
+    digest = hashlib.sha256(body).hexdigest()
+
+    # First: a connector pull of these exact bytes, authenticated by its own
+    # configuration and handed over by no person at all.
+    pulled = take_delivery(
+        session,
+        DeliveryBinding(
+            customer=settings.customer_id,
+            project_id=int(project.id),
+            project_slug=project.slug,
+            transport="pull",
+            channel="shared-files",
+            configuration_identity="shared-files-v1",
+            configuration_version="1",
+        ),
+        DeliveryObservation(
+            external_identity="shared-files/baseline-ucm.xlsx",
+            external_version="rev-1",
+            content_digest=digest,
+            bytes_reference=f"objects/{digest}",
+        ),
+        service_identity="tests.test_onboarding_web",
+        run_identity=uuid4().hex,
+    )
+    session.flush()
+
+    # Then: the coordinator uploads the same workbook through the product.
+    client = browser(COORDINATOR_EMAIL)
+    upload = client.get(
+        f"/projects/{project.slug}/sources/upload", follow_redirects=False
+    )
+    client.post(
+        f"/projects/{project.slug}/sources/upload",
+        data={**(form_fields(upload.text, "/sources/upload") or {}), "doc_type": "matrix"},
+        files={"upload": (name, body)},
+        follow_redirects=False,
+    )
+
+    page = client.get(f"/work/{project.slug}", follow_redirects=False)
+    assert page.status_code == 200, page.text
+
+    controls = re.findall(
+        rf'action="/projects/{re.escape(project.slug)}/baseline/prepare"', page.text
+    )
+    assert len(controls) == 1, (
+        "the page now offers one control per delivery, which is the change "
+        f"this test was written to notice; it offered {len(controls)}"
+    )
+    offered = form_fields(page.text, "/baseline/prepare")
+    assert offered is not None
+    assert offered["sha256"] == digest
+
+    # The pulled delivery is not merely unselected. It is absent: neither the
+    # name it arrived under nor the channel that carried it reaches the page,
+    # so nothing on the screen says a second delivery of these bytes exists.
+    assert offered["source_delivery_id"] != str(pulled.delivery_id)
+    assert "shared-files" not in prose(page.text), (
+        "the page now names the channel a delivery arrived on, which is what "
+        "would let a coordinator tell two deliveries of one workbook apart"
+    )
+
+    # What is preserved, and is the half #947 got right: the reading is made
+    # from exactly the delivery the control named, and the registered Document
+    # carries that id rather than the one that merely shares the bytes.
+    prepared = submit_form(
+        client, f"/projects/{project.slug}/baseline/prepare", offered
+    )
+    assert prepared.status_code == 201, prepared.text
+    document = session.scalars(
+        select(Document).where(Document.project_id == int(project.id))
+    ).one()
+    assert int(document.source_delivery_id) == int(offered["source_delivery_id"])
+    assert int(document.source_delivery_id) != int(pulled.delivery_id)
 
 
 def test_a_member_who_may_not_prepare_is_not_offered_the_control(
@@ -347,7 +457,7 @@ def test_a_member_who_may_not_prepare_is_not_offered_the_control(
 def test_a_withdrawn_permission_pauses_the_page_rather_than_offering_the_control(
     session, browser, provisioned, tmp_path
 ):
-    """#937: the displayed capability is the permission too, not the designation alone.
+    """#934: the displayed capability is the permission too, not the designation alone.
 
     The compatibility permission ADR-0099 grants is per-project, versioned and
     withdrawable, and `prepare_baseline_reading` proves it in the database
@@ -412,7 +522,7 @@ def test_the_page_reads_the_reading_permission_not_the_adoption_one(
     issued a narrower one that carries only the adoption. Nothing about this
     project is paused -- the grant in force is perfectly good -- and the act
     this page would otherwise offer is one Corridor may not perform. The page
-    has the answer already; before #937 it printed the invitation anyway.
+    has the answer already; before #934 it printed the invitation anyway.
     """
 
     project, grant_id = provisioned

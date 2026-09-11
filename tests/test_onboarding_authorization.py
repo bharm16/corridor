@@ -84,7 +84,9 @@ from corridor.principals import HumanPrincipal
 from corridor.source_authorization import (
     CONNECTOR_CONFIGURATION,
     AuthorizedSourceBinding,
+    authentication_mode_of,
     record_source_authorization,
+    source_binding_standing,
 )
 from corridor.source_register import read_source_register
 from corridor.source_delivery import (
@@ -197,7 +199,7 @@ def onboarding(session, tmp_path, store):
 def delivered(session, project, staged, *, name="ucm.xlsx"):
     """Take delivery of the staged bytes as the person who handed them over.
 
-    A reading is prepared on a delivery, not on a digest (#937), so every
+    A reading is prepared on a delivery, not on a digest (#933), so every
     scenario here hands the workbook over before it is read -- which is what
     the product does: the upload takes delivery, and the page then offers the
     reading on the row that produced.
@@ -1116,7 +1118,7 @@ def _hold_reading(session, document_id):
     )
 
 
-# --- #937 The delivery a reading was prepared from --------------------------
+# --- #933 The delivery a reading was prepared from --------------------------
 #
 # Preparation used to register a Document and confirm nothing, so an upload
 # left an awaiting-confirmation delivery in `source_deliveries` beside a
@@ -1295,6 +1297,197 @@ def test_a_source_authorization_that_no_longer_permits_this_binding_refuses(
     )
 
 
+# --- what admits a reading when no source set is recorded -------------------
+#
+# Preparation runs before activation, so the activated source set the ordinary
+# processing path compares a delivery against does not exist yet and most
+# onboarding projects record none. `_submitted_baseline_delivery` leaves that
+# absence alone rather than gating on it -- the delivery path did not require
+# one either -- and the three tests below fix what that absence does and does
+# not mean. It is not the authority. The authority is the positive one
+# `prepare_baseline_reading` proves separately: a current limited-onboarding
+# permission for this project and for `inspect_compatibility`, read out of the
+# customer database before anything is opened. Hold the absence constant and
+# vary only that permission, and the reading is admitted, refused, and refused
+# again.
+
+
+def _binding_standing(session, delivery: SourceDelivery):
+    """What this project's recorded source set says about this delivery."""
+
+    return source_binding_standing(
+        session,
+        project_id=int(delivery.project_id),
+        customer=delivery.customer,
+        channel=delivery.channel,
+        configuration_identity=delivery.configuration_identity,
+        configuration_version=delivery.configuration_version,
+        authentication_mode=authentication_mode_of(delivery),
+    )
+
+
+def _refuse_to_open_the_workbook(monkeypatch):
+    """Make opening the workbook an error, so a late refusal cannot pass.
+
+    A refusal is only a refusal of the operation if it arrives before the
+    operation happens. These two are the first expensive things
+    `prepare_baseline_reading` does after it proves the permission, so a check
+    that moved below them -- or stopped being asked, leaving the database
+    command at the end of the pass to refuse -- fails here rather than
+    reporting the same sentence a step too late.
+    """
+
+    import corridor.baseline_adoption as module
+
+    def refuse(*args, **kwargs):
+        raise AssertionError("the workbook was opened before the reading was refused")
+
+    monkeypatch.setattr(module, "read_baseline_workbook", refuse)
+    monkeypatch.setattr(module, "preview_baseline_adoption", refuse)
+
+
+def test_no_recorded_source_set_and_a_current_limited_grant_prepares_the_reading(
+    session, onboarding, tmp_path
+):
+    """The absent set is admitted by the grant beside it, not by itself.
+
+    Both facts are asserted before the act rather than inferred from it: this
+    project records no authorized source set, and it holds a current
+    `inspect_compatibility` permission. The reading is prepared, and it names
+    the delivery it was prepared from.
+    """
+
+    project, _ = onboarding
+    staged = validate_and_stage(workbook(tmp_path), "ucm.xlsx")
+    delivery_id = delivered(session, project, staged)
+
+    standing = _binding_standing(session, session.get(SourceDelivery, delivery_id))
+    assert standing.recorded is False, (
+        "this case is about a project that records no authorized source set; "
+        f"this one records version {standing.authorization_version}"
+    )
+    permission = onboarding_standing(
+        session,
+        project_id=int(project.id),
+        operation=INSPECT_COMPATIBILITY,
+        at=AT,
+    )
+    assert permission.permitted, (
+        "the positive authority the reading rests on is missing, so this test "
+        f"would prove nothing about the absent set: {permission.reason}"
+    )
+
+    retained = prepare_baseline_reading(
+        session,
+        project=project,
+        staged=staged,
+        customer="Lone Star Transit Authority",
+        source_identity="UCM workbook revision C",
+        principal=COORDINATOR,
+        at=AT,
+        source_delivery_id=delivery_id,
+        field_mapping=DEMO,
+        images_dir=tmp_path / "images",
+    )
+    assert retained.source_delivery_id == delivery_id
+
+
+def test_neither_a_recorded_source_set_nor_a_limited_grant_refuses_the_reading(
+    session, project, store, tmp_path, monkeypatch
+):
+    """The inverse, and the one that proves the absence admits nothing.
+
+    The same absent source set as the case above, and no onboarding grant at
+    all. Nothing is prepared: `require_onboarding_permission` fails closed on
+    a project that was never granted anything, and no second reading of the
+    absent set turns that refusal into a yes.
+    """
+
+    seed_membership(session, project, COORDINATOR, designations=[access.COORDINATION])
+    staged = validate_and_stage(workbook(tmp_path), "ucm.xlsx")
+    delivery_id = delivered(session, project, staged)
+
+    standing = _binding_standing(session, session.get(SourceDelivery, delivery_id))
+    assert standing.recorded is False
+    assert (
+        onboarding_standing(
+            session,
+            project_id=int(project.id),
+            operation=INSPECT_COMPATIBILITY,
+            at=AT,
+        ).reason
+        == "no_onboarding_authorization"
+    )
+
+    _refuse_to_open_the_workbook(monkeypatch)
+    with refusal(session) as refused:
+        prepare_baseline_reading(
+            session,
+            project=project,
+            staged=staged,
+            customer="Lone Star Transit Authority",
+            source_identity="UCM workbook revision C",
+            principal=COORDINATOR,
+            at=AT,
+            source_delivery_id=delivery_id,
+            field_mapping=DEMO,
+            images_dir=tmp_path / "images",
+        )
+    assert refused.value.code == "no_onboarding_authorization"
+
+
+def test_a_withdrawn_limited_grant_is_not_rescued_by_the_absent_source_set(
+    session, onboarding, tmp_path, monkeypatch
+):
+    """A withdrawal refuses, and the absent set is not a second way in.
+
+    Withdrawal is the third case because it is the one that can be read as a
+    fallback: the permission the reading depends on is gone, the ordinary
+    source-set path has nothing recorded to refuse on, and a path that treated
+    an absent set as its own sufficiency would let the reading through on the
+    strength of what was never recorded. It does not. The customer asked
+    processing to stop, and the reading stops.
+    """
+
+    project, grant_id = onboarding
+    staged = validate_and_stage(workbook(tmp_path), "ucm.xlsx")
+    delivery_id = delivered(session, project, staged)
+    record_onboarding_event(
+        session,
+        project_id=int(project.id),
+        grant_id=grant_id,
+        kind="withdrawal_requested",
+        requested_by="Dana Reyes, records custodian",
+        requested_at=AT,
+        executed_by_actor="security:duty-officer",
+        executed_at=AT + timedelta(minutes=2),
+        reason="customer paused processing pending counsel review",
+    )
+    session.flush()
+
+    standing = _binding_standing(session, session.get(SourceDelivery, delivery_id))
+    assert standing.recorded is False, (
+        "the absent set is held constant across all three cases; only the "
+        "limited permission varies"
+    )
+
+    _refuse_to_open_the_workbook(monkeypatch)
+    with refusal(session) as refused:
+        prepare_baseline_reading(
+            session,
+            project=project,
+            staged=staged,
+            customer="Lone Star Transit Authority",
+            source_identity="UCM workbook revision C",
+            principal=COORDINATOR,
+            at=AT,
+            source_delivery_id=delivery_id,
+            field_mapping=DEMO,
+            images_dir=tmp_path / "images",
+        )
+    assert refused.value.code == "onboarding_authorization_withdrawn"
+
+
 def test_adopting_a_reading_whose_document_lost_its_delivery_is_refused(
     session, onboarding, tmp_path
 ):
@@ -1317,7 +1510,7 @@ def test_adopting_a_reading_whose_document_lost_its_delivery_is_refused(
 
 
 def test_an_unsupported_development_login_is_refused_in_words(session, onboarding):
-    """A raw `permission denied for function` is a 500, not an answer (#937).
+    """A raw `permission denied for function` is a 500, not an answer (#933).
 
     Leaving this path out of `corridor_legacy_dev`'s grants is deliberate: it
     is the opt-in unpartitioned login, and an unpartitioned reading of every

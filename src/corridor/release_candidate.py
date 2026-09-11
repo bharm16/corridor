@@ -1593,9 +1593,9 @@ def candidate_staleness_reasons(
         # questions, so removing one changes what this candidate says. "The
         # same accepted revision" is not the same thing as "still current".
         reasons.append(
-            "Corridor corrected its reading of a source after this candidate "
-            "was prepared, so what it discloses as still open may no longer "
-            "be what this project is waiting on"
+            "A source reading was corrected after this issue was prepared. "
+            "Prepare the issue again so its open-question disclosures are "
+            "current."
         )
     reasons.extend(replaced_format_reasons(candidate, formats))
     return tuple(reasons)

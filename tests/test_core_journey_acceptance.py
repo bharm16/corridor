@@ -1279,7 +1279,7 @@ def find_the_passage(
 ) -> tuple[str, str]:
     """Search this source for the passage a capture should have been read from.
 
-    Through the page's own "Find another passage of this source" control,
+    Through the page's own "Find another passage in this document" control,
     because the passages a report may name are the ones the product offers:
     the window it opens on is the cited passage's neighbourhood, and a
     coordinator who believes the value is somewhere else looks for it.

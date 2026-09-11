@@ -28,9 +28,10 @@ things the record supports:
 
 - a claim whose lease is still in force,
 - a claim whose lease has expired, with recovery outstanding,
-- no claim at all.
+- a pass the runtime recorded as failed with its retries spent,
+- no claim at all, which the page says nothing about.
 
-There is no fourth reading available. A worker heartbeat was considered and is
+There is no fifth reading available. A worker heartbeat was considered and is
 not one: ``operational_health.heartbeat_reading`` is a deployment-wide cadence
 reading over every schedule at once, explicitly not authoritative and not a
 product measure (#532), and it would need ``due_work_receipts`` as well. The
@@ -65,29 +66,46 @@ from sqlalchemy.orm import Session
 CLAIMED = "claimed"
 # A worker took the pass and the lease ran out before anything finalized it.
 CLAIM_EXPIRED = "claim_expired"
-# The occurrence is in none of the claimed states: pending, retried, completed
-# or failed. The banner does not tell those apart, because "is anything holding
-# the pass" is the one question it answers and the register's own rows already
-# carry what became of each source.
+# The runtime spent this occurrence's retries and recorded it as failed. It is
+# the one unclaimed state the page still speaks about, because a failure that
+# nothing says out loud is a failure a coordinator waits through.
+FAILED = "failed"
+# The occurrence is in none of the above: pending, retried or completed. The
+# banner does not tell those apart, because "is anything holding the pass" is
+# the one question it answers and the register's own rows already carry what
+# became of each source.
 UNCLAIMED = "unclaimed"
 
-# The words the page prints. `CLAIMED` is quoted from #900's own correction and
-# is deliberately about the *pass*: it names no document, because no record says
-# which document is being read.
+# The words the page prints, for the three states that have any. `CLAIMED` is
+# quoted from #900's own correction and is deliberately about the *pass*: it
+# names no document, because no record says which document is being read.
 #
-# `CLAIM_EXPIRED` has two halves and needs both. The first says what the record
-# says — the claim lapsed, and the next pass is what recovers it. The second is
-# there so the first cannot be read as "the worker stopped": nothing fences the
-# original worker and nothing records its liveness, so a sentence implying it
-# had finished would be the invented state this module exists to refuse.
+# `UNCLAIMED` has no sentence. A line that says a worker holds nothing is true
+# for almost the whole life of almost every project, so printing it permanently
+# is a banner a reader learns to stop seeing, and it displaces the register's
+# own rows, which carry what actually became of each source. The page prints
+# nothing there.
+#
+# `CLAIM_EXPIRED` says only what the record says, and says it only while
+# recovery remains open: `_status` reaches that state exactly when the
+# occurrence is still `claimed` and its lease has lapsed, which is precisely
+# `claim_due_work`'s own recovery-candidate predicate, so the sentence cannot
+# outlive the recovery it promises. A spent occurrence is `FAILED` instead.
 SENTENCES: Mapping[str, str] = {
     CLAIMED: "A worker has claimed this project's document-processing pass.",
+    CLAIM_EXPIRED: "The processing claim expired. Recovery is pending.",
+    FAILED: "This project's document-processing pass failed.",
+}
+
+# What the record cannot settle, kept out of the sentence and put underneath
+# it. The claim lapsing is a fact; what became of the worker that held it is
+# not one, because nothing fences that worker when its lease runs out and
+# nothing records its liveness. Saying so in the headline made the headline
+# about the uncertainty rather than about the claim.
+DETAILS: Mapping[str, str] = {
     CLAIM_EXPIRED: (
-        "The claim on this project's document-processing pass has expired and "
-        "recovery is pending. Nothing records whether the worker that claimed "
-        "it has stopped."
+        "Nothing records whether the worker that claimed it has stopped."
     ),
-    UNCLAIMED: "No worker holds a claim on this project's document-processing pass.",
 }
 
 
@@ -98,12 +116,18 @@ class ProcessingPassBanner:
     ``claimed_at`` and ``lease_expires_at`` are present exactly when a claim was
     taken, which is a fact about the occurrence rather than a gap: an occurrence
     nobody has claimed carries neither, and the sentence says so without them.
+
+    ``sentence`` is empty for a state the page says nothing about, so a caller
+    renders the banner on the words rather than on the reading's existence.
+    ``detail`` is the qualification that belongs under the sentence and not in
+    it, and is empty for every state that has none.
     """
 
     status: str
     sentence: str
     claimed_at: datetime | None
     lease_expires_at: datetime | None
+    detail: str = ""
 
     @property
     def claim_held(self) -> bool:
@@ -139,23 +163,29 @@ def read_processing_pass(
     )
     return ProcessingPassBanner(
         status=status,
-        sentence=SENTENCES[status],
+        sentence=SENTENCES.get(status, ""),
         claimed_at=row["claimed_at"],
         lease_expires_at=row["lease_expires_at"],
+        detail=DETAILS.get(status, ""),
     )
 
 
 def _status(
     occurrence_state: str, *, lease_expires_at: datetime | None, now: datetime
 ) -> str:
-    """Claimed, lapsed, or held by nobody — the three the lease can tell apart.
+    """Claimed, lapsed, failed, or held by nobody.
 
     The lease is compared the way ``claim_due_work`` compares it, so the state
     this reports and the state that decides whether the occurrence is a
     recovery candidate cannot disagree: at the exact instant the lease expires
     the runtime already treats the occurrence as recoverable, and so does this.
+    Which is also why ``failed`` is read off the column rather than inferred:
+    the runtime writes it only once the retries are spent, and that is the one
+    unclaimed state a reader has to be told about.
     """
 
+    if occurrence_state == FAILED:
+        return FAILED
     if occurrence_state != "claimed":
         return UNCLAIMED
     if lease_expires_at is None or _aware(lease_expires_at) <= now:

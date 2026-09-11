@@ -43,11 +43,14 @@ from corridor.due_work import (
     complete_due_work,
     configure_due_work,
     enqueue_due_work,
+    fail_due_work,
 )
 from corridor.models import Project, ProjectRosterEntry
 from corridor.project_processing_banner import (
     CLAIMED,
     CLAIM_EXPIRED,
+    DETAILS,
+    FAILED,
     SENTENCES,
     UNCLAIMED,
     read_processing_pass,
@@ -308,11 +311,14 @@ def test_an_expired_lease_says_the_claim_lapsed_not_that_the_worker_stopped(
     assert held.status == CLAIMED
     assert lapsed.status == CLAIM_EXPIRED
     assert not lapsed.claim_held
-    assert lapsed.sentence == (
-        "The claim on this project's document-processing pass has expired and "
-        "recovery is pending. Nothing records whether the worker that claimed "
-        "it has stopped."
+    assert lapsed.sentence == "The processing claim expired. Recovery is pending."
+    # The uncertainty is still said, and is said underneath: what became of the
+    # worker is not a fact the record holds, so it does not get to be the
+    # headline about a claim that did lapse.
+    assert lapsed.detail == (
+        "Nothing records whether the worker that claimed it has stopped."
     )
+    assert "worker" not in lapsed.sentence
     assert lapsed.lease_expires_at == claim.lease_expires_at
     # The occurrence is still `claimed` in the record. The banner reports the
     # lease, not the column, which is the whole distinction #918 established.
@@ -324,8 +330,15 @@ def test_an_expired_lease_says_the_claim_lapsed_not_that_the_worker_stopped(
     assert state == "claimed"
 
 
-def test_a_completed_pass_holds_no_claim(factory):
-    """A finished pass leaves nobody holding the occurrence, and says so."""
+def test_a_completed_pass_holds_no_claim_and_the_page_says_nothing(factory):
+    """A finished pass leaves nobody holding the occurrence, and prints nothing.
+
+    The reading is still available -- a caller that wants to know whether
+    anything holds the pass gets `UNCLAIMED` -- but it carries no sentence, so
+    the register prints no banner. A permanent line saying no worker holds a
+    claim is true for almost the whole life of almost every project, and a
+    reader learns to stop seeing it long before the day it would have mattered.
+    """
 
     starts_at = datetime(2026, 9, 11, 8, 0, tzinfo=timezone.utc)
     with factory() as setup:
@@ -348,9 +361,52 @@ def test_a_completed_pass_holds_no_claim(factory):
     banner = _banner(factory, project_id, finished_at)
 
     assert banner.status == UNCLAIMED
-    assert banner.sentence == SENTENCES[UNCLAIMED]
+    assert banner.sentence == "", (
+        "a pass nobody holds has no sentence, so the page renders no banner"
+    )
+    assert banner.detail == ""
+    assert UNCLAIMED not in SENTENCES
     assert banner.claimed_at is None
     assert banner.lease_expires_at is None
+
+
+def test_a_failed_pass_keeps_its_failure_where_a_coordinator_sees_it(factory):
+    """Dropping the unclaimed banner must not drop the one failure it hid.
+
+    "No worker holds a claim" was true of a completed pass and of a pass that
+    had burned through its retries and stopped, and it said the same thing
+    about both. The runtime writes `failed` only once `max_attempts` is spent,
+    so it is a terminal fact rather than a lull between attempts, and it is the
+    one unclaimed state that still gets a sentence.
+    """
+
+    starts_at = datetime(2026, 9, 11, 8, 0, tzinfo=timezone.utc)
+    with factory() as setup:
+        project_id = _project(setup, "banner-failed", starts_at=starts_at)
+        setup.commit()
+    with factory() as ticking:
+        enqueue_due_work(ticking, now=starts_at)
+        ticking.commit()
+    claim = _claim(factory, starts_at)
+    failed_at = starts_at + timedelta(minutes=2)
+    with factory() as failing:
+        outcome = fail_due_work(
+            failing,
+            claim,
+            error_code="extraction_failed",
+            now=failed_at,
+            retryable=False,
+        )
+        assert outcome.execution_outcome == "failed"
+        failing.commit()
+
+    banner = _banner(factory, project_id, failed_at)
+
+    assert banner.status == FAILED
+    assert banner.sentence == "This project's document-processing pass failed."
+    # No qualification, because there is none to make: the occurrence is not
+    # claimed and not recoverable, so nothing about a worker is in question.
+    assert banner.detail == ""
 
 
 def test_recovery_of_a_lapsed_claim_is_reported_as_the_new_claim(factory):
@@ -542,6 +598,28 @@ def test_the_register_prints_the_claim_sentence_and_then_the_expiry_one(
     assert SENTENCES[CLAIM_EXPIRED] not in held
     assert SENTENCES[CLAIM_EXPIRED] in lapsed
     assert SENTENCES[CLAIMED] not in lapsed
+    # The qualification is on the page, and under the sentence rather than in
+    # it: the claim lapsing is the headline, what became of the worker is not.
+    assert DETAILS[CLAIM_EXPIRED] in lapsed
+    assert DETAILS[CLAIM_EXPIRED] not in held
+
+    # And once the pass finishes there is no banner at all. The permanent line
+    # saying no worker holds a claim is the thing this page stopped printing.
+    # The worker finalizes inside its lease, because a finalization after it
+    # is the stale claim `complete_due_work` refuses.
+    finished_at = claim.lease_expires_at - timedelta(minutes=1)
+    complete_due_work(
+        session,
+        claim,
+        handler_result=_completed_result(project_id, finished_at),
+        now=finished_at,
+    )
+    session.flush()
+    finished = _page(claim.lease_expires_at + timedelta(minutes=1))
+    assert "holds a claim" not in finished
+    assert 'class="pass"' not in finished
+    assert SENTENCES[CLAIMED] not in finished
+    assert SENTENCES[CLAIM_EXPIRED] not in finished
     # A per-row "Processing" state is the thing #900 refused to invent, and
     # adding a banner is not a way of smuggling it back: the register's state
     # vocabulary still carries no state that says a particular document is
