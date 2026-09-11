@@ -273,7 +273,7 @@ def _finish_api(monkeypatch, *, defect=None, gate_seconds=5, migration_seconds=N
 
     monkeypatch.setattr(ci, "github", github)
     monkeypatch.setattr(ci, "previous_reports", lambda *_args: [])
-    monkeypatch.setattr(ci, "test_files", lambda: ["tests/test_one.py"] + (
+    monkeypatch.setattr(ci, "test_files", lambda exclude=(): ["tests/test_one.py"] + (
         ["tests/test_missing.py"] if defect == "missing file" else []
     ))
     for key, value in {"PYTEST_SHARDS": "1", "SLOW_SHARDS": "1", "MIGRATION_REQUIRED": "true" if migration_seconds is not None else "false",

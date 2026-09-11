@@ -26,13 +26,20 @@ an earlier revision set it to 0.5s from a CI shard that held 166 files and
 ran 79s while running two tests, which turned out to be the render worker
 building its environment over a saturated network, not collection at all.
 
-`tests/test_ci_policy.py` proves that each gate's partition covers the suite
-exactly; the former `scripts/test_shard.py` command that printed one shard
-was invoked by nothing else and is retired.
+`CHECK_OWNED_FILES` names the files `make check` runs, and `exclude` is how a
+gate drops them: the required proof they carry runs in the `check` job, so a
+behavior shard that also selected them would run it twice.  Zeroing their
+weight left them placed, so the constant was a scheduling hint rather than the
+selection rule the repository describes.
+
+`tests/test_ci_policy.py` proves that each behavior gate's partition covers the
+suite apart from those files, exactly; the former `scripts/test_shard.py`
+command that printed one shard was invoked by nothing else and is retired.
 """
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 import json
 import math
 from pathlib import Path
@@ -50,13 +57,25 @@ COLLECTION_SECONDS = 0.05
 # almost the whole suite onto one shard. This is a scheduling floor, not a new
 # timing claim or test-selection rule; every file remains assigned exactly once.
 SLOW_MINIMUM_FILE_SECONDS = 0.5
+# The files `make check` runs. Both behavior gates exclude them; the timing
+# tool, which reads a local whole-suite report, does not.
+CHECK_OWNED_FILES = (
+    "tests/test_architecture.py",
+    "tests/test_source_scan_support.py",
+)
 
 
-def test_files() -> list[str]:
-    """Every top-level test module, as the repository-relative path the gate uses."""
+def test_files(exclude: Iterable[str] = ()) -> list[str]:
+    """Every top-level test module, as the repository-relative path the gate uses.
+
+    `exclude` names the files this gate does not run, so a caller states its
+    selection once rather than filtering the partition afterwards.
+    """
+    omitted = frozenset(exclude)
     return sorted(
-        str(path.relative_to(ROOT))
+        name
         for path in (ROOT / "tests").glob("test_*.py")
+        if (name := str(path.relative_to(ROOT))) not in omitted
     )
 
 
