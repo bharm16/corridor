@@ -14,7 +14,6 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 from threading import Barrier
-from urllib.parse import parse_qs, urlsplit
 from uuid import uuid4
 
 import pytest
@@ -38,6 +37,13 @@ from corridor.principals import HumanPrincipal
 from corridor.web import auth
 from corridor.web.app import app, get_session
 from corridor.work_decisions import FOLLOW_UP_NEXT_ACTION_CHOICES
+
+from browser_session_support import (
+    authed_post,
+    link_token,
+    request_link,
+    sign_in,
+)
 
 OPERATOR = HumanPrincipal("local:operations")
 
@@ -80,47 +86,6 @@ def enroll(session, project, subject, email, designations):
         display_name=subject.split(":", 1)[1],
         designations=designations,
         operator=OPERATOR,
-    )
-
-
-def request_link(client, email, next_path=""):
-    data = {"email": email}
-    if next_path:
-        data["next"] = next_path
-    return client.post("/sign-in/request", data=data, follow_redirects=False)
-
-
-def link_token(sender) -> str:
-    _email, link = sender.sent[-1]
-    return parse_qs(urlsplit(link).query)["token"][0]
-
-
-def sign_in(client, sender, email, *, next_path=""):
-    """Request and consume a link; leaves the session cookie on the client."""
-    before = len(sender.sent)
-    response = request_link(client, email, next_path)
-    assert response.status_code == 200
-    assert len(sender.sent) == before + 1, "a member must receive exactly one link"
-    consume = client.get(
-        "/sign-in/consume",
-        params={"token": link_token(sender)},
-        follow_redirects=False,
-    )
-    assert consume.status_code == 303
-    return consume
-
-
-def csrf_headers(client) -> dict[str, str]:
-    token = client.cookies.get(auth.CSRF_COOKIE)
-    return {auth.CSRF_HEADER: token} if token else {}
-
-
-def authed_post(client, url, data=None):
-    return client.post(
-        url,
-        data=data or {},
-        headers=csrf_headers(client),
-        follow_redirects=False,
     )
 
 
