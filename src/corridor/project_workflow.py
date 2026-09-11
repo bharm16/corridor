@@ -122,10 +122,17 @@ PREPARATION_FAILED = "preparation_failed"
 # reading the page, addressed the way the Issue section already addresses them
 # ("nothing is needed from you", "the coverage you confirmed").
 #
-# Neither is a designation claim. Nothing in the write path requires a
-# designation to confirm coverage and ask for a preparation today, and naming a
-# rule the database does not enforce is exactly what the Issue section refuses
-# to do beside the approval it *does* enforce.
+# Neither is a designation claim, and that distinction now has to be read
+# carefully. Until #839, nothing in the write path required a designation to
+# confirm coverage or ask for a preparation, and these names were chosen so as
+# not to state a rule the database did not enforce. PostgreSQL now refuses both
+# acts to a member without the project-coordination designation, so the rule
+# exists -- but ``You, on this page`` still names the reader rather than the
+# designation, and ``Corridor Operations`` is a bounded context rather than a
+# designation at all (``access.py`` has no such name; it has
+# ``TECHNICAL_OPERATIONS``). Whether either becomes a designation name is a
+# customer-facing naming decision, not something to infer from the guard
+# landing.
 OPERATIONS_OWNER = "Corridor Operations"
 COORDINATOR_OWNER = "You, on this page"
 
