@@ -137,8 +137,13 @@ def _claim(factory, now: datetime):
 
 
 def _completed_result(project_id: int, observed_at: datetime) -> dict:
+    # Mirrors `project_processing`'s own receipt exactly, because
+    # `due_work._validate_handler_result` checks the key set rather than a
+    # subset: #919's containment added `held_unread` and moved the version to
+    # v3, and a receipt built here that has drifted from that one is refused
+    # by the runtime rather than quietly accepted.
     return {
-        "schema_version": 1,
+        "schema_version": "project-processing-result-v3",
         "project_id": project_id,
         "configuration_version": "project-processing-v1",
         "observed_at": observed_at.isoformat(),
@@ -151,6 +156,7 @@ def _completed_result(project_id: int, observed_at: datetime) -> dict:
         "unreadable": 0,
         "quarantined": 0,
         "held_out": 0,
+        "held_unread": 0,
         "processing_failures": [],
         "reconciled": False,
         "admitted": 0,
