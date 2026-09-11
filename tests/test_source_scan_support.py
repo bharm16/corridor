@@ -8,8 +8,10 @@ import pytest
 
 import source_scan_support
 from source_scan_support import (  # noqa: F401
+    callers_of,
     imported_names,
     importers_of,
+    mentions_of,
     python_files,
     read_python,
     source_scan_cache,
@@ -144,3 +146,50 @@ def test_importers_of_names_each_file_that_reaches_the_prefix_by_any_form(tmp_pa
         root / "unrelated.py",
     }
     assert importers_of("absent", (root,)) == {}
+
+
+def test_callers_of_finds_every_call_and_import_of_each_symbol(tmp_path):
+    """A per-symbol pin asks who reaches a name; it never walks the AST itself."""
+    root = tmp_path / "src"
+    root.mkdir()
+    (root / "owner.py").write_text(
+        "def wanted():\n    return other()\n\n\ndef other():\n    return None\n",
+        encoding="utf-8",
+    )
+    (root / "caller.py").write_text(
+        "from owner import wanted\n\n\ndef run(module):\n"
+        "    module.wanted()\n"
+        "    return wanted\n",
+        encoding="utf-8",
+    )
+    (root / "prose.py").write_text('"""wanted is named here only in prose."""\n', encoding="utf-8")
+
+    found = callers_of({"wanted", "absent"}, (root,))
+
+    assert found["absent"] == {}
+    assert found["wanted"] == {root / "caller.py": (1, 5, 6)}, (
+        "the import, the attribute and the bare name are references; the "
+        "defining statement and a docstring are not"
+    )
+
+
+def test_mentions_of_sees_a_name_written_anywhere_in_the_text(tmp_path):
+    """The weaker question, for the rule that would otherwise delete live code.
+
+    A name in a docstring, an ``__all__`` or the source of a probe a test
+    executes is not a caller, but it is the repository writing the name. A
+    rule whose failure means "delete this" has to ask the weaker question, so
+    that it can only ever be wrong by letting something live.
+    """
+    root = tmp_path / "src"
+    root.mkdir()
+    (root / "owner.py").write_text(
+        '"""Nothing calls wanted yet."""\n\n__all__ = ["wanted"]\n\n\ndef wanted():\n    return None\n',
+        encoding="utf-8",
+    )
+    (root / "other.py").write_text("unwanted = 1\nwanted_too = 2\n", encoding="utf-8")
+
+    assert mentions_of({"wanted"}, (root,)) == {
+        "wanted": {root / "owner.py": (1, 3, 6)}
+    }
+    assert callers_of({"wanted"}, (root,)) == {"wanted": {}}

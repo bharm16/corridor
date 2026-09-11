@@ -18,9 +18,11 @@ cache directories before descending into their installed packages.
 from __future__ import annotations
 
 import ast
+from collections.abc import Iterable
 from dataclasses import dataclass
 import os
 from pathlib import Path
+import re
 
 import pytest
 
@@ -33,6 +35,8 @@ class PythonSource:
 
 
 _sources: dict[Path, PythonSource] = {}
+
+_WORD = re.compile(r"[A-Za-z_]\w*")
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -121,3 +125,59 @@ def importers_of(
             if matches:
                 found[path] = matches
     return found
+
+
+def callers_of(
+    symbols: Iterable[str], roots: tuple[Path, ...]
+) -> dict[str, dict[Path, tuple[int, ...]]]:
+    """Every site that calls, imports or otherwise names each symbol.
+
+    The answer four per-symbol pins used to each walk the AST for. A name
+    read, an attribute of that name, and an import of it are all references;
+    the defining statement is not, so a symbol nothing reaches comes back with
+    an empty mapping rather than with its own definition.
+    """
+    wanted = set(symbols)
+    found: dict[str, dict[Path, list[int]]] = {name: {} for name in wanted}
+    for root in roots:
+        for path in python_files(root):
+            for node in read_python(path).nodes:
+                if isinstance(node, ast.Name):
+                    name = node.id
+                elif isinstance(node, ast.Attribute):
+                    name = node.attr
+                elif isinstance(node, ast.alias):
+                    name = node.name.rpartition(".")[2]
+                else:
+                    continue
+                if name in wanted:
+                    found[name].setdefault(path, []).append(node.lineno)
+    return {
+        name: {path: tuple(sorted(set(lines))) for path, lines in sorted(sites.items())}
+        for name, sites in found.items()
+    }
+
+
+def mentions_of(
+    symbols: Iterable[str], roots: tuple[Path, ...]
+) -> dict[str, dict[Path, tuple[int, ...]]]:
+    """Every line whose text writes each symbol as a whole word.
+
+    Weaker than `callers_of`, deliberately. A name in a docstring, in an
+    `__all__`, or inside the source of a probe another process runs is not a
+    caller, but it is the repository writing the name. A rule whose failure
+    means "delete this" asks the weaker question, so that it can only ever be
+    wrong by letting something live.
+    """
+    wanted = set(symbols)
+    found: dict[str, dict[Path, list[int]]] = {name: {} for name in wanted}
+    for root in roots:
+        for path in python_files(root):
+            text = path.read_text(encoding="utf-8")
+            for lineno, line in enumerate(text.splitlines(), 1):
+                for word in set(_WORD.findall(line)) & wanted:
+                    found[word].setdefault(path, []).append(lineno)
+    return {
+        name: {path: tuple(lines) for path, lines in sorted(sites.items())}
+        for name, sites in found.items()
+    }

@@ -11,7 +11,9 @@ from pathlib import Path
 
 from corridor.migrations import policy
 from source_scan_support import (  # noqa: F401
+    callers_of,
     imported_names,
+    mentions_of,
     python_files,
     read_python,
     source_scan_cache,
@@ -154,6 +156,139 @@ def test_no_module_silently_replaces_a_top_level_interface_name():
             ]
 
     assert duplicates == {}
+
+
+# --- Public symbols nothing reaches (#548 ratchet shape) ---------------------
+#
+# The fifty-one rules in this file police the import graph, the legacy-table
+# census, the engine scan, template colour, audit actions, value-copying and
+# web-readable relations and ADR frontmatter. None of them could see a public
+# function or class in `src/corridor` that the repository never writes again.
+# There were twelve.
+#
+# A registered web route is reached by its decorator rather than by its name,
+# and a schema family's relations are re-exported by name in
+# `corridor.models.__init__`, so neither needs an entry below; the rule sees
+# both without an exemption. Everything else with no second mention is a
+# public interface awaiting a caller, and says so here with a reason and a
+# ticket, or is deleted.
+#
+# Three symbols were deleted rather than listed when this rule was written:
+# `proposed_deltas.StaleAcceptedRevisionRefused` (an exception never raised),
+# `telemetry.current_correlation` (`dict(_correlation.get())`, which the two
+# real readers already inline) and `release_authorization.receipt_identity`
+# (one undocumented `sha256` line).
+REGISTERED_BY_DECORATOR = frozenset(
+    {"app.get", "app.post", "app.exception_handler"}
+)
+AWAITING_CALLER = {
+    "build_native_report": (
+        "report.py:512 -- the retained accepted-record entry point of the "
+        "internal Report, kept as one delegation to `build_report` while "
+        "ADR-0086/ADR-0091 move the customer's Coordination Report to "
+        "`issue_rendering.render_weekly_report` (ADR-0081 stage 3)"
+    ),
+    "configure_release_preparation": (
+        "due_work.py:788 -- one of fourteen one-line handler configurations, "
+        "the only one with neither a caller nor a test; audit card A7 removes "
+        "it, and this entry is the placeholder until that lane lands"
+    ),
+    "due_action_inbox": (
+        "notifications.py:1557 -- the recipient's own due-action inbox read, "
+        "scoped to one member and one project; the screen that renders it is "
+        "unbuilt, and the operations delivery view beside it is the half that "
+        "has a caller"
+    ),
+    "eligible_scan_pages": (
+        "unreadable_cells.py:246 -- the pages an unreadable-cell profile "
+        "would read; #739's scanned route selects its own pages, so this "
+        "profile-scoped reader waits for the profile to be wired"
+    ),
+    "follow_up_plans_for_delta": (
+        "review_packets.py:995 -- every Follow-up Plan on one Proposed "
+        "Delta, in the order they were made; ADR-0081's released "
+        "class-specific projection policies are what will read it"
+    ),
+    "pending_record_inclusion_project_ids": (
+        "record_inclusion.py:70 -- the recovery drain's list of projects "
+        "with unreconciled Record Inclusion work; the drain itself is unbuilt"
+    ),
+    "pending_revision_reconciliation_project_ids": (
+        "revision_reconciliation_request.py:52 -- the same recovery drain, "
+        "for unreconciled revision work; retire both entries together"
+    ),
+    "publish_frontend_pass_bundle": (
+        "product_proving_frontend_capture.py:616 -- seals one observed "
+        "frontend pass before its database is restored; the capture command "
+        "that would call it is not wired into Product Proving yet"
+    ),
+    "replace_local_database_with_verified_clone": (
+        "product_proving_database.py:1258 -- the staged/validated/finalized "
+        "swap composed into one act, including the post-swap fingerprint and "
+        "migration-head checks the three exported steps do not carry; callers "
+        "run the steps themselves today"
+    ),
+}
+
+
+def _route_decorated(node: ast.AST) -> bool:
+    """True for a handler the web application registers by decorating it."""
+
+    return any(
+        ast.unparse(decorator.func if isinstance(decorator, ast.Call) else decorator)
+        in REGISTERED_BY_DECORATOR
+        for decorator in getattr(node, "decorator_list", ())
+    )
+
+
+def _public_definitions() -> dict[str, tuple[Path, int]]:
+    """Every public module-level function and class the source tree declares."""
+
+    definitions: dict[str, tuple[Path, int]] = {}
+    for path in _module_paths():
+        for node in _tree(path).body:
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                continue
+            if node.name.startswith("_") or _route_decorated(node):
+                continue
+            definitions[node.name] = (path, node.lineno)
+    return definitions
+
+
+def test_every_public_symbol_is_written_somewhere_other_than_its_definition():
+    """A public interface no line of this repository ever names again is dead.
+
+    The weaker of the two questions `source_scan_support` answers: a name in a
+    docstring, in an `__all__`, or inside the source of a probe a test runs is
+    not a caller, but it is the repository writing the name. Failing here
+    means nothing anywhere writes it at all, so the remedy is to delete the
+    symbol -- or, when it is a seam whose caller is genuinely still to come,
+    to say so above with a reason and a ticket, the way `PRODUCTION_IMPORTERS`
+    and `CYCLE_EDGE_ALLOWLIST` do. The list may fall and may never rise.
+    """
+
+    definitions = _public_definitions()
+    written = mentions_of(
+        set(definitions),
+        (REPO_ROOT / "src", REPO_ROOT / "tests", REPO_ROOT / "scripts", REPO_ROOT / "workers"),
+    )
+    guard = Path(__file__).resolve()
+    unwritten = {}
+    for name, (path, lineno) in definitions.items():
+        elsewhere = {
+            site: tuple(line for line in lines if (site, line) != (path, lineno))
+            for site, lines in written[name].items()
+            if site != guard  # the table below is a record, not a reference
+        }
+        if not any(elsewhere.values()):
+            unwritten[name] = f"{path.relative_to(REPO_ROOT)}:{lineno}"
+
+    assert sorted(unwritten) == sorted(AWAITING_CALLER), (
+        "a public symbol nothing else in the repository names: delete it, or "
+        "record it in AWAITING_CALLER with a reason and a ticket:\n"
+        + "\n".join(f"{name} at {site}" for name, site in sorted(unwritten.items()))
+    )
+    assert all(AWAITING_CALLER.values()), "an entry without a reason is not a decision"
 
 
 def test_source_modules_do_not_import_another_module_private_implementation():
@@ -2268,16 +2403,10 @@ def test_the_unconfirmed_reading_append_has_exactly_its_production_caller():
     class, reviewed as one.
     """
 
-    callers: set[str] = set()
-    for path in _module_paths():
-        if path.name == "scanned_reading.py":
-            continue
-        for node in read_python(path).nodes:
-            if not isinstance(node, ast.Call):
-                continue
-            callee = node.func
-            name = callee.attr if isinstance(callee, ast.Attribute) else getattr(callee, "id", None)
-            if name == "record_unconfirmed_readings":
-                callers.add(path.name)
+    sites = callers_of({"record_unconfirmed_readings"}, (SOURCE_ROOT,))
 
-    assert callers == {"ingest.py"}
+    assert {
+        path.name
+        for path in sites["record_unconfirmed_readings"]
+        if path.name != "scanned_reading.py"
+    } == {"ingest.py"}

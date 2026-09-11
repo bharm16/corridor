@@ -74,7 +74,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from hashlib import sha256
 import json
 from typing import Any, Mapping
 
@@ -345,10 +344,6 @@ def receipt_payload(
 
 def receipt_declaration(payload: dict[str, Any]) -> str:
     return json.dumps(payload, sort_keys=True, separators=(",", ":"))
-
-
-def receipt_identity(declaration: str) -> str:
-    return sha256(declaration.encode("utf-8")).hexdigest()
 
 
 # --- the readings a release history and a portfolio need --------------------
