@@ -297,12 +297,57 @@ def _named_in(
     return len(definitions), frozenset(named), frozenset(runs)
 
 
+def declarations_at_merge_base(
+    name: str, *, repository: Path = REPO_ROOT
+) -> dict[tuple[str, str], frozenset[tuple[str, object]]] | None:
+    """Every `Relocation` in `<path>:<CONSTANT>` at the merge base, by reading.
+
+    `recorded_at_merge_base` cannot serve here: these are constructor calls, not
+    a literal, and `ast.literal_eval` refuses them. Reading the keywords instead
+    keeps the comparison to what the declaration *says*, so a reordered field or
+    a reformatted line is the same declaration and a changed model set is not.
+
+    `None` means the direction is unjudged -- no base ref, or the constant did
+    not exist there -- exactly as `recorded_at_merge_base` returns `None`.
+    """
+
+    path, _, constant = name.partition(":")
+    base = _merge_base(repository)
+    if not base:
+        return None
+    source = _git(repository, "show", f"{base}:{path}")
+    if source is None:
+        return None
+    for node in ast.walk(ast.parse(source)):
+        target = getattr(node, "target", None)
+        targets = getattr(node, "targets", [target] if target else [])
+        if not any(isinstance(t, ast.Name) and t.id == constant for t in targets):
+            continue
+        declared: dict[tuple[str, str], frozenset[tuple[str, object]]] = {}
+        for call in ast.walk(node.value):
+            if not isinstance(call, ast.Call):
+                continue
+            try:
+                said = {
+                    keyword.arg: ast.literal_eval(keyword.value)
+                    for keyword in call.keywords
+                    if keyword.arg
+                }
+            except ValueError:
+                return None
+            if "source" not in said or "source_reading" not in said:
+                continue
+            declared[(said["source"], said["source_reading"])] = frozenset(said.items())
+        return declared
+    return None
+
+
 def assert_reviewed_relocations(
     relocations: Sequence[Relocation],
     *,
     consumers: Mapping[str, Sequence[str]],
     source_root: str,
-    census: str | None = None,
+    declared: str | None = None,
     repository: Path = REPO_ROOT,
 ) -> frozenset[tuple[str, str]]:
     """The `(class, module)` pairs a reviewed extraction may add, and no others.
@@ -330,13 +375,11 @@ def assert_reviewed_relocations(
       reviewed extraction, so a module that already consumes a legacy class
       cannot be a destination.
 
-    * **the destination was not already a consumer.** At the merge base the
-      census did not list it for these classes. This is what spends the
-      permission, and it is deliberately the one check that does not read the
-      source reading: a declaration whose source is left as a delegating stub
-      goes on satisfying every check above it forever, because an annotation
-      counts as naming the dependency but never counts as running it. Asking
-      the census instead is indifferent to what the source became.
+    Those four run for a declaration this change is *making*. A declaration
+    already present at the merge base, word for word, is historical: it
+    authorizes nothing, is checked against nothing, and is not an error. Editing
+    one is refused outright, because broadening a landed authorization is a new
+    relocation wearing an old declaration's clothes.
 
     None of that says the reading still *means* what it meant. This reads
     imported and referenced class names; it cannot see project scoping,
@@ -345,10 +388,14 @@ def assert_reviewed_relocations(
     and by focused behavior tests, and this guard is no evidence about it
     whatsoever.
 
-    The permission is spent by the merge that uses it: the destination joins
-    the recorded census, so at the next merge base the last check refuses the
-    declaration and it has to be deleted. From then on the destination is an
-    ordinary consumer, counted like every other. None of this is
+    The permission is spent by the merge that uses it: from the next merge base
+    on the declaration is historical, so it authorizes nothing and the
+    destination stands in the recorded census on its own, counted like every
+    other consumer. Whether the declaration is then deleted or kept as
+    explanation is a matter of taste, and neither choice can reintroduce the
+    dependency it once authorized. What this must never do is *fail* on it --
+    an earlier version refused a landed declaration, which turned every
+    relocation into a red `main` between two pull requests. None of this is
     progress: ADR-0081 stage 4 exits when no reader imports a legacy table
     module, and a relocation leaves the census one name longer than it found
     it. The census goes on reporting that.
@@ -362,7 +409,11 @@ def assert_reviewed_relocations(
     if base is None:
         return frozenset()
 
-    landed = recorded_at_merge_base(census, repository=repository) if census else None
+    historical = (
+        declarations_at_merge_base(declared, repository=repository)
+        if declared
+        else None
+    )
     legacy = set(consumers)
     authorized: set[tuple[str, str]] = set()
     transferred: dict[str, set[str]] = {}
@@ -389,16 +440,34 @@ def assert_reviewed_relocations(
         )
         moved.add(reading)
 
-        if landed is not None:
-            already = sorted(
-                name
-                for name in models
-                if relocation.destination in set(landed.get(name, ()))
+        if historical is not None:
+            said = frozenset(
+                {
+                    "source": relocation.source,
+                    "source_reading": relocation.source_reading,
+                    "destination": relocation.destination,
+                    "destination_reading": relocation.destination_reading,
+                    "models": relocation.models,
+                    "card": relocation.card,
+                }.items()
             )
-            assert not already, (
-                f"{relocation}: at the merge base {relocation.destination} "
-                f"already consumes {', '.join(already)}. This relocation has "
-                "landed and the declaration is spent -- delete it"
+            was = historical.get(reading)
+            if was == said:
+                # Unchanged since the merge base: historical, and inert. It
+                # authorizes nothing -- the destination is in the recorded
+                # census on its own by now -- and it is not an error, because
+                # the question this guard answers is whether *this change*
+                # introduces an unauthorized dependency. Failing on a landed
+                # declaration made the branch that introduced it go red the
+                # moment it merged, which is a lifecycle defect and not the
+                # rule doing its job.
+                continue
+            assert was is None, (
+                f"{relocation}: {relocation.source}.{relocation.source_reading} "
+                "is already declared relocated at the merge base, and this "
+                "changes what that declaration says. A landed authorization is "
+                "not editable -- broadening its models, destination or reading "
+                "is a new relocation and needs its own review"
             )
 
         defined, before, _ = _named_in(

@@ -1593,7 +1593,7 @@ def test_the_legacy_table_consumer_list_may_fall_and_may_never_rise():
         RELOCATED_LEGACY_READINGS,
         consumers=found,
         source_root=SOURCE_ROOT.relative_to(REPO_ROOT).as_posix(),
-        census="tests/test_architecture.py:LEGACY_TABLE_CONSUMERS",
+        declared="tests/test_architecture.py:RELOCATED_LEGACY_READINGS",
     )
     pairs = lambda listed: {
         (name, module) for name, modules in listed.items() for module in modules
