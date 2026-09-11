@@ -82,6 +82,18 @@ def nothing_written(
     would have written somewhere, and reading only one of the two would not
     see where.
 
+    What it proves is that no row appeared and none disappeared. It is not a
+    proof that the values already in those rows are the ones that were there
+    before: a refusal that replaced one row with another, or that updated a
+    column in place, leaves every count identical and passes here. For an
+    append-only family -- source segments, source facts, fact decisions,
+    record revisions, receipts, the audit log -- no same-count substitution is
+    possible, so the count is the whole proof. Where the act under test could
+    reach a mutable column, or could delete one row and insert another, read
+    the exact values or a digest of them before and after and assert on those;
+    this guard still belongs around that assertion, because it is the part
+    watching the two hundred tables the assertion does not name.
+
     ``apart_from`` names the tables the act does write on purpose -- a page
     view appends a ``product_proving_frontend_request`` receipt to
     ``audit_log``, and that is a request observation rather than a change to
