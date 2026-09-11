@@ -1786,7 +1786,7 @@ COUNTS_ONE_FAMILY_ACROSS_AN_ACT_THAT_WRITES = {
         "the counts are absolute zeroes, not a before-and-after; a relative "
         "reading would be the weaker claim"
     ),
-    "test_source_intake._document_state": (
+    "test_source_intake._page_and_segment_counts": (
         "the two tables are the read's own output for one document -- the "
         "pages and the segments a parse writes -- so this is a reading of "
         "what the act produced rather than a claim about what it left alone"

@@ -84,8 +84,14 @@ def _receive(session, project, body, *, filename="matrix.pdf", revision=""):
     )
 
 
-def _upload_and_confirm(session, project, marker="Owner", doc_type="matrix"):
-    """The whole product path: take delivery, preview it, then admit it."""
+def _upload_and_confirm(
+    session, project, marker="Owner", doc_type="matrix", parse=True
+):
+    """The whole product path: take delivery, preview it, then admit it.
+
+    ``parse=False`` is the confirmation the web route actually makes (#893):
+    it registers the document and leaves the read to the standing pass.
+    """
 
     body = _matrix_pdf(marker)
     received = _receive(session, project, body, filename=f"{marker}.pdf")
@@ -100,6 +106,7 @@ def _upload_and_confirm(session, project, marker="Owner", doc_type="matrix"):
         binding_fingerprint=preview.binding_fingerprint,
         principal=UPLOADER,
         source_delivery_id=received.delivery_id,
+        parse=parse,
     )
 
 
@@ -228,6 +235,46 @@ def test_the_processing_state_of_each_source_is_derived_from_its_own_receipts(
     assert by_document[processed.document_id].state == "processed"
     assert by_document[failed.document_id].state == "parse_failed"
     assert by_document[held.document_id].state == "held_unmodeled"
+
+
+def test_a_held_source_the_pass_will_skip_does_not_read_as_waiting_for_it(
+    session, project, store
+):
+    """The hold is asked before ``pending``, because the pass skips it (#919).
+
+    A `schedule` upload is registered and held in the one confirmation
+    transaction, and the route leaves the read to the standing pass — so the
+    document sits `pending` and held at once. The read act now asks the
+    rich-processing gate and skips it, so "waiting for the processing pass"
+    would be a promise nothing intends to keep. The row says Held instead, and
+    carries the reason the record itself recorded rather than any claim about
+    the bytes.
+    """
+
+    _, held = _upload_and_confirm(
+        session, project, marker="Sequencing", doc_type="schedule", parse=False
+    )
+    _, unread = _upload_and_confirm(
+        session, project, marker="Ordinary", parse=False
+    )
+    session.flush()
+
+    rows, _register = _rows(session, project)
+    by_document = {row.document_id: row for row in rows.values()}
+
+    assert session.get(Document, held.document_id).parse_status == "pending"
+    assert by_document[held.document_id].state == "held_unmodeled"
+    assert by_document[held.document_id].state_words == (
+        "Held — its content is deliberately not read"
+    )
+    assert "work sequencing is not modeled" in (
+        by_document[held.document_id].recorded_reason
+    )
+    # A source the pass really will read still says it is waiting for it.
+    assert by_document[unread.document_id].state == "pending"
+    assert by_document[unread.document_id].state_words == (
+        "Pending — waiting for the processing pass"
+    )
 
 
 def test_a_source_no_extractor_reads_says_so_rather_than_waiting_forever(

@@ -82,6 +82,20 @@ anything.  A read that fails leaves ``parse_failed`` here, which does name an
 owner -- that is the difference between unread and unreadable, and this page is
 where a coordinator sees it.
 
+**A held source is asked about before "waiting" is, because the pass will not
+take it.**  The hold used to be read after the parse status, so a source that
+was registered, unread and held printed "waiting for the processing pass" --
+and now that the read act asks the one rich-processing gate before it opens
+any bytes, that pass selects such a source and skips it, which turns the
+sentence into a promise nothing will keep.  The hold is read first, so the row
+says **Held** and names the act that would change it.  It says nothing more
+than that on purpose.  ``document_quarantines`` carries a free-text reason and
+no machine-readable stage, so what the row reports is an **unclassified**
+restriction: the recorded reason is printed as the record wrote it, and
+nothing here promotes an unclassified hold into a claim that the file is
+dangerous.  #919 decides what a hold may say about itself, and this reading
+changes with it.
+
 **No clock.**  Every ordering and every filter is read from the rows' own
 recorded times and from the caller's declared bounds, so two readings of the
 same records land on the same page.
@@ -806,14 +820,22 @@ def _document_state(document: Document, context: _DocumentContext) -> str:
     document as held, an unreadable extraction as unreadable, and one the
     standing pass has not reached yet as pending. None is ever relabelled a
     success.
+
+    The hold is asked before ``pending``, and the order is the whole point: the
+    pass "waiting for the processing pass" names now skips a held source
+    instead of reading it, so deriving ``pending`` first printed a promise
+    nothing would keep. It is asked after ``parse_failed``, which is left
+    exactly where it was -- which of the two a source that failed *and* is held
+    should read as is part of what #919 settles, and inventing an answer here
+    is how a containment measure becomes a design. See the module docstring.
     """
 
     if document.parse_status == "failed":
         return "parse_failed"
-    if document.parse_status != "parsed":
-        return "pending"
     if int(document.id) in context.quarantines:
         return "held_unmodeled"
+    if document.parse_status != "parsed":
+        return "pending"
     run = context.runs.get(int(document.id))
     if run is None:
         # "Waiting for the processing pass" is only true of a document a pass

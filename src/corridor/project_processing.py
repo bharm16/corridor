@@ -26,7 +26,8 @@ recoverable and idempotent:
    It covers every registered document and not only the extractable ones,
    because a source no extractor reads still has pages and segments a citation
    is replayed against, and a kind this act skipped would wait for a reader
-   that never came.
+   that never came. A document under a hold is the one exception, and the
+   paragraph below says why that exception is temporary.
 2. Scope: load the project (refuse an unknown one before any model work) and
    select the eligible extractable documents. Held (quarantined), superseded
    (sealed), unread, unreadable, and permanently unreadable documents are
@@ -41,6 +42,22 @@ recoverable and idempotent:
    project is pending — including the case where every extraction was skipped
    but a prior crash left the watermark dirty — and is a no-op that appends no
    Policy Runs when the project is clean (ADR-0029, #342).
+
+**Act 1's hold check is temporary containment, not the intended design, and
+#919 is the decision that replaces it.** ``document_quarantines`` records a
+free-text reason and no machine-readable stage, so nothing on a held row says
+whether the hold forbids opening the bytes at all or only forbids taking
+meaning out of them — and the one gate that exists,
+``intake_hardening.assert_can_process_richly``, refuses every kind of rich
+processing for every hold. Until #919 gives a hold a stage the record actually
+carries, act 1 asks that gate and leaves a held document's bytes unopened.
+That is a conservative default over an **unclassified** restriction: it is not
+a finding that the file is dangerous, and every hold a production path writes
+today is an extraction hold rather than a hostile-bytes one. The cost is that
+a held document stays ``pending`` and is selected and skipped by every later
+pass, so this pass counts it every time rather than letting it fall out of
+both the parsed count and the failures; what ends that state is an
+attributable classification or repair, not another pass.
 """
 
 from __future__ import annotations
@@ -62,6 +79,7 @@ from corridor.extract_project import (
 )
 from corridor.extraction_runs import completed_document_ids
 from corridor.ingest import parse_registered_document
+from corridor.intake_hardening import HostileContentRefused, assert_can_process_richly
 from corridor.models import Document, DocumentQuarantine, ExtractionRun, Project
 
 
@@ -94,6 +112,13 @@ class ProcessingPassResult:
     ``parsed_document_count`` is how many documents this pass read for the
     first time and *committed*, which is the one number that says a confirmed
     upload was picked up rather than left waiting (#893).
+    ``held_unread_count`` is how many it declined to read because a hold
+    forbids rich processing. It is counted apart from ``excluded`` rather than
+    added to it, because the two describe different documents and the same
+    document can be in both: ``excluded`` holds out extractable documents the
+    scope act rejected, while this counts documents the read act never opened,
+    including the kinds no extractor would take anyway. A held document
+    belongs in one of these numbers or the pass has lost it (#919).
     """
 
     project_id: int
@@ -104,6 +129,7 @@ class ProcessingPassResult:
     reconciled: bool
     load: LoadResult | None
     parsed_document_count: int = 0
+    held_unread_count: int = 0
 
     def _count(self, status: str) -> int:
         return sum(1 for outcome in self.outcomes if outcome.status == status)
@@ -165,8 +191,8 @@ def process_project(
     # confirmed since the last pass becomes eligible in this one rather than
     # waiting a whole cadence for a second (#893). An unknown project selects
     # no documents, so this spends nothing before the refusal below.
-    parsed_document_count, parse_failures = _parse_landed_documents(
-        session_factory, project_id
+    parsed_document_count, held_unread_count, parse_failures = (
+        _parse_landed_documents(session_factory, project_id)
     )
 
     with session_factory() as session:
@@ -214,12 +240,13 @@ def process_project(
         reconciled=reconcile.did_load,
         load=reconcile.load,
         parsed_document_count=parsed_document_count,
+        held_unread_count=held_unread_count,
     )
 
 
 def _parse_landed_documents(
     session_factory, project_id: int
-) -> tuple[int, list[str]]:
+) -> tuple[int, int, list[str]]:
     """Read every registered document of this project nothing has read yet.
 
     One transaction per document, because that is what makes a crash cheap and
@@ -235,6 +262,18 @@ def _parse_landed_documents(
     rather than to a pass that would fail on it every hour for ever. That
     failure is this pass's own, so it is reported as a processing failure and
     not as a held-out steady state.
+
+    **A held document is counted, never opened.** The gate is
+    ``intake_hardening.assert_can_process_richly``, called rather than restated
+    — the same one ``operations_repair`` asks before its own re-parse — and it
+    is asked inside the claim, so the answer is about the row this transaction
+    holds rather than about a snapshot taken before it. The document keeps the
+    state it had: still held, still ``pending``, and selected and skipped again
+    by every later pass. That is neither this pass's failure nor a finding
+    about the bytes, so it is returned as its own number and not folded into
+    either the parsed count or the failures. Why the check is here at all, what
+    it does *not* claim, and what replaces it is in the module docstring
+    (#919).
 
     **Why the row is claimed and not merely re-checked.** Production scheduling
     does not keep two workers out of this loop. ``due_work.claim_due_work``
@@ -265,6 +304,7 @@ def _parse_landed_documents(
         ).all()
 
     parsed = 0
+    held_unread = 0
     failures: list[str] = []
     for document_id in pending:
         with session_factory() as reading:
@@ -279,6 +319,15 @@ def _parse_landed_documents(
                         # Either another worker is holding this row's read open
                         # right now, or one committed between the selection and
                         # here. Its commit is the one that counts.
+                        continue
+                    try:
+                        assert_can_process_richly(reading, document_id)
+                    except HostileContentRefused:
+                        # An unclassified restriction, not a judgement about
+                        # these bytes: nothing is written, nothing is read, and
+                        # the count below is what keeps the document visible
+                        # while it waits for #919.
+                        held_unread += 1
                         continue
                     sha256 = document.sha256
                     read = parse_registered_document(
@@ -300,7 +349,7 @@ def _parse_landed_documents(
             parsed += 1
         else:
             failures.append(f"{sha256}: parse failed")
-    return parsed, failures
+    return parsed, held_unread, failures
 
 
 def _eligible_documents(
@@ -420,13 +469,21 @@ def summarize_pass(
     # receipt for an operator who wants it. A document *this* pass could not
     # read is on the other side of that line: it is in
     # ``result.processing_failures`` above, so it does flip the verdict (#893).
+    # A document the read act declined to open is on the steady-state side of
+    # that line too: the hold is what stopped it, this pass did nothing wrong,
+    # and another pass is not what changes it. It rides the receipt as its own
+    # number so that a held document is never absent from every count (#919).
     health = (
         "healthy"
         if processing_failures == 0
         else "processing_attention_required"
     )
     return {
-        "schema_version": "project-processing-result-v2",
+        # v3 because a pending document is no longer always read or reported
+        # as a failure: the read act can now decline one, and a reader that
+        # reconciled `parsed` against the failures under v2 would come up short
+        # by exactly the held documents (#919).
+        "schema_version": "project-processing-result-v3",
         "project_id": result.project_id,
         "configuration_version": configuration_version,
         "observed_at": observed_at.isoformat(),
@@ -439,6 +496,7 @@ def summarize_pass(
         "unreadable": result.unreadable,
         "quarantined": result.quarantined,
         "held_out": result.held_out,
+        "held_unread": result.held_unread_count,
         "processing_failures": processing_failures,
         "reconciled": result.reconciled,
         "admitted": result.admitted,
