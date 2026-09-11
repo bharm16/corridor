@@ -143,6 +143,27 @@ def test_the_scheduled_suite_never_reports_on_a_pull_request():
     assert "make test-full" in _run_commands(workflow)
 
 
+def test_the_scheduled_suite_grants_no_scope_it_does_not_use():
+    """An absent block is the repository default for every scope, not a narrow one.
+
+    `full-suite.yml` had none, so it ran with whatever the repository grants --
+    which on a permissive default is write on contents and packages, held by
+    two jobs that build an image and run a container smoke and publish nothing.
+
+    The block is written at the top because neither job needs more than the
+    checkout: an explicit block sets every omitted scope to `none`, so a job
+    that later needs one declares it on that job instead of widening this.
+    """
+    workflow = _workflow("full-suite.yml")
+
+    assert workflow["permissions"] == {"contents": "read"}
+    for name, job in workflow["jobs"].items():
+        assert job.get("permissions", {"contents": "read"}) == {"contents": "read"}, (
+            f"full-suite.yml:{name} asks for a scope the workflow does not "
+            "grant; say why on the job"
+        )
+
+
 def test_the_gate_holds_every_job_the_summary_needs():
     assert set(_workflow(GATE)["jobs"]) == {
         "classify",

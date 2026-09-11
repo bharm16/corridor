@@ -36,8 +36,6 @@ from dataclasses import dataclass, field
 from hashlib import sha256
 import json
 
-from sqlalchemy import text
-from sqlalchemy.exc import DBAPIError, InvalidRequestError
 from sqlalchemy.orm import Session
 
 from corridor.db_roles import WORKER_CAPABILITY_LOGIN
@@ -53,6 +51,8 @@ from corridor.models import (
 )
 from corridor.source_append import SegmentValues, append_fact, append_source_segments
 
+from harness_support import as_role
+
 
 SHEET = "Utility Conflicts"
 CAPTURE_PROMPT_VERSION = "source_capture_fixture_v1"
@@ -62,12 +62,6 @@ CAPTURE_PROMPT_VERSION = "source_capture_fixture_v1"
 def _as_capability_login(session: Session) -> Iterator[Session]:
     """Append as the login the runtime appends as, and stop however the body ends.
 
-    ``harness_support.as_record_decision_role`` is this same pair for the
-    record-decision role, and records why the restore belongs in a ``finally``.
-    It is not generalised to other roles on this branch, so the source-append
-    commands' caller is written out here; when one seam covers every role this
-    becomes a call to it.
-
     The login, not the command owner, is the principal that makes the
     boundary real: ``corridor_source_append`` owns the ``SECURITY DEFINER``
     commands and therefore holds ``INSERT`` on the very tables they guard, so
@@ -75,27 +69,20 @@ def _as_capability_login(session: Session) -> Iterator[Session]:
     ``EXECUTE`` on the commands and no write at all, which is what makes a
     capture here reachable only through them.
 
-    Pending ORM state is flushed first, as the owner, so an autoflush inside a
-    command does not try to write the caller's unrelated rows as the login.
-    The principal in force on the way in is restored on the way out rather
-    than reset, so a capture inside a borrowed role hands that role back
-    instead of quietly dropping the caller to the session user.
+    ``harness_support.as_role`` is the borrow itself, for every role this suite
+    borrows, and it restores the principal that was in force rather than
+    resetting to the session user -- so a capture inside a borrowed role hands
+    that role back.  This seam was written out separately only while that was
+    not true of it.
+
+    What remains here is the flush.  Pending ORM state is written as the owner
+    before the borrow, so an autoflush inside a command does not try to write
+    the caller's unrelated rows as the login.
     """
 
     session.flush()
-    previous = session.scalar(text("select current_user"))
-    session.execute(text(f"set local role {WORKER_CAPABILITY_LOGIN}"))
-    try:
-        yield session
-    finally:
-        try:
-            session.execute(text(f"set local role {previous}"))
-        except (DBAPIError, InvalidRequestError):
-            # A refused append leaves the transaction unusable, in PostgreSQL
-            # or in SQLAlchemy's own guard over it. Either way the enclosing
-            # rollback discards the role with everything else, and raising
-            # here would replace the refusal the caller has to see.
-            pass
+    with as_role(session, WORKER_CAPABILITY_LOGIN) as borrowed:
+        yield borrowed
 
 
 @dataclass

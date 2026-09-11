@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from scripts.release_contract import (
+from corridor.release_contract import (
     RELEASE_STACK_OUTPUTS,
     UNSET_OUTPUT_VALUE,
     ReleaseContractError,

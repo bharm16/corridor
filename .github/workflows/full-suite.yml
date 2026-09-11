@@ -16,6 +16,19 @@ on:
     - cron: "0 6 * * 0"
   workflow_dispatch:
 
+# Without this block the workflow takes the repository default for every scope,
+# which is the only reason it ever had more than this. Both jobs were read
+# before it was written: `full-suite` checks out, restores a uv cache through
+# the runner's own runtime token, starts the runner's PostgreSQL and runs the
+# suite; `image` checks out, builds the image from anonymously pullable public
+# bases, and runs containers against a service database. Neither reads
+# `GITHUB_TOKEN` for anything but the checkout, and neither publishes. An
+# explicit block sets every scope it omits to `none`, so a job that later needs
+# one -- `packages` for a registry it must authenticate to, `id-token` for an
+# AWS role -- declares it on that job rather than here.
+permissions:
+  contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -137,6 +150,24 @@ jobs:
           assert 'DATABASE_URL' not in os.environ, 'an injected owner URL survived'
           assert not [k for k in os.environ if k.endswith('_PASSWORD')], 'raw password survived'
           print('batch role ok')
+          "
+
+      # The disposition provider runs inside this image and reads its five
+      # stack-output keys off the release contract. `src/` is copied whole and
+      # `scripts/` is not, which is why the contract lives in the package; only
+      # the built image can prove it is actually there.
+      - name: Smoke - the disposition command reads the release contract
+        run: |
+          docker run --rm --network none \
+            -e CORRIDOR_TASK_ROLE=batch \
+            -e CORRIDOR_DB_HOST=h -e CORRIDOR_DB_PORT=5432 \
+            -e CORRIDOR_DB_NAME=corridor -e CORRIDOR_WORKER_DB_PASSWORD=x \
+            "corridor:${{ github.sha }}" python -c "
+          from corridor.aws_environment_disposition import observe_stack_inventory
+          from corridor.release_contract import DISPOSITION_STACK_OUTPUTS, RELEASE_STACK
+          assert set(DISPOSITION_STACK_OUTPUTS) == {'CorridorApplication', 'CorridorData'}
+          assert RELEASE_STACK == 'CorridorApplication'
+          print('disposition contract ok')
           "
 
       - name: Smoke - the render environment resolves offline

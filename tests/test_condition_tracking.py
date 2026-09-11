@@ -11,6 +11,7 @@ re-processing, and the ADR-0050 replay gate on the automatic mechanical clear.
 from __future__ import annotations
 
 from datetime import date
+import re
 
 import pytest
 from fastapi.testclient import TestClient
@@ -376,6 +377,58 @@ def test_generic_condition_proposes_clear_and_is_cleared_by_cited_confirm(
     assert after.conditions[0].state == "cleared"
     assert after.conditions[0].resolved_by == REVIEWER.subject
     assert after.is_ready is True
+
+
+def test_only_a_passage_the_check_found_can_be_offered_as_the_clearing_basis(
+    session, project, client
+):
+    """The select's own reading of the Source Passage Check (ADR-0082).
+
+    Clearing a generic condition cites a later passage, so the passages
+    offered have to be ones a reader can still find at the location they name.
+    The predicate is read here, at this select, and inverting it there left the
+    whole suite green: a coordinator would have been offered exactly the
+    passages that were not found, and nothing else.
+    """
+    dependency = _relocate_dep(session, project)
+    _conditional_letter(
+        session, project, dependency, "Approved pending our board's Q3 review."
+    )
+    condition = read_checklist(session, dependency.id).conditions[0]
+    assert (condition.target.kind, condition.state) == ("generic", "open")
+
+    found_document = _document(
+        session, project, name="permit", text="the encroachment permit issued"
+    )
+    found = _link(
+        session,
+        dependency,
+        found_document,
+        "The district issued the encroachment permit on 3 March.",
+    )
+    absent_document = _document(
+        session, project, name="memo", text="an unrelated page of the memo"
+    )
+    _link(
+        session,
+        dependency,
+        absent_document,
+        "A sentence that is not on the page it cites.",
+        verified=False,
+    )
+
+    page = client.get(f"/ledger/{project.slug}/{dependency.id}")
+
+    assert page.status_code == 200
+    offered = re.search(
+        r'<select name="basis_evidence_link_id">(.*?)</select>', page.text, re.S
+    )
+    assert offered is not None, "the generic condition offers no clearing basis"
+    assert re.findall(r'<option value="(\d*)"', offered.group(1)) == [
+        "",
+        str(found.id),
+    ]
+    assert "The district issued the encroachment permit" in offered.group(1)
 
 
 def test_generic_condition_cleared_attributably_by_recorded_verbal(session, project):

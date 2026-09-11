@@ -48,9 +48,12 @@ concurrency:
   group: corridor-nonproduction-mutation
   cancel-in-progress: false
 
+# `CLUSTER` is deliberately absent: it is a `CorridorApplication` output, and
+# the resolve step below exports it with the rest of the release contract. A
+# name written here would be this repository's guess at what the stack created,
+# and every `aws ecs` call in this workflow would follow the guess.
 env:
   AWS_REGION: us-east-2
-  CLUSTER: corridor-nonprod
   COMMIT_SHA: ${{ inputs.commit_sha }}
   WEB_DESIRED_COUNT: ${{ inputs.web_desired_count }}
   WORKER_DESIRED_COUNT: ${{ inputs.worker_desired_count }}
@@ -120,7 +123,7 @@ jobs:
           aws cloudformation describe-stacks --stack-name CorridorApplication \
             --query 'Stacks[0].Outputs' --output json > outputs.json \
             || { echo "::error::CorridorApplication is not deployed yet"; exit 1; }
-          uv run python scripts/release_contract.py resolve outputs.json >> "$GITHUB_ENV"
+          uv run python -m corridor.release_contract resolve outputs.json >> "$GITHUB_ENV"
 
       # A retry of a failed release re-runs the same commit. The repository is
       # tag-immutable, so pushing again is rejected before the workflow reaches
@@ -202,7 +205,7 @@ jobs:
         run: |
           uv run python - <<'PY' > migration-overrides.json
           import json, os
-          from scripts.release_contract import MIGRATION_CONTAINER_NAME
+          from corridor.release_contract import MIGRATION_CONTAINER_NAME
           command = ["python", "-m", "corridor.deployment_bootstrap", "configure"]
           if os.environ["WORKER_DESIRED_COUNT"] != "0":
               command.append("--require-enabled")

@@ -251,6 +251,49 @@ def test_every_external_image_is_pinned_by_digest():
     assert not unpinned, f"pinned by tag rather than digest: {unpinned}"
 
 
+def test_the_release_names_no_cluster_the_stacks_did_not_create():
+    """Every `aws ecs` call in the release names a cluster. It reads one.
+
+    The workflow used to carry `CLUSTER: corridor-nonprod` in its own `env:`
+    block while `CorridorApplication` emitted the cluster it actually created
+    and nothing related the two. A renamed cluster would have left the drain,
+    the migration and both service updates pointed at a name this repository
+    invented -- and `aws ecs` answers a missing cluster with a failure per
+    call, mid-release, after the environment approval was spent.
+
+    So the name is a declared release output like the other nine, and the
+    resolve step that exports them has to come before the first step that
+    spends one.
+    """
+    from corridor.release_contract import RELEASE_STACK_OUTPUTS
+
+    assert RELEASE_STACK_OUTPUTS["ClusterName"] == "CLUSTER"
+
+    workflow = _workflow("app-release.yml")
+    assert "CLUSTER" not in (workflow.get("env") or {}), (
+        "app-release.yml names a cluster of its own; it reads ClusterName off "
+        "the deployed stack"
+    )
+
+    steps = workflow["jobs"]["release"]["steps"]
+    resolves = next(
+        index
+        for index, step in enumerate(steps)
+        if "release_contract" in str(step.get("run", ""))
+        and "resolve" in str(step.get("run", ""))
+    )
+    spends = [
+        index
+        for index, step in enumerate(steps)
+        if "$CLUSTER" in str(step.get("run", ""))
+    ]
+    assert spends, "no step uses the resolved cluster"
+    assert min(spends) > resolves, (
+        "a step spends $CLUSTER before the release contract exports it, so it "
+        "would run against an empty cluster name"
+    )
+
+
 @pytest.mark.parametrize(
     "workflow", ["infra-deploy.yml", "app-release.yml"]
 )

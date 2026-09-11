@@ -21,6 +21,7 @@ from corridor.disposition_contracts import (
     json_digest as digest, provider_rows, require_no_rds_replicas, automated_backup_rows,
     retained_object_versions,
 )
+from corridor.release_contract import DISPOSITION_STACK_OUTPUTS
 
 # Explicitly reviewed #489 resource kinds. Any new kind needs a disposition
 # implementation before it can be silently included in this profile.
@@ -45,22 +46,27 @@ def observe_stack_inventory(clients, resources, *, application_stack_id, data_st
     Shared network, account audit and control-plane stacks are never selected.
     """
     cf = clients["cloudformation"]
-    bucket = resources.object_namespace_bucket
+    # Which outputs bind a stack to the registered environment is the release
+    # contract's declaration, not a second copy of it here. Every binding is
+    # read before the first provider call, so a namespace no registration can
+    # express refuses without a describe (#813).
+    expected_by_stack = {
+        stack: {key: getattr(resources, attribute) for key, attribute in binding.items()}
+        for stack, binding in DISPOSITION_STACK_OUTPUTS.items()
+    }
     result = []
-    for role, stack_id in (("application", application_stack_id), ("data", data_stack_id)):
+    for stack, stack_id in (
+        ("CorridorApplication", application_stack_id),
+        ("CorridorData", data_stack_id),
+    ):
         prefix = f"arn:aws:cloudformation:{resources.region}:{resources.account_id}:stack/"
         if not stack_id.startswith(prefix) or len(stack_id.removeprefix(prefix).split("/")) != 2:
             raise DispositionRefused("inventory needs exact same-account stack ARNs")
-        stack = cf.describe_stacks(StackName=stack_id)["Stacks"][0]
-        if stack["StackId"] != stack_id or stack["StackStatus"] not in {"CREATE_COMPLETE", "UPDATE_COMPLETE", "UPDATE_ROLLBACK_COMPLETE"}:
+        described = cf.describe_stacks(StackName=stack_id)["Stacks"][0]
+        if described["StackId"] != stack_id or described["StackStatus"] not in {"CREATE_COMPLETE", "UPDATE_COMPLETE", "UPDATE_ROLLBACK_COMPLETE"}:
             raise DispositionRefused("stack identity or stable deployment state differs")
-        outputs = {row["OutputKey"]: row["OutputValue"] for row in stack.get("Outputs", [])}
-        expected = ({"DispositionCustomerId": resources.customer_id,
-                     "DispositionEnvironmentId": resources.environment_id,
-                     "DispositionDeploymentId": resources.deployment_id} if role == "application" else
-                    {"DatabaseEndpoint": resources.database_host,
-                     "ArtifactBucketName": bucket})
-        if any(outputs.get(key) != value for key, value in expected.items()):
+        outputs = {row["OutputKey"]: row["OutputValue"] for row in described.get("Outputs", [])}
+        if any(outputs.get(key) != value for key, value in expected_by_stack[stack].items()):
             raise DispositionRefused("stack outputs do not bind this registered environment")
         rows = provider_rows(cf, "list_stack_resources", "StackResourceSummaries", StackName=stack_id)
         for row in rows:

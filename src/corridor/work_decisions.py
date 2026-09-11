@@ -93,6 +93,32 @@ DEFERRAL_REASONS = frozenset(
 )
 
 
+class _NoStatedExpectation:
+    """A caller that said nothing about which Next Action it saw."""
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return "NO_EXPECTATION_STATED"
+
+
+# Three answers, not two. A work surface that binds its close or deferral to
+# the exact action a coordinator was looking at says which one that was, and
+# says so even when the answer is "none" -- an empty hidden field is the screen
+# reporting that this Constraint had no Next Action when it was read. `None` is
+# therefore compared like any other answer, the way
+# `_require_current_plan_predecessors` compares the Follow-up Plan's own
+# predecessors; it is not permission to skip the check. Only this sentinel is,
+# and it exists for the callers that never had a screen: these commands are
+# also reached from code that read the action it is closing in the same
+# transaction.
+NO_EXPECTATION_STATED = _NoStatedExpectation()
+
+# What a surface says it saw: a decision id, `None` for no Next Action at all,
+# or the sentinel for no statement either way.
+ExpectedNextAction = int | None | _NoStatedExpectation
+
+
 class CoordinationDecisionRefusal(refusals.Refusal, ValueError):
     """A subject-bound close or deferral refused; nothing was written.
 
@@ -261,7 +287,7 @@ def defer_work(
     reason: str,
     return_date: date,
     principal: HumanPrincipal,
-    expected_next_action_decision_id: int | None = None,
+    expected_next_action_decision_id: ExpectedNextAction = NO_EXPECTATION_STATED,
 ) -> WorkDecision:
     """Record why immediate work can wait and the date it must return.
 
@@ -324,7 +350,7 @@ def complete_next_action(
     successor_due_date_unknown_reason: str | None = None,
     no_follow_up_reason: str | None = None,
     note: str | None = None,
-    expected_next_action_decision_id: int | None = None,
+    expected_next_action_decision_id: ExpectedNextAction = NO_EXPECTATION_STATED,
     permitted_successor_actions: Iterable[str] | None = None,
 ) -> WorkDecision:
     """Record completion without pretending it proves an External Party fact."""
@@ -357,7 +383,7 @@ def cancel_next_action(
     no_follow_up_reason: str | None = None,
     cancellation_reason: str | None = None,
     note: str | None = None,
-    expected_next_action_decision_id: int | None = None,
+    expected_next_action_decision_id: ExpectedNextAction = NO_EXPECTATION_STATED,
     permitted_successor_actions: Iterable[str] | None = None,
 ) -> WorkDecision:
     """Withdraw an action with a structured reason, never an external closure."""
@@ -562,7 +588,7 @@ def _close_next_action(
     no_follow_up_reason: str | None,
     cancellation_reason: str | None,
     note: str | None,
-    expected_next_action_decision_id: int | None = None,
+    expected_next_action_decision_id: ExpectedNextAction = NO_EXPECTATION_STATED,
     permitted_successor_actions: Iterable[str] | None = None,
 ) -> WorkDecision:
     recorder = require_human_principal(principal)
@@ -596,8 +622,10 @@ def _close_next_action(
     # is written.  A stale, repeated, or cross-project submission names a
     # decision that is no longer the chain tail and refuses here, so it can
     # never close a different action or leave a partial decision.
-    if expected_next_action_decision_id is not None and (
-        tail is None or tail.id != expected_next_action_decision_id
+    # A surface that saw no action at all states `None`, and that is compared
+    # too: an action recorded since is not the one it was looking at.
+    if expected_next_action_decision_id is not NO_EXPECTATION_STATED and (
+        _decision_row_id(tail) != expected_next_action_decision_id
     ):
         raise StaleNextAction(
             "the Next Action changed after this work surface was read; "
@@ -760,13 +788,19 @@ def _tail(
 def _require_expected_next_action(
     session: Session,
     subject: CoordinationSubject,
-    expected_next_action_decision_id: int | None,
+    expected_next_action_decision_id: ExpectedNextAction,
 ) -> None:
-    """Refuse unless the current Next Action tail is the one the surface saw."""
-    if expected_next_action_decision_id is None:
+    """Refuse unless the current Next Action tail is the one the surface saw.
+
+    ``None`` is an answer, not a blank: the surface is saying this Constraint
+    had no Next Action when it was read, so a deferral submitted from it is as
+    stale as any other once one exists.  A caller that states nothing either
+    way passes ``NO_EXPECTATION_STATED`` and binds its deferral to nothing.
+    """
+    if expected_next_action_decision_id is NO_EXPECTATION_STATED:
         return
     tail = _tail(session, subject, NEXT_ACTION)
-    if tail is None or tail.id != expected_next_action_decision_id:
+    if _decision_row_id(tail) != expected_next_action_decision_id:
         raise StaleNextAction(
             "the Next Action changed after this work surface was read; "
             "nothing was deferred"
