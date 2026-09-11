@@ -4,9 +4,12 @@ Email is evidence, not an instruction channel.  This module stores an RFC 5322
 message byte-for-byte, preserves the headers that establish its deterministic
 thread, and routes only by exact registered evidence (ADR-0058, ADR-0062).  It
 deliberately does not parse a command from a subject/body, infer Supersession,
-mint an organization, or call an extractor or model in the request.  The
-transaction which stores a message also stores its route/triage residue, so a
-crash cannot turn a received message into an untraceable fact.
+mint an organization, or call an extractor or model in the request.  Since #913
+it does not render or read the files it registers either: a delivery registers
+its message and its attachments ``pending`` and commits, and the standing
+project-processing pass reads them.  The transaction which stores a message
+also stores its route/triage residue, so a crash cannot turn a received message
+into an untraceable fact.
 
 There are two front doors, and only one of them is the current design.
 
@@ -716,10 +719,29 @@ def _register_routed_content(
 
     Everything here is the ordinary shared intake: #349's bounded limits and
     content-addressed staging for attachments, `ingest_document` registration
-    and page parsing for both, identical bytes deduping to the already
-    registered Document. What is deliberately absent is any inference —
-    supersession, rendition equivalence, document dates, registry ids, and
-    organizations all stay exactly as unresolved as an upload leaves them.
+    for both, identical bytes deduping to the already registered Document.
+    What is deliberately absent is any inference — supersession, rendition
+    equivalence, document dates, registry ids, and organizations all stay
+    exactly as unresolved as an upload leaves them.
+
+    **Registering is not reading (#913).** ``parse=False`` on both calls, so a
+    delivery commits a registered, unread Document and the rendering and
+    parsing belong to the standing project-processing pass, which selects
+    exactly the ``pending`` state this leaves behind. It is #893's shape
+    applied to the other ingress: `/intake/inbound` is a server-to-server
+    request, and rendering a forty-page attachment inside it was the unbounded
+    request-local pipeline #349's acceptance refuses whether or not a person is
+    waiting. Measured on one mail delivery carrying a forty-page PDF: 20.5 s
+    before, 0.06 s after.
+
+    One rule rather than a per-door flag, because every door writes through
+    this one body and the pass produces the same rows for all of them. The
+    pulled door is a worker and could have kept reading in line; giving it a
+    second behaviour would mean two answers to "when is a delivered source
+    read", and the module's whole shape is that there is one registration and
+    one place a door differs. Nothing here binds a Fact to a Segment in this
+    transaction, which is what keeps Adopt Baseline, later-revision capture and
+    the key-date export reading in line and keeps this one out of that company.
 
     The message document carries the delivery it came in on (#687), and only
     that one: `push_delivery_id` is the ledger row this message's *own* bytes
@@ -741,6 +763,7 @@ def _register_routed_content(
             images_dir=settings.corpus_images,
             filename=_message_filename(inbound),
             source_delivery_id=inbound.push_delivery_id,
+            parse=False,
         )
         inbound.document_id = body_document.id
     receipts = list(inbound.attachments_json or [])
@@ -769,6 +792,7 @@ def _register_routed_content(
                 doc_type=declared_type,
                 images_dir=settings.corpus_images,
                 filename=staged.filename,
+                parse=False,
             )
             receipts.append(
                 {

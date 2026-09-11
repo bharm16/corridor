@@ -373,6 +373,19 @@ WEB_DENIED_RELATIONS = (
 # are not here. The confirmation still writes a quarantine — a `schedule`
 # upload is registered deliberately unread (#149), and that row is written in
 # the request that registers it — and the source register reads both.
+#
+# **#913 asked the same question of the machine intake credential and the
+# answer is no revocation, with a reason.** `/intake/inbound` stopped parsing
+# inside its request too, so a mail delivery no longer writes any of these four
+# either. But that route takes `get_machine_session`, which is `corridor_worker`
+# (#680), and `corridor_worker` is the very login the standing
+# project-processing pass runs as — `due_work_cli` builds a `WorkerSession`.
+# The write did not leave the role; it moved from one of the role's acts to
+# another. Revoking these from `corridor_worker` would stop the pass reading
+# any document at all, for every ingress, so all four keep the INSERT, UPDATE,
+# DELETE and SELECT they hold. Separating the two would mean a second machine
+# login for transport ingress, which is a boundary decision of its own and not
+# a consequence of where a parse happens.
 WEB_DENIED_PARTITIONED = (
     "doc_pages",
     "page_render_derivatives",

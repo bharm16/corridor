@@ -36,6 +36,23 @@ from access_support import seed_membership
 from pdf_fixture_support import PdfFixture
 
 
+def read_as_the_standing_pass_does(session, document):
+    """Read one registered mail source the way project processing act 1 does.
+
+    Mail intake registers and does not read (#913), so a test that wants the
+    pages or the segments asks for them here rather than expecting the delivery
+    to have produced them. This is the pass's own seam, not a second reader.
+    """
+
+    from corridor.ingest import parse_registered_document
+
+    assert document.parse_status == "pending"
+    assert parse_registered_document(
+        session, document=document, images_dir=settings.corpus_images
+    )
+    return document
+
+
 @pytest.fixture(autouse=True)
 def isolated_store(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "corpus_store", str(tmp_path / "store"))
@@ -126,6 +143,13 @@ def test_routed_body_registers_as_prose_source_with_verifiable_page(session):
     document = session.get(Document, stored.document_id)
     assert document.project_id == alpha.id
     assert document.doc_type == "email"
+    # The delivery registered it and committed; the reading is the standing
+    # pass's (#913), and it produces the same verifiable page.
+    assert document.parse_status == "pending"
+    assert session.scalar(
+        select(func.count()).select_from(DocPage).where(DocPage.document_id == document.id)
+    ) == 0
+    read_as_the_standing_pass_does(session, document)
     assert document.parse_status == "parsed"
     page = session.scalar(
         select(DocPage).where(DocPage.document_id == document.id)
@@ -159,7 +183,7 @@ def test_attachments_register_through_shared_limits_and_dedupe(session):
     assert receipts["letter.pdf"]["document_id"] is not None
     registered = session.get(Document, receipts["letter.pdf"]["document_id"])
     assert registered.project_id == alpha.id
-    assert registered.parse_status == "parsed"
+    assert registered.parse_status == "pending"
     assert registered.sha256 == sha256(accepted).hexdigest()
     assert receipts["tool.exe"]["refused"] == "unsupported_type"
     assert "document_id" not in receipts["tool.exe"]
@@ -424,6 +448,7 @@ def test_directive_content_and_headers_are_inert_data(session):
     )
     assert session.scalar(select(func.count(Document.id))) == documents_before + 1
     stored = session.get(InboundMessage, received.message_id)
+    read_as_the_standing_pass_does(session, session.get(Document, stored.document_id))
     page = session.scalar(
         select(DocPage).where(DocPage.document_id == stored.document_id)
     )
@@ -467,7 +492,9 @@ def test_standalone_body_promise_flows_through_ordinary_statement_extraction(ses
     )
     received = receive(session, raw(message_id="<promise@example.test>", body=body))
     stored = session.get(InboundMessage, received.message_id)
-    document = session.get(Document, stored.document_id)
+    document = read_as_the_standing_pass_does(
+        session, session.get(Document, stored.document_id)
+    )
 
     candidates = extract_document(session, document, client=promise_client())
 

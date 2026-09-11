@@ -222,10 +222,19 @@ def ingest_document(
 ) -> Document:
     # `parse=False` registers the document and stops, leaving `parse_status`
     # at `pending` for `parse_registered_document` to finish (#893). It exists
-    # for one caller: the web confirmation, where registering is the person's
-    # attributable act and rendering and reading the file is a worker's job
-    # rather than something a person waits on. Every other caller is already a
-    # batch or a worker, so reading on the way in costs nobody a request.
+    # for the callers that register inside a request: the web confirmation,
+    # where registering is the person's attributable act and rendering and
+    # reading the file is a worker's job rather than something a person waits
+    # on, and mail intake, whose `/intake/inbound` is a server-to-server
+    # request with the same shape and no person at all (#913). What decides it
+    # is the shape of the work, not who is waiting: #349's acceptance refuses
+    # an unbounded request-local pipeline either way.
+    #
+    # What keeps the default `True` is the opposite property, not "it is a
+    # batch": Adopt Baseline, later-revision capture and the key-date export
+    # each bind Facts to the `source_segments` rows this read produces, in the
+    # caller's own transaction. Deferring there would capture a Fact whose
+    # support does not exist yet.
 
     # `source_delivery_id` is the ledger row of the delivery that carried these
     # exact bytes in (#687). It is the caller's proven fact, never derived here:

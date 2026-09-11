@@ -54,6 +54,24 @@ def isolated_store(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "corpus_images", str(tmp_path / "images"))
 
 
+def read_as_the_standing_pass_does(session, document):
+    """Read one registered mail source the way project processing act 1 does.
+
+    Mail intake registers and does not read (#913). A thread capture needs no
+    such call -- it appends the MIME segments it reads from the retained bytes
+    itself -- so this is only for the tests that want the rows a *file* read
+    produces, such as an attachment workbook's cells.
+    """
+
+    from corridor.ingest import parse_registered_document
+
+    assert document.parse_status == "pending"
+    assert parse_registered_document(
+        session, document=document, images_dir=settings.corpus_images
+    )
+    return document
+
+
 def deliver(session, raw, project=None, *, attachment_doc_types=None):
     if project is None:
         project = Project(slug=f"email-{uuid4().hex[:12]}", name="Synthetic email project", is_synthetic=True)
@@ -244,6 +262,7 @@ def test_attachment_bytes_and_cells_keep_their_own_document_provenance(session):
     capture_email_thread(session, envelope, client=fixture_client())
     child = session.scalar(select(Document).where(Document.project_id == project.id, Document.sha256 == sha256(attachment).hexdigest()))
     assert child is not None and child.source_delivery_id is None
+    read_as_the_standing_pass_does(session, child)
     cell = session.scalar(select(SourceSegment).where(SourceSegment.document_id == child.id,
         SourceSegment.cell_range == "E2"))
     assert dereference_source_segment(child, cell, stored_file(child)) == "Attachment evidence"
@@ -325,8 +344,11 @@ def test_worker_cannot_insert_a_source_reading_around_the_append_command(session
     from sqlalchemy.exc import IntegrityError
     from corridor.models import SourceSegment
 
+    from corridor.models import Document
+
     project, _ = deliver(session, message_bytes(body="Maybe October?\n"))
     inbound = session.scalar(select(InboundMessage).where(InboundMessage.project_id == project.id))
+    read_as_the_standing_pass_does(session, session.get(Document, inbound.document_id))
     segment = session.scalar(select(SourceSegment).where(SourceSegment.document_id == inbound.document_id).order_by(SourceSegment.id).limit(1))
     with as_role(session, WORKER_CAPABILITY_LOGIN), pytest.raises(
         IntegrityError, match="requires its append command"
