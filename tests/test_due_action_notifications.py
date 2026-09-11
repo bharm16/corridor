@@ -20,7 +20,7 @@ from corridor import notifications
 from corridor.due_work import (
     DueActionNotificationDeclaration,
     DueWorkRefusal,
-    configure_due_action_notification,
+    configure_due_work,
     due_work_status,
 )
 from corridor.external_statements import (
@@ -586,7 +586,7 @@ def test_daily_summary_is_idempotent_within_a_window(session, project):
 
 
 def test_gate7_valid_configuration_enables_the_schedule(session, project):
-    schedule = configure_due_action_notification(
+    schedule = configure_due_work(
         session,
         DueActionNotificationDeclaration.released_hourly(
             project_id=project.id,
@@ -616,7 +616,7 @@ def test_gate7_invalid_configuration_refuses_and_writes_nothing(
     session, project, overrides
 ):
     with pytest.raises(DueWorkRefusal):
-        configure_due_action_notification(
+        configure_due_work(
             session,
             DueActionNotificationDeclaration.released_hourly(
                 project_id=project.id,
@@ -646,7 +646,7 @@ def test_gate7_model_budget_must_be_zero(session, project):
         **{**declaration.__dict__, "model_token_budget": 1}
     )
     with pytest.raises(DueWorkRefusal):
-        configure_due_action_notification(session, tampered, now=NOW)
+        configure_due_work(session, tampered, now=NOW)
 
 
 def test_gate7_escalation_contact_must_be_an_active_member(session, project):
@@ -657,7 +657,7 @@ def test_gate7_escalation_contact_must_be_an_active_member(session, project):
         session, other, _assignee(9), display_name="Foreign Contact"
     )
     with pytest.raises(DueWorkRefusal):
-        configure_due_action_notification(
+        configure_due_work(
             session,
             DueActionNotificationDeclaration.released_hourly(
                 project_id=project.id,

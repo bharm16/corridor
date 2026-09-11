@@ -27,7 +27,7 @@ from sqlalchemy import func, select
 from corridor.due_work import (
     EvidenceOutcomeCaptureDeclaration,
     HANDLER_EVIDENCE_OUTCOME_CAPTURE,
-    configure_evidence_outcome_capture,
+    configure_due_work,
     enqueue_due_work,
     run_due_work_once,
 )
@@ -318,7 +318,7 @@ def _committed_case(factory):
             _contract(case, cutoff=cutoff, protection_end=cutoff + (4 * HOUR)),
             now=frozen,
         )
-        schedule = configure_evidence_outcome_capture(
+        schedule = configure_due_work(
             setup,
             EvidenceOutcomeCaptureDeclaration.released_hourly(
                 project_id=project.id,

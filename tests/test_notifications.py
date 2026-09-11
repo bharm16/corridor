@@ -16,7 +16,7 @@ from sqlalchemy import func, select
 from corridor import notifications
 from corridor.due_work import (
     AssignmentNotificationDeclaration,
-    configure_assignment_notification,
+    configure_due_work,
 )
 from corridor.external_statements import (
     StatementScope,
@@ -513,7 +513,7 @@ def test_operations_delivery_view_counts_and_reports_enabled(
     assert view["deliveries"][0]["recipient"] == ASSIGNEE.subject
 
     # Recording a valid gate-7 configuration marks delivery enabled.
-    configure_assignment_notification(
+    configure_due_work(
         session,
         AssignmentNotificationDeclaration.released_hourly(
             project_id=project.id,

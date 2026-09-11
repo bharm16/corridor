@@ -26,7 +26,7 @@ from corridor.due_work import (
     HANDLER_PROJECT_PROCESSING,
     HandlerContract,
     ProjectProcessingDeclaration,
-    configure_project_processing,
+    configure_due_work,
     enqueue_due_work,
     run_due_work_once,
 )
@@ -612,7 +612,7 @@ def _declare_processing(factory, project_id, now):
             extractor_identity=EXTRACTOR_IDENTITY,
             starts_at=now.replace(minute=0, second=0, microsecond=0),
         )
-        configure_processing = configure_project_processing(setup, declaration, now=now)
+        configure_processing = configure_due_work(setup, declaration, now=now)
         schedule_id = configure_processing.id
         setup.commit()
     return schedule_id

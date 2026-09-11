@@ -21,7 +21,7 @@ from corridor.due_work import (
     HANDLER_RETENTION_SWEEP,
     DueWorkRefusal,
     RetentionSweepDeclaration,
-    configure_retention_sweep,
+    configure_due_work,
     due_work_status,
     enqueue_due_work,
     run_due_work_once,
@@ -103,7 +103,7 @@ def _project_with_due_content(session, *, due=True, slug_prefix="retention-sweep
 def _seed(factory, *, due=True):
     with factory() as setup:
         project, request = _project_with_due_content(setup, due=due)
-        configure_retention_sweep(
+        configure_due_work(
             setup,
             RetentionSweepDeclaration.released_weekly(
                 project_id=project.id,
@@ -265,12 +265,12 @@ def test_gate7_refuses_a_sweep_that_names_no_human_authority(runtime_database):
             starts_at=NOW,
         )
         with pytest.raises(DueWorkRefusal, match="human principal"):
-            configure_retention_sweep(
+            configure_due_work(
                 setup, replace(base, authorized_by="local:system"), now=NOW
             )
         with pytest.raises(DueWorkRefusal, match="human principal"):
-            configure_retention_sweep(
+            configure_due_work(
                 setup, replace(base, authorized_by="operations"), now=NOW
             )
         with pytest.raises(DueWorkRefusal, match="weekly UTC latest-only"):
-            configure_retention_sweep(setup, replace(base, cadence="hourly"), now=NOW)
+            configure_due_work(setup, replace(base, cadence="hourly"), now=NOW)

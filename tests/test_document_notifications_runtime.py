@@ -24,7 +24,7 @@ from corridor.documentation_checklist import confirm_interpretation, read_checkl
 from corridor.due_work import (
     DocumentNotificationDeclaration,
     DueWorkRefusal,
-    configure_document_notification,
+    configure_due_work,
     due_work_status,
     enqueue_due_work,
     run_due_work_once,
@@ -369,7 +369,7 @@ def test_committed_loss_discovers_and_delivers_through_the_runtime(runtime_datab
     ctx = _committed_loss(factory, index=7, register=False)
     now = datetime(2026, 8, 30, 7, 5, tzinfo=timezone.utc)
     with factory() as s:
-        configure_document_notification(
+        configure_due_work(
             s,
             DocumentNotificationDeclaration.released_hourly(
                 project_id=ctx["project_id"],
@@ -407,7 +407,7 @@ def test_competing_workers_deliver_each_notification_once(runtime_database):
     ctx = _committed_loss(factory, index=8, register=False)
     now = datetime(2026, 8, 30, 7, 5, tzinfo=timezone.utc)
     with factory() as s:
-        configure_document_notification(
+        configure_due_work(
             s,
             DocumentNotificationDeclaration.released_hourly(
                 project_id=ctx["project_id"],
@@ -456,7 +456,7 @@ def test_gate7_missing_or_invalid_config_keeps_delivery_disabled(runtime_databas
 
     with factory() as s:
         with pytest.raises(DueWorkRefusal):
-            configure_document_notification(
+            configure_due_work(
                 s,
                 DocumentNotificationDeclaration.released_hourly(
                     project_id=ctx["project_id"],

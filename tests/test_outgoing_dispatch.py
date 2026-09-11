@@ -24,7 +24,7 @@ import pytest
 from corridor import digests, outgoing_dispatch
 from corridor.due_work import (
     AssignmentNotificationDeclaration,
-    configure_assignment_notification,
+    configure_due_work,
 )
 from corridor.models import (
     AssignmentNotification,
@@ -481,7 +481,7 @@ def test_the_receipt_reports_the_pass_and_whether_delivery_is_enabled(
         "skipped": 0,
     }
 
-    configure_assignment_notification(
+    configure_due_work(
         session,
         AssignmentNotificationDeclaration.released_hourly(
             project_id=project.id,

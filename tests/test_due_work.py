@@ -37,7 +37,6 @@ from corridor.due_work import (
     claim_due_work,
     complete_due_work,
     configure_due_work,
-    configure_processing_health,
     due_work_status,
     enqueue_due_work,
     fail_due_work,
@@ -135,7 +134,7 @@ def test_processing_health_runs_due_to_receipt_to_status_without_domain_writes(
         )
         setup.flush()
         before = _domain_counts(setup, project.id)
-        schedule = configure_processing_health(
+        schedule = configure_due_work(
             setup,
             ProcessingHealthDeclaration.released_hourly(
                 project_id=project.id,
@@ -381,7 +380,7 @@ def test_invalid_gate_configuration_is_refused_without_a_job(runtime_database):
             timezone_name="America/Chicago",
         )
         with pytest.raises(DueWorkRefusal, match="hourly UTC"):
-            configure_processing_health(setup, declaration, now=now)
+            configure_due_work(setup, declaration, now=now)
         assert setup.scalars(
             select(DueWorkSchedule).where(DueWorkSchedule.project_id == project.id)
         ).all() == []
@@ -417,7 +416,7 @@ def test_changed_configuration_disables_prior_schedule_but_retains_context(
         )
         setup.add(project)
         setup.flush([project])
-        first = configure_processing_health(
+        first = configure_due_work(
             setup,
             ProcessingHealthDeclaration.released_hourly(
                 project_id=project.id,
@@ -426,7 +425,7 @@ def test_changed_configuration_disables_prior_schedule_but_retains_context(
             ),
             now=now,
         )
-        second = configure_processing_health(
+        second = configure_due_work(
             setup,
             ProcessingHealthDeclaration.released_hourly(
                 project_id=project.id,

@@ -24,7 +24,7 @@ from corridor.due_work import (
     HANDLER_EVENT_ADMISSION_REPROOF,
     HandlerContract,
     claim_due_work,
-    configure_event_admission_reproof,
+    configure_due_work,
     due_work_status,
     enqueue_due_work,
     run_due_work_once,
@@ -237,7 +237,7 @@ def _make_project(factory, now, *, setup=None):
                 selection_rule=SELECTION_RULE,
                 starts_at=now.replace(minute=0, second=0, microsecond=0),
             )
-            schedule = configure_event_admission_reproof(session, declaration, now=now)
+            schedule = configure_due_work(session, declaration, now=now)
             ids = (project.id, schedule.id)
     return ids
 

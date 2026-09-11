@@ -22,7 +22,7 @@ from corridor import notifications
 from corridor.due_work import (
     AssignmentNotificationDeclaration,
     DueWorkRefusal,
-    configure_assignment_notification,
+    configure_due_work,
     due_work_status,
     enqueue_due_work,
     run_due_work_once,
@@ -468,7 +468,7 @@ def test_committed_assignment_delivers_through_the_supervised_runtime(runtime_da
     ctx = _committed_constraint(factory)
     now = datetime(2026, 8, 30, 7, 5, tzinfo=timezone.utc)
     with factory() as s:
-        configure_assignment_notification(
+        configure_due_work(
             s,
             AssignmentNotificationDeclaration.released_hourly(
                 project_id=ctx["project_id"],
@@ -507,7 +507,7 @@ def test_competing_workers_deliver_a_notification_exactly_once(runtime_database)
     ctx = _committed_constraint(factory)
     now = datetime(2026, 8, 30, 7, 5, tzinfo=timezone.utc)
     with factory() as s:
-        configure_assignment_notification(
+        configure_due_work(
             s,
             AssignmentNotificationDeclaration.released_hourly(
                 project_id=ctx["project_id"],
@@ -559,7 +559,7 @@ def test_gate7_missing_or_invalid_config_keeps_delivery_disabled(runtime_databas
     # writes no schedule, so delivery remains disabled.
     with factory() as s:
         with pytest.raises(DueWorkRefusal):
-            configure_assignment_notification(
+            configure_due_work(
                 s,
                 AssignmentNotificationDeclaration.released_hourly(
                     project_id=ctx["project_id"],

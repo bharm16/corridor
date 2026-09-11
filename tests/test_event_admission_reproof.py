@@ -20,7 +20,7 @@ from corridor.due_work import (
     DueWorkRefusal,
     EventAdmissionReproofDeclaration,
     HANDLER_EVENT_ADMISSION_REPROOF,
-    configure_event_admission_reproof,
+    configure_due_work,
     _validate_stored_schedule,
 )
 from corridor.event_admission import (
@@ -259,7 +259,7 @@ def test_failed_newest_proof_is_not_recovered_automatically(session, project):
 
 
 def test_valid_declaration_persists_one_enabled_schedule(session, project):
-    schedule = configure_event_admission_reproof(
+    schedule = configure_due_work(
         session, _declaration(project.id, NOW), now=NOW
     )
     assert schedule.handler_key == HANDLER_EVENT_ADMISSION_REPROOF
@@ -277,10 +277,10 @@ def test_valid_declaration_persists_one_enabled_schedule(session, project):
 
 
 def test_a_second_configuration_disables_the_prior_schedule(session, project):
-    first = configure_event_admission_reproof(
+    first = configure_due_work(
         session, _declaration(project.id, NOW), now=NOW
     )
-    second = configure_event_admission_reproof(
+    second = configure_due_work(
         session,
         replace(
             _declaration(project.id, NOW),
@@ -312,7 +312,7 @@ def test_invalid_declaration_is_refused_without_writing_a_schedule(
     session, project, override, match
 ):
     with pytest.raises(DueWorkRefusal, match=match):
-        configure_event_admission_reproof(
+        configure_due_work(
             session, replace(_declaration(project.id, NOW), **override), now=NOW
         )
     assert (

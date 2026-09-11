@@ -31,7 +31,7 @@ from corridor.due_work import (
     HANDLER_REPORT_PUBLICATION,
     HandlerContract,
     ReportPublicationDeclaration,
-    configure_report_publication,
+    configure_due_work,
     due_work_status,
     enqueue_due_work,
     run_due_work_once,
@@ -184,7 +184,7 @@ def _configure(session, project_id: int, now: datetime, **overrides):
     )
     if overrides:
         declaration = replace(declaration, **overrides)
-    return configure_report_publication(session, declaration, now=now)
+    return configure_due_work(session, declaration, now=now)
 
 
 def _scheduled_project(factory, now: datetime, *, released_on=None, **overrides):

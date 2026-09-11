@@ -22,7 +22,7 @@ from sqlalchemy import func, select
 from corridor import notifications
 from corridor.due_work import (
     DueActionNotificationDeclaration,
-    configure_due_action_notification,
+    configure_due_work,
     due_work_status,
     enqueue_due_work,
     run_due_work_once,
@@ -480,7 +480,7 @@ def test_committed_reminder_delivers_through_the_supervised_runtime(runtime_data
     ctx = _committed_constraint(factory, due_date=date(2026, 9, 2))
     now = datetime(2026, 8, 30, 7, 5, tzinfo=timezone.utc)
     with factory() as s:
-        configure_due_action_notification(
+        configure_due_work(
             s,
             DueActionNotificationDeclaration.released_hourly(
                 project_id=ctx["project_id"],
@@ -538,7 +538,7 @@ def test_competing_workers_deliver_a_reminder_exactly_once(runtime_database):
     ctx = _committed_constraint(factory, due_date=date(2026, 9, 2))
     now = datetime(2026, 8, 30, 7, 5, tzinfo=timezone.utc)
     with factory() as s:
-        configure_due_action_notification(
+        configure_due_work(
             s,
             DueActionNotificationDeclaration.released_hourly(
                 project_id=ctx["project_id"],
@@ -577,7 +577,7 @@ def test_daily_summary_registers_only_on_the_summary_hour(runtime_database):
     factory = runtime_database.session_factory
     ctx = _committed_constraint(factory, due_date=date(2026, 9, 2))
     with factory() as s:
-        configure_due_action_notification(
+        configure_due_work(
             s,
             DueActionNotificationDeclaration.released_hourly(
                 project_id=ctx["project_id"],
