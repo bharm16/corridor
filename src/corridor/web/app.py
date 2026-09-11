@@ -406,6 +406,7 @@ from corridor.statement_lifecycle import (
     current_lineage_statement,
 )
 from corridor.evidence_investigator_shadow import observe_shadow_review
+from corridor.consequence_levels import MUST_HANDLE
 from corridor.packet_review import (
     LEAVE_OPEN,
     FocusedAnswer,
@@ -415,7 +416,16 @@ from corridor.packet_review import (
     focused_request,
     packet_request,
     read_review_items,
+    screen_binding,
     select_children,
+)
+from corridor.pilot_observations import (
+    JUDGMENT_CHOICES,
+    TriageOccurrence,
+    collect_triage_observations,
+    collection_is_pinned,
+    judgment_from_form,
+    minutes_from_form,
 )
 from corridor.operating_mode import is_adopted_baseline
 from corridor.project_portfolio import (
@@ -4723,8 +4733,10 @@ def _review_context(
     saved: dict | None = None,
     refusal: dict | None = None,
     errors: tuple = (),
+    judgment: dict | None = None,
 ) -> dict:
     reading = read_review_items(session, project_id=project.id, as_of=now)
+    binding = binding_for_session(session)
     opened = reading.item(opened_key) if opened_key else None
     landing = opened or (reading.items[0] if reading.items else None)
     focus = ui_primitives.focus_target(
@@ -4746,6 +4758,10 @@ def _review_context(
                 "guidance": _review_guidance(item),
                 "counts": _review_counts(shown),
                 "answers": (answers or {}) if is_open else {},
+                # The pilot's interrupting-packet sample is exactly the items
+                # Corridor placed at "Must handle before this issue"; the level
+                # is read from the item rather than derived a second time here.
+                "interrupting": item.consequence == MUST_HANDLE,
                 "open_url": (
                     f"/review/{project.slug}?item={quote(item.item_key, safe='')}"
                 ),
@@ -4755,6 +4771,7 @@ def _review_context(
         "project": project,
         "items": tuple(views),
         "reading": reading,
+        "binding": binding,
         "opened": opened,
         "focus": focus,
         "errors": tuple(errors),
@@ -4763,6 +4780,12 @@ def _review_context(
         "defer_until": "",
         "focused_outcomes": _FOCUSED_OUTCOME_LABELS,
         "leave_open": LEAVE_OPEN,
+        # #846: the measurement controls belong to the pinned pilot
+        # configuration, and to nothing else. Every other deployment renders a
+        # review screen with no measurement on it at all.
+        "judgment_offered": collection_is_pinned(binding),
+        "judgment_choices": JUDGMENT_CHOICES,
+        "judgment_answer": judgment or {},
     }
 
 
@@ -4862,7 +4885,7 @@ def review_source_changes(
     project = _project(session, slug, principal)
     now = clock()
     context = _review_context(session, project, now=now, opened_key=item)
-    return _render_review_response(request, session, context, principal=principal, record_opening=True)
+    return _render_review_response(request, context, principal=principal, record_opening=True)
 
 
 @app.get("/review/{slug}/source")
@@ -4897,6 +4920,55 @@ def open_review_source(
                       principal_subject=principal.subject, at=now, binding=binding_for_session(session),
                       item_key=item, delta_id=delta_id, source_row_id=source_row_id, link_role=role)
     return RedirectResponse(url, status_code=303)
+
+
+# --- The pilot's contemporaneous triage observation (#846) -----------------
+#
+# The contract asks the coordinator to mark each interrupting packet as
+# genuinely required *at the moment of triage* and to log the minutes spent
+# rebuilding context outside Corridor for it then. Both Save screens carry the
+# question, because all four decisions -- Apply, Keep current, Needs
+# coordination and Defer -- are that moment.
+#
+# Two things about the shape. The occurrence comes back from the page rather
+# than from a fresh reading: the judgment is of the packet that was displayed,
+# at the consequence level and rule version it was displayed at, and re-deriving
+# those after the Save would record a judgment of whatever the packet became.
+# And the collection happens after the decision has committed, through a seam
+# that raises nothing, because measurement observes a project decision and
+# never decides one.
+
+
+def _triage_form(
+    judgment: str, minutes: str, cutoff: str, consequence: str, rule_version: str
+) -> dict[str, str]:
+    """What the rendered page sent back: the answers, and the occurrence shown."""
+
+    return {
+        "judgment": judgment,
+        "minutes": minutes,
+        "cutoff": cutoff,
+        "consequence": consequence,
+        "rule_version": rule_version,
+    }
+
+
+def _observe_triage(project: Project, item, *, principal, binding, form) -> None:
+    """Collect this triage act's observations; a failure changes nothing saved."""
+
+    collect_triage_observations(
+        project_id=project.id,
+        actor=principal.subject,
+        occurrence=TriageOccurrence(
+            item_key=item.item_key,
+            cutoff=form["cutoff"],
+            consequence_level=form["consequence"],
+            consequence_rule_version=form["rule_version"],
+        ),
+        binding=screen_binding(item, binding),
+        judgment=judgment_from_form(form["judgment"]),
+        minutes=minutes_from_form(form["minutes"]),
+    )
 
 
 # --- What both review Save screens say when they refuse --------------------
@@ -4971,6 +5043,11 @@ def save_source_changes(
     outcome: str = Form(...),
     child: list[str] = Form(default=[]),
     defer_until: str = Form(""),
+    judgment: str = Form(""),
+    judgment_minutes: str = Form(""),
+    judgment_cutoff: str = Form(""),
+    judgment_consequence: str = Form(""),
+    judgment_rule_version: str = Form(""),
     principal: HumanPrincipal = Depends(get_human_principal),
     session: Session = Depends(get_session),
     clock=Depends(get_review_clock),
@@ -4979,6 +5056,10 @@ def save_source_changes(
 
     project = _project(session, slug, principal, designation=access.COORDINATION)
     now = clock()
+    judgment_form = _triage_form(
+        judgment, judgment_minutes, judgment_cutoff, judgment_consequence,
+        judgment_rule_version,
+    )
     selected = [int(value) for value in child if value.strip().isdigit()]
     reading = read_review_items(session, project_id=project.id, as_of=now)
     item = reading.item(item_key)
@@ -5021,6 +5102,7 @@ def save_source_changes(
             opened_key=item_key,
             selected=selected,
             errors=tuple(errors),
+            judgment=judgment_form,
             status_code=400,
         )
 
@@ -5050,6 +5132,7 @@ def save_source_changes(
                     for value in missing
                 ),
             ),
+            judgment=judgment_form,
             status_code=409,
         )
 
@@ -5078,10 +5161,12 @@ def save_source_changes(
             opened_key=item_key,
             selected=selected,
             refusal=_review_screen_refused(exc),
+            judgment=judgment_form,
             status_code=409,
         )
 
-    result = resolve_review_packet(session, act, binding=binding_for_session(session))
+    binding = binding_for_session(session)
+    result = resolve_review_packet(session, act, binding=binding)
     if result.status != "saved":
         return _review_render(
             request,
@@ -5092,10 +5177,14 @@ def save_source_changes(
             opened_key=item_key,
             selected=[row.delta_id for row in result.preserved_selections],
             refusal=_a_change_moved_under_the_reading(result, chosen="selected"),
+            judgment=judgment_form,
             status_code=409,
         )
 
     session.commit()
+    _observe_triage(
+        project, item, principal=principal, binding=binding, form=judgment_form
+    )
     return _review_render(
         request,
         session,
@@ -5146,6 +5235,11 @@ def save_focused_answers(
     answer_person: list[str] = Form(default=[]),
     answer_organization: list[str] = Form(default=[]),
     answer_return: list[str] = Form(default=[]),
+    judgment: str = Form(""),
+    judgment_minutes: str = Form(""),
+    judgment_cutoff: str = Form(""),
+    judgment_consequence: str = Form(""),
+    judgment_rule_version: str = Form(""),
     principal: HumanPrincipal = Depends(get_human_principal),
     session: Session = Depends(get_session),
     clock=Depends(get_review_clock),
@@ -5154,6 +5248,10 @@ def save_focused_answers(
 
     project = _project(session, slug, principal, designation=access.COORDINATION)
     now = clock()
+    judgment_form = _triage_form(
+        judgment, judgment_minutes, judgment_cutoff, judgment_consequence,
+        judgment_rule_version,
+    )
     lists = (
         answer_outcome,
         answer_source,
@@ -5176,6 +5274,7 @@ def save_focused_answers(
                 "The answers did not arrive as this screen sends them, so "
                 "nothing was written. Open the item again and answer it."
             ),
+            judgment=judgment_form,
             status_code=400,
         )
 
@@ -5250,6 +5349,7 @@ def save_focused_answers(
                         message=str(exc),
                     ),
                 ),
+                judgment=judgment_form,
                 status_code=400,
             )
         return _review_render(
@@ -5261,10 +5361,12 @@ def save_focused_answers(
             opened_key=item_key,
             answers=typed,
             refusal=_review_screen_refused(exc),
+            judgment=judgment_form,
             status_code=409,
         )
 
-    result = resolve_review_packet(session, act, binding=binding_for_session(session))
+    binding = binding_for_session(session)
+    result = resolve_review_packet(session, act, binding=binding)
     if result.status != "saved":
         return _review_render(
             request,
@@ -5275,10 +5377,14 @@ def save_focused_answers(
             opened_key=item_key,
             answers=typed,
             refusal=_a_change_moved_under_the_reading(result, chosen="answered"),
+            judgment=judgment_form,
             status_code=409,
         )
 
     session.commit()
+    _observe_triage(
+        project, item, principal=principal, binding=binding, form=judgment_form
+    )
     answered = len(act.children)
     return _review_render(
         request,
@@ -5332,6 +5438,7 @@ def _review_render(
     saved: dict | None = None,
     refusal: dict | None = None,
     errors: tuple = (),
+    judgment: dict | None = None,
     status_code: int = 200,
 ):
     """Re-read after a write, so what the coordinator sees is what now stands."""
@@ -5346,14 +5453,15 @@ def _review_render(
         saved=saved,
         refusal=refusal,
         errors=errors,
+        judgment=judgment,
     )
-    return _render_review_response(request, session, context, principal=principal, status_code=status_code)
+    return _render_review_response(request, context, principal=principal, status_code=status_code)
 
 
-def _render_review_response(request, session, context, *, principal, status_code=200, record_opening=False):
+def _render_review_response(request, context, *, principal, status_code=200, record_opening=False):
     """Record every actual presentation, including Save and refusal responses."""
     response = TEMPLATES.TemplateResponse(request, "review.html", context, status_code=status_code)
-    binding = binding_for_session(session)
+    binding = context["binding"]
     for view in context["items"]:
         emit_packet_surfacing(context["reading"], view["item"],
                               principal_subject=principal.subject, binding=binding)

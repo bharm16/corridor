@@ -103,6 +103,61 @@ from a missing stream. A missing census leaves volume and coverage unavailable;
 a missing interaction observation leaves a zero-click result unavailable.
 Human review minutes never come from elapsed browser sessions.
 
+## Collect the human observations (#846)
+
+Two of the contract's inputs are judgments a person makes while they work, and
+the contract asks for them **at the moment of triage**: whether an interrupting
+packet genuinely needed handling before the issue, and the minutes spent
+rebuilding context outside Corridor to answer it. The Review screen asks both
+on the same form as the decision, so Apply, Keep current, Needs coordination
+and Defer each carry one, and records them after that decision has committed.
+
+The controls appear only where the pinned cohort declaration says this
+deployment is the measured pilot: `enabled_feature_flags` in
+`CORRIDOR_ANALYTICS_BINDING_FILE` contains `pilot_measurement_collection`. It
+is the same declaration the cohort table already pins, so there is no second
+switch to forget, and every collected observation binds the flag state it was
+collected under. A submission that arrives without that flag records nothing.
+
+What the surface deliberately does not do is decide the population. The
+interruption denominator is built from `packet_surfacing` presentation records,
+so an interrupting packet that was ignored, abandoned or left open at close
+stays in it and is reported as `unjudged_interrupting_packets`. No option is
+preselected and an empty minutes box records no observation, so an unanswered
+question stays unanswered rather than becoming a default judgment and a zero.
+Each observation names the presentation it answers -- the item key, the cutoff
+of the reading that displayed it, the level shown and the rule that derived the
+level -- and is dated at that cutoff, so the same rendered form submitted twice
+is one observation and a judgment is never re-attached to whatever the packet
+became. A refused or stale Save writes no observation and keeps the answers on
+the re-rendered form; a measurement failure is logged and leaves the recorded
+project decision exactly as it stands.
+
+## Import observations of work performed outside Corridor
+
+Operations minutes, the pre-adoption baseline the coordinator logged, and an
+artifact somebody repaired in a spreadsheet are real work Corridor cannot watch
+happen. `make pilot-observations` reads them from a governed declaration file
+into the same collector:
+
+```bash
+make pilot-observations ARGS="--input /governed/external-observations.json --output /governed/external-observations.jsonl"
+```
+
+The file declares `pilot-observation-import-v1`, an optional default `binding`,
+and one `observations` entry per observation carrying its `family`, a zoned
+`occurred_at`, its `payload` and optionally its own `binding`. The output is
+the #558 JSONL `--events` reads above. Every entry is validated before any of
+it is emitted, so a rejected file leaves the stream untouched.
+
+It refuses, by position and with the reason: a presentation, decision, capture
+or release family, because those are Corridor's own account of what Corridor
+did and a denominator assembled from a file is not a measurement; a
+`packet_usefulness` or `child_usefulness` sample, because the contract takes
+those at triage and an imported one is a retrospective relabelling; an instant
+with no time zone; and a binding with no customer, environment and database
+identity, which no measurement period could ever claim.
+
 ## Collect and export
 
 `measurement_collection.collect_observation(event)` validates explicit

@@ -29,6 +29,11 @@ help:
 pilot-measurement:
 	uv run python -m corridor.pilot_measurement_cli $(ARGS)
 
+.PHONY: pilot-observations
+# Import observations of work performed outside Corridor into the #532 collector.
+pilot-observations:
+	uv run python -m corridor.pilot_observation_cli $(ARGS)
+
 .PHONY: pilot-report pilot-checkpoint
 # Reproduce economics from native measurement receipts and predeclared evidence.
 pilot-report:
