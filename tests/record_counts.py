@@ -1,17 +1,16 @@
 """Read every row one project holds, so "the refused act wrote nothing" has a name.
 
 A refusal leaves the Project Record exactly as it was. That is a released
-invariant, and it was asserted twenty-seven times without ever being named:
-twenty-two test bodies read four models before the act and the same four
-after it, and ten more modules wrapped the idiom in a private helper.
+invariant, and it was asserted thirty-two times without ever being named:
+twenty-two test bodies read three or four models before the act and the
+same models after it, and ten modules wrapped the idiom in a private helper.
 
 The helpers are why this is a correctness problem rather than a verbosity
-one. They hand-picked their tables, and the hands did not agree --
-``_ledger_counts`` watched 3 tables, two ``_spine_counts`` watched 5, one
-watched 7 and one watched 8, out of the 208 a project can hold. A refusal
-test that reads five tables passes while the write it forbids lands in the
-other two hundred and three, and the module that chose five had no way to
-know that.
+one. They hand-picked their tables, and the hands did not agree: the eight
+retired here watched 3, 3, 5, 5, 5, 6, 7 and 8 tables, out of the 208 a
+project can hold. A refusal test that reads five tables passes while the
+write it forbids lands in the other two hundred and three, and the module
+that chose five had no way to know that.
 
 So the table set is not chosen here either. ``committed_scenario_support``
 already derives the whole project graph from the ORM metadata and refuses

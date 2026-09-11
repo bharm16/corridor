@@ -1624,12 +1624,13 @@ def _row_count_subjects(node: ast.AST) -> list[str]:
 def test_the_refused_act_wrote_nothing_is_read_from_one_derived_table_set():
     """One reading of "the act left the record exactly as it was" (#846).
 
-    The invariant was asserted twenty-seven times and named nowhere. Ten
+    The invariant was asserted thirty-two times and named nowhere. Ten
     modules wrapped it in a private helper and each helper chose its own
-    tables: three, five, five, five, six, seven and eight, out of the two
-    hundred and eight a project can hold. A refusal test that reads five
-    tables passes while the write it forbids lands in the other two hundred
-    and three, and the module that chose five had no way to know.
+    tables; the eight retired watched three, three, five, five, five, six,
+    seven and eight, out of the two hundred and eight a project can hold. A
+    refusal test that reads five tables passes while the write it forbids
+    lands in the other two hundred and three, and the module that chose
+    five had no way to know.
 
     So this rule is about the choosing. A function that counts rows of two
     different tables is taking that reading by hand: either it counts each

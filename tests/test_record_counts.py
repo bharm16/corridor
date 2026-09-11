@@ -33,6 +33,9 @@ RETIRED_HAND_PICKED_SETS: dict[str, frozenset[str]] = {
             "support_assessments",
         }
     ),
+    "test_demo._project_counts": frozenset(
+        {"candidates", "dependencies", "audit_log"}
+    ),
     "test_human_principals._project_counts": frozenset(
         {"candidates", "dependencies", "assertions", "evidence_links", "audit_log"}
     ),
