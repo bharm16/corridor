@@ -47,6 +47,17 @@ one would assert an authority rule the write path does not enforce (#839).  A
 row that is not blocked names nobody, because inventing an owner for work
 nobody has to do is how a register becomes a queue.
 
+**A blocked row also says what has been done about it (#842).**  Naming an
+owner answers "who acts next" and leaves "and has anybody?" unanswered, which
+is how a source sits blocked for a fortnight while everybody assumes somebody
+is on it.  So a row whose processing failed, and any row a repair was recorded
+against, carries the repair standing beside the owner: what operations did,
+when, by whom, and whether the source has been read since.  It is read from the
+receipt ``operations_repair`` writes, which is the same receipt the standing
+pass reads to take the source again -- so an engineer who repaired a project by
+hand appears here exactly as an operator does, which is what the 2026-09-10
+audit asked for.
+
 **A source no extractor reads says so, instead of waiting forever.**  Only some
 declared kinds are ever handed to an extractor, and a ``plan`` PDF or an
 undeclared source registered as ``other`` is never one of them — which used to
@@ -81,6 +92,11 @@ from corridor.models import (
     SourceDeliveryConfirmation,
 )
 from corridor.extraction_run_queries import extractable_document
+from corridor.operations_repair import (
+    CORRECTED_MAPPING,
+    RepairReceipt,
+    repair_receipts,
+)
 from corridor.project_workflow import COORDINATOR_OWNER, OPERATIONS_OWNER
 from corridor.review_packet_reading import current_deltas, open_deltas
 from corridor.source_delivery import (
@@ -128,6 +144,26 @@ class ProcessingOutput:
 
 
 @dataclass(frozen=True, slots=True)
+class RepairStanding:
+    """What operations has done about one blocked source, and what came of it.
+
+    ``procedure`` is empty when nothing has been recorded, which is a fact
+    about this source rather than a gap: the sentence says so, and a screen
+    never has to decide what an absent receipt means.
+    """
+
+    procedure: str
+    performed_by: str
+    performed_at: datetime | None
+    read_again: bool
+    sentence: str
+
+    @property
+    def recorded(self) -> bool:
+        return bool(self.procedure)
+
+
+@dataclass(frozen=True, slots=True)
 class RegisterRow:
     """One delivery — or one registered source that names none — and its state."""
 
@@ -153,6 +189,7 @@ class RegisterRow:
     confirmed_by: str
     confirmed_at: datetime | None
     output: ProcessingOutput | None
+    repair: RepairStanding | None = None
 
     @property
     def is_blocked(self) -> bool:
@@ -295,6 +332,7 @@ class _DocumentContext:
     replaced_by: Mapping[int, str]
     replaces: Mapping[int, str]
     families: Mapping[int, str]
+    repairs: Mapping[int, RepairReceipt]
 
     @classmethod
     def read(
@@ -303,7 +341,7 @@ class _DocumentContext:
         ids = [int(document.id) for document in documents]
         names = {int(document.id): document.filename for document in documents}
         if not ids:
-            return cls({}, {}, {}, {}, {}, {}, {}, {})
+            return cls({}, {}, {}, {}, {}, {}, {}, {}, {})
 
         quarantines = {
             int(document_id): str(reason)
@@ -385,6 +423,10 @@ class _DocumentContext:
             replaced_by=replaced_by,
             replaces=replaces,
             families=families,
+            # The newest repair recorded against each of this project's
+            # sources (#842). One grouped statement like every other member
+            # here, and the only `audit_log` read this page makes.
+            repairs=repair_receipts(session, document_ids=ids),
         )
 
 
@@ -540,6 +582,91 @@ _NEXT_ACTIONS: Mapping[str, tuple[str, str]] = {
 }
 
 
+# --- What has been done about a blocked source (#842) ----------------------
+#
+# The three states a repair procedure exists for: the two the standing pass
+# excludes permanently, and the one it retries on its own. A row in any of
+# them says what has been done, and so does any row a repair was recorded
+# against, because a repair that worked must not disappear from the page the
+# moment it works -- an unseen rescue is the cost the 2026-09-10 audit said
+# was going unmeasured.
+_REPAIRABLE_STATES = frozenset({"parse_failed", "unreadable", "processing_failed"})
+
+_NO_REPAIR = "No repair has been recorded for this source."
+
+_DEFAULT_PROCEDURE_WORDS = (
+    "Corridor Operations put this source back to the processing pass."
+)
+
+
+def _procedure_words(receipt: RepairReceipt) -> str:
+    """What was done, naming the mapping revision where one is the reason.
+
+    The registration is named rather than described, because which revision a
+    reading happened under is the fact a later reader needs and "corrected" is
+    the person's own word for it, recorded when they registered it.
+    """
+
+    if receipt.procedure != CORRECTED_MAPPING:
+        return _DEFAULT_PROCEDURE_WORDS
+    return (
+        "Corridor Operations put this source back to the processing pass to be "
+        f"read under field mapping {receipt.under_mapping}."
+    )
+
+
+# What the recorded outcome adds, where the act did something the pass did not
+# do later. A re-admission adds nothing: the next sentence says whether the
+# pass has taken it.
+_OUTCOME_WORDS: Mapping[str, str] = {
+    "recovered": "Its file was read again, and this time it parsed.",
+    "still_failed": "Its file was read again, and it did not parse.",
+}
+
+_READ_SINCE = "It has been read since; the state beside this is that reading."
+_NOT_READ_SINCE = "Nothing has read it since."
+
+
+def _repair(
+    state: str, document_id: int | None, context: "_DocumentContext"
+) -> RepairStanding | None:
+    """The repair standing of one row, or nothing for a row that has no use for one."""
+
+    receipt = (
+        None if document_id is None else context.repairs.get(int(document_id))
+    )
+    if receipt is None:
+        if state not in _REPAIRABLE_STATES:
+            return None
+        return RepairStanding(
+            procedure="",
+            performed_by="",
+            performed_at=None,
+            read_again=False,
+            sentence=_NO_REPAIR,
+        )
+    # Whether anything has read this source since the repair, asked of the run
+    # the receipt names rather than of the clock: a receipt and the reading it
+    # repairs can share one transaction's `now()`, and the run identity cannot
+    # tie.
+    run = None if document_id is None else context.runs.get(int(document_id))
+    read_again = run is not None and int(run.id) > (
+        receipt.read_through_run_id or 0
+    )
+    parts = [
+        _procedure_words(receipt),
+        _OUTCOME_WORDS.get(receipt.outcome, ""),
+        _READ_SINCE if read_again else _NOT_READ_SINCE,
+    ]
+    return RepairStanding(
+        procedure=receipt.procedure,
+        performed_by=receipt.performed_by,
+        performed_at=receipt.performed_at,
+        read_again=read_again,
+        sentence=" ".join(part for part in parts if part),
+    )
+
+
 def _delivery_row(
     delivery: SourceDelivery,
     *,
@@ -578,6 +705,9 @@ def _delivery_row(
         confirmed_by="" if confirmation is None else confirmation.confirmed_by_principal,
         confirmed_at=None if confirmation is None else confirmation.confirmed_at,
         output=output,
+        repair=_repair(
+            state, None if document is None else int(document.id), context
+        ),
     )
 
 
@@ -614,6 +744,7 @@ def _document_row(document: Document, *, context: _DocumentContext) -> RegisterR
         confirmed_by="",
         confirmed_at=None,
         output=output,
+        repair=_repair(state, int(document.id), context),
     )
 
 
