@@ -560,6 +560,28 @@ def test_a_stored_link_reads_back_as_a_status_not_a_boolean():
     assert evidence_link_locator_validation_status(_StoredCheck(False)) == INVALID
 
 
+def test_the_legacy_stored_check_can_never_report_a_retired_locator_scheme():
+    """A boolean has no way to say ``not_re_readable``, so this reader cannot.
+
+    The Constraint log's ``AssertionView`` carries this reader's answer, and
+    its comment used to describe the field as the Source Passage Check itself.
+    It is the stored column projected into that vocabulary: whether the check
+    ran, and what it recorded when it did. Discovering that a locator scheme
+    has been retired takes the replay, which this projection never performs.
+
+    The status family still holds all four -- the readers that do replay need
+    the fourth -- so what is pinned here is the reachable set of this one
+    function, over its whole input domain: no link, and both booleans.
+    """
+    reachable = {
+        evidence_link_locator_validation_status(link)
+        for link in (None, _StoredCheck(True), _StoredCheck(False))
+    }
+
+    assert reachable == {NOT_CHECKED, VALID, INVALID}
+    assert NOT_RE_READABLE in LOCATOR_VALIDATION_STATUSES
+
+
 def test_no_screen_reads_the_retired_column():
     """"No new code reads it" is a property of the tree, not a convention.
 

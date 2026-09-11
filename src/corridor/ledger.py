@@ -73,9 +73,16 @@ class AssertionView:
     filename: str | None
     page_no: int | None
     quote: str | None
-    # The Source Passage Check for this claim's own locator (ADR-0082). A
-    # claim with no supporting document has not been checked, which the old
-    # boolean could only render as a failure.
+    # The legacy stored check read in ADR-0082's status vocabulary, not the
+    # replay that vocabulary names. This is `evidence_links.verified` projected
+    # by `evidence_link_locator_validation_status`, so it says what was recorded
+    # when the link was written, not what the locator dereferences to now.
+    # Three of the four statuses can appear: `not_checked` for a claim with no
+    # supporting document at all -- which the old boolean could only render as a
+    # failure -- and otherwise `valid` or `invalid` for the stored true/false.
+    # `not_re_readable` cannot: a retired locator scheme is something only the
+    # replay discovers, and a boolean has no way to say it. The status family
+    # keeps all four for the readers that do replay.
     locator_validation_status: str
     document_date: date | None
     text_source: str | None
