@@ -40,4 +40,6 @@ Ordinary software helper names are outside this construction-terminology gate. A
 
 If a proposal would change an accepted domain decision, identify that conflict before editing. Cite the ADR and describe the change in plain language. Terminology work must not silently grant authority, introduce a lifecycle, change a calculation, or settle an open policy question.
 
+Two accepted decisions can describe the same concept on two different runtime paths without conflicting. A Follow-up Plan is the worked example: [the ADR-0038 and ADR-0085 crosswalk](../adr-0038-adr-0085-crosswalk.md) says which semantics apply to a legacy project and which to an adopted-baseline one, and why neither ADR's metadata changes. Read it before concluding that either decision has outgrown its recorded scope.
+
 The [complete glossary terminology review](../research/glossary-terminology-review-2026-08-27.md) records all adopted recommendations, their primary sources, alternatives, and boundaries. It incorporates the [Key dates research](../research/milestone-terminology-2026-08-27.md) and builds on the [initial construction-language research](../research/construction-industry-terminology-2026-08-27.md); these notes locate evidence but do not replace source verification for a new proposal.
