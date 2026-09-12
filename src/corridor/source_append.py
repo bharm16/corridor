@@ -37,6 +37,7 @@ from corridor.models import (
     Fact,
     InboundThreadReading,
     MinutesCapture,
+    MinutesQuestionDisposition,
     RecordedVerbalOrigin,
     SourceFactAppendReceipt,
     SourceSegment,
@@ -356,6 +357,58 @@ def append_minutes_capture(session: Session, *, project_id: int, document_id: in
     identifier = session.scalar(select(func.append_minutes_capture(project_id, document_id,
         extraction_run_id, source_family, source_revision, input_sha256, accepted_revision_id, _jsonb(output))))
     return session.get_one(MinutesCapture, int(identifier))
+
+
+def append_minutes_question_disposition(
+    session: Session,
+    *,
+    project_id: int,
+    capture_id: int,
+    source_family: str,
+    segment_id: int,
+    question_identity: str,
+    disposition: str,
+    reason_code: str,
+    detail: dict,
+    content_sha256: str,
+    decided_by: str,
+    decision_generation: int,
+    evidence_segment_id: int | None = None,
+    produced_delta_ids: Sequence[int] | None = None,
+    supersedes_id: int | None = None,
+) -> MinutesQuestionDisposition:
+    """Append one disposition of a source question, or return the replay's row (#833)."""
+
+    require_source_project(session, project_id)
+    identifier = session.scalar(
+        select(
+            func.append_minutes_question_disposition(
+                project_id,
+                capture_id,
+                source_family,
+                segment_id,
+                question_identity,
+                disposition,
+                reason_code,
+                evidence_segment_id,
+                cast(
+                    bindparam(
+                        None,
+                        list(produced_delta_ids)
+                        if produced_delta_ids is not None
+                        else None,
+                    ),
+                    ARRAY(BigInteger),
+                ),
+                _jsonb(detail),
+                content_sha256,
+                decided_by,
+                decision_generation,
+                supersedes_id,
+            )
+        )
+    )
+    return session.get_one(MinutesQuestionDisposition, int(identifier))
 
 
 def append_support_assessment(

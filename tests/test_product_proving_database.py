@@ -304,8 +304,13 @@ def test_public_fingerprint_discovers_all_current_tables_and_sequences_read_only
     # own per-delta unique, and one more shared predicate function joins the
     # two every terminal writer already calls. A column, two constraints and a
     # function move the digest and neither count.
-    assert fingerprint.table_count == 235
-    assert fingerprint.sequence_count == 214
+    # #833 gives every source question a permitted ending:
+    # `minutes_question_dispositions`, one append-only relation keyed by its own
+    # bigserial, so one table and one sequence. Its command, its guard trigger
+    # and its RLS policies are schema objects the digest reads and neither count
+    # does.
+    assert fingerprint.table_count == 236
+    assert fingerprint.sequence_count == 215
     assert fingerprint.schema_object_count > 0
     assert len(fingerprint.schema_sha256) == 64
     assert [item.name for item in fingerprint.tables] == sorted(

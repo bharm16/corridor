@@ -195,6 +195,7 @@ __all__ = [  # noqa: F405
     "Milestone",
     "MilestoneRegistration",
     "MinutesCapture",
+    "MinutesQuestionDisposition",
     "NEW_ASSIGNMENT_NOTIFICATION_CATEGORY",
     "NUMBERING_SCHEMES",
     "ORG_TYPES",

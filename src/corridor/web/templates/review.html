@@ -125,14 +125,139 @@
     Leaving an item records nothing.
   </p>
 
-  {%- if reading.source_questions %}
+  {#
+    Statements to review (#833). Each is a source question with a permitted
+    ending, never a display-only line: the reason it carries maps to one row of
+    the matrix, and the coordinator resolves it from the source, records what
+    the source does or does not say, asks for a clarification, or records it
+    out of scope. There is no generic Dismiss, and only these actions drop it
+    from the waiting count. `question_views` carries each question with the
+    catalog choices its resolve control needs.
+  #}
+  {%- if question_views %}
   <section aria-label="Statements to review">
     <h2>Statements to review</h2>
-    {%- for question in reading.source_questions %}
+    {%- for view in question_views %}
+    {%- set q = view.question %}
     <article class="item">
-      <p>{{ question.filename }}{% if question.page_no %}, page {{ question.page_no }}{% endif %}</p>
-      <blockquote>{{ question.text }}</blockquote>
-      <p>{{ question.reasons|join("; ") }}</p>
+      <p>{{ q.filename }}{% if q.page_no %}, page {{ q.page_no }}{% endif %}</p>
+      <blockquote>{{ q.text }}</blockquote>
+      <p>{{ q.reasons|join("; ") }}</p>
+      <form method="post" action="/review/{{ project.slug }}/question">
+        {{ csrf_field() }}
+        <input type="hidden" name="question_id" value="{{ q.question_id }}">
+        <input type="hidden" name="segment_id" value="{{ q.segment_id }}">
+
+        {%- if "resolve" in q.permitted_actions %}
+        <fieldset class="answer">
+          <legend>Resolve this from the source</legend>
+          {%- if q.resolution_dimension == "organization" %}
+          {% call ui.field(view.id ~ "-org", "Which registered party does the source attribute this to?") %}
+          <select id="{{ view.id }}-org" name="resolve_organization">
+            <option value="">Choose a registered organization</option>
+            {%- for value, text in view.options.get("organizations", []) %}
+            <option value="{{ value }}">{{ text }}</option>
+            {%- endfor %}
+          </select>
+          {% endcall %}
+          {%- elif q.resolution_dimension == "person" %}
+          {% call ui.field(view.id ~ "-person", "Which named person said this?") %}
+          <select id="{{ view.id }}-person" name="resolve_person">
+            <option value="">No specific person</option>
+            {%- for value, text in view.options.get("people", []) %}
+            <option value="{{ value }}">{{ text }}</option>
+            {%- endfor %}
+          </select>
+          {% endcall %}
+          {%- elif q.resolution_dimension == "scope" %}
+          <fieldset>
+            <legend>Which Utility Conflict(s) does the source's own passage cover?</legend>
+            {%- for value, text in view.options.get("subjects", []) %}
+            <label><input type="checkbox" name="resolve_scope" value="{{ value }}"> {{ text }}</label><br>
+            {%- endfor %}
+          </fieldset>
+          {%- elif q.resolution_dimension == "timing" %}
+          {% call ui.field(view.id ~ "-timing", "Which Promised timing does the source state?") %}
+          <select id="{{ view.id }}-timing" name="resolve_timing">
+            <option value="">Choose the timing the source states</option>
+            {%- for value, text in view.options.get("timings", []) %}
+            <option value="{{ value }}">{{ text }}</option>
+            {%- endfor %}
+          </select>
+          {% endcall %}
+          {%- elif q.resolution_dimension in ("predecessor", "new_or_predecessor") %}
+          {% call ui.field(view.id ~ "-predecessor", "Which earlier Commitment does this update?") %}
+          <select id="{{ view.id }}-predecessor" name="resolve_predecessor">
+            <option value="">Choose the earlier Commitment</option>
+            {%- for value, text in view.options.get("predecessors", []) %}
+            <option value="{{ value }}">{{ text }}</option>
+            {%- endfor %}
+          </select>
+          {% endcall %}
+          {%- if q.resolution_dimension == "new_or_predecessor" %}
+          <label><input type="checkbox" name="resolve_new_commitment" value="1"> This is a new Commitment, not an update</label>
+          {%- endif %}
+          {%- endif %}
+          <button type="submit" name="action" value="resolve">Resolve and re-enter comparison</button>
+        </fieldset>
+        {%- endif %}
+
+        {%- if "interpret" in q.permitted_actions %}
+        <fieldset class="answer">
+          <legend>Record what the source says</legend>
+          {% call ui.field(view.id ~ "-interpret",
+               "The source does not make this assertion. Record what it does say.",
+               "This is recorded as your reading of the source; it never becomes an accepted value.") %}
+          <input type="text" id="{{ view.id }}-interpret" name="interpretation">
+          {% endcall %}
+          <button type="submit" name="action" value="interpret">Record this interpretation</button>
+        </fieldset>
+        {%- endif %}
+
+        {%- if "clarify" in q.permitted_actions %}
+        <fieldset class="answer">
+          <legend>Ask for a clarification</legend>
+          {% call ui.field(view.id ~ "-question", "What exactly must be clarified?") %}
+          <input type="text" id="{{ view.id }}-question" name="clarification_question">
+          {% endcall %}
+          {% call ui.field(view.id ~ "-owes", "Who owes that answer?") %}
+          <input type="text" id="{{ view.id }}-owes" name="responsible_party">
+          {% endcall %}
+          <button type="submit" name="action" value="clarify">Record a clarification request</button>
+        </fieldset>
+        {%- endif %}
+
+        {%- if "exclude" in q.permitted_actions %}
+        <fieldset class="answer">
+          <legend>Record out of this project's scope</legend>
+          {% call ui.field(view.id ~ "-exclude", "Why is this statement outside this project's scope?") %}
+          <input type="text" id="{{ view.id }}-exclude" name="exclusion_reason">
+          {% endcall %}
+          <button type="submit" name="action" value="exclude">Record an out-of-scope exclusion</button>
+        </fieldset>
+        {%- endif %}
+      </form>
+    </article>
+    {%- endfor %}
+  </section>
+  {%- endif %}
+
+  {%- if clarifications %}
+  <section aria-label="Clarifications requested">
+    <h2>Clarifications requested</h2>
+    <p class="quiet">
+      These questions are retained with a named clarification request. They no
+      longer wait on your own judgement; they wait on the person who owes the
+      answer.
+    </p>
+    {%- for clarified in clarifications %}
+    <article class="item">
+      <p>{{ clarified.filename }}{% if clarified.page_no %}, page {{ clarified.page_no }}{% endif %}</p>
+      <blockquote>{{ clarified.text }}</blockquote>
+      <p>{{ clarified.reasons|join("; ") }}</p>
+      <p class="quiet">Clarification requested: {{ clarified.clarification_question }}
+        {%- if clarified.responsible_party %} — owed by {{ clarified.responsible_party }}{% endif %}
+        (recorded by {{ clarified.requested_by }}).</p>
     </article>
     {%- endfor %}
   </section>
@@ -141,8 +266,10 @@
   {%- if saved %}
   {% call ui.outcome("saved", saved.heading, focus) %}
     <p>{{ saved.detail }}</p>
+    {%- if saved.receipt_id %}
     <p><a href="/review/{{ project.slug }}/packet/{{ saved.receipt_id }}">See what each
       change became, and undo this decision if it was a mistake</a></p>
+    {%- endif %}
   {% endcall %}
   {%- endif %}
 

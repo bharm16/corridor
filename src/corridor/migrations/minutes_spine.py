@@ -130,6 +130,97 @@ grant select on project_baseline_adoptions,project_record_revisions,current_proj
 """
 
 
+DISPOSITION_SCHEMA = """
+create table minutes_question_dispositions (
+    id bigserial primary key, project_id bigint not null references projects(id),
+    capture_id bigint not null, source_family text not null,
+    segment_id bigint not null references source_segments(id),
+    question_identity varchar(64) not null,
+    disposition text not null, reason_code text not null,
+    evidence_segment_id bigint references source_segments(id),
+    produced_delta_ids bigint[], detail jsonb not null,
+    content_sha256 varchar(64) not null, decided_by text not null,
+    decision_generation integer not null, supersedes_id bigint,
+    decided_at timestamptz not null default clock_timestamp(),
+    constraint uq_minutes_question_disposition_scope unique(project_id,id),
+    constraint fk_minutes_question_disposition_capture
+        foreign key(project_id,capture_id) references minutes_captures(project_id,id),
+    constraint fk_minutes_question_disposition_supersedes
+        foreign key(project_id,supersedes_id) references minutes_question_dispositions(project_id,id),
+    constraint ck_minutes_question_disposition_kind
+        check(disposition in ('resolve','interpret','exclude','clarify')),
+    constraint uq_minutes_question_disposition_generation
+        unique(project_id,question_identity,decision_generation)
+);
+create index ix_minutes_question_disposition_identity
+    on minutes_question_dispositions(project_id,source_family,question_identity);
+create function guard_minutes_question_disposition() returns trigger language plpgsql as $$
+begin
+    if tg_op<>'INSERT' or current_user<>'corridor_source_append' then
+        raise exception 'minutes question dispositions require the immutable source append command' using errcode='23514';
+    end if;
+    return new;
+end; $$;
+create trigger minutes_question_disposition_guard
+    before insert or update or delete on minutes_question_dispositions
+    for each row execute function guard_minutes_question_disposition();
+revoke all on function guard_minutes_question_disposition() from public;
+"""
+
+DISPOSITION_APPEND = """
+create function append_minutes_question_disposition(p_project bigint,p_capture bigint,
+    p_family text,p_segment bigint,p_identity text,p_disposition text,p_reason text,
+    p_evidence_segment bigint,p_delta_ids bigint[],p_detail jsonb,p_content text,
+    p_decided_by text,p_generation integer,p_supersedes bigint)
+returns bigint language plpgsql security definer set search_path to 'public' as $$
+declare existing bigint; expected integer; capture_document bigint; result bigint;
+begin
+    perform 1 from projects where id=p_project for update;
+    if not found then
+        raise exception 'minutes question disposition is outside its project' using errcode='23514';
+    end if;
+    select document_id into capture_document from minutes_captures where id=p_capture and project_id=p_project;
+    if capture_document is null then
+        raise exception 'minutes question disposition names a foreign capture' using errcode='23514';
+    end if;
+    if not exists(select 1 from source_segments where id=p_segment and project_id=p_project and document_id=capture_document) then
+        raise exception 'minutes question disposition names a foreign question segment' using errcode='23514';
+    end if;
+    if p_evidence_segment is not null and not exists(select 1 from source_segments
+        where id=p_evidence_segment and project_id=p_project and document_id=capture_document) then
+        raise exception 'minutes question disposition cites a foreign evidence segment' using errcode='23514';
+    end if;
+    if p_content !~ '^[0-9a-f]{64}$' or coalesce(p_identity,'')='' or coalesce(p_family,'')='' then
+        raise exception 'minutes question disposition requires a bounded identity' using errcode='23514';
+    end if;
+    if p_delta_ids is not null and array_length(p_delta_ids,1) is not null
+        and (select count(*) from proposed_deltas where id=any(p_delta_ids) and project_id=p_project) <> array_length(p_delta_ids,1) then
+        raise exception 'minutes question disposition names a foreign proposed delta' using errcode='23514';
+    end if;
+    select id into existing from minutes_question_dispositions
+        where project_id=p_project and question_identity=p_identity and content_sha256=p_content;
+    if existing is not null then
+        return existing;
+    end if;
+    select count(*) into expected from minutes_question_dispositions
+        where project_id=p_project and question_identity=p_identity;
+    if p_generation is distinct from expected then
+        raise exception 'minutes question was answered again while this page was open' using errcode='40001';
+    end if;
+    insert into minutes_question_dispositions(project_id,capture_id,source_family,segment_id,
+        question_identity,disposition,reason_code,evidence_segment_id,produced_delta_ids,detail,
+        content_sha256,decided_by,decision_generation,supersedes_id)
+    values(p_project,p_capture,p_family,p_segment,p_identity,p_disposition,p_reason,p_evidence_segment,
+        p_delta_ids,p_detail,p_content,p_decided_by,p_generation,p_supersedes)
+    returning id into result;
+    return result;
+end; $$;
+alter function append_minutes_question_disposition(bigint,bigint,text,bigint,text,text,text,bigint,bigint[],jsonb,text,text,integer,bigint) owner to corridor_source_append;
+revoke all on function append_minutes_question_disposition(bigint,bigint,text,bigint,text,text,text,bigint,bigint[],jsonb,text,text,integer,bigint) from public;
+grant execute on function append_minutes_question_disposition(bigint,bigint,text,bigint,text,text,text,bigint,bigint[],jsonb,text,text,integer,bigint) to corridor_worker,corridor_web;
+"""
+
+
 def upgrade(op):
     op.execute(SCHEMA)
     for table, name, expression in CHECKS:
@@ -147,11 +238,23 @@ def upgrade(op):
     op.execute("create policy p_minutes_captures_project_partition on minutes_captures to corridor_web using(project_id=any(current_project_partition()))")
     op.execute("create policy p_minutes_internal on minutes_captures to corridor_worker,corridor_source_append using(true) with check(true)")
     op.execute(APPEND)
+    op.execute(DISPOSITION_SCHEMA)
+    op.execute("revoke all on minutes_question_dispositions from corridor_web,corridor_worker")
+    op.execute("grant select on minutes_question_dispositions to corridor_web,corridor_worker")
+    op.execute("grant select,insert on minutes_question_dispositions to corridor_source_append")
+    op.execute("grant usage,select on sequence minutes_question_dispositions_id_seq to corridor_source_append")
+    op.execute("alter table minutes_question_dispositions enable row level security")
+    op.execute("create policy p_minutes_question_dispositions_project_partition on minutes_question_dispositions to corridor_web using(project_id=any(current_project_partition()))")
+    op.execute("create policy p_minutes_question_dispositions_internal on minutes_question_dispositions to corridor_worker,corridor_source_append using(true) with check(true)")
+    op.execute(DISPOSITION_APPEND)
 
 
 def downgrade(op):
     if op.get_bind().scalar(sa.text("select exists(select 1 from minutes_captures)")):
         raise RuntimeError("minutes capture history cannot be represented by the predecessor")
+    op.execute("drop function append_minutes_question_disposition(bigint,bigint,text,bigint,text,text,text,bigint,bigint[],jsonb,text,text,integer,bigint)")
+    op.execute("drop table minutes_question_dispositions")
+    op.execute("drop function guard_minutes_question_disposition()")
     op.execute("drop function append_minutes_capture(bigint,bigint,bigint,text,text,text,bigint,jsonb)")
     op.execute("alter table delta_supersessions drop constraint ck_delta_supersessions_successor")
     op.execute("alter table delta_supersessions drop column minutes_capture_id")

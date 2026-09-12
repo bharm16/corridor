@@ -443,6 +443,13 @@ from corridor.capture_correction import (
     record_correction_request,
     reported_corrections,
 )
+from corridor.minutes_question_disposition import (
+    DispositionRequest,
+    MinutesQuestionDispositionRefused,
+    record_question_disposition,
+)
+from corridor.minutes_reading import read_minutes_clarifications, read_minutes_work
+from corridor.minutes_spine import QuestionResolution, inspect_minutes
 from corridor.packet_review import (
     LEAVE_OPEN,
     FocusedAnswer,
@@ -5644,6 +5651,54 @@ def record_history_screen(
 # nothing here writes.
 
 
+# --- Source questions and their permitted endings (#833) -------------------
+#
+# Each question the minutes reading emits carries the matrix row and the
+# permitted actions the reason maps to; this builds the option lists the Row-2
+# resolve control needs (which are read from the same bounded catalog capture
+# used, never invented here) and hands the template one view per question. A
+# question with a recorded disposition has already dropped out of the reading,
+# so nothing here has to hide one.
+
+
+def _question_options(session: Session, question) -> dict:
+    """The catalog choices the resolve control offers for this question's dimension."""
+
+    dimension = question.resolution_dimension
+    if dimension is None:
+        return {}
+    document = session.get(Document, question.document_id)
+    if document is None:
+        return {}
+    catalog = inspect_minutes(session, document)
+    if dimension == "organization":
+        return {"organizations": [(item["id"], item["name"]) for item in catalog["organizations"]]}
+    if dimension == "person":
+        return {"people": [(item["id"], item["name"]) for item in catalog["people"]]}
+    if dimension == "scope":
+        return {"subjects": [(item["subject_key"], item["reference"]) for item in catalog["subjects"]]}
+    if dimension == "timing":
+        return {"timings": [(item["ref"], item["text"]) for item in catalog["timings"]
+                            if item["segment_id"] == question.segment_id and item["purpose"] == "stated"]}
+    if dimension in {"predecessor", "new_or_predecessor"}:
+        return {"predecessors": [(item["subject_key"], item.get("wording", item["subject_key"]))
+                                 for item in catalog["predecessors"]]}
+    return {}
+
+
+def _question_views(session: Session, questions) -> tuple[dict, ...]:
+    """One template view per waiting source question, with its permitted actions."""
+
+    return tuple(
+        {
+            "question": question,
+            "id": f"source-question-{index}",
+            "options": _question_options(session, question),
+        }
+        for index, question in enumerate(questions)
+    )
+
+
 def _review_context(
     session: Session,
     project: Project,
@@ -5724,6 +5779,12 @@ def _review_context(
         "project": project,
         "items": tuple(views),
         "reading": reading,
+        # Each source question with its permitted endings, and the retained
+        # clarifications that no longer wait on the coordinator (#833).
+        "question_views": _question_views(session, reading.source_questions),
+        "clarifications": read_minutes_clarifications(
+            session, project_id=project.id, as_of=now
+        ),
         "binding": binding,
         "opened": opened,
         "focus": focus,
@@ -6746,6 +6807,151 @@ def report_extraction_error(
             ),
         },
         status_code=200,
+    )
+
+
+# --- Disposing of a source question (#833) ---------------------------------
+#
+# The Review page's source questions were display-only. Each now carries the
+# permitted ending its reason maps to on the matrix recorded on #833, and this
+# is the one route that records it. A resolve re-enters the statement into the
+# existing capture+comparison path and produces the Proposed Delta the source
+# would have produced; interpret, clarify and exclude write no delta and no
+# accepted revision. There is no generic Dismiss: the disposition module
+# refuses a resolve of a reason the matrix does not make resolvable.
+
+
+def _source_question_left_the_reading() -> dict:
+    return _review_refusal(
+        "A newer source revision or an earlier decision changed the source "
+        "questions, so nothing was recorded. The current ones are listed below.",
+        heading="This source question is no longer part of the reading",
+    )
+
+
+def _source_question_saved(action: str, question) -> dict:
+    heading = {
+        "resolve": "Resolved the source question",
+        "interpret": "Recorded what the source says",
+        "exclude": "Recorded the statement as out of this project's scope",
+        "clarify": "Recorded a clarification request",
+    }.get(action, "Recorded")
+    detail = {
+        "resolve": "The statement re-enters comparison as a proposed change, "
+        "decided with the changes below. No accepted value has moved.",
+        "interpret": "The source does not make that assertion, so nothing was "
+        "proposed and the record is unchanged.",
+        "exclude": "The statement is recorded as outside this project's scope, "
+        "with your reason, and the record is unchanged.",
+        "clarify": "The question is retained as a named clarification request "
+        "and no longer waits on your own judgement.",
+    }.get(action, "")
+    return {"heading": heading, "detail": detail}
+
+
+def _resolution_from_form(
+    question,
+    organization: str,
+    person: str,
+    predecessor: str,
+    keep_new: str,
+    scope: list[str],
+    timing: str,
+) -> QuestionResolution:
+    """The coordinator's evidence-bound binding, for the one reason it resolves."""
+
+    reason = question.reason_codes[0] if question.reason_codes else ""
+    return QuestionResolution(
+        resolves=frozenset({reason}),
+        organization_id=int(organization) if organization.strip().isdigit() else None,
+        person_id=int(person) if person.strip().isdigit() else None,
+        predecessor_subject_key=predecessor.strip() or None,
+        keep_as_new_commitment=bool(keep_new.strip()),
+        scope_subject_keys=tuple(one for one in scope if one.strip()),
+        # The scope evidence is the statement's own passage, where the reference
+        # lives; the append command re-validates that it carries each subject.
+        scope_segment_id=question.segment_id if reason == "scope_unresolved" else None,
+        timing_ref=int(timing) if timing.strip().isdigit() else None,
+    )
+
+
+@app.post("/review/{slug}/question", response_class=HTMLResponse)
+def dispose_source_question(
+    request: Request,
+    slug: str,
+    question_id: str = Form(...),
+    segment_id: int = Form(...),
+    action: str = Form(...),
+    interpretation: str = Form(""),
+    exclusion_reason: str = Form(""),
+    clarification_question: str = Form(""),
+    responsible_party: str = Form(""),
+    resolve_organization: str = Form(""),
+    resolve_person: str = Form(""),
+    resolve_predecessor: str = Form(""),
+    resolve_new_commitment: str = Form(""),
+    resolve_scope: list[str] = Form(default=[]),
+    resolve_timing: str = Form(""),
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+    clock=Depends(get_review_clock),
+):
+    """Record one permitted ending of one source question, bound to that question."""
+
+    project = _project(session, slug, principal)
+    now = clock()
+    questions, _ = read_minutes_work(session, project_id=project.id, as_of=now)
+    question = next(
+        (
+            one
+            for one in questions
+            if one.question_id == question_id and one.segment_id == segment_id
+        ),
+        None,
+    )
+    if question is None:
+        return _review_render(
+            request, session, project, principal=principal, now=now, opened_key="",
+            refusal=_source_question_left_the_reading(), status_code=409,
+        )
+    resolution = (
+        _resolution_from_form(
+            question, resolve_organization, resolve_person, resolve_predecessor,
+            resolve_new_commitment, resolve_scope, resolve_timing,
+        )
+        if action == "resolve"
+        else None
+    )
+    try:
+        record_question_disposition(
+            session,
+            DispositionRequest(
+                project_id=project.id,
+                capture_id=question.capture_id,
+                source_family=question.source_family,
+                segment_id=question.segment_id,
+                question_identity=question.question_id,
+                reason_code=question.reason_codes[0] if question.reason_codes else "",
+                disposition=action,
+                decision_generation=question.decision_generation,
+                interpretation=interpretation,
+                exclusion_reason=exclusion_reason,
+                clarification_question=clarification_question,
+                responsible_party=responsible_party,
+                resolution=resolution,
+            ),
+            principal=principal,
+        )
+    except MinutesQuestionDispositionRefused as exc:
+        session.rollback()
+        return _review_render(
+            request, session, project, principal=principal, now=now, opened_key="",
+            refusal=_review_refusal(str(exc)), status_code=409,
+        )
+    session.commit()
+    return _review_render(
+        request, session, project, principal=principal, now=now, opened_key="",
+        saved=_source_question_saved(action, question), status_code=200,
     )
 
 

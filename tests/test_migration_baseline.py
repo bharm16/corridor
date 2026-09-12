@@ -290,7 +290,15 @@ EXPECTED_SCHEMA_SHA256 = (
     # relations that already exist, so the digest moves and neither count does.
     # Recomputed against a fresh disposable database with template reuse off
     # (combined #951 + #956 + #957 + #945).
-    "2f10bbd9117a6c386876cd31c723d4820c698eb5f021c0ca8f5e425556ec4320"
+    #
+    # #833 gives every minutes source question a permitted disposition: one
+    # new append-only relation `minutes_question_dispositions`, written only
+    # through the source-append `append_minutes_question_disposition` command
+    # (guard trigger, RLS and grants mirroring `minutes_captures`). One table
+    # and its bigserial sequence, so both counts rise by one. Recomputed
+    # against a fresh disposable database with template reuse off
+    # (combined #951 + #956 + #957 + #945 + #833).
+    "6bc98ddbe65e7f11ac2f6204c869954562169dec2190df8139c6046cba4535dd"
 )
 
 pytestmark = [pytest.mark.slow, pytest.mark.migration]
