@@ -45,6 +45,10 @@ OWNER_ROLES = (
     "corridor_source_append",
     "corridor_fact_decision_writer",
     "corridor_statement_retirement",
+    # The non-login owner of the retention-hold commands (#956): placing and
+    # lifting a hold are attributable human acts written only through its
+    # `SECURITY DEFINER` commands, never by a runtime capability's raw write.
+    "corridor_retention_hold",
 )
 RUNTIME_LOGIN_ROLES = ("corridor_web", "corridor_worker")
 
@@ -295,6 +299,11 @@ def test_human_decision_commands_are_callable_only_by_the_web_capability(admin):
         "record_delta_follow_up_plan",
         "record_review_packet_receipt",
         "reverse_review_packet",
+        # Placing and lifting a retention hold are attributable human acts, and
+        # the worker holds no execute on either -- it observes holds and
+        # executes permitted deletion, but cannot remove the restriction (#956).
+        "place_retention_hold",
+        "lift_retention_hold",
     ):
         granted = admin.execute(
             text(

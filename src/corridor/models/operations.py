@@ -239,6 +239,12 @@ class ProcessingArtifact(Base):
     content_sha256: Mapped[str] = mapped_column(String(64))
     terminal_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Set when a retention deletion could not confirm the object left the store
+    # (#956): the outcome is uncertain until reconciliation resolves it, never
+    # assumed deleted or rolled back.
+    deletion_uncertain_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
 
 
 class RetentionHold(Base):

@@ -46,7 +46,11 @@ from corridor.due_work_contract import (
 )
 from corridor.models import DueWorkSchedule, RetentionManifestItem
 from corridor.principals import HumanPrincipal, InvalidHumanPrincipal
-from corridor.retention import RetentionRefused, execute_retention, plan_retention
+from corridor.retention import (
+    RetentionRefused,
+    execute_retention_in_batches,
+    plan_retention,
+)
 
 # The one server-owned handler key this module's work runs under.  It matches
 # ``due_work.HANDLER_RETENTION_SWEEP``; the constant lives here because this
@@ -80,13 +84,19 @@ def execute_retention_sweep(
     deleted = 0
     manifest_public_id = ""
     refusal = ""
-    with session_factory() as working:
-        try:
+    manifest_id: int | None = None
+    manifest_sha256 = ""
+    # Plan in its own transaction and commit it, so the bounded execution
+    # batches -- each its own transaction, releasing the ordering boundary
+    # between them (#956 C) -- can see the manifest. A refusal at plan time
+    # (a still-reachable citation, drift) is an outcome, not a crash.
+    try:
+        with session_factory() as planning:
             manifest = plan_retention(
-                working, as_of=as_of, principal=principal, project_id=project_id
+                planning, as_of=as_of, principal=principal, project_id=project_id
             )
             planned = int(
-                working.scalar(
+                planning.scalar(
                     select(func.count())
                     .select_from(RetentionManifestItem)
                     .where(RetentionManifestItem.manifest_id == manifest.id)
@@ -96,22 +106,26 @@ def execute_retention_sweep(
             if planned == 0:
                 # Nothing is due. The dry run is discarded rather than retained
                 # as an empty manifest for every idle slot.
-                working.rollback()
+                planning.rollback()
             else:
-                execute_retention(
-                    working,
-                    manifest_id=manifest.id,
-                    expected_sha256=manifest.content_sha256,
-                    executed_at=as_of,
-                )
-                manifest_public_id = manifest.public_id
-                deleted = planned
-                working.commit()
-        except RetentionRefused as exc:
-            working.rollback()
-            planned = 0
-            deleted = 0
-            refusal = _refusal_code(exc)
+                manifest_id = manifest.id
+                manifest_sha256 = manifest.content_sha256
+                planning.commit()
+    except RetentionRefused as exc:
+        planned = 0
+        refusal = _refusal_code(exc)
+
+    if manifest_id is not None and not refusal:
+        acknowledgement = execute_retention_in_batches(
+            session_factory,
+            manifest_id=manifest_id,
+            expected_sha256=manifest_sha256,
+            executed_at=as_of,
+        )
+        planned = acknowledgement["requested"]
+        deleted = acknowledgement["enforced"]
+        refusal = acknowledgement["refusal"]
+        manifest_public_id = acknowledgement["manifest_public_id"]
 
     return {
         "schema_version": _RESULT_SCHEMA_VERSION,

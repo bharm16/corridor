@@ -50,13 +50,36 @@ from corridor.db import WorkerSession
 from corridor.models import RetentionManifestItem
 from corridor.principals import HumanPrincipal
 from corridor.retention import (
+    HOLD_ENFORCEMENT_ACKNOWLEDGEMENT,
     delete_rebuildable_page_data,
-    execute_retention,
+    execute_retention_in_batches,
     lift_hold,
     place_hold,
     plan_retention,
 )
 from corridor.sign_in_retention import sweep_sign_in_records
+
+
+# The versioned acknowledgement a placed hold prints (#956 E).
+_HOLD_ACK_SCHEMA_VERSION = "retention-hold-ack-v1"
+
+
+def _web_session_factory():
+    """A routed web-capability session, the way ``WorkerSession`` is worker-routed.
+
+    Placing and lifting a hold are attributable human acts the ``corridor_web``
+    login alone may command (#956 B); the operator's ``hold`` and ``lift``
+    subcommands therefore open a web session rather than the worker one the
+    maintenance commands use.
+    """
+
+    from corridor.customer_routing_runtime import configured_customer_router
+    from corridor.db import capability_session_factory
+
+    router = configured_customer_router()
+    if router is None:
+        return capability_session_factory("web")
+    return lambda: router.open_session(router.identity, capability="web")
 
 
 _CONTRACT = """\
@@ -108,6 +131,49 @@ def main(argv: list[str] | None = None, *, session_factory=None) -> int:
         # one -- in order to run.
         return HumanPrincipal(settings.human_principal)
 
+    # Execution runs in bounded, self-committing batches under the ordering
+    # boundary (#956 C), so it drives a session factory rather than one session.
+    if args.command == "execute":
+        payload = {
+            "manifest_id": args.manifest_id,
+            **execute_retention_in_batches(
+                factory,
+                manifest_id=args.manifest_id,
+                expected_sha256=args.expected_sha256,
+            ),
+        }
+        print(json.dumps(payload, sort_keys=True))
+        return 0
+
+    # Placing and lifting a hold are human acts the web capability alone may
+    # command (#956 B). The acknowledgement is built after commit, so it never
+    # claims a boundary the transaction has not yet settled (#956 E).
+    if args.command in {"hold", "lift"}:
+        hold_factory = session_factory or _web_session_factory()
+        with hold_factory() as session:
+            if args.command == "hold":
+                hold = place_hold(
+                    session,
+                    project_id=args.project_id,
+                    reason=args.reason,
+                    principal=principal(),
+                )
+                hold_id = hold.id
+                session.commit()
+                payload = {
+                    "hold_id": hold_id,
+                    "status": "active",
+                    "schema_version": _HOLD_ACK_SCHEMA_VERSION,
+                    "acknowledgement": HOLD_ENFORCEMENT_ACKNOWLEDGEMENT,
+                }
+            else:
+                hold = lift_hold(session, hold_id=args.hold_id, principal=principal())
+                hold_id = hold.id
+                session.commit()
+                payload = {"hold_id": hold_id, "status": "lifted"}
+        print(json.dumps(payload, sort_keys=True))
+        return 0
+
     with factory() as session:
         if args.command == "plan":
             manifest = plan_retention(
@@ -133,24 +199,6 @@ def main(argv: list[str] | None = None, *, session_factory=None) -> int:
                     for item in items
                 ],
             }
-        elif args.command == "execute":
-            manifest = execute_retention(
-                session,
-                manifest_id=args.manifest_id,
-                expected_sha256=args.expected_sha256,
-            )
-            payload = {"manifest_id": manifest.id, "status": manifest.status}
-        elif args.command == "hold":
-            hold = place_hold(
-                session,
-                project_id=args.project_id,
-                reason=args.reason,
-                principal=principal(),
-            )
-            payload = {"hold_id": hold.id, "status": "active"}
-        elif args.command == "lift":
-            hold = lift_hold(session, hold_id=args.hold_id, principal=principal())
-            payload = {"hold_id": hold.id, "status": "lifted"}
         elif args.command == "expire-sign-in-records":
             payload = sweep_sign_in_records(
                 session, as_of=args.as_of or datetime.now(timezone.utc)

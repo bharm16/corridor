@@ -215,6 +215,7 @@ from corridor.migrations.source_append_commands import (
     report_reading_payload,
     report_revision_binding,
     resolve_delta,
+    retention_hold_commands,
     review_packets,
     scanned_observations,
     source_authorization,
@@ -1614,6 +1615,14 @@ def upgrade() -> None:
     # nothing later in the revision names `document_quarantines`.
     processing_holds.upgrade(op)
 
+    # --- #956 A retention hold is placed and lifted through commands -------
+    # After the feature blocks and before the sibling transitions: it alters
+    # `retention_holds` and `processing_artifacts`, both baseline relations
+    # established well before here, and nothing later in the revision names
+    # either. It revokes the runtime logins' direct writes on `retention_holds`
+    # and replaces them with two commands the human capability alone may call.
+    retention_hold_commands.upgrade(op)
+
     # --- ADR-0101 What a corrected capture established, and what it retires -
     # After `capture_correction`, whose request relation its composite foreign
     # key names, and after `review_packets` and the spine relations the rest of
@@ -1686,6 +1695,12 @@ def downgrade() -> None:
     # and before the request relation and the Proposed Delta relations its
     # composite foreign keys name unwind.
     capture_correction_retirement.downgrade(op)
+
+    # --- #956 A retention hold is placed and lifted through commands -------
+    # Mirroring the upgrade, which added it between `processing_holds` and
+    # `capture_correction_retirement`: the commands drop, the raw writes return
+    # to the runtime logins, and the uncertain-deletion column is removed.
+    retention_hold_commands.downgrade(op)
 
     # --- #919 A hold says which processing stage it prohibits -------------
     # Next, because the upgrade added it second from the end. It

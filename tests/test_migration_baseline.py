@@ -252,7 +252,18 @@ EXPECTED_SCHEMA_SHA256 = (
     # rewritten commands on relations that already exist, so the digest moves and
     # neither count does. Recomputed against a fresh disposable database with
     # template reuse off.
-    "d06e6ecc45ae20b520d4d3a151f8c0f56b147b8212013a297012414666be184e"
+    #
+    # #956 makes a retention hold a command rather than a raw write and gives an
+    # object-store deletion a place to record an uncertain outcome. Two new
+    # `SECURITY DEFINER` functions, `place_retention_hold` and
+    # `lift_retention_hold`, replace the runtime logins' direct writes on
+    # `retention_holds`, and `processing_artifacts` gains a
+    # `deletion_uncertain_at` column. Two functions and a column on relations
+    # that already exist, so the digest moves and neither the table nor the
+    # sequence count does. Grants and the new command-owner role are not schema
+    # objects this fingerprint reads. Recomputed against a fresh disposable
+    # database with template reuse off (combined #951 + #956).
+    "db6f693e35d37b698f4dd509d99a5e44f2a8d06bee022bba9e185cbe1ac23160"
 )
 
 pytestmark = [pytest.mark.slow, pytest.mark.migration]
@@ -381,6 +392,7 @@ COMPOSED_UPGRADE = (
     "onboarding_authorization",
     "source_authorization",
     "processing_holds",
+    "retention_hold_commands",
     "capture_correction_retirement",
     # The sibling transitions this revision has always carried at the end, and
     # the PUBLIC sweep that runs last of all because it reads the catalog every
@@ -407,6 +419,7 @@ COMPOSED_DOWNGRADE = (
     "project_contacts",
     "email_spine",
     "capture_correction_retirement",
+    "retention_hold_commands",
     "processing_holds",
     "source_authorization",
     "onboarding_authorization",

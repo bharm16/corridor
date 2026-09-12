@@ -64,6 +64,16 @@ class ObjectMissing(StorageError):
     """The key holds no object."""
 
 
+class DeletionUncertain(StorageError):
+    """A delete could not be confirmed: no acknowledgement, or it timed out.
+
+    The object may or may not be gone (#956). A caller records the outcome as
+    uncertain until reconciled rather than treating it as either a completed
+    deletion or a rolled-back no-op, because a database rollback does not
+    restore an object the store may already have removed.
+    """
+
+
 @dataclass(frozen=True)
 class StoredObject:
     key: str
@@ -424,13 +434,26 @@ class S3ObjectStore:
         return destination
 
     def delete_under_policy(self, key: str, *, permit: DeletionPermit) -> None:
+        from botocore.exceptions import (
+            ConnectionError as BotoConnectionError,
+            ReadTimeoutError,
+        )
+
         _check_permit(key, permit)
         current = self._digest(key)
         if current is None:
             raise ObjectMissing(f"{key} holds no object")
         if current != permit.sha256:
             raise ObjectConflict(f"{key} no longer holds the permitted bytes")
-        self.client.delete_object(Bucket=self.bucket, Key=self._name(key))
+        try:
+            self.client.delete_object(Bucket=self.bucket, Key=self._name(key))
+        except (ReadTimeoutError, BotoConnectionError) as exc:
+            # The request went out but no acknowledgement came back: the object
+            # may or may not be gone. Record it as uncertain (#956), never as a
+            # confirmed deletion the reconciler need not revisit.
+            raise DeletionUncertain(
+                f"{key} deletion was not acknowledged; the outcome is uncertain"
+            ) from exc
 
     def probe(self) -> None:
         """One bounded list: it fails on a missing bucket or a denied credential."""

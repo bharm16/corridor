@@ -43,7 +43,11 @@ from corridor.object_storage import (
     local_staging_path,
     parse_key,
 )
-from corridor.retention import RetentionRefused, permit_unreferenced_deletion
+from corridor.retention import (
+    RetentionRefused,
+    permit_unreferenced_deletion,
+    take_hold_ordering_lock,
+)
 
 
 @dataclass
@@ -157,7 +161,15 @@ def referenced_digests(session: Session) -> dict[str, list[Path]]:
     for sha256 in session.scalars(select(Document.sha256)):
         promise(sha256, None)
     for artifact in session.scalars(
-        select(ProcessingArtifact).where(ProcessingArtifact.deleted_at.is_(None))
+        select(ProcessingArtifact).where(
+            ProcessingArtifact.deleted_at.is_(None),
+            # An artifact whose object-store deletion is uncertain (#956 D) is
+            # not a live reference to restore: it was being removed. Excluding
+            # it lets reconciliation resolve the uncertainty -- a persisting
+            # object becomes unreferenced and is removed under the hold check,
+            # a gone one is simply gone -- instead of re-uploading a deletion.
+            ProcessingArtifact.deletion_uncertain_at.is_(None),
+        )
     ):
         promise(artifact.content_sha256, artifact.storage_path)
     for derivative in session.scalars(select(PageRenderDerivative)):
@@ -220,12 +232,20 @@ def reconcile(
         else:
             report.unrepairable.append(sha256)
 
+    # Unreferenced-object cleanup is a destructive path a hold suspends
+    # (#956 A, ADR-0080), so it takes the common ordering boundary before it
+    # reads hold state, the same one `place_hold` and Class B execution take.
+    # Only when it will actually remove: a report-only reconcile stays a read.
+    boundary_taken = False
     for sha256, key in sorted(stored.items()):
         if sha256 in expected:
             continue
         report.unreferenced.append(key)
         if not remove_unreferenced:
             continue
+        if not boundary_taken:
+            take_hold_ordering_lock(session)
+            boundary_taken = True
         try:
             permit = permit_unreferenced_deletion(
                 session, key=key, sha256=sha256, issued_by=issued_by
