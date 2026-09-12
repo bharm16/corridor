@@ -752,6 +752,27 @@ def test_the_heading_field_vocabulary_in_the_schema_matches_the_released_one(
     )
 
 
+def test_the_business_identity_field_is_one_string_everywhere() -> None:
+    """#945 B: one definition of identity across the resolver, command and reader.
+
+    The applicability resolver, the writing command's own copy and the
+    later-revision reader all name the conflict-number field with one string, so
+    a passage's subject cannot be resolved under one definition of identity and
+    the capture assigned under another.
+    """
+
+    from corridor import correction_applicability, later_revision
+    from corridor.migrations.source_append_commands import (
+        capture_correction_retirement as migration,
+    )
+
+    assert (
+        correction_applicability.BUSINESS_IDENTITY_FIELD
+        == later_revision.BUSINESS_IDENTITY_FIELD
+        == migration.UTILITY_ID_FIELD
+    )
+
+
 def test_the_command_derives_the_field_from_the_heading_not_the_callers_word(
     session: Session, misread: Misread
 ) -> None:
