@@ -42,6 +42,8 @@ from aws_cdk import (
     aws_ecr as ecr,
     aws_ecs as ecs,
     aws_elasticloadbalancingv2 as elbv2,
+    aws_events as events,
+    aws_events_targets as targets,
     aws_iam as iam,
     aws_logs as logs,
     aws_rds as rds,
@@ -399,6 +401,123 @@ class CorridorApplicationStack(Stack):
                 "Corridor has fewer running Due Work supervisors than requested. "
                 "Inspect ECS task health and retained Due Work receipts."
             ),
+        )
+
+        # --- scheduled sign-in record expiry (ADR-0102, #943) ------------
+        # The one thing that makes the expiry pass happen without a person.
+        # #927 built `expire-sign-in-records`, the policy and the receipt, and
+        # it is runnable by hand; nothing ran it on a schedule, which is the
+        # defect #907 named and ADR-0102 assigns to this deployment task.
+        #
+        # It reuses the batch task definition above -- the same image, under
+        # the same corridor_worker credentials -- and overrides only the
+        # command. corridor_worker already holds DELETE on web_sessions,
+        # sign_in_tokens and sign_in_attempts and INSERT on audit_log
+        # (ADR-0102 s.2), so this adds no grant and no new application role.
+        # The only new identity is EventBridge's, which may run this one task
+        # definition and pass its roles. Its network identity is the batch
+        # task's own: the batch security group (already admitted on 5432) in a
+        # public subnet with a public IP, because this VPC has no NAT and the
+        # image is pulled over the internet gateway.
+        #
+        # One schedule for the whole customer environment, never one per
+        # project and never a placeholder project: the three relations are
+        # keyed to a person, not a project, so a per-project schedule would run
+        # the same environment-wide delete once per project (ADR-0102, and the
+        # rejected "extend Due Work's scope model" alternative -- Due Work's
+        # project foreign keys stay NOT NULL).
+        #
+        # Daily, at a fixed low-traffic hour. None of the three relations
+        # carries a time-only index, so every pass scans all three; that is
+        # cheap while they are small and is ADR-0102's reason not to run it
+        # hourly. The interval is also the deletion lag the ADR states as its
+        # own term -- an eligible row goes at the next pass, so up to roughly a
+        # further day after it becomes eligible -- not a 24-hour deadline.
+        expiry_schedule_role = iam.Role(
+            self,
+            "SignInExpiryScheduleRole",
+            path=CORRIDOR_ROLE_PATH,
+            assumed_by=iam.ServicePrincipal("events.amazonaws.com"),
+            description=(
+                "EventBridge identity that runs the daily sign-in record "
+                "expiry pass on the existing batch task definition. It may run "
+                "that one task definition and pass its roles; nothing more."
+            ),
+        )
+        expiry_schedule = events.Rule(
+            self,
+            "SignInRecordExpirySchedule",
+            description=(
+                "Daily environment-wide sign-in record expiry pass "
+                "(corridor.retention_cli expire-sign-in-records); ADR-0102, "
+                "#943."
+            ),
+            # cron(0 8 * * ? *): every day at 08:00 UTC. A fixed hour rather
+            # than rate(1 day) so the pass runs at a predictable wall-clock
+            # time; the exact hour is not load-bearing, because the cadence is
+            # the deletion lag, not a deadline.
+            schedule=events.Schedule.cron(minute="0", hour="8"),
+        )
+        expiry_schedule.add_target(
+            targets.EcsTask(
+                cluster=cluster,
+                task_definition=batch_task,
+                task_count=1,
+                role=expiry_schedule_role,
+                security_groups=[batch_security_group],
+                subnet_selection=ec2.SubnetSelection(
+                    subnet_type=ec2.SubnetType.PUBLIC
+                ),
+                assign_public_ip=True,
+                launch_type=ecs.LaunchType.FARGATE,
+                # Override only the command. The entrypoint still composes
+                # WORKER_DATABASE_URL because CORRIDOR_TASK_ROLE=batch, and
+                # `expire-sign-in-records` takes no argument: --as-of defaults
+                # to the process start, which is what a fixed command line
+                # needs (ADR-0102). An operator reproducing a past pass still
+                # passes --as-of by hand through `make retention`.
+                container_overrides=[
+                    targets.ContainerOverride(
+                        container_name=batch_task.default_container.container_name,
+                        command=[
+                            "python",
+                            "-m",
+                            "corridor.retention_cli",
+                            "expire-sign-in-records",
+                        ],
+                    )
+                ],
+            )
+        )
+        # The only wildcard in EventBridge's generated policy is
+        # ecs:TagResource on arn:...:task/<cluster>/*. ECS mints the task id
+        # when the run starts, so it cannot be named at synthesis; the
+        # wildcard is that runtime id, scoped to this one cluster. RunTask is
+        # pinned to the batch task definition (conditioned on the cluster) and
+        # PassRole to that task's own roles, so neither of those is wild --
+        # test_the_expiry_schedule_role_is_scoped_and_grants_no_new_authority
+        # holds that line. This role adds no authority beyond running that one
+        # task (ADR-0102).
+        NagSuppressions.add_resource_suppressions(
+            expiry_schedule_role,
+            [
+                {
+                    "id": "AwsSolutions-IAM5",
+                    "reason": (
+                        "ecs:TagResource applies to the task ECS creates at run "
+                        "time, whose id is not knowable at synthesis; the "
+                        "wildcard is that runtime task id under this one "
+                        "cluster. RunTask is scoped to the batch task "
+                        "definition and PassRole to that task's own roles."
+                    ),
+                    "appliesTo": [
+                        {
+                            "regex": "/^Resource::arn:<AWS::Partition>:ecs:.*:task\\/<Cluster.*>\\/\\*$/g"
+                        },
+                    ],
+                }
+            ],
+            apply_to_children=True,
         )
 
         # --- migration ---------------------------------------------------
