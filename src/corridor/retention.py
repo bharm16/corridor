@@ -22,7 +22,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
 
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from corridor.models import (
@@ -34,6 +34,7 @@ from corridor.models import (
 )
 from corridor.object_storage import (
     DeletionPermit,
+    DeletionUncertain,
     StorageError,
     content_key,
     content_store,
@@ -44,6 +45,25 @@ from corridor.principals import HumanPrincipal, require_human_principal
 
 CLASS_B_DAYS = 30
 OPEN_REFERENCE_DAYS = 90
+
+# How many due items one execution transaction removes before releasing the
+# ordering boundary and rechecking (#956 C). A hold placed while a sweep runs
+# waits behind at most one batch rather than the whole unbounded pass.
+DEFAULT_RETENTION_BATCH_SIZE = 50
+
+# The versioned acknowledgement a bounded execution returns (#956 E): what was
+# requested, what the boundary let it enforce, and what a hold or an uncertain
+# object-store outcome left failed or pending.
+RETENTION_EXECUTION_SCHEMA_VERSION = "retention-execution-v1"
+
+# The one approved sentence a placed hold is acknowledged with (#956 E). It is
+# printed only after the ordering boundary is won, and it says exactly what
+# winning the boundary licenses and no more: a batch already authorized before
+# the hold took effect is not recovered by it.
+HOLD_ENFORCEMENT_ACKNOWLEDGEMENT = (
+    "The hold is active. New deletion batches within its scope are blocked. "
+    "A batch authorized before the hold took effect may already have completed."
+)
 
 # The one environment-level ordering boundary hold activation and a sign-in
 # record deletion batch both pass through (ADR-0102). A string rather than a
@@ -250,22 +270,20 @@ def place_hold(
     a batch removed come back.
     """
 
-    take_hold_ordering_lock(session)
     actor = require_human_principal(principal).subject
     if not reason.strip():
         raise RetentionRefused("a retention hold requires a reason")
-    active = session.scalar(
-        select(RetentionHold).where(
-            RetentionHold.project_id == project_id,
-            RetentionHold.lifted_at.is_(None),
-        )
+    # The write is the `place_retention_hold` command's, not the runtime
+    # capability's (#956 B): no ordinary login holds a direct write on
+    # `retention_holds`. The command takes the ordering boundary as its first
+    # act, so the returned hold has already won it.
+    hold_id = session.scalar(
+        select(func.place_retention_hold(project_id, reason.strip(), actor))
     )
-    if active is not None:
-        return active
-    hold = RetentionHold(project_id=project_id, reason=reason.strip(), placed_by=actor)
-    session.add(hold)
-    session.flush()
-    return hold
+    # The command inserted through raw SQL; the identity map must load the row
+    # rather than serve a stale absence.
+    session.expire_all()
+    return session.get_one(RetentionHold, int(hold_id))
 
 
 def lift_hold(
@@ -275,17 +293,19 @@ def lift_hold(
     principal: HumanPrincipal,
     lifted_at: datetime | None = None,
 ) -> RetentionHold:
-    """Record the separate attributable act that resumes retention work."""
+    """Record the separate attributable act that resumes retention work.
+
+    The write is the `lift_retention_hold` command's (#956 B). The worker
+    holds no execute on it: lifting a hold is an attributable human act, not
+    machine maintenance, so a worker cannot remove the restriction by any route.
+    """
 
     actor = require_human_principal(principal).subject
-    hold = session.get(RetentionHold, hold_id)
-    if hold is None:
+    if session.get(RetentionHold, hold_id) is None:
         raise RetentionRefused("retention hold does not exist")
-    if hold.lifted_at is None:
-        hold.lifted_by = actor
-        hold.lifted_at = lifted_at or datetime.now(timezone.utc)
-        session.flush()
-    return hold
+    session.scalar(select(func.lift_retention_hold(hold_id, actor, lifted_at)))
+    session.expire_all()
+    return session.get_one(RetentionHold, int(hold_id))
 
 
 def open_reference(
@@ -419,8 +439,28 @@ def execute_retention(
     manifest_id: int,
     expected_sha256: str,
     executed_at: datetime | None = None,
+    limit: int | None = None,
 ) -> RetentionManifest:
-    """Execute one unchanged dry-run after repeating every safety check."""
+    """Remove up to ``limit`` still-pending items under the ordering boundary.
+
+    The destructive operations now take the ``retention-hold-ordering``
+    boundary before they read hold state (#956 A), the same one ``place_hold``
+    and the sign-in sweep take, so a hold that commits first is honoured and a
+    batch that begins first may finish -- a stated outcome rather than a race.
+
+    ``limit`` bounds how many due items one transaction removes (#956 C).
+    ``None`` removes every remaining item, which is the whole-manifest behaviour
+    an operator's single ``execute`` keeps; ``execute_retention_in_batches``
+    passes a bound and commits between batches so a hold does not wait behind an
+    entire sweep. The call is re-entrant: an item whose content is already gone,
+    or whose object-store outcome is uncertain, is skipped, and the manifest is
+    marked ``executed`` only once nothing pending remains.
+    """
+
+    # The boundary first, and hold state only after it (ADR-0102): a hold that
+    # reached it first is committed by the time the lock is granted here, and
+    # one that did not now waits for this batch instead of overlapping it.
+    take_hold_ordering_lock(session)
 
     manifest = session.get(RetentionManifest, manifest_id)
     if manifest is None or manifest.status != "dry_run":
@@ -434,7 +474,17 @@ def execute_retention(
         .where(RetentionManifestItem.manifest_id == manifest.id)
         .order_by(RetentionManifestItem.id)
     ).all()
-    for item in items:
+
+    pending = [item for item in items if _item_pending(session, item)]
+    if not pending:
+        _mark_executed(session, manifest, when)
+        return manifest
+
+    batch = pending if limit is None else pending[:limit]
+
+    # Recheck every item in this batch before removing any of it, so a drifted
+    # or newly-held item aborts the batch before an irreversible delete.
+    for item in batch:
         if _active_hold(session, item.project_id):
             raise RetentionRefused("active retention hold suspends the TTL job")
         if _open_references(session, item.family, item.source_row_id):
@@ -458,31 +508,14 @@ def execute_retention(
             payload = {column: row[column] for column in spec.content_columns}
             if _digest(payload) != item.content_sha256:
                 raise RetentionRefused("intermediary content changed after dry-run")
+
     session.execute(
         text("select set_config('corridor.retention_manifest_id', :manifest_id, true)"),
         {"manifest_id": str(manifest.id)},
     )
-    for item in items:
+    for item in batch:
         if item.family == "processing_artifact":
-            artifact = session.get(ProcessingArtifact, item.source_row_id)
-            assert artifact is not None
-            key = artifact_key(item.content_sha256, artifact.storage_path)
-            permit = permit_deletion(
-                session,
-                project_id=item.project_id,
-                key=key,
-                sha256=item.content_sha256,
-                issued_by=f"retention_manifest:{manifest.id}",
-            )
-            try:
-                store.delete_under_policy(key, permit=permit)
-            except StorageError as exc:
-                raise RetentionRefused(
-                    "processing artifact could not be deleted under policy"
-                ) from exc
-            # The staged local copy is not the object of record; it goes too.
-            Path(artifact.storage_path).unlink(missing_ok=True)
-            artifact.deleted_at = when
+            _expire_processing_artifact(session, store, item, manifest_id=manifest.id, when=when)
             continue
         spec = _BY_FAMILY[item.family]
         assignments = ", ".join(f"{column} = null" for column in spec.content_columns)
@@ -494,10 +527,184 @@ def execute_retention(
             ),
             {"digest": item.content_sha256, "deleted_at": when, "row_id": item.source_row_id},
         )
+
+    if not any(_item_pending(session, item) for item in items):
+        _mark_executed(session, manifest, when)
+    else:
+        session.flush()
+    return manifest
+
+
+def _expire_processing_artifact(
+    session: Session,
+    store,
+    item: RetentionManifestItem,
+    *,
+    manifest_id: int,
+    when: datetime,
+) -> None:
+    """Remove one artifact's object, or record the outcome as uncertain (#956 D).
+
+    The object *is* the artifact's content, and a database rollback does not
+    restore it, so the store's answer is recorded rather than assumed. A
+    confirmed delete sets ``deleted_at`` and drops the staged copy; a delete the
+    store could not acknowledge sets ``deletion_uncertain_at`` and leaves the
+    staged bytes in place, so reconciliation resolves it later against the store
+    instead of a caller pretending it went or that it did not.
+    """
+
+    artifact = session.get(ProcessingArtifact, item.source_row_id)
+    assert artifact is not None
+    key = artifact_key(item.content_sha256, artifact.storage_path)
+    permit = permit_deletion(
+        session,
+        project_id=item.project_id,
+        key=key,
+        sha256=item.content_sha256,
+        issued_by=f"retention_manifest:{manifest_id}",
+    )
+    try:
+        store.delete_under_policy(key, permit=permit)
+    except DeletionUncertain:
+        artifact.deletion_uncertain_at = when
+        return
+    except StorageError as exc:
+        raise RetentionRefused(
+            "processing artifact could not be deleted under policy"
+        ) from exc
+    # The staged local copy is not the object of record; it goes too.
+    Path(artifact.storage_path).unlink(missing_ok=True)
+    artifact.deleted_at = when
+
+
+def _mark_executed(
+    session: Session, manifest: RetentionManifest, when: datetime
+) -> None:
     manifest.status = "executed"
     manifest.executed_at = when
     session.flush()
-    return manifest
+
+
+def _item_pending(session: Session, item: RetentionManifestItem) -> bool:
+    """Whether one manifest item's content is still present and not uncertain."""
+
+    if item.family == "processing_artifact":
+        artifact = session.get(ProcessingArtifact, item.source_row_id)
+        return (
+            artifact is not None
+            and artifact.deleted_at is None
+            and artifact.deletion_uncertain_at is None
+        )
+    spec = _BY_FAMILY[item.family]
+    deleted_at = session.execute(
+        text(
+            f"select retention_deleted_at from {spec.table} where id = :row_id"
+        ),
+        {"row_id": item.source_row_id},
+    ).scalar_one_or_none()
+    return deleted_at is None
+
+
+def execute_retention_in_batches(
+    session_factory,
+    *,
+    manifest_id: int,
+    expected_sha256: str,
+    batch_size: int = DEFAULT_RETENTION_BATCH_SIZE,
+    executed_at: datetime | None = None,
+) -> dict:
+    """Run one manifest to completion in committed, boundary-bounded batches.
+
+    Each batch is its own transaction: it takes the ordering boundary, removes
+    up to ``batch_size`` items, and commits, releasing the boundary before the
+    next batch re-takes it and rechecks holds (#956 C). A hold that commits
+    between batches stops the ones that follow without undoing a batch already
+    committed. The returned acknowledgement distinguishes the three enforcement
+    states -- requested, enforced, failed-or-pending -- and is built only after
+    the batches, so nothing prints a claim the boundary has not settled (#956 E).
+    """
+
+    if batch_size < 1:
+        raise ValueError("a retention batch removes at least one item")
+    refusal = ""
+    while True:
+        with session_factory() as session:
+            try:
+                manifest = execute_retention(
+                    session,
+                    manifest_id=manifest_id,
+                    expected_sha256=expected_sha256,
+                    executed_at=executed_at,
+                    limit=batch_size,
+                )
+                done = manifest.status == "executed"
+                session.commit()
+            except RetentionRefused as exc:
+                session.rollback()
+                refusal = _refusal_code(exc)
+                break
+        if done:
+            break
+    return _execution_acknowledgement(session_factory, manifest_id, refusal)
+
+
+def _refusal_code(exc: RetentionRefused) -> str:
+    """A bounded reason code for the acknowledgement; the message names details."""
+
+    message = str(exc)
+    if "hold" in message:
+        return "hold_active"
+    if "referenced" in message or "reachable" in message:
+        return "content_still_reachable"
+    if "changed" in message or "unreadable" in message or "disappeared" in message:
+        return "content_changed_after_dry_run"
+    return "retention_refused"
+
+
+def _execution_acknowledgement(
+    session_factory, manifest_id: int, refusal: str
+) -> dict:
+    """The versioned receipt (#956 E), read from committed state after the run."""
+
+    with session_factory() as session:
+        manifest = session.get(RetentionManifest, manifest_id)
+        items = session.scalars(
+            select(RetentionManifestItem).where(
+                RetentionManifestItem.manifest_id == manifest_id
+            )
+        ).all()
+        requested = len(items)
+        pending = [item for item in items if _item_pending(session, item)]
+        uncertain = sum(
+            1
+            for item in items
+            if item.family == "processing_artifact"
+            and _artifact_uncertain(session, item.source_row_id)
+        )
+        enforced = requested - len(pending) - uncertain
+        failed_or_pending = requested - enforced
+        if failed_or_pending == 0:
+            outcome = "enforced"
+        elif refusal:
+            outcome = "blocked"
+        else:
+            outcome = "partial"
+        return {
+            "schema_version": RETENTION_EXECUTION_SCHEMA_VERSION,
+            "manifest_public_id": manifest.public_id if manifest is not None else "",
+            "manifest_status": manifest.status if manifest is not None else "",
+            "requested": requested,
+            "enforced": enforced,
+            "failed_or_pending": failed_or_pending,
+            "uncertain": uncertain,
+            "outcome": outcome,
+            "refusal": refusal,
+        }
+
+
+def _artifact_uncertain(session: Session, artifact_id: int) -> bool:
+    artifact = session.get(ProcessingArtifact, artifact_id)
+    return artifact is not None and artifact.deletion_uncertain_at is not None
 
 
 def delete_rebuildable_page_data(session: Session) -> None:

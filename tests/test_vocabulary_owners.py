@@ -206,6 +206,10 @@ def test_migration_role_constants_do_not_drift():
         # Created and granted only by migrations: the operations role for the
         # retained legacy history relations has no application caller.
         "corridor_history_operations",
+        # Created and granted only by migrations: the non-login owner of the
+        # retention-hold commands (#956). The application calls the commands by
+        # name through `func.*`; it never names the owning role.
+        "corridor_retention_hold",
     }
 
     unknown = []
