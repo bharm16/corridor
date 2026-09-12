@@ -585,6 +585,48 @@ SELECTED_CAPABILITIES: tuple[JourneyRow, ...] = (
         owner="#837, #835",
         handoff_to=COORDINATION,
     ),
+    # Contact correction (#838), the second selected capability. #562's contact
+    # resolution is required "when a partner requires exact addresses" and is not
+    # a blocker otherwise, so like correspondence it is a declared extension
+    # rather than a step every customer walks: a role-only follow-up is valid and
+    # invents no person. When a contact *is* shown and is wrong, a partner should
+    # not have to raise a separate request to fix it -- the bundle carries a
+    # small attributable correction form over the one authoritative endpoint, and
+    # it is not a CRM.
+    JourneyRow(
+        role=COORDINATION,
+        state="A verified contact shown on a follow-up bundle is wrong",
+        action="Correct it from the bundle, with a reason",
+        route="POST /projects/{slug}/contacts/{contact_id}/correct",
+        result="The correction is appended and attributable, the record it "
+        "corrects stays readable, and a stale or borrowed correction is refused; "
+        "no accepted Project Record value changes",
+        scenario="correct_a_shown_contact",
+        owner="#838",
+        produces="the corrected project contact",
+    ),
+    JourneyRow(
+        role=COORDINATION,
+        state="A shown contact was corrected",
+        action="Read the corrected contact back on the current bundle",
+        route="GET /work/{slug}",
+        result="The current follow-up bundle resolves to the corrected contact; "
+        "an as-of reading before the correction still names the earlier one",
+        scenario="correct_a_shown_contact",
+        owner="#838",
+        retrieves="the corrected project contact",
+    ),
+    JourneyRow(
+        role=COORDINATION,
+        state="A follow-up bundle resolved to a responsible role and no contact",
+        action="Read the bundle with its role, offered no correction form and "
+        "no fabricated person or address",
+        route="GET /work/{slug}",
+        result="The role-only follow-up is rendered in full; nothing invents a "
+        "person or an address to correct",
+        scenario="a_role_only_bundle_needs_no_person",
+        owner="#838, #562",
+    ),
 )
 
 
@@ -607,6 +649,15 @@ SELECTED_CAPABILITY_WORKFLOWS: tuple[WorkflowRow, ...] = (
         "no-response band that stops firing",
         scenario="record_what_came_back",
         owner="#837",
+    ),
+    WorkflowRow(
+        workflow="A shown contact is corrected",
+        producer="POST /projects/{slug}/contacts/{contact_id}/correct, through "
+        "corridor.project_contacts.correct_contact",
+        consumer="GET /work/{slug}, the Follow-up section, whose bundle "
+        "re-resolves the contact through corridor.project_contacts",
+        scenario="correct_a_shown_contact",
+        owner="#838",
     ),
 )
 

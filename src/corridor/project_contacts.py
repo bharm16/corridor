@@ -327,6 +327,57 @@ def contact_history(session, *, project_id: int):
                                 .order_by(ProjectContact.id)).all())
 
 
+@dataclass(frozen=True)
+class CorrectableContact:
+    """One current contact record's values, exactly as the correction form needs them.
+
+    The correction endpoint takes a whole `ContactInput`, and its identity —
+    `source_contact_id` above all — cannot change: the `correct_project_contact`
+    command refuses a correction whose `source_contact_id` differs from the
+    predecessor's, so the form carries the current identity back unchanged and a
+    person edits only the person, channel and address. Every value is the string
+    the record holds; a blank optional is the empty string, never a guess.
+    """
+
+    contact_id: int
+    source_contact_id: str
+    organization_ref: str
+    responsible_role: str
+    person_name: str
+    channel: str
+    address: str
+    effective_from: str
+    effective_until: str
+    external_system: str
+    external_id: str
+
+
+def correctable_contacts(session, *, project_id: int, contact_ids):
+    """The current values of the named project contacts, keyed by id, for the form.
+
+    The follow-up bundle already names the contact records a resolved recipient
+    stands on (`recipient.contact_record_ids`); this reads exactly those rows so
+    the correction form prefills the record's own values rather than the recipient
+    sentence the reading composed. It never invents a field: a contact absent from
+    this project, or one whose values the record does not hold, simply is not here.
+    """
+    ids = tuple(dict.fromkeys(int(one) for one in contact_ids))
+    if not ids:
+        return {}
+    rows = session.scalars(
+        select(ProjectContact).where(
+            ProjectContact.project_id == project_id, ProjectContact.id.in_(ids)
+        )
+    ).all()
+    return {
+        row.id: CorrectableContact(
+            contact_id=row.id,
+            **{field: str(row.values_json.get(field) or "") for field in CONTACT_FIELDS},
+        )
+        for row in rows
+    }
+
+
 def resolve_project_contacts(session, *, project_id: int, requests, as_of: datetime):
     """Resolve roles as of one cutoff, in one batch and without guessing an address."""
     if as_of.tzinfo is None:

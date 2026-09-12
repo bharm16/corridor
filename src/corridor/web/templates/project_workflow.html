@@ -401,6 +401,73 @@
              ("The one quantity this band declares", view.quantity_sentence),
            ]) }}
 
+        {#
+          Correct the shown contact (#838). Offered only where the recipient
+          resolved to a person and an address, which is the only case with
+          something to correct; a role-only bundle carries no form and invents
+          no person. It posts the corrected contact, a reason and an idempotency
+          key to the one authoritative correction endpoint (`web_boundary`'s
+          first manifest entry), which appends a correction and keeps the record
+          it corrects. The record's identity — its `source_contact_id` above all
+          — is carried back unchanged in hidden fields, because the command
+          refuses a correction that would change it; a person edits only the
+          person, channel and address. This is not a CRM and it is not a sender.
+        #}
+        {%- set correction = contact_corrections.get(view.anchor) %}
+        {%- if correction %}
+        {%- set contact = correction.contact %}
+        <details class="correct-contact">
+          <summary>Correct this contact</summary>
+          <p class="field-hint" id="{{ view.anchor }}-correct-hint">
+            The contact above resolved to a person and an address from the
+            record. If it is wrong, record the corrected contact with a reason.
+            Corridor keeps the record it corrects: this appends a correction and
+            the earlier contact stays readable in the record.
+          </p>
+          <form method="post"
+                action="/projects/{{ project.slug }}/contacts/{{ contact.contact_id }}/correct"
+                data-correct-contact
+                aria-describedby="{{ view.anchor }}-correct-hint">
+            {{ csrf_field() }}
+            <input type="hidden" name="idempotency_key" value="{{ correction.idempotency_key }}">
+            <input type="hidden" name="source_contact_id" value="{{ contact.source_contact_id }}">
+            <input type="hidden" name="organization_ref" value="{{ contact.organization_ref }}">
+            <input type="hidden" name="responsible_role" value="{{ contact.responsible_role }}">
+            <input type="hidden" name="effective_from" value="{{ contact.effective_from }}">
+            <input type="hidden" name="effective_until" value="{{ contact.effective_until }}">
+            <input type="hidden" name="external_system" value="{{ contact.external_system }}">
+            <input type="hidden" name="external_id" value="{{ contact.external_id }}">
+            {% call ui.field(view.anchor ~ "-contact-person", "Person", "The person this ask goes to.", required=true) %}
+            <input type="text" id="{{ view.anchor }}-contact-person" name="person_name"
+                   value="{{ contact.person_name }}" required>
+            {% endcall %}
+            {% call ui.field(view.anchor ~ "-contact-channel", "Channel", required=true) %}
+            <select id="{{ view.anchor }}-contact-channel" name="channel" required>
+              <option value="email"{% if contact.channel == "email" %} selected{% endif %}>email</option>
+              <option value="phone"{% if contact.channel == "phone" %} selected{% endif %}>phone</option>
+            </select>
+            {% endcall %}
+            {% call ui.field(view.anchor ~ "-contact-address", "Address", "The exact email address or phone number.", required=true) %}
+            <input type="text" id="{{ view.anchor }}-contact-address" name="address"
+                   value="{{ contact.address }}" required>
+            {% endcall %}
+            {% call ui.field(view.anchor ~ "-contact-reason", "Why it is being corrected", "Recorded with the correction and kept.", required=true) %}
+            <input type="text" id="{{ view.anchor }}-contact-reason" name="reason" required>
+            {% endcall %}
+            <p class="field-hint">
+              This corrects contact record {{ contact.contact_id }}
+              (source id {{ contact.source_contact_id }}); the correction is
+              appended and the record it corrects stays readable.
+            </p>
+            <p class="correct-status" id="{{ view.anchor }}-correct-status" role="status"
+               aria-live="polite" hidden></p>
+            {% call ui.sticky_actions("Correcting this contact") %}
+            <button type="submit">Correct contact</button>
+            {% endcall %}
+          </form>
+        </details>
+        {%- endif %}
+
         {%- if view.bundle.accepted_position %}
         {% call ui.record_table(
              "The current accepted position, as the record holds it",
@@ -1013,3 +1080,72 @@
     <li><a href="/issue-configuration/{{ project.slug }}">Issue configuration — what this project externally issues, and who approved it</a></li>
   </ul>
 </main>
+<script>
+  // #838. The correction endpoint is the one authoritative writer and it takes
+  // JSON: the corrected contact, a reason and an idempotency key, with the
+  // request-forgery token in the header the way a script echoes the readable
+  // cookie. This upgrades the rendered form to that request rather than adding
+  // a second write path. The identity fields ride back unchanged; a person
+  // edits only the person, channel and address.
+  (function () {
+    var CONTACT_FIELDS = [
+      "source_contact_id", "organization_ref", "responsible_role", "person_name",
+      "channel", "address", "effective_from", "effective_until",
+      "external_system", "external_id"
+    ];
+    document.querySelectorAll("form[data-correct-contact]").forEach(function (form) {
+      var status = form.querySelector(".correct-status");
+      function say(text) {
+        if (!status) { return; }
+        status.textContent = text;
+        status.hidden = false;
+      }
+      form.addEventListener("submit", function (event) {
+        event.preventDefault();
+        var read = function (name) {
+          var field = form.elements.namedItem(name);
+          return field ? field.value : "";
+        };
+        var contact = {};
+        CONTACT_FIELDS.forEach(function (name) { contact[name] = read(name); });
+        var button = form.querySelector("button[type=submit]");
+        if (button) { button.disabled = true; }
+        say("Recording the correction…");
+        fetch(form.action, {
+          method: "POST",
+          credentials: "same-origin",
+          headers: {
+            "content-type": "application/json",
+            "x-csrf-token": read("csrf_token")
+          },
+          body: JSON.stringify({
+            contact: contact,
+            reason: read("reason"),
+            idempotency_key: read("idempotency_key")
+          })
+        }).then(function (response) {
+          if (response.ok) {
+            window.location.reload();
+            return;
+          }
+          if (button) { button.disabled = false; }
+          if (response.status === 409) {
+            say("This contact changed since the page was loaded, so nothing "
+              + "was overwritten. Reload the page and correct the current "
+              + "contact.");
+            return;
+          }
+          response.json().then(function (body) {
+            say((body && body.detail) || "The correction could not be recorded.");
+          }).catch(function () {
+            say("The correction could not be recorded.");
+          });
+        }).catch(function () {
+          if (button) { button.disabled = false; }
+          say("The correction could not be sent. Check your connection and try "
+            + "again.");
+        });
+      });
+    });
+  })();
+</script>
