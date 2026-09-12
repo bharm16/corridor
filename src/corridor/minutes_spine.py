@@ -23,7 +23,7 @@ from sqlalchemy import func, select
 from corridor.extraction_runs import record_extraction_run
 from corridor.extractor_lineage import injected_extractor_config, token_usage_delta, usage_snapshot, zero_token_usage
 from corridor.materializer import materialize_prose_wording, materialize_prose_scope, materialize_typed_satellite
-from corridor.models import (Document, Fact, FactSource, MinutesCapture, Project, ProjectRecordRevision, SourceDelivery, SourceSegment)
+from corridor.models import (Document, ExtractionRun, Fact, FactSource, MinutesCapture, Project, ProjectRecordRevision, SourceDelivery, SourceSegment)
 from corridor.operating_mode import is_adopted_baseline
 from corridor.prompt_library import installed_prompt
 from corridor.prose_interpretation import read_typed_prose
@@ -50,6 +50,44 @@ MAX_CHARACTERS = 120_000
 
 class MinutesCaptureRefused(ValueError):
     """The source reading cannot prove its bound inputs or supported references."""
+
+
+@dataclass(frozen=True)
+class QuestionResolution:
+    """One coordinator's evidence-bound answer to a source question (#833, Row 2).
+
+    ``resolves`` names the reason code(s) this answer addresses, so the same
+    capture guard that emitted the question uses the human's binding in place of
+    the automatic match it could not make — and only that guard. The Row-3
+    reasons ``required_by_is_not_promised_timing`` and ``completion_not_explicit``
+    are deliberately absent: the source does not make those assertions, so they
+    are recorded as interpretations, never resolved into a fabricated one.
+    """
+
+    resolves: frozenset[str] = frozenset()
+    organization_id: int | None = None
+    person_id: int | None = None
+    predecessor_subject_key: str | None = None
+    keep_as_new_commitment: bool = False
+    scope_subject_keys: tuple[str, ...] = ()
+    scope_segment_id: int | None = None
+    timing_ref: int | None = None
+
+
+#: The reason codes a Row-2 resolution may answer. A reason outside this set is
+#: an interpretation (Row 3), a clarification (Row 4) or an exclusion (Row 5).
+RESOLVABLE_REASONS = frozenset({
+    "attribution_unresolved",
+    "person_attribution_unresolved",
+    "predecessor_unresolved",
+    "new_commitment_has_predecessor",
+    "scope_unresolved",
+    "new_timing_unresolved",
+})
+
+
+def _resolves(resolution, reason):
+    return resolution is not None and reason in resolution.resolves
 
 
 class ScopeReference(StrictOutputModel):
@@ -232,14 +270,19 @@ def capture_minutes(session, document, *, client, source_family: str | None = No
 
 
 def _capture_statement(session, document, run, statement, spans, accepted, organizations, people,
-                       timings, predecessors, project, family, version, revision):
+                       timings, predecessors, project, family, version, revision, resolution=None):
     span = spans.get(statement.wording_segment_id)
     if span is None:
         raise MinutesCaptureRefused("minutes statement names a foreign source segment")
     predecessor_key = next((key for key, value in predecessors.items() if value["ref"] == statement.predecessor_ref), None)
     outcome = {"segment_id": span.segment.id, "kind": statement.kind, "status": "unresolved",
                "reasons": [], "fact_ids": [], "delta_ids": [], "scope_state": "unknown",
-               "predecessor_subject_key": predecessor_key}
+               "predecessor_subject_key": predecessor_key,
+               # Retained so a Row-2 resolution can replay this exact statement
+               # against the same catalog with the human's binding (#833). The
+               # capture outcome itself is never mutated; the resolution is a
+               # separate append that reads this.
+               "statement": statement.model_dump(mode="json")}
     reasons = outcome["reasons"]
     if span.role in {"draft", "quoted_history", "meeting_metadata", "agenda", "speaker_label"}:
         reasons.append(span.role)
@@ -257,53 +300,83 @@ def _capture_statement(session, document, run, statement, spans, accepted, organ
         reasons.append("project_side_speaker")
         return outcome
     orgs = [key for key, value in organizations.items() if any(_contains(label, alias) for alias in (value.display_name, *value.aliases))]
+    org_id = statement.organization_id
     if len(orgs) != 1 or statement.organization_id != orgs[0]:
-        reasons.append("attribution_unresolved")
-        return outcome
+        if _resolves(resolution, "attribution_unresolved") and resolution.organization_id in organizations:
+            org_id = resolution.organization_id
+        else:
+            reasons.append("attribution_unresolved")
+            return outcome
     matched_people = [key for key, person in people.items()
                       if any(_contains(label, alias) for alias in (person.display_name, *person.aliases))]
+    person_id = statement.person_id
     if len(matched_people) > 1 or (statement.person_id is not None and matched_people != [statement.person_id]):
-        reasons.append("person_attribution_unresolved")
-        return outcome
-    scope_members = []
-    for reference in statement.scope:
-        subject_key, target = next(((key, value) for (key, field), value in accepted.items()
-                                   if field == "utility_id" and value.fact_id == reference.subject_ref), (None, None))
-        source = spans.get(reference.segment_id)
-        if target is None or source is None:
-            raise MinutesCaptureRefused("minutes scope names a foreign subject or segment")
-        match = _contains(source.segment.exact_text, target.text_value)
-        same_reference = [value for (key, field), value in accepted.items()
-                          if field == "utility_id" and value.text_value == target.text_value]
-        if (not match or len(same_reference) != 1 or source.block != span.block
-                or (source.segment.id != span.segment.id and source.role != "agenda")):
-            reasons.append("scope_unresolved")
+        if _resolves(resolution, "person_attribution_unresolved") and (
+                resolution.person_id is None or resolution.person_id in people):
+            person_id = resolution.person_id
+        else:
+            reasons.append("person_attribution_unresolved")
             return outcome
-        scope_members.append(ScopeSubjectValues(subject_key, source.segment.id, match.group(0)))
+    scope_members = []
+    if _resolves(resolution, "scope_unresolved"):
+        # The human names the covered subjects and cites one passage of this
+        # source; the append command re-validates that the passage carries each
+        # reference, so a resolution can never bind a subject the source does
+        # not name.
+        scope_source = spans.get(resolution.scope_segment_id)
+        for subject_key in resolution.scope_subject_keys:
+            target = accepted.get((subject_key, "utility_id"))
+            if target is None or scope_source is None:
+                reasons.append("scope_unresolved")
+                return outcome
+            scope_members.append(ScopeSubjectValues(subject_key, scope_source.segment.id, target.text_value))
+    else:
+        for reference in statement.scope:
+            subject_key, target = next(((key, value) for (key, field), value in accepted.items()
+                                       if field == "utility_id" and value.fact_id == reference.subject_ref), (None, None))
+            source = spans.get(reference.segment_id)
+            if target is None or source is None:
+                raise MinutesCaptureRefused("minutes scope names a foreign subject or segment")
+            match = _contains(source.segment.exact_text, target.text_value)
+            same_reference = [value for (key, field), value in accepted.items()
+                              if field == "utility_id" and value.text_value == target.text_value]
+            if (not match or len(same_reference) != 1 or source.block != span.block
+                    or (source.segment.id != span.segment.id and source.role != "agenda")):
+                reasons.append("scope_unresolved")
+                return outcome
+            scope_members.append(ScopeSubjectValues(subject_key, source.segment.id, match.group(0)))
     if len({member.subject_key for member in scope_members}) != len(scope_members):
         raise MinutesCaptureRefused("minutes scope repeats a subject")
     if statement.kind in {"timing_change", "completion_report"}:
-        eligible = [key for key, value in predecessors.items() if value["organization_id"] == statement.organization_id
+        eligible = [key for key, value in predecessors.items() if value["organization_id"] == org_id
                     and (not scope_members or not value["scope"] or set(value["scope"]) & {member.subject_key for member in scope_members})]
-        if len(eligible) != 1 or predecessor_key != eligible[0]:
+        if len(eligible) == 1 and predecessor_key == eligible[0]:
+            subject = eligible[0]
+        elif _resolves(resolution, "predecessor_unresolved") and resolution.predecessor_subject_key in predecessors:
+            subject = resolution.predecessor_subject_key
+        else:
             reasons.append("predecessor_unresolved")
             return outcome
-        subject = eligible[0]
     else:
-        if statement.predecessor_ref is not None:
+        if statement.predecessor_ref is None:
+            subject = f"minutes:{_digest(family)[:24]}:{_digest((span.segment.exact_text, label))}"
+        elif _resolves(resolution, "new_commitment_has_predecessor") and resolution.keep_as_new_commitment:
+            subject = f"minutes:{_digest(family)[:24]}:{_digest((span.segment.exact_text, label))}"
+        else:
             reasons.append("new_commitment_has_predecessor")
             return outcome
-        subject = f"minutes:{_digest(family)[:24]}:{_digest((span.segment.exact_text, label))}"
     timing = None
-    if statement.timing_ref is not None:
-        timing_source = timings.get(statement.timing_ref)
+    resolving_timing = _resolves(resolution, "new_timing_unresolved")
+    timing_ref = resolution.timing_ref if resolving_timing and resolution.timing_ref is not None else statement.timing_ref
+    if timing_ref is not None:
+        timing_source = timings.get(timing_ref)
         if timing_source is None or timing_source[0].id != span.segment.id:
             raise MinutesCaptureRefused("minutes timing must replay from its statement")
         if timing_source[2]:
             reasons.append("required_by_is_not_promised_timing")
             return outcome
         timing = timing_source[1]
-        if statement.kind == "timing_change" and re.search(r"\b(?:changed?|moved?|revised?|rescheduled?|shifted?|extended?)\b", span.segment.exact_text, re.I):
+        if not resolving_timing and statement.kind == "timing_change" and re.search(r"\b(?:changed?|moved?|revised?|rescheduled?|shifted?|extended?)\b", span.segment.exact_text, re.I):
             options = [value for source, value, required in timings.values() if source.id == span.segment.id and not required]
             if len(options) > 1 and timing != options[-1]:
                 reasons.append("new_timing_unresolved")
@@ -354,8 +427,8 @@ def _capture_statement(session, document, run, statement, spans, accepted, organ
     created = create_proposed_delta_group(session, project_id=project.id,
         source_family=sha256(f"minutes:{family}".encode()).hexdigest(), source_revision=_digest((version, document.sha256)),
         document_id=document.id, deltas=deltas)
-    outcome.update(status="captured", subject_key=subject, organization_id=statement.organization_id,
-        person_id=statement.person_id, fact_ids=[fact.id for fact, _ in facts], delta_ids=[delta.id for delta in created],
+    outcome.update(status="captured", subject_key=subject, organization_id=org_id,
+        person_id=person_id, fact_ids=[fact.id for fact, _ in facts], delta_ids=[delta.id for delta in created],
         scope_state="selected" if scope_members else "unknown",
         scope_subject_keys=[member.subject_key for member in scope_members])
     if not scope_members and not states_unknown_scope(span.segment.exact_text):
@@ -363,6 +436,35 @@ def _capture_statement(session, document, run, statement, spans, accepted, organ
         if prior_scope and prior_scope.applies_to_subject_keys:
             outcome["scope_state"] = "accepted_context"
     return outcome
+
+
+def resolve_question_into_deltas(session, capture, outcome, resolution):
+    """Replay one unresolved statement with the human's binding (#833, Row 2).
+
+    This is the existing capture+comparison path, not a second one: it rebuilds
+    the same bounded catalog `_prepare` gives capture, reconstructs the exact
+    statement the reader emitted, and hands it to `_capture_statement` with the
+    resolution so the one guard that could not match uses the human's evidence.
+    The Facts are materialized from the source segments and the Proposed Deltas
+    are created by `create_proposed_delta_group`, so no value is fabricated and
+    no accepted record moves. Returns the replayed outcome; its `delta_ids` are
+    the deltas the source would have produced with that answer.
+    """
+
+    if "statement" not in outcome:
+        raise MinutesCaptureRefused("this source question carries no statement to resolve")
+    document = session.get_one(Document, capture.document_id)
+    project, spans, accepted, organizations, people, timings, predecessors, context = _prepare(session, document)
+    span_by_id = {span.segment.id: span for span in spans}
+    stored = dict(outcome["statement"])
+    # The reader's strict output types round-trip through JSON as lists; rebuild
+    # the exact statement the reader emitted before replaying it.
+    stored["scope"] = tuple(ScopeReference(**reference) for reference in stored.get("scope", ()))
+    statement = MinutesStatement(**stored)
+    run = session.get_one(ExtractionRun, capture.extraction_run_id)
+    return _capture_statement(session, document, run, statement, span_by_id, accepted, organizations,
+        people, timings, predecessors, project, capture.source_family, capture.source_revision,
+        context["accepted_revision_id"], resolution=resolution)
 
 
 def _append(session, document, run, subject, value, *, canonical=None, **satellites):

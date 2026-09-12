@@ -61,6 +61,7 @@ __all__ = [
     "FactSource",
     "FactStatementTiming",
     "MinutesCapture",
+    "MinutesQuestionDisposition",
     "OnboardingAct",
     "OnboardingGrant",
     "OnboardingGrantEvent",
@@ -479,6 +480,74 @@ class MinutesCapture(Base):
     accepted_revision_id: Mapped[int] = mapped_column(ForeignKey("project_record_revisions.id"))
     output_json: Mapped[dict] = mapped_column(JSONB)
     recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.clock_timestamp())
+
+
+class MinutesQuestionDisposition(Base):
+    """One append-only disposition of one source question (#833).
+
+    A ``minutes_captures`` outcome the reader emits as a question
+    (``status == 'unresolved'``) has, until this relation, no permitted ending
+    on the Review page. This records one — a Row-2 evidence-bound resolution
+    that re-enters comparison, a Row-3 recorded interpretation, a Row-4 named
+    clarification request, or a Row-5 scoped exclusion — bound to the exact
+    source question through the capture revision it was observed on and the
+    wording Source Segment, never by mutating the immutable capture outcome.
+
+    ``question_identity`` is the stable carry key (see
+    ``minutes_question_disposition.question_identity``): a digest of the source
+    family, the normalized wording, and the sorted reason set, so a later
+    revision that changed any of them re-asks the question rather than
+    inheriting this answer. The rows are append-only; a correction is a new row
+    that names its predecessor in ``supersedes_id`` once, and ``decision_generation``
+    refuses a stale or concurrent submission. Only a resolve appends Proposed
+    Deltas (through the existing capture+comparison path); its
+    ``produced_delta_ids`` name them. Nothing here writes an accepted value.
+    """
+
+    __tablename__ = "minutes_question_dispositions"
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id", "id", name="uq_minutes_question_disposition_scope"
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "capture_id"],
+            ["minutes_captures.project_id", "minutes_captures.id"],
+            name="fk_minutes_question_disposition_capture",
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "supersedes_id"],
+            [
+                "minutes_question_dispositions.project_id",
+                "minutes_question_dispositions.id",
+            ],
+            name="fk_minutes_question_disposition_supersedes",
+        ),
+        CheckConstraint(
+            "disposition in ('resolve', 'interpret', 'exclude', 'clarify')",
+            name="ck_minutes_question_disposition_kind",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    capture_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    source_family: Mapped[str] = mapped_column(Text)
+    segment_id: Mapped[int] = mapped_column(ForeignKey("source_segments.id"))
+    question_identity: Mapped[str] = mapped_column(String(64), index=True)
+    disposition: Mapped[str] = mapped_column(Text)
+    reason_code: Mapped[str] = mapped_column(Text)
+    evidence_segment_id: Mapped[int | None] = mapped_column(
+        ForeignKey("source_segments.id")
+    )
+    produced_delta_ids: Mapped[list[int] | None] = mapped_column(ARRAY(BigInteger))
+    detail: Mapped[dict] = mapped_column(JSONB)
+    content_sha256: Mapped[str] = mapped_column(String(64))
+    decided_by: Mapped[str] = mapped_column(Text)
+    decision_generation: Mapped[int] = mapped_column(Integer)
+    supersedes_id: Mapped[int | None] = mapped_column(BigInteger)
+    decided_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.clock_timestamp()
+    )
 
 
 class FactAppliesTo(Base):

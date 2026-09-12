@@ -627,6 +627,53 @@ SELECTED_CAPABILITIES: tuple[JourneyRow, ...] = (
         scenario="a_role_only_bundle_needs_no_person",
         owner="#838, #562",
     ),
+    # Source question dispositions (#833). The Review page's Statements to
+    # review were display-only; each now carries the permitted ending its reason
+    # maps to on the matrix recorded on #833, exercised over this harness by
+    # tests/test_source_question_disposition_journey.py. It is a selected
+    # capability because it is ready only when minutes are in the declared demo
+    # or pilot scope, not a step of the core journey every customer walks.
+    JourneyRow(
+        role=COORDINATION,
+        state="A source question's identity, scope or timing can be established "
+        "from the source",
+        action="Resolve it from the source",
+        route="POST /review/{slug}/question",
+        result="The statement re-enters comparison and produces the Proposed "
+        "Delta the source would have produced; no accepted value moves",
+        scenario="resolve_a_source_question",
+        owner="#833",
+    ),
+    JourneyRow(
+        role=COORDINATION,
+        state="A source question asserts something the source does not make",
+        action="Record what the source does and does not say",
+        route="POST /review/{slug}/question",
+        result="The interpretation is recorded and nothing is proposed; Required "
+        "By never becomes Promised For and a report never becomes a completion",
+        scenario="interpret_a_source_question",
+        owner="#833",
+    ),
+    JourneyRow(
+        role=COORDINATION,
+        state="A source question has genuinely insufficient evidence",
+        action="Record a named clarification request",
+        route="POST /review/{slug}/question",
+        result="The question is retained with who owes the answer and stops "
+        "counting as waiting on the coordinator's judgement",
+        scenario="clarify_a_source_question",
+        owner="#833",
+    ),
+    JourneyRow(
+        role=COORDINATION,
+        state="A source question is not relevant to the declared project scope",
+        action="Record an out-of-scope exclusion with a reason",
+        route="POST /review/{slug}/question",
+        result="The statement is recorded outside this project's scope and "
+        "nothing is proposed",
+        scenario="exclude_a_source_question",
+        owner="#833",
+    ),
 )
 
 
@@ -658,6 +705,15 @@ SELECTED_CAPABILITY_WORKFLOWS: tuple[WorkflowRow, ...] = (
         "re-resolves the contact through corridor.project_contacts",
         scenario="correct_a_shown_contact",
         owner="#838",
+    ),
+    WorkflowRow(
+        workflow="A source question is disposed of",
+        producer="POST /review/{slug}/question, through the source-append role's "
+        "minutes-question-disposition command",
+        consumer="GET /review/{slug}, the Statements to review section, and the "
+        "Work page's waiting count",
+        scenario="resolve_a_source_question",
+        owner="#833",
     ),
 )
 
