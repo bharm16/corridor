@@ -239,7 +239,7 @@ EXPECTED_SCHEMA_SHA256 = (
     # generation itself under the terminal lock, and raises one more refusal.
     # A column, two constraints, a function and a rewritten command on
     # relations that already exist, so the digest moves and neither count does.
-    # Recomputed against a fresh disposable database with template reuse off.
+    #
     # #951 makes the recorded source scope effective. `source_deliveries` gains
     # a retained classification claim -- `source_class`,
     # `source_class_contract_version`, `source_class_basis` and
@@ -262,8 +262,17 @@ EXPECTED_SCHEMA_SHA256 = (
     # that already exist, so the digest moves and neither the table nor the
     # sequence count does. Grants and the new command-owner role are not schema
     # objects this fingerprint reads. Recomputed against a fresh disposable
-    # database with template reuse off (combined #951 + #956).
-    "db6f693e35d37b698f4dd509d99a5e44f2a8d06bee022bba9e185cbe1ac23160"
+    # database with template reuse off.
+    #
+    # #957 names the submitter and an opaque submission id in a delivery's
+    # identity. `source_deliveries` gains a `submission_id` column with
+    # `ck_source_delivery_submission`, and `enforce_source_delivery_identity`
+    # re-derives the identity and idempotency key over `delivered_by_principal`
+    # and `submission_id` too, via `concat_ws` so a pulled or machine-pushed
+    # delivery is unchanged. A column, a constraint and a rewritten trigger on a
+    # relation that already exists, so the digest moves and neither count does
+    # (combined #951 + #956 + #957).
+    "5fbc3b62fabe4b2b77ddccf564a36943f08095757d698bb7bb6526ec319c4ef9"
 )
 
 pytestmark = [pytest.mark.slow, pytest.mark.migration]

@@ -105,10 +105,25 @@ def build_delivery_identity(
     channel: str,
     external_identity: str,
     external_version: str,
+    delivered_by_principal: str = "",
+    submission_id: str = "",
 ) -> str:
-    """Deterministic delivery identity per ADR-0083."""
+    """Deterministic delivery identity per ADR-0083, extended for #957.
 
-    canonical = f"{customer}:{project}:{channel}:{external_identity}:{external_version}"
+    A pulled delivery and a machine push carry neither ``delivered_by_principal``
+    nor ``submission_id``, so the canonical form is exactly the five fields it
+    always was and their identity is unchanged.  A human upload carries both,
+    and they are appended when present -- which is what tells two people who
+    hand over the same bytes apart, and what makes a retry of one submission
+    converge while a new submission is its own delivery.  This mirrors the
+    database's ``concat_ws(':', ..., delivered_by_principal, submission_id)``,
+    which skips a null argument, so the two derivations agree column for column
+    and the trigger accepts the identity the writer supplies.
+    """
+
+    parts = [customer, project, channel, external_identity, external_version]
+    parts += [value for value in (delivered_by_principal, submission_id) if value]
+    canonical = ":".join(parts)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 

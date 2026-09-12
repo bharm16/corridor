@@ -17,6 +17,10 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import func, select, text
 
+from corridor.connectors.pull_connector import (
+    build_delivery_identity,
+    build_idempotency_key,
+)
 from corridor.models import PushIntakeCredential, SourceDelivery
 from corridor.source_delivery import (
     DeliveryBinding,
@@ -388,8 +392,17 @@ def test_a_human_upload_is_a_pushed_delivery_its_own_person_authenticated(
         )
     # And the database refuses the same row, so the rule is not one a writer
     # that bypassed `DeliveryBinding` could get wrong differently. The copy
-    # keeps every column the identity trigger re-derives, so what refuses it is
-    # the authentication check and not a mis-derived identity.
+    # names neither a credential nor a principal, so it derives the identity a
+    # principal-less delivery would (the person is now part of that identity,
+    # #957) and carries it, so what refuses the row is the authentication check
+    # and not a mis-derived identity.
+    principal_less_identity = build_delivery_identity(
+        customer="acme-utilities",
+        project=project.slug,
+        channel="product_upload",
+        external_identity="matrix.pdf",
+        external_version=digest,
+    )
     with pytest.raises(Exception, match="ck_source_delivery_authentication"):
         with session.begin_nested():
             session.execute(
@@ -405,12 +418,16 @@ def test_a_human_upload_is_a_pushed_delivery_its_own_person_authenticated(
                     select customer, project_id, transport, channel,
                            configuration_identity, external_identity,
                            external_version, content_sha256, bytes_reference,
-                           delivery_identity, idempotency_key, service_identity,
+                           :identity, :key, service_identity,
                            run_identity, 'duplicate'
                       from source_deliveries where id = :id
                     """
                 ),
-                {"id": recorded.delivery_id},
+                {
+                    "id": recorded.delivery_id,
+                    "identity": principal_less_identity,
+                    "key": build_idempotency_key(principal_less_identity, digest),
+                },
             )
 
     definitions = {

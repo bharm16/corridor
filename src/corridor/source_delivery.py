@@ -156,6 +156,10 @@ class DeliveryBinding:
     source_class: str = ""
     source_class_basis: str = ""
     source_class_basis_kind: str = ""
+    # The opaque submission id a person's upload carries across a retry (#957).
+    # It is part of the derived identity, so it is empty for every delivery no
+    # person handed over through the product.
+    submission_id: str = ""
 
     def __post_init__(self) -> None:
         if self.transport not in ("pull", "push"):
@@ -171,6 +175,10 @@ class DeliveryBinding:
             raise SourceDeliveryRefused(
                 "a pushed delivery names the one thing that authenticated it: "
                 "a machine credential, or the person who handed it over"
+            )
+        if str(self.submission_id or "").strip() and not principal:
+            raise SourceDeliveryRefused(
+                "a submission id belongs to a delivery a person handed over"
             )
         if not str(self.configuration_identity).strip():
             raise SourceDeliveryRefused(
@@ -228,6 +236,8 @@ def delivery_identity_for(
         channel=binding.channel,
         external_identity=observation.external_identity,
         external_version=observation.external_version,
+        delivered_by_principal=binding.delivered_by_principal or "",
+        submission_id=binding.submission_id or "",
     )
     return identity, build_idempotency_key(identity, observation.content_digest)
 
@@ -264,6 +274,7 @@ def record_delivery(
     values = {
         "credential_id": binding.credential_id,
         "delivered_by_principal": binding.delivered_by_principal or None,
+        "submission_id": binding.submission_id or None,
         "customer": binding.customer,
         "project_id": binding.project_id,
         "transport": binding.transport,
@@ -483,6 +494,7 @@ def binding_of_delivery(session: Session, row: SourceDelivery) -> DeliveryBindin
         configuration_version=row.configuration_version or "",
         credential_id=row.credential_id,
         delivered_by_principal=row.delivered_by_principal or "",
+        submission_id=row.submission_id or "",
     )
 
 

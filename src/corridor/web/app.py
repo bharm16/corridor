@@ -283,6 +283,7 @@ from corridor.source_intake import (
     MAX_UPLOAD_BYTES,
     IntakeRefused,
     StagedSource,
+    UploadConflict,
     UploadNotTaken,
     confirm_intake,
     preview_intake,
@@ -8529,6 +8530,12 @@ def source_upload_form(
             "max_mib": MAX_UPLOAD_BYTES // (1024 * 1024),
             "error": None,
             "selected_doc_type": None,
+            # A fresh opaque submission id per rendered form, minted before the
+            # bytes are sent and carried on every retry of this page, so a retry
+            # converges on the one delivery it took and a new page is a new
+            # submission (#957). The principal that authenticates it comes from
+            # the session, never this field.
+            "submission_id": uuid4().hex,
         },
     )
 
@@ -8538,6 +8545,11 @@ def source_upload_preview(
     request: Request,
     slug: str,
     doc_type: str = Form(...),
+    # The form always mints one (a fresh id per rendered page, carried across a
+    # retry), and the person is attributed by their session regardless, so an
+    # absent field converges on identical bytes the way this route always has
+    # rather than refusing the upload (#957).
+    submission_id: str = Form(""),
     upload: UploadFile = File(...),
     principal: HumanPrincipal = Depends(get_human_principal),
     session: Session = Depends(get_session),
@@ -8551,6 +8563,8 @@ def source_upload_preview(
         # Taking delivery is what this route does, and every outcome of it is a
         # ledger row (#823): the person's authenticated session is what admitted
         # the bytes, so the delivery names them rather than a machine credential.
+        # The submission id is the form's own, carried across a retry so a retry
+        # converges rather than becoming a second delivery (#957).
         received = receive_upload(
             session,
             project=project,
@@ -8558,14 +8572,35 @@ def source_upload_preview(
             filename=upload.filename or "",
             principal=principal,
             customer=settings.customer_id,
+            submission_id=submission_id,
         )
         preview = preview_intake(session, project, received.staged, doc_type)
+    except UploadConflict as exc:
+        # The submission id was reused with a different file. The refusal comes
+        # before anything is staged and records nothing, so there is nothing to
+        # commit and nothing to roll back; the person starts a fresh submission,
+        # so the re-rendered form carries a new id (#957).
+        return TEMPLATES.TemplateResponse(
+            request,
+            "source_upload.html",
+            {
+                "project": project,
+                "doc_types": _DOC_TYPE_CHOICES,
+                "max_mib": MAX_UPLOAD_BYTES // (1024 * 1024),
+                "error": str(exc),
+                "selected_doc_type": doc_type,
+                "submission_id": uuid4().hex,
+            },
+            status_code=409,
+        )
     except (IntakeRefused, UploadNotTaken) as exc:
         # The refusal or the failed attempt is durable before the response that
         # refuses the request; rolling it back with the response is exactly the
         # loss ADR-0089 removed. The status keeps the two apart for a client as
         # the ledger does for a reader: a refusal is about the file, and a
-        # storage or scanner failure is about Corridor on one attempt.
+        # storage or scanner failure is about Corridor on one attempt. The same
+        # submission id is offered back, so correcting the file and re-sending is
+        # one submission, not two (#957).
         session.commit()
         return TEMPLATES.TemplateResponse(
             request,
@@ -8576,6 +8611,7 @@ def source_upload_preview(
                 "max_mib": MAX_UPLOAD_BYTES // (1024 * 1024),
                 "error": str(exc),
                 "selected_doc_type": doc_type,
+                "submission_id": submission_id,
             },
             status_code=503 if isinstance(exc, UploadNotTaken) else 400,
         )

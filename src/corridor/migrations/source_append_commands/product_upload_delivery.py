@@ -60,6 +60,29 @@ because the captures that register a delivered revision run there — and
 neither may edit or erase one, on the same terms the delivery ledger itself
 was granted.
 
+**Two people are two submissions (#957).**  ``unified_delivery`` derived a
+delivery's identity from ``(customer, project, channel, external_identity,
+external_version)`` and nothing else, so the same bytes under the same filename
+handed over by two different people collapsed onto one row attributed to
+whoever arrived first: the second person's act was never recorded.  The
+identity now also names ``delivered_by_principal`` and an opaque
+``submission_id``, folded into the same derived digest ``enforce_source_delivery_identity``
+already re-derives from the row's own columns.  ``concat_ws`` skips a null, so a
+pulled delivery and a machine push -- which carry neither column -- derive
+exactly the digest they did before, and only a human upload, which carries
+both, is told apart by them.  A ``submission_id`` is the opaque key the upload
+surface mints before the bytes are sent and keeps across a retry, so a retry of
+one submission converges on the delivery it already took while a genuinely new
+submission of identical bytes is its own delivery.  The material payload is
+bound to that identity in the writer rather than here: ``source_intake`` refuses
+a submission id reused with different bytes rather than recording a second
+attributed row, on the same terms ``confirm_intake`` already refuses a tampered
+binding.  ``ck_source_delivery_submission`` keeps the column honest -- a
+submission id is non-blank and belongs to a delivery a person authenticated --
+without putting the payload binding in the database, because two uploads of two
+different revisions of one workbook are two submissions and neither is the
+other's duplicate.
+
 The downgrade refuses while a human-authenticated delivery exists.  The
 predecessor requires every push to name a credential, so carrying such a row
 back would mean inventing one; the same discipline as the blocks above, which
@@ -80,7 +103,8 @@ CONFIRMATION_TABLE = "source_delivery_confirmations"
 
 PRODUCT_UPLOAD_DELIVERY_SCHEMA = f"""
 alter table public.source_deliveries
-    add column delivered_by_principal text;
+    add column delivered_by_principal text,
+    add column submission_id text;
 
 alter table public.source_deliveries
     drop constraint ck_source_delivery_push_credential;
@@ -95,7 +119,42 @@ alter table public.source_deliveries
                end),
     add constraint ck_source_delivery_principal
         check (delivered_by_principal is null
-               or length(btrim(delivered_by_principal)) > 0);
+               or length(btrim(delivered_by_principal)) > 0),
+    add constraint ck_source_delivery_submission
+        check (submission_id is null
+               or (length(btrim(submission_id)) > 0
+                   and delivered_by_principal is not null));
+
+create or replace function public.enforce_source_delivery_identity()
+    returns trigger
+    language plpgsql
+    as $$
+        declare
+            bound_slug text;
+            derived_identity text;
+            derived_key text;
+        begin
+            select slug into bound_slug from projects where id = new.project_id;
+            if bound_slug is null then
+                raise exception 'source_delivery:unbound_delivery a delivery names a project that does not exist'
+                    using errcode='23514';
+            end if;
+            derived_identity := encode(sha256(convert_to(concat_ws(':',
+                new.customer, bound_slug, new.channel,
+                new.external_identity, new.external_version,
+                new.delivered_by_principal, new.submission_id), 'UTF8')), 'hex');
+            derived_key := encode(sha256(convert_to(concat_ws(':',
+                derived_identity, new.content_sha256), 'UTF8')), 'hex');
+            if new.delivery_identity is distinct from derived_identity then
+                raise exception 'source_delivery:delivery_identity a delivery identity is derived from the binding and the transport, never supplied'
+                    using errcode='23514';
+            end if;
+            if new.idempotency_key is distinct from derived_key then
+                raise exception 'source_delivery:idempotency_key a delivery idempotency key is derived from its identity and its bytes, never supplied'
+                    using errcode='23514';
+            end if;
+            return new;
+        end; $$;
 
 create table public.{CONFIRMATION_TABLE} (
     id bigserial primary key,
@@ -162,7 +221,38 @@ drop table public.{CONFIRMATION_TABLE};
 
 drop function public.reject_{CONFIRMATION_TABLE}_mutation();
 
+create or replace function public.enforce_source_delivery_identity()
+    returns trigger
+    language plpgsql
+    as $$
+        declare
+            bound_slug text;
+            derived_identity text;
+            derived_key text;
+        begin
+            select slug into bound_slug from projects where id = new.project_id;
+            if bound_slug is null then
+                raise exception 'source_delivery:unbound_delivery a delivery names a project that does not exist'
+                    using errcode='23514';
+            end if;
+            derived_identity := encode(sha256(convert_to(concat_ws(':',
+                new.customer, bound_slug, new.channel,
+                new.external_identity, new.external_version), 'UTF8')), 'hex');
+            derived_key := encode(sha256(convert_to(concat_ws(':',
+                derived_identity, new.content_sha256), 'UTF8')), 'hex');
+            if new.delivery_identity is distinct from derived_identity then
+                raise exception 'source_delivery:delivery_identity a delivery identity is derived from the binding and the transport, never supplied'
+                    using errcode='23514';
+            end if;
+            if new.idempotency_key is distinct from derived_key then
+                raise exception 'source_delivery:idempotency_key a delivery idempotency key is derived from its identity and its bytes, never supplied'
+                    using errcode='23514';
+            end if;
+            return new;
+        end; $$;
+
 alter table public.source_deliveries
+    drop constraint ck_source_delivery_submission,
     drop constraint ck_source_delivery_principal,
     drop constraint ck_source_delivery_authentication;
 
@@ -170,7 +260,9 @@ alter table public.source_deliveries
     add constraint ck_source_delivery_push_credential
         check ((transport = 'push') = (credential_id is not null));
 
-alter table public.source_deliveries drop column delivered_by_principal;
+alter table public.source_deliveries
+    drop column submission_id,
+    drop column delivered_by_principal;
 """
 
 

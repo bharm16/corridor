@@ -128,7 +128,7 @@ from corridor.storage import staged_file
 # the top — the same local import ``source_delivery`` itself makes for the
 # activation gate.
 if TYPE_CHECKING:
-    from corridor.source_delivery import DeliveryObservation
+    from corridor.source_delivery import DeliveryBinding, DeliveryObservation
 
 # One uploaded file per request is the count bound; a batch caller (email) loops
 # this module per attachment. 64 MiB holds a large utility-conflict matrix PDF or
@@ -222,6 +222,28 @@ class IntakeConflict(refusals.Refusal, ValueError):
     Raised for a stale, tampered, concurrent, or cross-project confirmation before
     any authoritative write. ``reason`` is one of ``binding_mismatch``,
     ``bytes_missing``, ``bytes_tampered``, ``type_conflict``.
+    """
+
+    refusal_kind = refusals.CONFLICT
+
+    def __init__(self, reason: str, message: str) -> None:
+        super().__init__(message)
+        self.reason = reason
+
+
+class UploadConflict(refusals.Refusal, ValueError):
+    """A submission id was reused with a different material payload (#957).
+
+    The upload surface mints an opaque submission id before the bytes are sent
+    and keeps it across a retry, so a retry of one submission converges on the
+    delivery it already took. Reusing that id for *different* bytes, a different
+    filename, or a different declared revision is not that retry: it is a
+    contradiction in the request. It is refused here, before anything is staged,
+    rather than recorded as a second delivery attributed to the same submission
+    -- the same discipline ``confirm_intake`` uses to refuse a binding that no
+    longer matches what was previewed. Two genuinely different submissions of
+    identical bytes are two deliveries and never reach this refusal, because
+    each carries its own submission id.
     """
 
     refusal_kind = refusals.CONFLICT
@@ -403,6 +425,7 @@ def receive_upload(
     principal: HumanPrincipal,
     customer: str,
     source_revision: str = "",
+    submission_id: str = "",
     max_bytes: int | None = None,
 ) -> ReceivedUpload:
     """Take delivery of one uploaded file, and record what became of it.
@@ -433,6 +456,19 @@ def receive_upload(
     because storage deduplication and delivery identity are different questions
     and identical bytes can be a new and meaningful source revision (ADR-0015
     leaves what they are to the person, and this module still never guesses it).
+
+    ``submission_id`` is the opaque key the upload surface mints before the
+    bytes are sent and keeps across a retry (#957). It joins the authenticated
+    principal in the delivery's identity, so the same bytes handed over by two
+    different people are two attributed deliveries rather than one, and a new
+    submission of identical bytes by one person is a second delivery. A retry of
+    *one* submission -- the same id with the same material payload -- converges
+    on the delivery it already took, exactly as an undeclared re-upload does.
+    Reusing that id with a different payload is a contradiction, not a retry, and
+    is refused as an ``UploadConflict`` before anything is staged rather than
+    recorded as a second row attributed to the same submission. It is empty for
+    a caller that mints no submission id, which converges on identical bytes the
+    way this seam always has.
     """
 
     from corridor import source_delivery
@@ -447,6 +483,7 @@ def receive_upload(
         channel=PRODUCT_UPLOAD_CHANNEL,
         configuration_identity=PRODUCT_UPLOAD_CONFIGURATION,
         delivered_by_principal=principal.subject,
+        submission_id=submission_id,
     )
     # The upload form is the whole run: there is no pass and no cursor, and the
     # run is not part of the delivery's identity, so a replay converges on the
@@ -460,6 +497,12 @@ def receive_upload(
         digest,
         len(body),
     )
+    # A submission id is an idempotency key over the material payload it was
+    # first stored with. Reusing it for a different payload is a contradiction,
+    # refused before staging so the request never becomes a second delivery
+    # attributed to the same submission; a retry with the same payload matches
+    # and falls through to converge on the delivery already taken (#957).
+    _refuse_conflicting_submission_reuse(session, binding, offered)
     try:
         staged = validate_and_stage(
             body,
@@ -560,6 +603,50 @@ def _offered_name(filename: str) -> str:
         return _safe_filename(filename)
     except IntakeRefused:
         return ""
+
+
+def _refuse_conflicting_submission_reuse(
+    session: Session,
+    binding: "DeliveryBinding",
+    offered: "DeliveryObservation",
+) -> None:
+    """Refuse a submission id reused with a different material payload (#957).
+
+    Looks up the delivery this submission already stored -- scoped to this
+    project, this principal, and this submission id -- and compares the bytes,
+    the supplied filename, and the declared revision it carried against what is
+    being offered now. Equal is an honest retry and falls through to converge on
+    that delivery; different is a contradiction and is refused before anything
+    is staged. A caller that minted no submission id is left exactly as it was,
+    converging on identical bytes through the delivery identity as before.
+    """
+
+    if not (binding.submission_id or "").strip():
+        return
+    from corridor.source_delivery import DISPOSITION_STORED
+
+    prior = session.scalars(
+        select(SourceDelivery)
+        .where(
+            SourceDelivery.project_id == binding.project_id,
+            SourceDelivery.delivered_by_principal == binding.delivered_by_principal,
+            SourceDelivery.submission_id == binding.submission_id,
+            SourceDelivery.disposition == DISPOSITION_STORED,
+        )
+        .order_by(SourceDelivery.id)
+    ).first()
+    if prior is None:
+        return
+    if (
+        prior.content_sha256 != offered.content_digest
+        or prior.external_identity != offered.external_identity
+        or prior.external_version != offered.external_version
+    ):
+        raise UploadConflict(
+            "submission_conflict",
+            "This submission was already recorded with a different file. Reload "
+            "the upload page to start a new one.",
+        )
 
 
 def preview_intake(
