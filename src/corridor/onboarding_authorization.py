@@ -269,6 +269,10 @@ class OnboardingStanding:
     evidence_identity: str = ""
     evidence_sha256: str = ""
     source_scope: str = ""
+    scope_contract_version: int = 0
+    permitted_source_classes: tuple[str, ...] = ()
+    bound_source_identity: str = ""
+    bound_source_sha256: str = ""
 
     @classmethod
     def of(cls, payload: Mapping[str, Any]) -> "OnboardingStanding":
@@ -297,6 +301,12 @@ class OnboardingStanding:
             evidence_identity=str(payload.get("evidence_identity") or ""),
             evidence_sha256=str(payload.get("evidence_sha256") or ""),
             source_scope=str(payload.get("source_scope") or ""),
+            scope_contract_version=int(payload.get("scope_contract_version") or 0),
+            permitted_source_classes=tuple(
+                payload.get("permitted_source_classes") or ()
+            ),
+            bound_source_identity=str(payload.get("bound_source_identity") or ""),
+            bound_source_sha256=str(payload.get("bound_source_sha256") or ""),
         )
 
 
@@ -355,8 +365,19 @@ def record_onboarding_grant(
     expires_at: datetime,
     issued_by_actor: str,
     recorded_by_actor: str,
+    scope_contract_version: int = 0,
+    permitted_source_classes: Sequence[str] | None = None,
+    bound_source_identity: str = "",
+    bound_source_sha256: str = "",
 ) -> int:
-    """Record here what the control plane issued. Operations capability only."""
+    """Record here what the control plane issued. Operations capability only.
+
+    ``scope_contract_version`` and ``permitted_source_classes`` are the typed
+    source scope (#951): version 0 is the narrative ``source_scope`` alone, and
+    version 1 and up name the classes a delivery is matched against under
+    ``source_class_contract``. ``bound_source_*`` optionally pin the grant to one
+    delivery's exact identity and content digest.
+    """
 
     unknown = sorted(set(permitted_operations) - set(ONBOARDING_OPERATIONS))
     if unknown:
@@ -381,6 +402,12 @@ def record_onboarding_grant(
             _aware(expires_at),
             issued_by_actor,
             recorded_by_actor,
+            int(scope_contract_version),
+            list(permitted_source_classes)
+            if permitted_source_classes is not None
+            else None,
+            bound_source_identity or None,
+            bound_source_sha256 or None,
         ),
     )
     return int(outcome["grant_id"])

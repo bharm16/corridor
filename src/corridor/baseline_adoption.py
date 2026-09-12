@@ -101,6 +101,7 @@ from corridor.object_storage import (
 )
 from corridor.operating_mode import adopt_project_baseline
 from corridor.principals import HumanPrincipal, require_human_principal
+from corridor import source_class_contract
 from corridor.source_append import append_fact
 from corridor.source_authorization import (
     authentication_mode_of,
@@ -1819,6 +1820,59 @@ def _submitted_baseline_delivery(
     return delivery
 
 
+def _require_grant_source_scope(
+    standing: onboarding_authorization.OnboardingStanding,
+    delivery: SourceDelivery,
+    staged: StagedSource,
+) -> None:
+    """The grant's own typed source scope and exact-evidence pin, before opening (#951).
+
+    ``_submitted_baseline_delivery`` proves the *delivery* is this project's and
+    that its recorded source authorization still permits its channel. This proves
+    the *grant's own* scope, which is a different record and a different
+    question: the limited onboarding authorization names which source classes it
+    admits, and may be pinned to one exact source.
+
+    **The narrative scope is not parsed.** Contract version 0 -- the grants #827
+    issued and the ordinary case still -- carries a human ``source_scope`` string
+    and gates nothing here: it is readable history, and turning its words into a
+    permission by substring would be exactly the inference #951 forbids. A typed
+    scope (version 1 and up) names its permitted classes, and the delivery's
+    declared class is matched against them under the one shared interpretation,
+    so the two paths recognise a class the same way while each keeps its own set.
+
+    **A pin is optional and exact.** A grant bound to specific evidence admits
+    only that delivery's identity and its bytes; a grant not so bound is not
+    newly gated. Reissuing the authorization appends a new version with its own
+    pin rather than rewriting this one.
+    """
+
+    if standing.bound_source_sha256 and staged.sha256 != standing.bound_source_sha256:
+        raise BaselineAdoptionRefused(
+            "This onboarding authorization is bound to a specific source, and "
+            "these are not its bytes. Corridor operations can say which source "
+            "this authorization admits."
+        )
+    if standing.bound_source_identity and (
+        delivery.delivery_identity != standing.bound_source_identity
+    ):
+        raise BaselineAdoptionRefused(
+            "This onboarding authorization is bound to a specific delivery, and "
+            "this is not it. Corridor operations can say which source this "
+            "authorization admits."
+        )
+    if standing.scope_contract_version >= 1:
+        decision = source_class_contract.evaluate(
+            standing.permitted_source_classes, delivery.source_class or ""
+        )
+        if not decision.permitted:
+            raise BaselineAdoptionRefused(
+                "This onboarding authorization's source scope does not cover "
+                f"this delivery ({decision.reason}). Corridor operations can say "
+                "what this project may take delivery on for onboarding."
+            )
+
+
 def prepare_baseline_reading(
     session: Session,
     *,
@@ -1875,7 +1929,10 @@ def prepare_baseline_reading(
         project_id=int(project.id),
         operation=onboarding_authorization.INSPECT_COMPATIBILITY,
         at=at,
-    ):
+    ) as standing:
+        # The grant's own typed source scope and any exact-evidence pin, proved
+        # against the delivery before the workbook is opened (#951).
+        _require_grant_source_scope(standing, delivery, staged)
         preview = preview_baseline_adoption(
             session,
             project=project,

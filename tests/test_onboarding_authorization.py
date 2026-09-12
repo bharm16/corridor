@@ -25,7 +25,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.exc import DBAPIError
 
 from corridor import processing_holds
-from corridor import access, audit, intake_hardening, refusals
+from corridor import access, audit, intake_hardening, refusals, source_class_contract
 from corridor.baseline_adoption import (
     ANSWER_EFFECTS,
     BLOCKING_QUESTION_KINDS,
@@ -197,13 +197,17 @@ def onboarding(session, tmp_path, store):
     return project, grant_id
 
 
-def delivered(session, project, staged, *, name="ucm.xlsx"):
+def delivered(session, project, staged, *, name="ucm.xlsx", source_class=""):
     """Take delivery of the staged bytes as the person who handed them over.
 
     A reading is prepared on a delivery, not on a digest (#933), so every
     scenario here hands the workbook over before it is read -- which is what
     the product does: the upload takes delivery, and the page then offers the
     reading on the row that produced.
+
+    ``source_class`` optionally declares the delivery's semantic class (#951),
+    with the basis a real upload records, so a grant's typed scope has a class
+    to match against.
     """
 
     recorded = take_delivery(
@@ -217,6 +221,11 @@ def delivered(session, project, staged, *, name="ucm.xlsx"):
             configuration_identity="product-upload-v1",
             configuration_version="1",
             delivered_by_principal=COORDINATOR.subject,
+            source_class=source_class,
+            source_class_basis=(
+                "coordinator declared it on the upload screen" if source_class else ""
+            ),
+            source_class_basis_kind="declared" if source_class else "",
         ),
         DeliveryObservation(
             external_identity=name,
@@ -348,6 +357,7 @@ def test_the_web_capability_cannot_record_or_annotate_an_onboarding_grant(
                         int(project.id), "self-issued", 2, "c", "e",
                         ["adopt_baseline"], "scope", "gov", "v1", "ev", "b" * 64,
                         AT, AT + timedelta(days=1), "coordinator", "coordinator",
+                        0, None, None, None,
                     )
                 )
             )
@@ -1834,6 +1844,269 @@ def test_an_unsupported_development_login_is_refused_in_words(session, onboardin
 
     assert refused.value.refusal_kind == refusals.NOT_AUTHORIZED
     assert "not one Corridor prepares baseline readings under" in str(refused.value)
+
+
+# --- #951 The grant's own typed source scope and exact-evidence pin ---------
+#
+# `_submitted_baseline_delivery` proves the delivery and the *source
+# authorization* that governs its channel. The grant carries a second scope of
+# its own -- which source classes the limited onboarding authorization admits,
+# and optionally one exact source it is pinned to -- and until #951 those fields
+# were recorded and never compared. Contract version 0 is the narrative
+# `source_scope` string #827 issued: readable history, never parsed into a
+# permission. Version 1 and up name the permitted classes, matched against the
+# delivery's declared class under the one shared interpretation the activated
+# path also reads. Each refusal installs `_refuse_to_open_the_workbook` first, so
+# a check that arrived after the reading would fail here rather than pass a step
+# too late.
+
+
+def _reissue(
+    session,
+    project,
+    *,
+    version=2,
+    scope_contract_version=0,
+    permitted_source_classes=None,
+    bound_source_identity="",
+    bound_source_sha256="",
+):
+    """Reissue this project's onboarding authorization at a higher version.
+
+    The grant the operations actor records, exactly as `onboarding` records the
+    first, carrying the #951 typed scope or exact pin under test.
+    """
+
+    return record_onboarding_grant(
+        session,
+        project_id=int(project.id),
+        authorization_id="loa-2026-05",
+        grant_version=version,
+        customer="lone-star-transit",
+        environment="pilot-1",
+        permitted_operations=ONBOARDING_OPERATIONS,
+        source_scope="ucm workbook revisions for project onboard",
+        governing_authorization_identity="customer-authorization-7",
+        governing_authorization_version="2026-04-01",
+        evidence_identity="s3://authorizations/customer-authorization-7.pdf",
+        evidence_sha256="a" * 64,
+        issued_at=AT - timedelta(minutes=5),
+        expires_at=AT + timedelta(days=14),
+        issued_by_actor=OPERATIONS_ACTOR,
+        recorded_by_actor=OPERATIONS_ACTOR,
+        scope_contract_version=scope_contract_version,
+        permitted_source_classes=permitted_source_classes,
+        bound_source_identity=bound_source_identity,
+        bound_source_sha256=bound_source_sha256,
+    )
+
+
+def _prepare(session, project, staged, delivery_id, tmp_path):
+    return prepare_baseline_reading(
+        session,
+        project=project,
+        staged=staged,
+        customer="Lone Star Transit Authority",
+        source_identity="UCM workbook revision C",
+        principal=COORDINATOR,
+        at=AT,
+        source_delivery_id=delivery_id,
+        field_mapping=DEMO,
+        images_dir=tmp_path / "images",
+    )
+
+
+def test_a_typed_scope_that_excludes_the_delivery_class_refuses_before_opening(
+    session, onboarding, tmp_path, monkeypatch
+):
+    """A grant scoped to `ucm_revision` does not admit a `matrix`, before opening.
+
+    The delivery is this project's own, on a permitted channel, under a live
+    grant. What refuses it is the grant's own typed scope: it names the source
+    classes this onboarding authorization admits, and `matrix` is not among them.
+    """
+
+    project, _ = onboarding
+    _reissue(
+        session, project, scope_contract_version=1,
+        permitted_source_classes=["ucm_revision"],
+    )
+    session.flush()
+    staged = validate_and_stage(workbook(tmp_path), "ucm.xlsx")
+    delivery_id = delivered(session, project, staged, source_class="matrix")
+
+    _refuse_to_open_the_workbook(monkeypatch)
+    with refusal(session, BaselineAdoptionRefused) as refused:
+        _prepare(session, project, staged, delivery_id, tmp_path)
+    assert "source scope does not cover" in str(refused.value)
+    assert source_class_contract.SOURCE_CLASS_NOT_PERMITTED in str(refused.value)
+
+
+def test_a_typed_scope_refuses_an_unrecognized_or_undeclared_delivery_class(
+    session, onboarding, tmp_path, monkeypatch
+):
+    """A typed scope needs a class it recognises; a guess is not one.
+
+    An unrecognised class and a delivery that declares none are both refused --
+    a typed scope is not silently satisfied by an uninterpretable claim.
+    """
+
+    project, _ = onboarding
+    _reissue(
+        session, project, scope_contract_version=1,
+        permitted_source_classes=["ucm_revision"],
+    )
+    session.flush()
+    staged = validate_and_stage(workbook(tmp_path), "ucm.xlsx")
+    unknown = delivered(session, project, staged, source_class="mystery_export")
+    undeclared = delivered(session, project, staged, name="ucm-2.xlsx")
+
+    _refuse_to_open_the_workbook(monkeypatch)
+    with refusal(session, BaselineAdoptionRefused) as refused:
+        _prepare(session, project, staged, unknown, tmp_path)
+    assert source_class_contract.SOURCE_CLASS_UNRECOGNIZED in str(refused.value)
+    with refusal(session, BaselineAdoptionRefused) as refused:
+        _prepare(session, project, staged, undeclared, tmp_path)
+    assert source_class_contract.SOURCE_CLASS_UNDECLARED in str(refused.value)
+
+
+def test_a_typed_scope_that_covers_the_delivery_class_prepares_the_reading(
+    session, onboarding, tmp_path
+):
+    """The class the scope names is admitted, and the reading names its delivery."""
+
+    project, _ = onboarding
+    _reissue(
+        session, project, scope_contract_version=1,
+        permitted_source_classes=["ucm_revision", "matrix"],
+    )
+    session.flush()
+    staged = validate_and_stage(workbook(tmp_path), "ucm.xlsx")
+    delivery_id = delivered(session, project, staged, source_class="ucm_revision")
+
+    retained = _prepare(session, project, staged, delivery_id, tmp_path)
+    assert retained.source_delivery_id == delivery_id
+
+
+def test_a_narrative_scope_grant_is_history_and_gates_no_class(
+    session, onboarding, tmp_path
+):
+    """Contract version 0 is not parsed: its words admit nothing and refuse nothing.
+
+    The `onboarding` grant's `source_scope` says "ucm workbook revisions", and a
+    delivery declaring `matrix` still reads -- because a narrative scope is
+    readable history, and turning its words into a permission by substring is
+    exactly the inference #951 forbids. The typed scope is where a class gate
+    lives, and this grant has none.
+    """
+
+    project, _ = onboarding
+    assert held_grant(session, int(project.id)).scope_contract_version == 0
+    staged = validate_and_stage(workbook(tmp_path), "ucm.xlsx")
+    delivery_id = delivered(session, project, staged, source_class="matrix")
+
+    retained = _prepare(session, project, staged, delivery_id, tmp_path)
+    assert retained.source_delivery_id == delivery_id
+
+
+def test_a_grant_bound_to_specific_evidence_refuses_different_bytes(
+    session, onboarding, tmp_path, monkeypatch
+):
+    """A grant pinned to one source admits only its bytes, before opening.
+
+    The pin is the exact source binding: a verified content digest bound to the
+    grant. A delivery of this project's own bytes, on a permitted channel, is
+    still refused because those are not the bytes this authorization was pinned
+    to. A grant not so pinned is not gated -- every other scenario in this file
+    prepares a reading under one.
+    """
+
+    project, _ = onboarding
+    _reissue(session, project, bound_source_sha256="e" * 64)
+    session.flush()
+    staged = validate_and_stage(workbook(tmp_path), "ucm.xlsx")
+    assert staged.sha256 != "e" * 64
+    delivery_id = delivered(session, project, staged)
+
+    _refuse_to_open_the_workbook(monkeypatch)
+    with refusal(session, BaselineAdoptionRefused) as refused:
+        _prepare(session, project, staged, delivery_id, tmp_path)
+    assert "bound to a specific source" in str(refused.value)
+
+
+def test_a_grant_bound_to_its_own_delivery_admits_it(session, onboarding, tmp_path):
+    """The pin admits the exact source it names: identity and bytes both match."""
+
+    project, _ = onboarding
+    staged = validate_and_stage(workbook(tmp_path), "ucm.xlsx")
+    delivery_id = delivered(session, project, staged)
+    delivery = session.get(SourceDelivery, delivery_id)
+    _reissue(
+        session, project,
+        bound_source_identity=delivery.delivery_identity,
+        bound_source_sha256=staged.sha256,
+    )
+    session.flush()
+
+    retained = _prepare(session, project, staged, delivery_id, tmp_path)
+    assert retained.source_delivery_id == delivery_id
+
+
+def test_reissuing_the_authorization_appends_a_version_and_keeps_its_pins(
+    session, onboarding
+):
+    """Reauthorization appends a new version; the earlier terms stay readable.
+
+    Two reissues, each with its own pin, leave three grant rows in version
+    order, and the standing reads the newest -- history is appended, never
+    rewritten (#951, and the same shape #827 gives the grant).
+    """
+
+    project, _ = onboarding
+    _reissue(session, project, version=2, bound_source_sha256="a" * 64)
+    _reissue(session, project, version=3, bound_source_sha256="b" * 64)
+    session.flush()
+
+    grants = session.scalars(
+        select(OnboardingGrant)
+        .where(OnboardingGrant.project_id == project.id)
+        .order_by(OnboardingGrant.grant_version)
+    ).all()
+    assert [g.grant_version for g in grants] == [1, 2, 3]
+    assert [g.bound_source_sha256 for g in grants] == [None, "a" * 64, "b" * 64]
+
+    standing = onboarding_standing(
+        session, project_id=int(project.id), operation=INSPECT_COMPATIBILITY, at=AT
+    )
+    assert (standing.grant_version, standing.bound_source_sha256) == (3, "b" * 64)
+
+
+def test_the_onboarding_scope_and_the_activated_set_share_recognition_not_permission(
+    session, onboarding, tmp_path
+):
+    """One interpretation, two permitted sets: shared recognition, separate yes.
+
+    The onboarding grant permits `minutes`, so a `minutes` delivery reads. The
+    same class is recognised by the one shared contract -- it is not path-local
+    -- yet an activated set that names only `ucm_revision` would refuse it. The
+    paths agree on what a class *is* and each keeps its own permitted set.
+    """
+
+    project, _ = onboarding
+    _reissue(
+        session, project, scope_contract_version=1,
+        permitted_source_classes=["minutes"],
+    )
+    session.flush()
+    staged = validate_and_stage(workbook(tmp_path), "ucm.xlsx")
+    delivery_id = delivered(session, project, staged, source_class="minutes")
+
+    retained = _prepare(session, project, staged, delivery_id, tmp_path)
+    assert retained.source_delivery_id == delivery_id
+
+    assert source_class_contract.is_recognized("minutes")
+    assert source_class_contract.evaluate(["minutes"], "minutes").permitted is True
+    assert source_class_contract.evaluate(["ucm_revision"], "minutes").permitted is False
 
 
 # --- the adoption itself ----------------------------------------------------

@@ -152,6 +152,10 @@ create table public.{GRANT_TABLE} (
     environment character varying(128) not null,
     permitted_operations text[] not null,
     source_scope character varying(256) not null,
+    scope_contract_version integer not null default 0,
+    permitted_source_classes text[],
+    bound_source_identity text,
+    bound_source_sha256 character varying(64),
     governing_authorization_identity character varying(128) not null,
     governing_authorization_version character varying(64) not null,
     evidence_identity character varying(256) not null,
@@ -183,6 +187,26 @@ create table public.{GRANT_TABLE} (
         and length(btrim(customer)) > 0
         and length(btrim(environment)) > 0
         and length(btrim(source_scope)) > 0
+    ),
+    -- The typed source scope (#951). Contract version 0 is the narrative
+    -- ``source_scope`` alone, readable history that authorizes no
+    -- source-dependent processing by inference; version 1 and up name the
+    -- permitted source classes the delivery is matched against, so a typed
+    -- scope is never an empty promise. An exact-evidence pin, when present, is
+    -- a well-formed digest and the delivery/document identity it binds.
+    constraint ck_{GRANT_TABLE}_scope check (
+        scope_contract_version >= 0
+        and (
+            scope_contract_version = 0
+            or (
+                permitted_source_classes is not null
+                and array_length(permitted_source_classes, 1) >= 1
+                and array_position(permitted_source_classes, null) is null
+                and array_position(permitted_source_classes, '') is null
+            )
+        )
+        and (bound_source_sha256 is null or bound_source_sha256 ~ '^[0-9a-f]{{64}}$')
+        and (bound_source_identity is null or length(btrim(bound_source_identity)) > 0)
     )
 );
 
@@ -366,7 +390,11 @@ create function public.record_onboarding_grant(
     p_issued_at timestamp with time zone,
     p_expires_at timestamp with time zone,
     p_issued_by_actor character varying,
-    p_recorded_by_actor character varying
+    p_recorded_by_actor character varying,
+    p_scope_contract_version integer,
+    p_permitted_source_classes text[],
+    p_bound_source_identity character varying,
+    p_bound_source_sha256 character varying
 ) returns jsonb
     language plpgsql security definer
     set search_path to 'public'
@@ -383,7 +411,15 @@ create function public.record_onboarding_grant(
                 if prior.permitted_operations <> p_permitted_operations
                    or prior.expires_at is distinct from p_expires_at
                    or prior.governing_authorization_version
-                       is distinct from p_governing_version then
+                       is distinct from p_governing_version
+                   or prior.scope_contract_version
+                       is distinct from p_scope_contract_version
+                   or prior.permitted_source_classes
+                       is distinct from p_permitted_source_classes
+                   or prior.bound_source_identity
+                       is distinct from p_bound_source_identity
+                   or prior.bound_source_sha256
+                       is distinct from p_bound_source_sha256 then
                     raise exception 'onboarding_grant:version_bound_to_other_terms this authorization version already names different terms; reissue at a higher version'
                         using errcode='23514';
                 end if;
@@ -401,12 +437,16 @@ create function public.record_onboarding_grant(
             insert into {GRANT_TABLE} (
                 project_id, authorization_id, grant_version, customer,
                 environment, permitted_operations, source_scope,
+                scope_contract_version, permitted_source_classes,
+                bound_source_identity, bound_source_sha256,
                 governing_authorization_identity, governing_authorization_version,
                 evidence_identity, evidence_sha256, issued_at, expires_at,
                 issued_by_actor, recorded_by_actor
             ) values (
                 p_project_id, p_authorization_id, p_grant_version, p_customer,
                 p_environment, p_permitted_operations, p_source_scope,
+                coalesce(p_scope_contract_version, 0), p_permitted_source_classes,
+                p_bound_source_identity, p_bound_source_sha256,
                 p_governing_identity, p_governing_version, p_evidence_identity,
                 p_evidence_sha256, p_issued_at, p_expires_at,
                 p_issued_by_actor, p_recorded_by_actor
@@ -419,7 +459,8 @@ RECORD_ONBOARDING_GRANT_SIGNATURE = (
     "(bigint, character varying, integer, character varying, character varying, "
     "text[], character varying, character varying, character varying, "
     "character varying, character varying, timestamp with time zone, "
-    "timestamp with time zone, character varying, character varying)"
+    "timestamp with time zone, character varying, character varying, "
+    "integer, text[], character varying, character varying)"
 )
 
 
@@ -580,7 +621,12 @@ create function public.onboarding_grant_standing(
                     held.governing_authorization_version,
                 'evidence_identity', held.evidence_identity,
                 'evidence_sha256', held.evidence_sha256,
-                'source_scope', held.source_scope
+                'source_scope', held.source_scope,
+                'scope_contract_version', held.scope_contract_version,
+                'permitted_source_classes',
+                    to_jsonb(held.permitted_source_classes),
+                'bound_source_identity', held.bound_source_identity,
+                'bound_source_sha256', held.bound_source_sha256
             );
         end; $$;
 """

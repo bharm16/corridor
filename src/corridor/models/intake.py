@@ -387,6 +387,21 @@ class SourceDelivery(Base):
             "(disposition in ('stored', 'duplicate')) = (refusal_reason is null)",
             name="ck_source_delivery_refusal_reason",
         ),
+        # A declared classification claim is a class *and* its basis, or it is
+        # absent (#951). It is never a filename standing in for a class: a row
+        # that names a class names the contract version it was read under, who
+        # or what declared it, and the kind of basis that is.
+        CheckConstraint(
+            "source_class is null or ("
+            "length(btrim(source_class)) > 0 "
+            "and source_class_contract_version is not null "
+            "and length(btrim(source_class_contract_version)) > 0 "
+            "and source_class_basis is not null "
+            "and length(btrim(source_class_basis)) > 0 "
+            "and source_class_basis_kind is not null "
+            "and length(btrim(source_class_basis_kind)) > 0)",
+            name="ck_source_delivery_classification",
+        ),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
@@ -428,6 +443,15 @@ class SourceDelivery(Base):
     run_identity: Mapped[str] = mapped_column(Text)
     disposition: Mapped[str] = mapped_column(String(24))
     refusal_reason: Mapped[str | None] = mapped_column(Text)
+    # The retained, versioned classification claim and its basis (#951). Null
+    # for a delivery that declared no class -- a bounded receipt whose semantic
+    # class is not yet established -- and otherwise the class the activated gate
+    # compared against the recorded permission, the contract version that
+    # interpreted it, and who or what declared it.
+    source_class: Mapped[str | None] = mapped_column(Text)
+    source_class_contract_version: Mapped[str | None] = mapped_column(Text)
+    source_class_basis: Mapped[str | None] = mapped_column(Text)
+    source_class_basis_kind: Mapped[str | None] = mapped_column(Text)
     received_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

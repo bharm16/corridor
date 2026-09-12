@@ -101,7 +101,11 @@ alter table public.source_deliveries
     add column service_identity text not null default '',
     add column run_identity text not null default '',
     add column disposition character varying(24) not null default 'stored',
-    add column refusal_reason text;
+    add column refusal_reason text,
+    add column source_class text,
+    add column source_class_contract_version text,
+    add column source_class_basis text,
+    add column source_class_basis_kind text;
 
 -- Every existing row is a pushed delivery whose bytes were taken, bound by
 -- the credential that admitted it, and recorded by this transition rather
@@ -140,7 +144,16 @@ alter table public.source_deliveries
                and length(btrim(run_identity)) > 0),
     add constraint ck_source_delivery_refusal_reason
         check ((disposition in ('stored', 'duplicate'))
-               = (refusal_reason is null));
+               = (refusal_reason is null)),
+    add constraint ck_source_delivery_classification
+        check (source_class is null or (
+            length(btrim(source_class)) > 0
+            and source_class_contract_version is not null
+            and length(btrim(source_class_contract_version)) > 0
+            and source_class_basis is not null
+            and length(btrim(source_class_basis)) > 0
+            and source_class_basis_kind is not null
+            and length(btrim(source_class_basis_kind)) > 0));
 
 drop trigger trg_push_deliveries_identity on public.source_deliveries;
 
@@ -258,6 +271,7 @@ drop table if exists public.connector_checkpoint_advance_deliveries;
 drop table if exists public.connector_checkpoint_advances;
 
 alter table public.source_deliveries
+    drop constraint if exists ck_source_delivery_classification,
     drop constraint if exists ck_source_delivery_refusal_reason,
     drop constraint if exists ck_source_delivery_run,
     drop constraint if exists ck_source_delivery_configuration,
@@ -267,6 +281,10 @@ alter table public.source_deliveries
     drop constraint if exists uq_source_deliveries_observation;
 
 alter table public.source_deliveries
+    drop column if exists source_class_basis_kind,
+    drop column if exists source_class_basis,
+    drop column if exists source_class_contract_version,
+    drop column if exists source_class,
     drop column if exists refusal_reason,
     drop column if exists disposition,
     drop column if exists run_identity,
