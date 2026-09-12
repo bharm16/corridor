@@ -473,9 +473,11 @@ from corridor.project_portfolio import (
 )
 from corridor.digests import canonical_sha256, sha256_bytes
 from corridor.follow_up_bundles import (
+    CONTACT_RESOLVED,
     emit_follow_up_reading,
     read_follow_up_bundles,
 )
+from corridor.project_contacts import correctable_contacts
 from corridor.outgoing_requests import (
     OutgoingRequestRefused,
     read_correspondence,
@@ -4171,6 +4173,35 @@ def _project_workflow_response(
             for need in workflow.follow_up
         },
     )
+    # #838: beside a resolved contact on a bundle, a bounded correction form over
+    # the one authoritative endpoint. The reading names the contact records a
+    # resolved recipient stands on; this reads their current values so the form
+    # prefills the record's own identity — which the correction may not change —
+    # and a person edits only the person, channel and address. A role-only bundle
+    # names no contact record, so it carries no form and invents no person. One
+    # idempotency key is minted per rendering, so a double-submit of one form
+    # converges through the endpoint rather than appending a second correction.
+    def _primary_contact_id(view) -> int | None:
+        recipient = view.bundle.recipient
+        if recipient.contact_state != CONTACT_RESOLVED or not recipient.contact_record_ids:
+            return None
+        return max(recipient.contact_record_ids)
+    correctable = correctable_contacts(
+        session,
+        project_id=project.id,
+        contact_ids={
+            found for view in chase.bundles
+            if (found := _primary_contact_id(view)) is not None
+        },
+    )
+    contact_corrections = {
+        view.anchor: {
+            "contact": correctable[_primary_contact_id(view)],
+            "idempotency_key": f"correct-contact:{uuid4().hex}",
+        }
+        for view in chase.bundles
+        if _primary_contact_id(view) in correctable
+    }
     # The Issue section (#529, #533). `issue_view` reads #529's own
     # `authorization_blockers` and refuses to offer an approval it named a
     # reason against; nothing here derives readiness a second time. It is told
@@ -4190,6 +4221,9 @@ def _project_workflow_response(
             "project": project,
             "workflow": workflow,
             "chase": chase,
+            # #838: per-bundle correction form models, keyed by the bundle's
+            # anchor; a bundle with no resolved contact has no entry here.
+            "contact_corrections": contact_corrections,
             "issue": issue,
             "landing": landing,
             "refusal": refusal,
