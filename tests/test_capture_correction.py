@@ -840,9 +840,12 @@ def test_the_same_conflicts_cell_under_another_field_is_refused(
 
     assert refused.value.reason == "passage_is_another_field"
     assert refused.value.control == CONTROL_PASSAGE
+    # A known contradiction gets its own sentence, naming the field to choose
+    # instead rather than sharing the uncertainty wording (#945 C).
     assert str(refused.value) == (
-        "Corridor could not establish that this passage supports the value "
-        "for this Utility Conflict."
+        "This passage describes a different field for this Utility Conflict. "
+        "Choose evidence for the field being corrected. No correction was "
+        "applied."
     )
     assert not session.scalars(select(CaptureCorrectionRequest.id)).all()
 
@@ -964,8 +967,13 @@ def test_the_picker_says_which_offered_passages_could_support_the_value(
 
     assert offered[built.promised_for_cell.id].applicable is True
     assert offered[built.promised_for_cell.id].why_not == ""
+    # The right conflict under the wrong field gets its own sentence, naming the
+    # field to choose instead rather than the uncertainty wording (#945 C).
     assert offered[built.required_by_cell.id].applicable is False
-    assert "could not establish" in offered[built.required_by_cell.id].why_not
+    assert (
+        "different field for this Utility Conflict"
+        in offered[built.required_by_cell.id].why_not
+    )
     assert offered[built.neighbours_cell.id].applicable is False
     assert (
         "different Utility Conflict" in offered[built.neighbours_cell.id].why_not

@@ -110,13 +110,17 @@ __all__ = [
     "APPLICABLE",
     "APPLICABILITY_VERDICTS",
     "CROSS_SUBJECT_PASSAGE",
+    "DocumentReading",
     "NOT_ESTABLISHED",
     "NOT_ESTABLISHED_REPORT_RETAINED",
     "OTHER_FIELD",
+    "OTHER_FIELD_PASSAGE",
     "OTHER_SUBJECT",
     "PassageApplicability",
     "UNCLEAR",
     "assess_passage",
+    "assess_passage_against",
+    "read_document",
     "worksheet_cell",
 ]
 
@@ -145,6 +149,15 @@ CROSS_SUBJECT_PASSAGE = (
     "This passage describes a different Utility Conflict. Choose evidence for "
     "this conflict, or ask Corridor operations to review the source mapping. "
     "No correction was applied."
+)
+#: The right conflict under the wrong field (#945 C). A known contradiction, so
+#: it gets its own sentence rather than sharing the uncertainty one below: a
+#: Required By column is not a failure to establish the Start Station -- it is a
+#: different field, and telling the coordinator that is telling them what to
+#: choose instead. Approved 2026-09-11, used as written.
+OTHER_FIELD_PASSAGE = (
+    "This passage describes a different field for this Utility Conflict. Choose "
+    "evidence for the field being corrected. No correction was applied."
 )
 #: The first sentence alone, for the door where nothing has been retained yet.
 #: Promising that a report remains available where no report was written would
@@ -200,22 +213,36 @@ class PassageApplicability:
 
     @property
     def offered_sentence(self) -> str:
-        """What the picker and the request door say, having retained nothing."""
+        """What the picker and the request door say, having retained nothing.
+
+        A known contradiction -- another conflict, or another field -- names
+        what to choose instead; only genuine uncertainty gets the "could not
+        establish" sentence, because the two must not share one (#945 C).
+        """
 
         if self.verdict == APPLICABLE:
             return ""
         if self.verdict == OTHER_SUBJECT:
             return CROSS_SUBJECT_PASSAGE
+        if self.verdict == OTHER_FIELD:
+            return OTHER_FIELD_PASSAGE
         return NOT_ESTABLISHED
 
     @property
     def investigation_sentence(self) -> str:
-        """What an investigation says, the report having really been retained."""
+        """What an investigation says, the report having really been retained.
+
+        A contradicted passage says the same thing at both doors: the report is
+        retained either way, but "another field" is not "we could not tell", so
+        the retention clause is only added to the uncertainty sentence (#945 C).
+        """
 
         if self.verdict == APPLICABLE:
             return ""
         if self.verdict == OTHER_SUBJECT:
             return CROSS_SUBJECT_PASSAGE
+        if self.verdict == OTHER_FIELD:
+            return OTHER_FIELD_PASSAGE
         return NOT_ESTABLISHED_REPORT_RETAINED
 
 
@@ -236,13 +263,158 @@ def worksheet_cell(segment: SourceSegment) -> tuple[str, str, int] | None:
     return segment.sheet_name, found.group(1), int(found.group(2))
 
 
+@dataclass(frozen=True, slots=True)
+class SheetStructure:
+    """One document sheet read once: what each column carries, and the exact
+    retained header cell that says so.
+
+    Everything a passage of this sheet needs to have its field derived, computed
+    a single time however many passages of it the picker offers (#945 D). The
+    header row is read the way ``facts.append_structured_cell_facts`` reads it:
+    cells are laid out by column number so a blank column cannot shift every
+    heading one place left, and the header is the first row naming at least
+    ``MIN_HEADER_FIELDS`` canonical fields through the released heading
+    vocabulary. A sheet with no such row answers nothing rather than guessing,
+    and a header at or below the selected cell is not a header for it.
+    """
+
+    header_row: int | None
+    #: 0-based header list index -> canonical field (``column_mapping``'s shape).
+    field_by_index: dict[int, str]
+    #: 1-based column index -> the header cell that named the column.
+    header_cell_by_column: dict[int, SourceSegment]
+
+    def field_of(
+        self, column: str, row_number: int
+    ) -> tuple[SourceSegment | None, str | None]:
+        """The field the passage's column carries, and the header cell, or None.
+
+        The topmost header-qualifying row of the sheet is the header for every
+        cell below it, and none for a cell at or above it -- the same answer the
+        per-passage scan gave, now read off structure computed once.
+        """
+
+        if self.header_row is None or self.header_row >= row_number:
+            return None, None
+        wanted = column_index_from_string(column)
+        return (
+            self.header_cell_by_column.get(wanted),
+            self.field_by_index.get(wanted - 1),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentReading:
+    """One selected document's structure and row registrations, read once.
+
+    The picker offers many passages of one document and used to reload the sheet
+    and re-query the row registration for each of them; this is that reading
+    taken a single time and assessed against, then discarded with the reading
+    (#945 D). It is a bounded performance repair, not a cache service: nothing
+    outside one reading holds it, and the writing boundary re-derives its own.
+    """
+
+    structures: dict[str, SheetStructure]
+    registrations: dict[tuple[str, int], BaselineSourceRow]
+
+
+def read_document(
+    session: Session, *, project_id: int, document_id: int | None
+) -> DocumentReading:
+    """Read one document's sheet structure and the row registrations once.
+
+    Two statements, whatever the document holds: every structured cell of the
+    document (grouped into a per-sheet header reading), and every adopted source
+    row of the project (keyed by sheet and worksheet row, newest winning). A
+    passage is then assessed against this in memory rather than re-reading the
+    sheet and re-querying the registration per option.
+    """
+
+    by_sheet: dict[str, dict[int, dict[int, SourceSegment]]] = {}
+    if document_id is not None:
+        for segment in session.scalars(
+            select(SourceSegment)
+            .where(
+                SourceSegment.project_id == project_id,
+                SourceSegment.document_id == document_id,
+                SourceSegment.kind == "spreadsheet_cell",
+            )
+            .order_by(SourceSegment.ordinal, SourceSegment.id)
+        ).all():
+            cell = worksheet_cell(segment)
+            if cell is None:
+                continue
+            sheet_name, column, row_number = cell
+            by_sheet.setdefault(sheet_name, {}).setdefault(row_number, {})[
+                column_index_from_string(column)
+            ] = segment
+    return DocumentReading(
+        structures={
+            sheet_name: _sheet_structure(rows) for sheet_name, rows in by_sheet.items()
+        },
+        registrations=_row_registrations(session, project_id),
+    )
+
+
+def _sheet_structure(rows: dict[int, dict[int, SourceSegment]]) -> SheetStructure:
+    """The topmost header-qualifying row of one sheet, and what it named."""
+
+    for header_row in sorted(rows):
+        cells = rows[header_row]
+        headings = [
+            "" if cells.get(index) is None else cells[index].exact_text
+            for index in range(1, max(cells) + 1)
+        ]
+        mapping = column_mapping(headings)
+        if len(mapping) < MIN_HEADER_FIELDS:
+            # ``sheets.header_row``'s own threshold, for its own reason: a
+            # merged title band populates one cell of the row it spans, and a
+            # data cell whose words happen to match a published heading would
+            # otherwise turn its row into a header for everything below it.
+            continue
+        return SheetStructure(
+            header_row=header_row,
+            field_by_index=mapping,
+            header_cell_by_column=dict(cells),
+        )
+    return SheetStructure(
+        header_row=None, field_by_index={}, header_cell_by_column={}
+    )
+
+
+def _row_registrations(
+    session: Session, project_id: int
+) -> dict[tuple[str, int], BaselineSourceRow]:
+    """The adopted source rows of one project, newest per sheet and row.
+
+    The newest registration wins where a project has registered more than one
+    baseline source, exactly as the per-row query did (order by
+    ``baseline_source_id`` then ``id``), which is what makes a re-registered
+    mapping felt: a correction compared against the old resolution is refused by
+    the command rather than committed against a mapping that has moved.
+    """
+
+    best: dict[tuple[str, int], tuple[int, int]] = {}
+    registrations: dict[tuple[str, int], BaselineSourceRow] = {}
+    for registered in session.scalars(
+        select(BaselineSourceRow).where(BaselineSourceRow.project_id == project_id)
+    ).all():
+        key = (registered.sheet_name, int(registered.row_number))
+        rank = (int(registered.baseline_source_id), int(registered.id))
+        if key not in best or rank > best[key]:
+            best[key] = rank
+            registrations[key] = registered
+    return registrations
+
+
 def assess_passage(
-    session: Session,
+    session: Session | None,
     *,
     project_id: int,
     subject_identity: str,
     field: str,
     selected: SourceSegment,
+    reading: DocumentReading | None = None,
 ) -> PassageApplicability:
     """Whether this passage establishes a value for this subject and this field.
 
@@ -250,6 +422,38 @@ def assess_passage(
     off retained rows by the callers rather than typed by anyone.  Nothing the
     coordinator wrote is an input, and neither is any Fact: see the module
     docstring for why the second of those is the whole point.
+
+    ``reading`` is the document read once (#945 D). The single-passage callers
+    -- the request door and operations -- omit it and one is read for the one
+    passage; the picker reads it once and hands the same one to every option. A
+    ``session`` is needed only to read one, so a caller that already holds a
+    reading passes ``None`` for it.
+    """
+
+    if reading is None:
+        assert session is not None, "assess_passage needs a session or a reading"
+        reading = read_document(
+            session,
+            project_id=project_id,
+            document_id=None if selected.document_id is None else int(selected.document_id),
+        )
+    return assess_passage_against(
+        reading, subject_identity=subject_identity, field=field, selected=selected
+    )
+
+
+def assess_passage_against(
+    reading: DocumentReading,
+    *,
+    subject_identity: str,
+    field: str,
+    selected: SourceSegment,
+) -> PassageApplicability:
+    """The verdict for one passage against a document read once (#945 D).
+
+    Pure: it reads nothing, so the picker computes the reading a single time and
+    assesses every option against it, and the writing boundary re-derives its
+    own from the same retained rows.
     """
 
     cell = worksheet_cell(selected)
@@ -265,16 +469,13 @@ def assess_passage(
         )
     sheet_name, column, row_number = cell
     passage_subject, subject_basis = _passage_subject(
-        session,
-        project_id=project_id,
-        sheet_name=sheet_name,
-        row_number=row_number,
-        subject_identity=subject_identity,
+        reading, sheet_name=sheet_name, row_number=row_number, subject_identity=subject_identity
     )
-    heading, passage_field = _passage_field(
-        session, selected=selected, sheet_name=sheet_name, column=column,
-        row_number=row_number,
-    )
+    structure = reading.structures.get(sheet_name)
+    if structure is None:
+        heading, passage_field = None, None
+    else:
+        heading, passage_field = structure.field_of(column, row_number)
     if passage_subject is None or passage_field is None:
         verdict = UNCLEAR
     elif passage_subject != subject_identity:
@@ -310,9 +511,8 @@ def _field_basis(heading: SourceSegment | None, field: str | None) -> str:
 
 
 def _passage_subject(
-    session: Session,
+    reading: DocumentReading,
     *,
-    project_id: int,
     sheet_name: str,
     row_number: int,
     subject_identity: str,
@@ -336,26 +536,10 @@ def _passage_subject(
     A row the adoption excluded resolves to nothing at all: it is not in the
     record, so no cell of it carries a value for any subject, and the answer is
     the unsettled one rather than a refusal about somebody else's conflict.
-
-    The newest registration wins where a project has registered more than one
-    baseline source, which is also what makes a re-registered mapping felt: a
-    correction compared against the old resolution is refused by the command
-    rather than committed against a mapping that has moved.
     """
 
     rule_identity = f"{sheet_name}!{row_number}"
-    registered = session.scalars(
-        select(BaselineSourceRow)
-        .where(
-            BaselineSourceRow.project_id == project_id,
-            BaselineSourceRow.sheet_name == sheet_name,
-            BaselineSourceRow.row_number == row_number,
-        )
-        .order_by(
-            BaselineSourceRow.baseline_source_id.desc(), BaselineSourceRow.id.desc()
-        )
-        .limit(1)
-    ).first()
+    registered = reading.registrations.get((sheet_name, row_number))
     if registered is None:
         identities, canonical = {rule_identity}, rule_identity
         basis = WORKSHEET_ROW_IDENTITY
@@ -369,58 +553,3 @@ def _passage_subject(
         subject_identity if subject_identity in identities else canonical,
         basis,
     )
-
-
-def _passage_field(
-    session: Session,
-    *,
-    selected: SourceSegment,
-    sheet_name: str,
-    column: str,
-    row_number: int,
-) -> tuple[SourceSegment | None, str | None]:
-    """Which canonical field this column carries, and the header cell saying so.
-
-    The sheet's own retained header row is read the way
-    ``facts.append_structured_cell_facts`` reads it: cells are laid out by
-    column number so a blank column cannot shift every heading one place left,
-    and the header is the first row naming at least ``MIN_HEADER_FIELDS``
-    canonical fields through the released heading vocabulary.  A sheet with no
-    such row answers nothing rather than falling back to a guess, and a header
-    at or below the selected cell is not a header for it.
-    """
-
-    rows: dict[int, dict[int, SourceSegment]] = {}
-    for segment in session.scalars(
-        select(SourceSegment)
-        .where(
-            SourceSegment.project_id == selected.project_id,
-            SourceSegment.document_id == selected.document_id,
-            SourceSegment.kind == "spreadsheet_cell",
-            SourceSegment.sheet_name == sheet_name,
-        )
-        .order_by(SourceSegment.ordinal, SourceSegment.id)
-    ).all():
-        cell = worksheet_cell(segment)
-        if cell is None:
-            continue
-        rows.setdefault(cell[2], {})[column_index_from_string(cell[1])] = segment
-    wanted = column_index_from_string(column)
-    for header_row in sorted(rows):
-        if header_row >= row_number:
-            return None, None
-        cells = rows[header_row]
-        headings = [
-            "" if cells.get(index) is None else cells[index].exact_text
-            for index in range(1, max(cells) + 1)
-        ]
-        mapping = column_mapping(headings)
-        if len(mapping) < MIN_HEADER_FIELDS:
-            # ``sheets.header_row``'s own threshold, for its own reason: a
-            # merged title band populates one cell of the row it spans, and a
-            # data cell whose words happen to match a published heading would
-            # otherwise turn its row into a header for everything below it.
-            continue
-        heading = cells.get(wanted)
-        return heading, mapping.get(wanted - 1)
-    return None, None

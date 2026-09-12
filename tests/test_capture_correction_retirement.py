@@ -32,6 +32,8 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
+from hashlib import sha256
+import json
 from threading import Barrier
 from uuid import uuid4
 
@@ -39,6 +41,8 @@ import pytest
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.orm import Session
+
+from corridor import sheets
 
 from corridor import access, audit
 from corridor.db_roles import RECORD_DECISION_ROLE
@@ -510,9 +514,9 @@ def test_a_report_that_went_round_the_picker_is_refused_by_the_investigation(
         (
             misread.wrong_field_cell,
             "other_field",
-            "Corridor could not establish that this passage supports the "
-            "value for this Utility Conflict. Your report remains available "
-            "for investigation; no correction was applied.",
+            "This passage describes a different field for this Utility "
+            "Conflict. Choose evidence for the field being corrected. No "
+            "correction was applied.",
         ),
     ):
         report = misread.report_bypassing_the_picker(passage)
@@ -693,6 +697,111 @@ def test_the_command_derives_the_verdict_rather_than_taking_the_callers_word(
                     recorded_at=CORRECTED_AT,
                 )
         assert refused.value.reason == reason
+
+
+def test_the_heading_field_vocabulary_in_the_schema_matches_the_released_one(
+    session: Session,
+) -> None:
+    """#945 A: the command's trusted copy is derived from `sheets`, not drifting.
+
+    The field a structured column carries is derived in the writing transaction
+    from the released heading vocabulary, so the copy the schema carries has to
+    be the same mapping `sheets.column_mapping` reads -- every entry, and no
+    more -- and its version has to digest that mapping. A released migration
+    freezes its bytes, so this is where a later change to the vocabulary that
+    forgot to refold this copy is caught rather than letting the reader and the
+    writing transaction state two vocabularies.
+    """
+
+    in_schema = {
+        heading: field
+        for heading, field in session.execute(
+            text(
+                "select normalized_heading, canonical_field "
+                "from public.structured_heading_field_vocabulary()"
+            )
+        ).all()
+    }
+    assert in_schema == sheets.HEADING_FIELD_VOCABULARY
+
+    version = session.scalar(
+        text("select public.structured_heading_vocabulary_version()")
+    )
+    assert version == sha256(
+        json.dumps(
+            sorted(sheets.HEADING_FIELD_VOCABULARY.items()), separators=(",", ":")
+        ).encode("utf-8")
+    ).hexdigest()
+
+    # The lookup normalises an arbitrary retained heading the way the mapping is
+    # keyed -- collapsed whitespace, casefolded -- and answers nothing for a
+    # heading the vocabulary has not ruled on.
+    assert (
+        session.scalar(
+            text("select public.structured_heading_field(:h)"),
+            {"h": "  Start   STATION "},
+        )
+        == "station_from"
+    )
+    assert (
+        session.scalar(
+            text("select public.structured_heading_field(:h)"),
+            {"h": "a column no form prints"},
+        )
+        is None
+    )
+
+
+def test_the_command_derives_the_field_from_the_heading_not_the_callers_word(
+    session: Session, misread: Misread
+) -> None:
+    """#945 A: a caller cannot make a wrong-column passage carry the field.
+
+    The passage is a real cell in the neighbouring column, with the real
+    header of that column retained above it, and the caller supplies the
+    *challenged* field as the passage's own -- the exact shape ADR-0100's
+    same-document rule let through.  The command derives what that column means
+    from the retained heading through the released heading vocabulary rather
+    than trusting the caller, so the claim is contradicted: a Required By
+    column is not a Start Station the command may correct against.  A heading
+    cell is a mapping record the caller may name; what the column *means* is
+    the command's own answer.
+    """
+
+    report = misread.report_bypassing_the_picker(misread.wrong_field_cell)
+    honest = misread.applicability(passage=misread.wrong_field_cell)
+    # The caller claims the neighbouring column carries the challenged field,
+    # keeping the real heading cell of that column so only the meaning is a lie.
+    stated = replace(honest, field=misread.field)
+
+    with pytest.raises(CaptureCorrectionRefused) as refused:
+        with session.begin_nested():
+            record_correction_result(
+                session,
+                project_id=misread.project.id,
+                request_id=int(report.id),
+                delta_id=int(misread.delta.id),
+                challenged_fact_id=int(misread.fact.id),
+                challenged_fact_sha256=misread.fact.content_sha256,
+                corrected_fact_id=None,
+                corrected_support_assessment_id=None,
+                accepted_revision_id=None,
+                comparison_rule_version="v1",
+                applicability=stated,
+                outcome=INCONCLUSIVE,
+                replacement_delta_id=None,
+                finding="a field the retained column does not carry",
+                authorized_by_principal=OPERATOR.subject,
+                executed_by=WORKER_IDENTITY,
+                recorded_at=CORRECTED_AT,
+            )
+
+    assert refused.value.reason == "passage_field_disagrees"
+    assert not session.scalars(
+        select(DeltaCaptureCorrection.id).where(
+            DeltaCaptureCorrection.delta_id == misread.delta.id
+        )
+    ).all()
 
 
 def test_the_successful_correction_retains_the_evidence_it_was_admitted_on(
