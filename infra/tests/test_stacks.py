@@ -1208,6 +1208,139 @@ def test_the_batch_role_may_still_replace_and_delete(stacks):
     assert any(a.startswith("s3:PutObject") for a in granted), granted
 
 
+# --- the scheduled sign-in record expiry pass (ADR-0102, #943) ---------
+# The expiry command exists and is runnable by hand (#927); these pin the one
+# thing that makes it happen without a person: a daily EventBridge rule that
+# runs `expire-sign-in-records` on the batch task definition the stack already
+# publishes, once per customer environment. They assert the synthesized rule,
+# not the Python, so they fail on the template that would deploy. Actual
+# scheduled *execution* is proved only in the deployed environment (#489, #943);
+# what is provable here is the schedule definition.
+EXPIRE_COMMAND = ["python", "-m", "corridor.retention_cli", "expire-sign-in-records"]
+
+
+def _expiry_rules(template: dict) -> dict:
+    return {
+        logical_id: resource
+        for logical_id, resource in template["Resources"].items()
+        if resource["Type"] == "AWS::Events::Rule"
+    }
+
+
+def _expiry_target(stacks) -> dict:
+    template = stacks["application"].to_json()
+    rules = _expiry_rules(template)
+    assert len(rules) == 1, (
+        "sign-in record expiry is one environment-wide schedule, never one per "
+        f"project; found {sorted(rules)}"
+    )
+    rule = next(iter(rules.values()))["Properties"]
+    targets = rule["Targets"]
+    assert len(targets) == 1, targets
+    return {"rule": rule, "target": targets[0], "template": template}
+
+
+def test_sign_in_record_expiry_runs_on_a_daily_schedule(stacks):
+    """ADR-0102 fixes the cadence at daily: none of the three relations carries
+    a time-only index, so every pass scans all three -- cheap while small, and
+    the reason not to run it hourly. The interval is also the deletion lag, so
+    a slower schedule would lengthen it; a faster one buys nothing here."""
+    rule = _expiry_target(stacks)["rule"]
+    assert rule["State"] == "ENABLED"
+    expression = rule["ScheduleExpression"]
+    # A daily cron: fires once a day at a fixed hour. `cron(m h * * ? *)` runs
+    # every day; a day-of-month or day-of-week restriction would not.
+    match = re.fullmatch(r"cron\(\d{1,2} \d{1,2} \* \* \? \*\)", expression)
+    assert match, f"{expression!r} is not a fixed-hour daily cron"
+
+
+def test_the_expiry_schedule_targets_the_existing_batch_task_definition(stacks):
+    """ADR-0102: it runs on the batch Fargate task definition the stack already
+    publishes -- the same image under corridor_worker credentials -- not a new
+    task definition. So the count of task definitions must stay at three."""
+    found = _expiry_target(stacks)
+    target, template = found["target"], found["template"]
+    batch_td_ref = template["Outputs"]["BatchTaskDefinitionArn"]["Value"]["Ref"]
+    assert target["EcsParameters"]["TaskDefinitionArn"] == {"Ref": batch_td_ref}, (
+        "the schedule must run the published batch task definition, not another"
+    )
+    assert target["EcsParameters"]["LaunchType"] == "FARGATE"
+    assert target["EcsParameters"]["TaskCount"] == 1
+    # No fourth task definition was minted for the schedule.
+    stacks["application"].resource_count_is("AWS::ECS::TaskDefinition", 3)
+
+
+def test_the_expiry_schedule_runs_the_argument_free_expire_command(stacks):
+    """`expire-sign-in-records` with no arguments: --as-of defaults to the
+    process start, which is what a fixed command line in a schedule needs
+    (ADR-0102). It overrides only the batch container's command; the image,
+    the corridor_worker credentials and the entrypoint (which composes
+    WORKER_DATABASE_URL because CORRIDOR_TASK_ROLE=batch) are unchanged."""
+    found = _expiry_target(stacks)
+    overrides = json.loads(found["target"]["Input"])["containerOverrides"]
+    batch = [o for o in overrides if o["name"] == "BatchContainer"]
+    assert len(batch) == 1, overrides
+    assert batch[0]["command"] == EXPIRE_COMMAND, batch[0]["command"]
+    # No per-run and no per-project argument: the pass is environment-wide and
+    # takes no project. A stray `--as-of` or project id would betray either.
+    assert "--as-of" not in batch[0]["command"]
+
+
+def test_the_expiry_schedule_uses_the_batch_network_identity(stacks):
+    """It must pull the image and reach the database the way the worker does:
+    the batch security group (already authorized on 5432) in the public subnets
+    with a public IP, because this VPC has no NAT gateway. Getting this wrong
+    means a task that can never start."""
+    network = _expiry_target(stacks)["target"]["EcsParameters"]["NetworkConfiguration"]
+    awsvpc = network["AwsVpcConfiguration"]
+    assert awsvpc["AssignPublicIp"] == "ENABLED"
+    template = stacks["application"].to_json()
+    batch_sg = template["Outputs"]["BatchSecurityGroupId"]["Value"]
+    assert batch_sg in awsvpc["SecurityGroups"], (
+        "the schedule must run under the batch security group, which the "
+        "database already admits on 5432"
+    )
+    assert awsvpc["Subnets"], "the task needs subnets to place its ENI in"
+
+
+def test_the_expiry_schedule_role_is_scoped_and_grants_no_new_authority(stacks):
+    """ADR-0102: no grant change and no new application role. The only new role
+    is EventBridge's invocation identity, which may run this one task definition
+    and pass its roles -- nothing more. It carries Corridor's role path (the
+    generic path/boundary sweeps also cover it) so the execution policy admits
+    it, and its RunTask/PassRole are scoped rather than wildcards."""
+    found = _expiry_target(stacks)
+    template = found["template"]["Resources"]
+    role_ref = found["target"]["RoleArn"]["Fn::GetAtt"][0]
+    role = template[role_ref]
+    assert role["Type"] == "AWS::IAM::Role"
+    assert role["Properties"]["Path"] == "/corridor/nonproduction/"
+    principal = role["Properties"]["AssumeRolePolicyDocument"]["Statement"][0]
+    assert principal["Principal"] == {"Service": "events.amazonaws.com"}
+
+    batch_td_ref = found["template"]["Outputs"]["BatchTaskDefinitionArn"]["Value"]["Ref"]
+    policies = [
+        resource["Properties"]["PolicyDocument"]["Statement"]
+        for resource in template.values()
+        if resource["Type"] == "AWS::IAM::Policy"
+        and role_ref in json.dumps(resource["Properties"].get("Roles"))
+    ]
+    assert policies, "the events role has no policy at all"
+    run_task = [s for statements in policies for s in statements
+                if "ecs:RunTask" in json.dumps(s.get("Action"))]
+    assert run_task, "the events role cannot run the task"
+    for statement in run_task:
+        assert statement["Resource"] == {"Ref": batch_td_ref}, (
+            "RunTask must be scoped to the batch task definition"
+        )
+        assert statement["Resource"] != "*"
+    pass_role = [s for statements in policies for s in statements
+                 if "iam:PassRole" in json.dumps(s.get("Action"))]
+    assert pass_role, "the events role cannot pass the task's roles"
+    for statement in pass_role:
+        assert statement["Resource"] != "*", statement
+
+
 # --- the contract a release reads off the deployed stacks ---------------
 # `src/corridor/release_contract.py` is the only declaration of these names. The
 # release workflow reads it at run time; these assertions read it at synthesis

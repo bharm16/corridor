@@ -87,6 +87,10 @@ the template that would actually deploy:
   cannot spend the sign-in allowance for everybody
 - a certificate requires the hostname it covers, and serving requires a
   verified sign-in sender
+- the sign-in record expiry pass (`expire-sign-in-records`) runs on a daily
+  EventBridge schedule, exactly once per environment, on the existing batch
+  task definition, under a scoped EventBridge role that adds no application
+  grant (ADR-0102, #943)
 
 Those were mutation-tested: collapsing the three execution roles back
 into one makes both fail.
