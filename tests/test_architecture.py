@@ -4298,6 +4298,120 @@ def test_the_model_assisted_intake_drafts_stay_outside_the_pilot_manifest():
     assert drafts & set(web_boundary.PILOT_ROUTES) == set()
 
 
+# --- One canonical route registry, two derived views (#847) ------------------
+#
+# The inbound-mail endpoint carries its own machine authentication and runs on
+# the operations capability, but it was in no route view at all, so the
+# router-level refusal answered 404 on an enforcing deployment before its own
+# authentication ran. The fix is not a second manifest that can drift from the
+# first: the registry records an authentication class and a capability per
+# route, and the human and machine views are derived from that one column. The
+# checks below hold that derivation, and hold the activation contract to the
+# declaration it binds.
+
+
+def test_the_machine_intake_route_is_registered_on_its_own_authentication_class():
+    """The documented primary intake is a machine route on the operations login.
+
+    Registered, so an enforcing deployment reaches its handler; MACHINE, so the
+    human boundary does not gate it; OPERATIONS, so its transport-ingress
+    relations are not measured against the revoked web login.
+    """
+    from corridor import web_boundary
+
+    key = ("POST", "/intake/inbound")
+    route = web_boundary.PILOT_ROUTES.get(key)
+
+    assert route is not None, (
+        "the inbound-mail endpoint is in no route view, so an enforcing "
+        "deployment 404s it before its own authentication runs (#847)"
+    )
+    assert route.auth_class is web_boundary.AuthClass.MACHINE
+    assert route.capability is web_boundary.Capability.OPERATIONS
+    assert web_boundary.route_authentication(*key) is web_boundary.AuthClass.MACHINE
+    assert key in web_boundary.machine_view()
+    assert key not in web_boundary.human_view()
+    # Served in every boundary state: the human boundary refuses no machine
+    # traffic, so it never 404s before the handler authenticates the transport.
+    for state in web_boundary.BoundaryState:
+        assert web_boundary.route_refusal(state, *key) is None
+
+
+def test_the_human_and_machine_views_derive_from_the_one_registry():
+    """Two views, one source: they partition the registry and cannot drift.
+
+    Every route declares an authentication class and a capability; the human
+    view is every non-machine route (screens, identity, probes) and the machine
+    view is every machine route, and together they are exactly the registry
+    with no overlap. Health and identity legitimately sit in the human view.
+    """
+    from corridor import web_boundary
+
+    human = web_boundary.human_view()
+    machine = web_boundary.machine_view()
+    registry = web_boundary.PILOT_ROUTES
+
+    assert set(human) | set(machine) == set(registry)
+    assert set(human) & set(machine) == set()
+    assert all(
+        isinstance(route.auth_class, web_boundary.AuthClass)
+        and isinstance(route.capability, web_boundary.Capability)
+        for route in registry.values()
+    )
+    # Machine traffic runs on the operations capability and never carries a
+    # person; the human web login never serves a machine route.
+    assert all(
+        route.capability is web_boundary.Capability.OPERATIONS
+        for route in machine.values()
+    )
+    # The health and readiness probes and the identity path are in the human
+    # view even though they carry no principal -- the surface a browser reaches.
+    for key in (("GET", "/health"), ("GET", "/readyz"), ("GET", "/sign-in")):
+        assert key in human
+    # The relation-survival check is the web login's question, so only web
+    # routes' relations are measured; a machine route's transport-ingress
+    # relations, revoked from the web role by design, are not.
+    assert "inbound_messages" not in web_boundary.web_capability_relations()
+    assert "inbound_messages" in machine[("POST", "/intake/inbound")].relations
+
+
+def test_the_route_manifest_digest_pins_authentication_and_capability(monkeypatch):
+    """The activation contract binds the effective route and capability (#847).
+
+    `route_manifest_digest` is what the activation receipt pins as
+    `boundary_route_digest`, and #847 widened it from the relations alone to the
+    whole registry row. So moving a route between the two views, or off the web
+    capability, changes the digest and invalidates the receipt that pinned it --
+    exactly as adding a relation always did. Proven by changing one route's
+    declaration and watching the digest move.
+    """
+    from corridor import activation, web_boundary
+
+    baseline = activation.route_manifest_digest()
+    key = ("POST", "/intake/inbound")
+    original = web_boundary.PILOT_ROUTES[key]
+
+    moved_capability = dict(web_boundary.PILOT_ROUTES)
+    moved_capability[key] = web_boundary.PilotRoute(
+        original.why, original.relations,
+        auth_class=original.auth_class, capability=web_boundary.Capability.WEB,
+    )
+    monkeypatch.setattr(activation, "PILOT_ROUTES", moved_capability)
+    assert activation.route_manifest_digest() != baseline, (
+        "a route's capability is not pinned by the activation digest"
+    )
+
+    moved_view = dict(web_boundary.PILOT_ROUTES)
+    moved_view[key] = web_boundary.PilotRoute(
+        original.why, original.relations,
+        auth_class=web_boundary.AuthClass.HUMAN, capability=original.capability,
+    )
+    monkeypatch.setattr(activation, "PILOT_ROUTES", moved_view)
+    assert activation.route_manifest_digest() != baseline, (
+        "a route's authentication class is not pinned by the activation digest"
+    )
+
+
 def test_no_enabled_pilot_route_reads_a_relation_the_boundary_revokes():
     """The two halves of the boundary, compared to each other.
 
@@ -4463,6 +4577,7 @@ def test_no_enabled_pilot_route_reaches_a_relation_granted_to_nobody():
         {
             relation
             for route in web_boundary.PILOT_ROUTES.values()
+            if route.capability is web_boundary.Capability.WEB
             for relation in route.relations
             & web_boundary.PARTITIONED_UNGRANTED_RELATIONS
         }
