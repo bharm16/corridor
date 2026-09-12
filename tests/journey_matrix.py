@@ -67,6 +67,12 @@ DOCUMENTATION_REVIEW = "Documentation Review"
 NOT_SIGNED_IN = "Not signed in"
 #: Enrolled on the project's roster, holding none of the four designations.
 ENROLLED_ONLY = "Enrolled member, no designation"
+#: Not a person and not a designation: the authenticated mail transport that
+#: delivers to the machine intake endpoint (#847). It carries a shared secret,
+#: no session and no membership, and the project is bound on the envelope
+#: recipient rather than on anything the transport is signed in as -- which is
+#: why it is its own authentication class and not one of the roster roles.
+MACHINE_TRANSPORT = "Machine transport (authenticated mail)"
 
 
 @dataclass(frozen=True)
@@ -674,6 +680,42 @@ SELECTED_CAPABILITIES: tuple[JourneyRow, ...] = (
         scenario="exclude_a_source_question",
         owner="#833",
     ),
+    # Machine intake (#847), a selected capability: ready when the partner's
+    # selected ingress includes mail or push intake (#535). It is the documented
+    # primary intake and it authenticates a transport, not a person, so it is
+    # served through its own authentication class of the one route registry --
+    # not gated as a human screen, which is what left it answering 404 before
+    # its own authentication ran on an enforcing deployment. The delivery is one
+    # end of a workflow whose other end is the human source register: the two
+    # rows are the producer and its reader, so machine intake and the Sources
+    # screen are proven to be one delivery model, not two mechanisms.
+    JourneyRow(
+        role=MACHINE_TRANSPORT,
+        state="An authenticated mail transport holds a source addressed to a "
+        "project's bound alias, on an enforcing deployment",
+        action="Deliver it to the machine intake endpoint with the transport "
+        "secret and the envelope recipient",
+        route="POST /intake/inbound",
+        result="The transport is authenticated and the project is bound on the "
+        "envelope recipient before any customer processing, with no human "
+        "session; the delivery is accepted rather than answered 404 before its "
+        "own authentication, and recorded in the source ledger",
+        scenario="machine_intake_delivery",
+        owner="#847",
+        produces="a mail-delivered source",
+    ),
+    JourneyRow(
+        role=COORDINATION,
+        state="A source arrived by authenticated mail",
+        action="Read it on the project's source register",
+        route="GET /projects/{slug}/sources",
+        result="The mail delivery appears in the register like any other "
+        "transport, so the machine intake and the human source view are the "
+        "same delivery model rather than two disconnected mechanisms",
+        scenario="machine_intake_delivery",
+        owner="#847",
+        retrieves="a mail-delivered source",
+    ),
 )
 
 
@@ -714,6 +756,15 @@ SELECTED_CAPABILITY_WORKFLOWS: tuple[WorkflowRow, ...] = (
         "Work page's waiting count",
         scenario="resolve_a_source_question",
         owner="#833",
+    ),
+    WorkflowRow(
+        workflow="A source is delivered by authenticated mail",
+        producer="POST /intake/inbound, through corridor.email_intake."
+        "receive_pushed_message on the operations capability",
+        consumer="GET /projects/{slug}/sources, the source register the human "
+        "coordinator reads",
+        scenario="machine_intake_delivery",
+        owner="#847",
     ),
 )
 

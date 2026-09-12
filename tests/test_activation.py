@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from corridor.web_boundary import BOUNDARY_DISABLED_REASON, PILOT_ROUTES
+from corridor.web_boundary import BOUNDARY_DISABLED_REASON, human_view
 
 from corridor.activation import (ActivationConfiguration, ActivationRefused, BASE_GATES,
     EvidenceArtifact, activate, processing_authorized, route_manifest_digest)
@@ -35,7 +35,7 @@ def evidence(tmp_path, configuration, **overrides):
                     "deployment_id": configuration.deployment_id},
                 "boundary_state": "enforced",
                 "observations": [{"method": method, "template": route, "status": 200}
-                    for method, route in PILOT_ROUTES] + [{"method": "GET", "template": "/disabled", "status": 404}]}
+                    for method, route in human_view()] + [{"method": "GET", "template": "/disabled", "status": 404}]}
         if gate == "pdf_image_audit":
             payload |= {"image_digest": configuration.image_digest,
                 "built_image_audit": {
@@ -147,7 +147,7 @@ def test_boundary_collector_requires_actual_login_and_deployed_enforcement(
     from corridor.config import settings
 
     cases = [{"method": method, "template": route, "url": route,
-        "expected_status": 200} for method, route in PILOT_ROUTES]
+        "expected_status": 200} for method, route in human_view()]
     cases.append({"method": "GET", "template": "/fixture-disabled", "url": "/fixture-disabled",
         "expected_status": 404})
     boundary_state, boundary_healthy = "enforced", True
@@ -168,7 +168,7 @@ def test_boundary_collector_requires_actual_login_and_deployed_enforcement(
         with Session(web_engine) as web:
             observed = collect_boundary_smoke(web, configuration=configuration, request=request, cases=cases, now=NOW)
             assert observed["actual_login"] == "corridor_web"
-            assert len(observed["observations"]) == len(PILOT_ROUTES) + 1
+            assert len(observed["observations"]) == len(human_view()) + 1
             with pytest.raises(ActivationRefused, match="actual database"):
                 collect_boundary_smoke(web, configuration=replace(configuration, deployment_id="other"),
                     request=request, cases=cases, now=NOW)
@@ -283,7 +283,7 @@ def test_boundary_smoke_checks_set_role_and_inherited_read_capabilities(runtime_
     authority = f"boundary_reader_{suffix}"
     relation = f"boundary_revoked_{suffix}"
     cases = [{"method": method, "template": route, "url": route, "expected_status": 200}
-        for method, route in PILOT_ROUTES]
+        for method, route in human_view()]
     cases.append({"method": "GET", "template": "/fixture-disabled", "url": "/fixture-disabled", "expected_status": 404})
     calls = []
 

@@ -22,7 +22,7 @@ from sqlalchemy import text
 
 from corridor.db_roles import WEB_CAPABILITY_LOGIN
 from corridor.receipts import ArtifactCollision, write_sealed
-from corridor.web_boundary import PILOT_ROUTES, PROTECTED_RELATIONS
+from corridor.web_boundary import PILOT_ROUTES, PROTECTED_RELATIONS, human_view
 
 VERSION = "activation-v1"
 BOUNDARY_VERSION = "live-pilot-web-boundary-v1"
@@ -41,8 +41,17 @@ _digest = digests.canonical_sha256
 
 
 def route_manifest_digest():
-    return _digest({f"{method} {route}": sorted(item.relations)
-        for (method, route), item in PILOT_ROUTES.items()})
+    # #847: the activation contract binds the effective route declaration, and
+    # that declaration is now the whole registry row -- the relations, the
+    # authentication class and the capability -- not the relations alone. A
+    # route moved between the human and machine views, or off the web
+    # capability, changes this digest and so invalidates the receipt that
+    # pinned it, exactly as adding a relation always did.
+    return _digest({f"{method} {route}": {
+        "relations": sorted(item.relations),
+        "authentication": item.auth_class.value,
+        "capability": item.capability.value,
+    } for (method, route), item in PILOT_ROUTES.items()})
 
 
 @dataclass(frozen=True)
@@ -147,11 +156,16 @@ def collect_boundary_smoke(session, *, configuration: ActivationConfiguration,
         raise ActivationRefused("web login can read a revoked relation through its available identities")
     if privileged:
         raise ActivationRefused("web login can assume a privileged or relation-owner identity")
+    # #847: the corridor_web smoke exercises the human view -- the screens, the
+    # identity path and the probes. A machine route is served on the operations
+    # capability and authenticates a transport, not this login, so it is not a
+    # corridor_web 200 and belongs to a separate machine-view smoke.
+    human = set(human_view())
     approved = {(case["method"].upper(), case["template"]) for case in cases
-        if (case["method"].upper(), case["template"]) in PILOT_ROUTES}
-    if approved != set(PILOT_ROUTES):
+        if (case["method"].upper(), case["template"]) in human}
+    if approved != human:
         raise ActivationRefused("deployed smoke must exercise every enabled pilot route")
-    if not any((case["method"].upper(), case["template"]) not in PILOT_ROUTES for case in cases):
+    if not any((case["method"].upper(), case["template"]) not in human for case in cases):
         raise ActivationRefused("deployed smoke must exercise a disabled route")
     health = request("GET", "/health")
     if health.status_code != 200 or not any(
@@ -163,7 +177,7 @@ def collect_boundary_smoke(session, *, configuration: ActivationConfiguration,
     observations = []
     for case in cases:
         key = (case["method"].upper(), case["template"])
-        enabled = key in PILOT_ROUTES
+        enabled = key in human
         expected = case["expected_status"] if enabled else 404
         if enabled and not 200 <= expected < 400:
             raise ActivationRefused("enabled route smoke must demonstrate success")
@@ -258,18 +272,23 @@ def validate_activation_evidence(configuration: ActivationConfiguration, *,
 
 
 def _complete_route_observations(observations):
+    # #847: the deployed smoke proves the human view -- every human-view route
+    # observed with a success and at least one disabled route observed 404. A
+    # machine route is not exercised as a corridor_web success; it is pinned in
+    # the route manifest digest and proven by its own transport authentication.
+    human = set(human_view())
     approved = set()
     disabled = False
     for item in observations:
         key = (item.get("method"), item.get("template"))
         status = item.get("status", 0)
-        if key in PILOT_ROUTES and 200 <= status < 400:
+        if key in human and 200 <= status < 400:
             approved.add(key)
-        elif key not in PILOT_ROUTES and status == 404:
+        elif key not in human and status == 404:
             disabled = True
         else:
             return False
-    return approved == set(PILOT_ROUTES) and disabled
+    return approved == human and disabled
 
 
 def _valid_image_audit(payload, configuration):

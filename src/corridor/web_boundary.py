@@ -44,11 +44,22 @@ Three consequences are deliberate and worth stating out loud.
 
 - **Machine traffic is not human traffic.**  ``/intake/inbound`` and
   ``/health`` carry no person, no membership and therefore no partition.
-  They now take the operations capability's session rather than the human
+  They take the operations capability's session rather than the human
   web role's, which is what makes it safe to partition ``documents`` and
   ``source_deliveries`` at last — #657 recorded that partitioning them would
   refuse a working ingress, and this removes that objection rather than
-  overruling it.
+  overruling it.  #847 finished this: the registry now records an
+  ``AuthClass`` and a ``Capability`` per route, and the human and machine
+  *views* are derived from that one column (``human_view``, ``machine_view``)
+  rather than kept as two hand-maintained lists that can drift.  ``route_refusal``
+  serves a ``MACHINE`` route in every boundary state, so an enforcing
+  deployment reaches ``/intake/inbound``'s handler and authenticates the
+  transport there — the earlier omission left it 404ing *before* its own
+  authentication, because the router refusal was applied to every route and it
+  was in no view at all.  The relation-survival check (``unprotected_route_relations``)
+  is asked only of the web-capability routes, because it is a question about
+  the login #680 revoked from; a machine route's relations run on
+  ``corridor_worker`` and are checked against that capability, not this one.
 
 - **A legacy project is refused by the enabled route, not served badly by
   it.**  ``/work/{slug}`` renders ADR-0035's item-per-record Work List for a
@@ -121,12 +132,56 @@ from corridor.db_roles import LEGACY_DEV_ROLE, WEB_CAPABILITY_LOGIN
 from corridor import access
 
 
+class AuthClass(Enum):
+    """How a route authenticates its caller, and so which surface it belongs to.
+
+    #847 made this an explicit column of the one registry rather than a fact
+    scattered across handlers. A route is served through exactly one of these
+    contracts, and the human and machine views are *derived* from the column so
+    two route authorities cannot drift.
+    """
+
+    #: A signed-in person carries the request, and their membership is the
+    #: partition every read runs inside.
+    HUMAN = "human"
+    #: A transport credential carries the request. There is no person, no
+    #: membership and no human session; the handler authenticates the transport
+    #: itself and binds the project and source before any customer processing.
+    MACHINE = "machine"
+    #: No principal at all -- a platform probe, or the identity path that mints
+    #: and spends a session before one exists. It belongs in the human view
+    #: alongside the screens, because that is the surface a browser reaches.
+    PUBLIC = "public"
+
+
+class Capability(Enum):
+    """The database login a route's reads run on (#847).
+
+    Orthogonal to `AuthClass`: `/health` carries no principal (PUBLIC) yet runs
+    on the operations capability, and `/sign-in` carries no principal yet runs
+    on the human web login. The #680 revoke was aimed at ``WEB``; ``OPERATIONS``
+    holds the transport-ingress policy that revoke never touched.
+    """
+
+    #: ``corridor_web``, the human web login the #680 boundary revokes from.
+    WEB = "web"
+    #: ``corridor_worker``, the operations capability transport ingress runs on.
+    OPERATIONS = "operations"
+
+
 @dataclass(frozen=True)
 class PilotRoute:
-    """One enabled route, and the relations it was observed to reach."""
+    """One enabled route: why it is served, what it reaches, and on what authority.
+
+    ``auth_class`` and ``capability`` default to the common case -- a human
+    screen read as the web login -- so the entries below state only their
+    exceptions, and a route is a machine route or a probe by saying so once.
+    """
 
     why: str
     relations: frozenset[str]
+    auth_class: AuthClass = AuthClass.HUMAN
+    capability: Capability = Capability.WEB
 
 
 PILOT_ROUTES: dict[tuple[str, str], PilotRoute] = {
@@ -146,6 +201,7 @@ PILOT_ROUTES: dict[tuple[str, str], PilotRoute] = {
             "every web task and takes the environment down"
         ),
         relations=frozenset(),
+        auth_class=AuthClass.PUBLIC,
     ),
     ("GET", "/health"): PilotRoute(
         why=(
@@ -155,6 +211,52 @@ PILOT_ROUTES: dict[tuple[str, str], PilotRoute] = {
             "it reads"
         ),
         relations=frozenset(),
+        auth_class=AuthClass.PUBLIC,
+        capability=Capability.OPERATIONS,
+    ),
+    # --- #847 The documented primary intake, on its own authentication class -
+    #
+    # The inbound-mail receipt is not a human screen and must never be gated as
+    # one. It carries no person and no membership: a shared secret authenticates
+    # the *transport*, and the envelope recipient the transport reports
+    # (`X-Corridor-Delivered-To`) is what binds the customer and project (#511,
+    # ADR-0078) -- never a session cookie, never a caller-supplied project id,
+    # never the message's own To/Cc, which are untrusted body. So it is a
+    # `MACHINE` route on the `OPERATIONS` capability, and `route_refusal` serves
+    # it in every boundary state: the human boundary does not refuse machine
+    # traffic, so an enforcing deployment reaches the handler and authenticates
+    # there rather than answering 404 before its own authentication runs.
+    #
+    # Its relations run on `corridor_worker`, which holds the transport-ingress
+    # policy the #680 revoke never touched, so they are *not* measured against
+    # the web grants (`web_capability_relations`): `inbound_messages`,
+    # `inbound_threads` and `inbound_route_triage` are revoked from the human
+    # web role by design, and reading them here is the whole point of the
+    # separate capability. Recorded from the bound-alias path (bind, take
+    # delivery, register); a routed attachment registers a `documents` row
+    # deliberately unread (#893, #913), so the page family is the standing
+    # pass's relations, not this route's.
+    ("POST", "/intake/inbound"): PilotRoute(
+        why=(
+            "#847, #511 the transport-authenticated inbound-mail receipt. It "
+            "authenticates the sender secret and binds the project on the "
+            "envelope recipient before any customer processing, on the "
+            "operations capability"
+        ),
+        relations=frozenset(
+            {
+                "documents",
+                "document_quarantines",
+                "inbound_messages",
+                "inbound_route_triage",
+                "inbound_threads",
+                "projects",
+                "push_intake_credentials",
+                "source_deliveries",
+            }
+        ),
+        auth_class=AuthClass.MACHINE,
+        capability=Capability.OPERATIONS,
     ),
     ("GET", "/"): PilotRoute(
         why=(
@@ -178,6 +280,7 @@ PILOT_ROUTES: dict[tuple[str, str], PilotRoute] = {
                 "web_sessions",
             }
         ),
+        auth_class=AuthClass.PUBLIC,
     ),
     ("POST", "/sign-in/request"): PilotRoute(
         why=(
@@ -190,6 +293,7 @@ PILOT_ROUTES: dict[tuple[str, str], PilotRoute] = {
                 "sign_in_tokens",
             }
         ),
+        auth_class=AuthClass.PUBLIC,
     ),
     ("GET", "/sign-in/consume"): PilotRoute(
         why=(
@@ -204,6 +308,7 @@ PILOT_ROUTES: dict[tuple[str, str], PilotRoute] = {
                 "web_sessions",
             }
         ),
+        auth_class=AuthClass.PUBLIC,
     ),
     ("POST", "/sign-out"): PilotRoute(
         why=(
@@ -216,6 +321,7 @@ PILOT_ROUTES: dict[tuple[str, str], PilotRoute] = {
                 "web_sessions",
             }
         ),
+        auth_class=AuthClass.PUBLIC,
     ),
     ("GET", "/portfolio"): PilotRoute(
         why=(
@@ -1268,16 +1374,68 @@ def route_is_enabled(method: str, template: str) -> bool:
     return (method.upper(), template) in PILOT_ROUTES
 
 
-def pilot_relations() -> frozenset[str]:
-    """Every relation the enabled routes were observed to reach."""
+def route_authentication(method: str, template: str) -> AuthClass | None:
+    """The authentication class the registry records for this route, or None."""
 
-    return frozenset().union(
-        *(route.relations for route in PILOT_ROUTES.values())
-    ) if PILOT_ROUTES else frozenset()
+    route = PILOT_ROUTES.get((method.upper(), template))
+    return route.auth_class if route is not None else None
+
+
+def human_view() -> dict[tuple[str, str], PilotRoute]:
+    """The registry projected onto the browser and platform surface (#847).
+
+    Every route that is not machine-to-machine: the screens, the identity path,
+    and the health and readiness probes -- which have a legitimate place here
+    even though they carry no principal. The live-pilot boundary gates exactly
+    this view, and the deployed boundary smoke exercises exactly this view.
+    """
+
+    return {
+        key: route
+        for key, route in PILOT_ROUTES.items()
+        if route.auth_class is not AuthClass.MACHINE
+    }
+
+
+def machine_view() -> dict[tuple[str, str], PilotRoute]:
+    """The registry projected onto the transport-authenticated surface (#847).
+
+    A machine request carries no person and no membership. It authenticates a
+    transport credential and runs on the operations capability, so the human
+    boundary does not gate this view: `route_refusal` serves these routes in
+    every state, and each one authenticates itself before any customer
+    processing. Derived from the same column the human view is, so the two
+    cannot name different routes.
+    """
+
+    return {
+        key: route
+        for key, route in PILOT_ROUTES.items()
+        if route.auth_class is AuthClass.MACHINE
+    }
+
+
+def web_capability_relations() -> frozenset[str]:
+    """Every relation the web-capability routes reach (#847).
+
+    The relation-survival check is a question about the human web login the
+    #680 revoke was aimed at, so it is asked only of the routes that run on that
+    login. A machine route runs on the operations capability, which holds the
+    transport-ingress policy the revoke never touched; measuring its relations
+    against the web grants would read `inbound_messages` and its neighbours as
+    revoked -- which they are, from the web role, entirely on purpose.
+    """
+
+    web = [
+        route.relations
+        for route in PILOT_ROUTES.values()
+        if route.capability is Capability.WEB
+    ]
+    return frozenset().union(*web) if web else frozenset()
 
 
 def unprotected_route_relations() -> tuple[str, ...]:
-    """Relations an enabled route needs that the revoke takes away, in order.
+    """Relations a web-capability route needs that the revoke takes away, in order.
 
     Non-empty means the two halves of the boundary disagree: the application
     would serve a route whose data the database no longer hands it. That is a
@@ -1286,10 +1444,12 @@ def unprotected_route_relations() -> tuple[str, ...]:
     Measured against what the capability is *granted*, not against what the
     partition covers. A relation can be policied and hold no grant, and a
     route reaching one of those meets ``permission denied`` exactly as it does
-    on a denied relation.
+    on a denied relation. Only web-capability routes are measured here: an
+    operations-capability route is not held by this login and is checked
+    against its own capability, not this one (#847).
     """
 
-    return tuple(sorted(pilot_relations() - GRANTED_RELATIONS))
+    return tuple(sorted(web_capability_relations() - GRANTED_RELATIONS))
 
 
 # --- #694 What the deployment does when the boundary is not enforced -------
@@ -1440,8 +1600,16 @@ def route_refusal(
     distinguishes whose problem it is — an enforced boundary is serving its
     declared surface and the route is simply not part of it, while an
     inconsistent one is misconfigured and says so.
+
+    Machine traffic is not human traffic (#847). A `MACHINE` route carries its
+    own authentication and runs on the operations capability, which the #680
+    revoke never touched, so the human boundary refuses it in no state: it
+    reaches its handler and authenticates the transport there, rather than
+    answering 404 before its own authentication runs.
     """
 
+    if route_authentication(method, template) is AuthClass.MACHINE:
+        return None
     if state is BoundaryState.NOT_DECLARED:
         return None
     if route_is_enabled(method, template):

@@ -1642,20 +1642,24 @@ def test_the_correspondence_capability_runs_as_a_declared_scenario(
 def test_every_selected_capability_row_names_a_step_of_this_scenario():
     """A row nothing exercises is a claim, not an inventory entry (#848).
 
-    The selected-capability inventory spans three scenarios, each walked by its
+    The selected-capability inventory spans four scenarios, each walked by its
     own module: correspondence recording (#837) here, contact correction (#838)
-    in ``test_contact_correction_form``, and source-question disposition (#833)
-    in ``test_source_question_disposition_journey``. A row is exercised when
-    *some* scenario has a step of that name, so the declared set is their union.
+    in ``test_contact_correction_form``, source-question disposition (#833) in
+    ``test_source_question_disposition_journey``, and machine intake (#847) in
+    ``test_machine_intake_journey``. A row is exercised when *some* scenario has
+    a step of that name, so the declared set is their union.
     """
 
     from test_contact_correction_form import CONTACT_CORRECTION_STEPS
+    from test_machine_intake_journey import MACHINE_INTAKE_STEPS
     from test_source_question_disposition_journey import SOURCE_QUESTION_STEPS
 
     declared = {step.name for step in CORRESPONDENCE_STEPS} | {
         step.name for step in CONTACT_CORRECTION_STEPS
     } | {
         step.name for step in SOURCE_QUESTION_STEPS
+    } | {
+        step.name for step in MACHINE_INTAKE_STEPS
     }
     unknown = sorted(
         {row.scenario for row in journey_matrix.SELECTED_CAPABILITIES}
