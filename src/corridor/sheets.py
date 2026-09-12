@@ -79,6 +79,15 @@ _BY_HEADING.update(
     }
 )
 
+#: The released heading vocabulary as normalized-heading -> canonical field, so
+#: a reader outside this module can carry it without touching a private name.
+#: `record_capture_correction_result` needs the same lookup in the writing
+#: transaction, and the migration derives its versioned, command-trusted copy
+#: from this (#945); `tests/test_capture_correction_retirement.py` proves the two
+#: never drift. It is `_BY_HEADING` itself rather than a copy on purpose: a
+#: second dict is a second thing to keep in step.
+HEADING_FIELD_VOCABULARY = _BY_HEADING
+
 
 class NoConflictSheet(NoMatrixFound):
     """No sheet in this workbook is a utility conflict matrix.

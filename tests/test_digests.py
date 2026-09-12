@@ -153,6 +153,12 @@ PRIVATE_JSON_DIGESTS = {
     "migrations/baseline_versions/b2d5f8a1c4e7_source_append_commands.py": (
         "released migration source bytes"
     ),
+    # A frozen version digest of the released heading vocabulary, embedded in
+    # the capture-correction command so "which vocabulary said so" is stable
+    # released history rather than a helper that could re-encode it (#945).
+    "migrations/source_append_commands/capture_correction_retirement.py": (
+        "heading vocabulary version digest"
+    ),
 }
 
 

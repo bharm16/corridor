@@ -25,15 +25,16 @@ The second sentence names the trap this module is written to avoid:
     Create a Fact saying this cell belongs to UC-1
     -> cite that new Fact as proof that the cell belongs to UC-1
 
-**So the verdict is computed from source structure only, and never from a
-capture.**  Three retained inputs decide it, and a correction can write none of
-them: the selected passage's own typed locator, the customer's adopted
-source-row registration, and the document's own header row read through the
-released heading vocabulary.  Facts, Support Assessments, Proposed Deltas and
-correction results are not consulted at all -- not the challenged capture, not
-a neighbouring one, and above all not the corrected capture the act is about to
-append.  A newly created Fact therefore cannot move this answer, which is what
-makes the circular case unreachable rather than merely discouraged.
+**So the verdict is computed from source structure and the accepted record,
+never from a capture.**  What decides it, and a correction can write none of it:
+the selected passage's own typed locator, the passage row's own conflict number
+in the selected document, the document's own header row read through the
+released heading vocabulary, and the accepted record's own conflict numbers.
+Facts, Support Assessments, Proposed Deltas and correction results are not
+consulted at all -- not the challenged capture, not a neighbouring one, and
+above all not the corrected capture the act is about to append.  A newly created
+Fact therefore cannot move this answer, which is what makes the circular case
+unreachable rather than merely discouraged.
 
 **Applicability comes from source structure, never from proximity.**  Neither
 "within two rows", nor a matching value type, nor the filename, nor the
@@ -43,18 +44,23 @@ evidence*, and a passage can support one proposition and be irrelevant to
 another.  Locating a valid number in the same workbook is not proof that it
 describes the challenged conflict.
 
-**The structured UCM path, in the terms that path already uses.**  A workbook
-cell's subject is its worksheet row and its field is its column, which is not
-this module's invention: ``facts.append_structured_cell_facts`` files every
-structured capture under ``sheet_name!worksheet_row_number`` -- the same
-``source_row_key_rule`` Adopt Baseline records -- and takes the field from the
-sheet's own header row through ``sheets.column_mapping``.  So the two halves
-are read exactly where the capture path reads them:
+**The structured UCM path, in the terms that path already uses (#945 B).**  A
+workbook row is a Utility Conflict and a column is a field, and ``later_revision``
+already resolves a row's subject by the conflict number the row states about
+itself -- its business identity, ``utility_id`` -- matched against the accepted
+record, *not* by where the row sits on the sheet, because a row moves between
+revisions.  This resolver follows that one contract rather than a second, so the
+two halves are read the way the capture that assigned the subject read them:
 
-* **subject** -- the adopted ``project_baseline_source_rows`` registration for
-  that sheet and row, which is the customer's own resolution of a source row to
-  a Project Record subject; and where a revision carries a row nobody has
-  registered, the worksheet-row identity that path would itself assign.
+* **subject** -- the conflict number the passage's own row states in the
+  selected document's ``utility_id`` column, matched against the accepted
+  record's own conflict numbers to the subject that states it.  Read from the
+  selected document and the accepted record, so a row that moved is still its
+  own subject and a baseline row at the same sheet position is never mistaken
+  for it; the ``sheet!row`` locator is meaningful only inside its own source and
+  is never an interchangeable alias for a business identity.  A conflict number
+  more than one row of the document, or more than one accepted subject, states
+  is ambiguous and resolves to none of them.
 * **field** -- the column the document's own retained header row names, read
   through the released heading vocabulary.  An unextracted cell is answered as
   readily as an extracted one, because a header row says what a column carries
@@ -71,7 +77,8 @@ wrong cell entirely.
 **What is deliberately not decided here.**  A passage that is not a structured
 cell -- a PDF span, an email span, a recorded verbal statement -- is answered
 ``UNCLEAR`` rather than guessed at.  So is a structured cell whose sheet
-retained no readable header, and one whose row the registration excludes.
+retained no readable header, one whose row states no conflict number, and one
+whose conflict number the accepted record does not hold or holds ambiguously.
 ``UNCLEAR`` is not a refusal to act: the report is retained and the
 investigation records that it could not be substantiated, which is exactly what
 ADR-0101 asks for when evidence is missing or ambiguous.  Reusing a retained
@@ -99,24 +106,29 @@ from dataclasses import dataclass
 import re
 
 from openpyxl.utils import column_index_from_string
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
-from corridor.models import BaselineSourceRow, SourceSegment
+from corridor.models import SourceSegment
 from corridor.sheets import MIN_HEADER_FIELDS, column_mapping
 
 
 __all__ = [
     "APPLICABLE",
     "APPLICABILITY_VERDICTS",
+    "BUSINESS_IDENTITY_FIELD",
     "CROSS_SUBJECT_PASSAGE",
+    "DocumentReading",
     "NOT_ESTABLISHED",
     "NOT_ESTABLISHED_REPORT_RETAINED",
     "OTHER_FIELD",
+    "OTHER_FIELD_PASSAGE",
     "OTHER_SUBJECT",
     "PassageApplicability",
     "UNCLEAR",
     "assess_passage",
+    "assess_passage_against",
+    "read_document",
     "worksheet_cell",
 ]
 
@@ -146,6 +158,15 @@ CROSS_SUBJECT_PASSAGE = (
     "this conflict, or ask Corridor operations to review the source mapping. "
     "No correction was applied."
 )
+#: The right conflict under the wrong field (#945 C). A known contradiction, so
+#: it gets its own sentence rather than sharing the uncertainty one below: a
+#: Required By column is not a failure to establish the Start Station -- it is a
+#: different field, and telling the coordinator that is telling them what to
+#: choose instead. Approved 2026-09-11, used as written.
+OTHER_FIELD_PASSAGE = (
+    "This passage describes a different field for this Utility Conflict. Choose "
+    "evidence for the field being corrected. No correction was applied."
+)
 #: The first sentence alone, for the door where nothing has been retained yet.
 #: Promising that a report remains available where no report was written would
 #: be false, so the retention clause is only ever added by the door that has
@@ -161,10 +182,24 @@ NOT_ESTABLISHED_REPORT_RETAINED = (
 )
 
 
+#: The canonical field a matrix row is identified by -- its conflict number --
+#: which is what ``later_revision`` resolves a row's subject through (#945 B).
+#: ``tests`` proves this stays the same string ``later_revision`` uses, so the
+#: applicability resolver and the capture that assigned the subject cannot state
+#: two definitions of identity.
+BUSINESS_IDENTITY_FIELD = "utility_id"
+
+
 #: How a verdict was reached, as a stable machine token on the retained proof.
 SOURCE_ROW_REGISTRATION = "source_row_registration"
-WORKSHEET_ROW_IDENTITY = "worksheet_row_identity"
-EXCLUDED_SOURCE_ROW = "excluded_source_row"
+#: The passage's row carries no conflict number this document could resolve --
+#: no utility_id column, or no value in it for this row.
+NO_ROW_IDENTITY = "no_row_identity"
+#: A conflict number carried by more than one row of this document, or resolving
+#: to more than one adopted subject: ambiguous correspondence stays ambiguous.
+AMBIGUOUS_ROW_IDENTITY = "ambiguous_row_identity"
+#: A conflict number no adopted source row registers, so it names no subject.
+UNREGISTERED_ROW_IDENTITY = "unregistered_row_identity"
 UNSTRUCTURED_PASSAGE = "unstructured_passage"
 RETAINED_HEADER_ROW = "retained_header_row"
 NO_HEADER_ROW = "no_header_row"
@@ -182,13 +217,18 @@ class PassageApplicability:
     readings of the same records reach the same verdict and appending the
     corrected capture does not change it.  ``subject_basis`` and
     ``field_heading_segment_id`` are the evidence itself rather than a summary
-    of it: the registration or rule the subject came from, and the exact
-    retained header cell the field claim rests on.
+    of it: how the subject was resolved, and the exact retained header cell the
+    field claim rests on.  ``subject_row_identity_segment_id`` and
+    ``subject_row_identity_heading_segment_id`` are the subject's own evidence,
+    for the writing boundary to re-derive against: the passage row's own cell in
+    the document's utility_id column, and that column's retained header (#945 B).
     """
 
     verdict: str
     subject_identity: str | None
     subject_basis: str
+    subject_row_identity_segment_id: int | None
+    subject_row_identity_heading_segment_id: int | None
     field: str | None
     field_basis: str
     field_heading_segment_id: int | None
@@ -200,22 +240,36 @@ class PassageApplicability:
 
     @property
     def offered_sentence(self) -> str:
-        """What the picker and the request door say, having retained nothing."""
+        """What the picker and the request door say, having retained nothing.
+
+        A known contradiction -- another conflict, or another field -- names
+        what to choose instead; only genuine uncertainty gets the "could not
+        establish" sentence, because the two must not share one (#945 C).
+        """
 
         if self.verdict == APPLICABLE:
             return ""
         if self.verdict == OTHER_SUBJECT:
             return CROSS_SUBJECT_PASSAGE
+        if self.verdict == OTHER_FIELD:
+            return OTHER_FIELD_PASSAGE
         return NOT_ESTABLISHED
 
     @property
     def investigation_sentence(self) -> str:
-        """What an investigation says, the report having really been retained."""
+        """What an investigation says, the report having really been retained.
+
+        A contradicted passage says the same thing at both doors: the report is
+        retained either way, but "another field" is not "we could not tell", so
+        the retention clause is only added to the uncertainty sentence (#945 C).
+        """
 
         if self.verdict == APPLICABLE:
             return ""
         if self.verdict == OTHER_SUBJECT:
             return CROSS_SUBJECT_PASSAGE
+        if self.verdict == OTHER_FIELD:
+            return OTHER_FIELD_PASSAGE
         return NOT_ESTABLISHED_REPORT_RETAINED
 
 
@@ -236,13 +290,219 @@ def worksheet_cell(segment: SourceSegment) -> tuple[str, str, int] | None:
     return segment.sheet_name, found.group(1), int(found.group(2))
 
 
+@dataclass(frozen=True, slots=True)
+class SheetStructure:
+    """One document sheet read once: what each column carries, and the exact
+    retained header cell that says so.
+
+    Everything a passage of this sheet needs to have its field derived, computed
+    a single time however many passages of it the picker offers (#945 D). The
+    header row is read the way ``facts.append_structured_cell_facts`` reads it:
+    cells are laid out by column number so a blank column cannot shift every
+    heading one place left, and the header is the first row naming at least
+    ``MIN_HEADER_FIELDS`` canonical fields through the released heading
+    vocabulary. A sheet with no such row answers nothing rather than guessing,
+    and a header at or below the selected cell is not a header for it.
+    """
+
+    header_row: int | None
+    #: 0-based header list index -> canonical field (``column_mapping``'s shape).
+    field_by_index: dict[int, str]
+    #: 1-based column index -> the header cell that named the column.
+    header_cell_by_column: dict[int, SourceSegment]
+    #: 1-based column index of the utility_id column this sheet's header names,
+    #: which is the column a matrix row's business identity is read from (#945 B).
+    identity_column: int | None
+    #: worksheet row -> that row's own cell in the utility_id column, for every
+    #: data row below the header. The conflict number a row states about itself.
+    identity_cell_by_row: dict[int, SourceSegment]
+
+    def field_of(
+        self, column: str, row_number: int
+    ) -> tuple[SourceSegment | None, str | None]:
+        """The field the passage's column carries, and the header cell, or None.
+
+        The topmost header-qualifying row of the sheet is the header for every
+        cell below it, and none for a cell at or above it -- the same answer the
+        per-passage scan gave, now read off structure computed once.
+        """
+
+        if self.header_row is None or self.header_row >= row_number:
+            return None, None
+        wanted = column_index_from_string(column)
+        return (
+            self.header_cell_by_column.get(wanted),
+            self.field_by_index.get(wanted - 1),
+        )
+
+    @property
+    def identity_heading_cell(self) -> SourceSegment | None:
+        """The retained header cell that named the utility_id column, or None."""
+
+        if self.identity_column is None:
+            return None
+        return self.header_cell_by_column.get(self.identity_column)
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentReading:
+    """One selected document's structure and row registrations, read once.
+
+    The picker offers many passages of one document and used to reload the sheet
+    and re-query the row registration for each of them; this is that reading
+    taken a single time and assessed against, then discarded with the reading
+    (#945 D). It is a bounded performance repair, not a cache service: nothing
+    outside one reading holds it, and the writing boundary re-derives its own.
+    """
+
+    structures: dict[str, SheetStructure]
+    #: conflict number -> the accepted Project Record subjects stating it. Read
+    #: from the accepted record itself -- each accepted subject's own utility_id
+    #: value -- exactly as ``later_revision`` resolves a row, so the
+    #: applicability check and the capture that assigned the subject share one
+    #: definition of identity rather than two (#945 B). More than one subject is
+    #: a repeated conflict number the customer kept apart, so it resolves to none
+    #: of them: ambiguous correspondence stays ambiguous.
+    subjects_by_business_identity: dict[str, tuple[str, ...]]
+
+
+def read_document(
+    session: Session, *, project_id: int, document_id: int | None
+) -> DocumentReading:
+    """Read one document's sheet structure and the row registrations once.
+
+    Two statements, whatever the document holds: every structured cell of the
+    document (grouped into a per-sheet header reading that also finds each row's
+    conflict number), and the accepted record's conflict numbers (grouped to the
+    subjects that state them). A passage is then assessed against this in memory
+    rather than re-reading the sheet and re-querying the record per option
+    (#945 D), and always through the document's own row correspondence rather
+    than a baseline row at the same sheet position (#945 B).
+    """
+
+    by_sheet: dict[str, dict[int, dict[int, SourceSegment]]] = {}
+    if document_id is not None:
+        for segment in session.scalars(
+            select(SourceSegment)
+            .where(
+                SourceSegment.project_id == project_id,
+                SourceSegment.document_id == document_id,
+                SourceSegment.kind == "spreadsheet_cell",
+            )
+            .order_by(SourceSegment.ordinal, SourceSegment.id)
+        ).all():
+            cell = worksheet_cell(segment)
+            if cell is None:
+                continue
+            sheet_name, column, row_number = cell
+            by_sheet.setdefault(sheet_name, {}).setdefault(row_number, {})[
+                column_index_from_string(column)
+            ] = segment
+    return DocumentReading(
+        structures={
+            sheet_name: _sheet_structure(rows) for sheet_name, rows in by_sheet.items()
+        },
+        subjects_by_business_identity=_subjects_by_business_identity(
+            session, project_id
+        ),
+    )
+
+
+def _sheet_structure(rows: dict[int, dict[int, SourceSegment]]) -> SheetStructure:
+    """The topmost header-qualifying row of one sheet, and what it named.
+
+    Once the header is found, the utility_id column it names is fixed, and every
+    data row below it contributes its own cell in that column -- the conflict
+    number the row states about itself, which is what a passage's subject is
+    resolved through (#945 B).
+    """
+
+    header_row: int | None = None
+    field_by_index: dict[int, str] = {}
+    header_cells: dict[int, SourceSegment] = {}
+    for candidate in sorted(rows):
+        cells = rows[candidate]
+        headings = [
+            "" if cells.get(index) is None else cells[index].exact_text
+            for index in range(1, max(cells) + 1)
+        ]
+        mapping = column_mapping(headings)
+        if len(mapping) < MIN_HEADER_FIELDS:
+            # ``sheets.header_row``'s own threshold, for its own reason: a
+            # merged title band populates one cell of the row it spans, and a
+            # data cell whose words happen to match a published heading would
+            # otherwise turn its row into a header for everything below it.
+            continue
+        header_row = candidate
+        field_by_index = mapping
+        header_cells = dict(cells)
+        break
+
+    identity_column: int | None = None
+    for index, mapped_field in field_by_index.items():
+        if mapped_field == BUSINESS_IDENTITY_FIELD:
+            identity_column = index + 1  # 0-based header index -> 1-based column
+            break
+
+    identity_cell_by_row: dict[int, SourceSegment] = {}
+    if identity_column is not None and header_row is not None:
+        for row_number, cells in rows.items():
+            if row_number <= header_row:
+                continue
+            cell = cells.get(identity_column)
+            if cell is not None:
+                identity_cell_by_row[row_number] = cell
+
+    return SheetStructure(
+        header_row=header_row,
+        field_by_index=field_by_index,
+        header_cell_by_column=header_cells,
+        identity_column=identity_column,
+        identity_cell_by_row=identity_cell_by_row,
+    )
+
+
+def _subjects_by_business_identity(
+    session: Session, project_id: int
+) -> dict[str, tuple[str, ...]]:
+    """The accepted record's conflict numbers, grouped to the subjects stating them.
+
+    Read from the accepted record itself -- each accepted subject's own
+    ``utility_id`` value in ``current_project_record`` -- which is exactly the
+    matching side ``later_revision`` resolves a row through (#945 B). Reading it
+    here rather than from the adoption receipt keeps the applicability check and
+    the capture that assigned the subject on one definition of identity: a
+    subject accepted from an earlier revision's new-subject delta is matched the
+    same way, and a re-registered mapping is felt at once.
+
+    A conflict number more than one accepted subject states is ambiguous and
+    resolves to none of them; the ``current_project_record`` projection already
+    excludes superseded and do-not-add decisions, so a value that left the
+    record is not matched.
+    """
+
+    grouped: dict[str, list[str]] = {}
+    for subject_key, value in session.execute(
+        text(
+            "select subject_key, text_value from current_project_record "
+            "where project_id = :project_id and fact_type = :field"
+        ),
+        {"project_id": project_id, "field": BUSINESS_IDENTITY_FIELD},
+    ).all():
+        identity = (value or "").strip()
+        if identity:
+            grouped.setdefault(identity, []).append(subject_key)
+    return {identity: tuple(subjects) for identity, subjects in grouped.items()}
+
+
 def assess_passage(
-    session: Session,
+    session: Session | None,
     *,
     project_id: int,
     subject_identity: str,
     field: str,
     selected: SourceSegment,
+    reading: DocumentReading | None = None,
 ) -> PassageApplicability:
     """Whether this passage establishes a value for this subject and this field.
 
@@ -250,6 +510,38 @@ def assess_passage(
     off retained rows by the callers rather than typed by anyone.  Nothing the
     coordinator wrote is an input, and neither is any Fact: see the module
     docstring for why the second of those is the whole point.
+
+    ``reading`` is the document read once (#945 D). The single-passage callers
+    -- the request door and operations -- omit it and one is read for the one
+    passage; the picker reads it once and hands the same one to every option. A
+    ``session`` is needed only to read one, so a caller that already holds a
+    reading passes ``None`` for it.
+    """
+
+    if reading is None:
+        assert session is not None, "assess_passage needs a session or a reading"
+        reading = read_document(
+            session,
+            project_id=project_id,
+            document_id=None if selected.document_id is None else int(selected.document_id),
+        )
+    return assess_passage_against(
+        reading, subject_identity=subject_identity, field=field, selected=selected
+    )
+
+
+def assess_passage_against(
+    reading: DocumentReading,
+    *,
+    subject_identity: str,
+    field: str,
+    selected: SourceSegment,
+) -> PassageApplicability:
+    """The verdict for one passage against a document read once (#945 D).
+
+    Pure: it reads nothing, so the picker computes the reading a single time and
+    assesses every option against it, and the writing boundary re-derives its
+    own from the same retained rows.
     """
 
     cell = worksheet_cell(selected)
@@ -258,23 +550,25 @@ def assess_passage(
             verdict=UNCLEAR,
             subject_identity=None,
             subject_basis=UNSTRUCTURED_PASSAGE,
+            subject_row_identity_segment_id=None,
+            subject_row_identity_heading_segment_id=None,
             field=None,
             field_basis=UNSTRUCTURED_PASSAGE,
             field_heading_segment_id=None,
             field_heading_text=None,
         )
     sheet_name, column, row_number = cell
+    structure = reading.structures.get(sheet_name)
     passage_subject, subject_basis = _passage_subject(
-        session,
-        project_id=project_id,
-        sheet_name=sheet_name,
-        row_number=row_number,
-        subject_identity=subject_identity,
+        reading, structure, row_number=row_number
     )
-    heading, passage_field = _passage_field(
-        session, selected=selected, sheet_name=sheet_name, column=column,
-        row_number=row_number,
-    )
+    if structure is None:
+        heading, passage_field = None, None
+        identity_cell = None
+    else:
+        heading, passage_field = structure.field_of(column, row_number)
+        identity_cell = structure.identity_cell_by_row.get(row_number)
+    identity_heading = None if structure is None else structure.identity_heading_cell
     if passage_subject is None or passage_field is None:
         verdict = UNCLEAR
     elif passage_subject != subject_identity:
@@ -287,6 +581,15 @@ def assess_passage(
         verdict=verdict,
         subject_identity=passage_subject,
         subject_basis=subject_basis,
+        # The passage row's own cell in the utility_id column, and that column's
+        # header, so the writing boundary can re-derive the subject against the
+        # same retained bytes rather than trust the resolved string (#945 B).
+        subject_row_identity_segment_id=(
+            None if identity_cell is None else int(identity_cell.id)
+        ),
+        subject_row_identity_heading_segment_id=(
+            None if identity_heading is None else int(identity_heading.id)
+        ),
         field=passage_field,
         field_basis=_field_basis(heading, passage_field),
         # The cell the field claim rests on, and only where there is a claim:
@@ -310,117 +613,52 @@ def _field_basis(heading: SourceSegment | None, field: str | None) -> str:
 
 
 def _passage_subject(
-    session: Session,
+    reading: DocumentReading,
+    structure: SheetStructure | None,
     *,
-    project_id: int,
-    sheet_name: str,
     row_number: int,
-    subject_identity: str,
 ) -> tuple[str | None, str]:
-    """Which Project Record subject this worksheet row resolves to.
+    """Which Project Record subject this worksheet row resolves to (#945 B).
 
-    One row resolves under two retained rules, and the product uses both. A
-    structured capture is filed under ``sheet_name!worksheet_row_number``, the
-    ``source_row_key_rule`` Adopt Baseline records; the adopted row's own
-    ``record_subject_key`` is the customer's resolution of that row to a
-    record subject, which is the row's business identity where the form prints
-    one. Neither is this module's invention and neither is safe to drop: a
-    project whose deltas are stated in one space would be refused wholesale if
-    only the other were consulted.
+    Row identity follows the conflict's business identity, not its position on
+    the sheet, which is the later-revision reader's own contract: a row may move
+    between revisions, so a correction citing row 10 of the *later* revision may
+    not use row 10 of the baseline to say what it is. So the row is resolved
+    through *its own document's* utility_id cell -- the conflict number the row
+    states about itself -- matched against the customer's adopted registration of
+    that conflict number to a subject. The positional ``sheet!row`` locator is
+    meaningful only inside its own source and is never an interchangeable alias
+    for a business identity.
 
-    So a row resolves to *either* of its retained identities, and what the
-    verdict asks is whether the challenged subject is one of them. That keeps
-    the containment exactly where #945 put it -- a neighbouring row resolves to
-    neither identity of this conflict, whatever space the delta is stated in.
-
-    A row the adoption excluded resolves to nothing at all: it is not in the
-    record, so no cell of it carries a value for any subject, and the answer is
-    the unsettled one rather than a refusal about somebody else's conflict.
-
-    The newest registration wins where a project has registered more than one
-    baseline source, which is also what makes a re-registered mapping felt: a
-    correction compared against the old resolution is refused by the command
-    rather than committed against a mapping that has moved.
+    Ambiguity stays ambiguity, on either side: a conflict number carried by more
+    than one row of this document, or registered to more than one adopted
+    subject, names none of them, and the row that carries it is unsettled rather
+    than resolved to a guess. A row whose conflict number no registration knows
+    is unsettled too -- it is not in the record, so no cell of it carries a value
+    for any subject.
     """
 
-    rule_identity = f"{sheet_name}!{row_number}"
-    registered = session.scalars(
-        select(BaselineSourceRow)
-        .where(
-            BaselineSourceRow.project_id == project_id,
-            BaselineSourceRow.sheet_name == sheet_name,
-            BaselineSourceRow.row_number == row_number,
-        )
-        .order_by(
-            BaselineSourceRow.baseline_source_id.desc(), BaselineSourceRow.id.desc()
-        )
-        .limit(1)
-    ).first()
-    if registered is None:
-        identities, canonical = {rule_identity}, rule_identity
-        basis = WORKSHEET_ROW_IDENTITY
-    elif registered.excluded or not registered.record_subject_key:
-        return None, EXCLUDED_SOURCE_ROW
-    else:
-        identities = {rule_identity, registered.record_subject_key}
-        canonical = registered.record_subject_key
-        basis = SOURCE_ROW_REGISTRATION
-    return (
-        subject_identity if subject_identity in identities else canonical,
-        basis,
-    )
-
-
-def _passage_field(
-    session: Session,
-    *,
-    selected: SourceSegment,
-    sheet_name: str,
-    column: str,
-    row_number: int,
-) -> tuple[SourceSegment | None, str | None]:
-    """Which canonical field this column carries, and the header cell saying so.
-
-    The sheet's own retained header row is read the way
-    ``facts.append_structured_cell_facts`` reads it: cells are laid out by
-    column number so a blank column cannot shift every heading one place left,
-    and the header is the first row naming at least ``MIN_HEADER_FIELDS``
-    canonical fields through the released heading vocabulary.  A sheet with no
-    such row answers nothing rather than falling back to a guess, and a header
-    at or below the selected cell is not a header for it.
-    """
-
-    rows: dict[int, dict[int, SourceSegment]] = {}
-    for segment in session.scalars(
-        select(SourceSegment)
-        .where(
-            SourceSegment.project_id == selected.project_id,
-            SourceSegment.document_id == selected.document_id,
-            SourceSegment.kind == "spreadsheet_cell",
-            SourceSegment.sheet_name == sheet_name,
-        )
-        .order_by(SourceSegment.ordinal, SourceSegment.id)
-    ).all():
-        cell = worksheet_cell(segment)
-        if cell is None:
-            continue
-        rows.setdefault(cell[2], {})[column_index_from_string(cell[1])] = segment
-    wanted = column_index_from_string(column)
-    for header_row in sorted(rows):
-        if header_row >= row_number:
-            return None, None
-        cells = rows[header_row]
-        headings = [
-            "" if cells.get(index) is None else cells[index].exact_text
-            for index in range(1, max(cells) + 1)
-        ]
-        mapping = column_mapping(headings)
-        if len(mapping) < MIN_HEADER_FIELDS:
-            # ``sheets.header_row``'s own threshold, for its own reason: a
-            # merged title band populates one cell of the row it spans, and a
-            # data cell whose words happen to match a published heading would
-            # otherwise turn its row into a header for everything below it.
-            continue
-        heading = cells.get(wanted)
-        return heading, mapping.get(wanted - 1)
-    return None, None
+    if structure is None:
+        return None, NO_ROW_IDENTITY
+    identity_cell = structure.identity_cell_by_row.get(row_number)
+    if identity_cell is None:
+        return None, NO_ROW_IDENTITY
+    business_identity = identity_cell.exact_text.strip()
+    if not business_identity:
+        return None, NO_ROW_IDENTITY
+    # Document-side ambiguity: this same conflict number on another row of this
+    # document. Nobody can say which of two identically numbered rows a passage
+    # in one of them describes.
+    carriers = [
+        row
+        for row, other in structure.identity_cell_by_row.items()
+        if other.exact_text.strip() == business_identity
+    ]
+    if len(carriers) != 1:
+        return None, AMBIGUOUS_ROW_IDENTITY
+    subjects = reading.subjects_by_business_identity.get(business_identity, ())
+    if len(subjects) > 1:
+        return None, AMBIGUOUS_ROW_IDENTITY
+    if not subjects:
+        return None, UNREGISTERED_ROW_IDENTITY
+    return subjects[0], SOURCE_ROW_REGISTRATION

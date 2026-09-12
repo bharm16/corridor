@@ -40,7 +40,11 @@ from corridor.capture_correction import (
     build_correction_request,
     record_correction_request,
 )
-from corridor.correction_applicability import PassageApplicability, assess_passage
+from corridor.correction_applicability import (
+    BUSINESS_IDENTITY_FIELD,
+    PassageApplicability,
+    assess_passage,
+)
 from corridor.models import Project, ProposedDelta, SourceSegment
 from corridor.packet_review import read_review_items
 from corridor.principals import HumanPrincipal
@@ -84,6 +88,14 @@ NEIGHBOUR_ACCEPTED_TEXT = "1004+00"
 #: wrongly read it from. Both are named by the rendition's own header row.
 FIELD_COLUMN = "C"
 WRONG_COLUMN = "D"
+#: The column carrying each row's conflict number, which is what a row's subject
+#: is resolved through -- its business identity, not its position on the sheet
+#: (#945 B). Row identity follows the number the row states about itself, so the
+#: same conflict at a different worksheet row still resolves to its own subject.
+IDENTITY_COLUMN = "A"
+#: The conflict numbers the two rows state, distinct so neither row is ambiguous.
+BUSINESS_IDENTITY = "U-001"
+NEIGHBOUR_BUSINESS_IDENTITY = "U-002"
 #: What ``WRONG_COLUMN`` actually carries. Two date fields in adjacent columns
 #: is the maintainer's own example of a substitution a correction may not make.
 WRONG_FIELD = "need_date"
@@ -138,17 +150,40 @@ class Misread:
         accepted, _ = self.adopted.capture(
             fact_type=field, value=accepted_text, subject_key=self.subject_key
         )
-        self.revision_id = accept_baseline_fact(session, project, accepted)
+        # The accepted record states each conflict's number, so a passage's row
+        # resolves to its subject by the number it carries -- the way
+        # ``later_revision`` resolves a row -- rather than by its sheet position
+        # (#945 B).
+        challenged_identity, _ = self.adopted.capture(
+            fact_type=BUSINESS_IDENTITY_FIELD,
+            value=BUSINESS_IDENTITY,
+            subject_key=self.subject_key,
+        )
+        neighbour_identity, _ = self.adopted.capture(
+            fact_type=BUSINESS_IDENTITY_FIELD,
+            value=NEIGHBOUR_BUSINESS_IDENTITY,
+            subject_key=subject(NEIGHBOUR_ROW),
+        )
+        self.revision_id = accept_baseline_fact(
+            session, project, accepted, challenged_identity, neighbour_identity
+        )
         baseline = register_baseline(
             session, project, self.adopted.document, self.revision_id
         )
-        register_source_row(
-            session,
-            project,
-            baseline,
-            row_number=CONFLICT_ROW,
-            business_identity="U-001",
-        )
+        # Both rows this scenario names are registered by their own conflict
+        # number, so a passage of either resolves through its business identity
+        # rather than its sheet position (#945 B).
+        for row_number, identity in (
+            (CONFLICT_ROW, BUSINESS_IDENTITY),
+            (NEIGHBOUR_ROW, NEIGHBOUR_BUSINESS_IDENTITY),
+        ):
+            register_source_row(
+                session,
+                project,
+                baseline,
+                row_number=row_number,
+                business_identity=identity,
+            )
         register_output_template(
             session, project, identity="district-ucm-template", version="v3"
         )
@@ -156,15 +191,28 @@ class Misread:
             session, project, f"ucm-2026-09-{uuid4().hex[:6]}.xlsx"
         )
         # What this revision's columns carry, in the workbook's own words. The
-        # header row is what makes "column C is this field" a retained fact
-        # about the source rather than a fixture's private convention.
+        # header row is what makes "column C is this field" -- and "column A is
+        # the conflict number" -- a retained fact about the source rather than a
+        # fixture's private convention.
         self.headings = (
             append_header_row(
                 self.incoming,
-                {FIELD_COLUMN: field, WRONG_COLUMN: neighbouring},
+                {
+                    IDENTITY_COLUMN: BUSINESS_IDENTITY_FIELD,
+                    FIELD_COLUMN: field,
+                    WRONG_COLUMN: neighbouring,
+                },
             )
             if header
             else {}
+        )
+        # Each conflict's own row states its conflict number in the identity
+        # column, which is what its subject is resolved through.
+        self.incoming.segment(
+            BUSINESS_IDENTITY, cell=f"{IDENTITY_COLUMN}{CONFLICT_ROW}"
+        )
+        self.incoming.segment(
+            NEIGHBOUR_BUSINESS_IDENTITY, cell=f"{IDENTITY_COLUMN}{NEIGHBOUR_ROW}"
         )
         # The misreading: the challenged conflict's own row, read through the
         # neighbouring column.

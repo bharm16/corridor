@@ -272,7 +272,25 @@ EXPECTED_SCHEMA_SHA256 = (
     # delivery is unchanged. A column, a constraint and a rewritten trigger on a
     # relation that already exists, so the digest moves and neither count does
     # (combined #951 + #956 + #957).
-    "5fbc3b62fabe4b2b77ddccf564a36943f08095757d698bb7bb6526ec319c4ef9"
+    #
+    # #945 finishes the capture-correction proof by deriving both halves of the
+    # verdict, not trusting the caller for either. The field is read from the
+    # passage's retained heading through the released heading vocabulary -- a
+    # versioned, command-trusted copy of `sheets`'s mapping, added as three read
+    # -only functions (`structured_heading_field_vocabulary`,
+    # `structured_heading_vocabulary_version` and `structured_heading_field`) --
+    # rather than taken as the caller's word; the subject is resolved through the
+    # selected document's own conflict number matched against the accepted
+    # record, the way `later_revision` resolves a row, rather than through a
+    # baseline row at the same sheet position. `record_capture_correction_result`
+    # gains two arguments (the passage row's utility_id cell and that column's
+    # header) and is rewritten to derive and contradict both halves, and the
+    # record-decision role gains `select` on `current_project_record`. Three new
+    # functions, two command arguments, one grant and a rewritten command on
+    # relations that already exist, so the digest moves and neither count does.
+    # Recomputed against a fresh disposable database with template reuse off
+    # (combined #951 + #956 + #957 + #945).
+    "2f10bbd9117a6c386876cd31c723d4820c698eb5f021c0ca8f5e425556ec4320"
 )
 
 pytestmark = [pytest.mark.slow, pytest.mark.migration]

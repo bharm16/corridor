@@ -122,11 +122,13 @@ from sqlalchemy.orm import Session
 from corridor import refusals
 from corridor.correction_applicability import (
     CROSS_SUBJECT_PASSAGE,
-    NOT_ESTABLISHED,
     OTHER_FIELD,
+    OTHER_FIELD_PASSAGE,
     OTHER_SUBJECT,
+    DocumentReading,
     PassageApplicability,
     assess_passage,
+    read_document,
 )
 from corridor.models import (
     CaptureCorrectionRequest,
@@ -202,11 +204,12 @@ CAPTURE_NOT_RETAINED = (
 )
 # Being a passage of this source is necessary and is not sufficient (#945).
 # The sentences are ``correction_applicability``'s, printed rather than
-# restated, and the *first* sentence alone is what this door may say: nothing
-# has been retained yet, so promising that a report remains available for
-# investigation would be a promise about a row that does not exist.
+# restated. Each names a known contradiction -- another conflict, or another
+# field -- rather than an uncertainty, so it tells the coordinator what to
+# choose instead; the "could not establish" sentence is for genuine uncertainty
+# alone, which this door reports and retains rather than refuses (#945 C).
 PASSAGE_DESCRIBES_ANOTHER_SUBJECT = CROSS_SUBJECT_PASSAGE
-PASSAGE_APPLICABILITY_NOT_ESTABLISHED = NOT_ESTABLISHED
+PASSAGE_IS_ANOTHER_FIELD = OTHER_FIELD_PASSAGE
 
 
 
@@ -452,7 +455,7 @@ def build_correction_request(
     if applicability.verdict == OTHER_FIELD:
         raise CaptureCorrectionRefused(
             "passage_is_another_field",
-            PASSAGE_APPLICABILITY_NOT_ESTABLISHED,
+            PASSAGE_IS_ANOTHER_FIELD,
             kind=refusals.MALFORMED_INPUT,
             delta_id=child.delta_id,
             control=CONTROL_PASSAGE,
@@ -684,6 +687,13 @@ def passage_choices(
 
     if capture.document_id is None:
         return PassageChoices(())
+    # The document's structure and row correspondence are read once for the
+    # whole picker, then every option is assessed against that one reading
+    # rather than reloading the sheet and re-querying the registration per
+    # option (#945 D). The writing boundary still re-derives its own.
+    reading = read_document(
+        session, project_id=capture.project_id, document_id=capture.document_id
+    )
     found = list(
         session.scalars(
             select(SourceSegment)
@@ -699,7 +709,7 @@ def passage_choices(
         matched = [row for row in found if _mentions(words, row)]
         return PassageChoices(
             tuple(
-                _offered(session, row, capture)
+                _offered(row, capture, reading)
                 for row in matched[:PASSAGE_MATCH_LIMIT]
             ),
             searched=words,
@@ -718,7 +728,7 @@ def passage_choices(
     else:
         found = found[: PASSAGE_CHOICE_WINDOW * 2 + 1]
     return PassageChoices(
-        tuple(_offered(session, row, capture) for row in found)
+        tuple(_offered(row, capture, reading) for row in found)
     )
 
 
@@ -738,11 +748,15 @@ def _mentions(words: str, segment: SourceSegment) -> bool:
 
 
 def _offered(
-    session: Session, segment: SourceSegment, capture: ChallengedCapture
+    segment: SourceSegment, capture: ChallengedCapture, reading: DocumentReading
 ) -> PassageChoice:
-    """One retained passage as the picker offers it, with what it may support."""
+    """One retained passage as the picker offers it, with what it may support.
 
-    applicability = passage_applicability(session, capture, segment)
+    Assessed against the reading the picker took once, so offering N passages
+    is one document read rather than N (#945 D).
+    """
+
+    applicability = passage_applicability(None, capture, segment, reading=reading)
     return PassageChoice(
         source_segment_id=int(segment.id),
         locator=source_segment_locator_words(segment),
@@ -754,7 +768,11 @@ def _offered(
 
 
 def passage_applicability(
-    session: Session, capture: ChallengedCapture, selected: SourceSegment
+    session: Session | None,
+    capture: ChallengedCapture,
+    selected: SourceSegment,
+    *,
+    reading: DocumentReading | None = None,
 ) -> PassageApplicability:
     """What the retained structure says about this passage for this capture.
 
@@ -762,6 +780,11 @@ def passage_applicability(
     question with the same arguments.  The rule itself is
     ``correction_applicability``'s; this only supplies the challenged capture's
     own subject and field to it, read off retained rows rather than typed.
+
+    ``reading`` is the document read once (#945 D): the picker passes the one it
+    took for the whole list, and a caller assessing a single passage omits it
+    and one is read for that passage. When it is supplied no ``session`` is
+    needed, because nothing is queried.
     """
 
     return assess_passage(
@@ -769,6 +792,7 @@ def passage_applicability(
         project_id=capture.project_id,
         subject_identity=capture.subject_identity,
         field=capture.field,
+        reading=reading,
         selected=selected,
     )
 

@@ -51,20 +51,24 @@ structure does not hold to this subject and this field.  Three things make it
 a proof rather than a restated opinion:
 
 - **It is computed here, from rows a correction cannot write**: the passage's
-  own typed locator, the customer's adopted ``project_baseline_source_rows``
-  registration, and a retained heading cell of the passage's own column.  No
-  Fact is an input -- not the challenged capture, not a neighbour's, and above
-  all not the corrected capture this command is about to insert.  A caller
-  cannot manufacture its own admission by creating a Fact that claims the
-  subject, which is the circularity the rule names.
-- **The caller's stated subject is contradicted rather than believed.**  The
-  subject half is entirely the command's; a stated one that disagrees is a
-  bounded refusal.  The field half rests on the released heading vocabulary,
-  which stays in ``sheets.column_mapping`` rather than being restated in SQL
-  where two copies would drift -- so what is proved here is that the claim is
-  anchored to real retained bytes above the passage in its own column, and the
-  exact heading text is copied off that cell so a later reader can check the
-  vocabulary claim without trusting anyone's summary of it.
+  own typed locator, the conflict number the passage's own row states in the
+  selected document's ``utility_id`` column, the accepted record's own conflict
+  numbers, and a retained heading cell of the passage's own column.  No Fact is
+  an input -- not the challenged capture, not a neighbour's, and above all not
+  the corrected capture this command is about to insert.  A caller cannot
+  manufacture its own admission by creating a Fact that claims the subject,
+  which is the circularity the rule names.
+- **The caller's stated subject and field are both contradicted rather than
+  believed (#945).**  The subject is resolved through the selected document's
+  own row correspondence -- the conflict number the row states, matched against
+  the accepted record the way ``later_revision`` resolves a row, never a
+  baseline row at the same sheet position -- so a stated subject that disagrees
+  is a bounded refusal.  The field is derived from the passage's retained header
+  through a versioned, command-trusted copy of the released heading vocabulary
+  (``structured_heading_field``, generated from ``sheets``), so a caller may
+  name the heading cell but not what the column means; a stated field the header
+  does not draw from that vocabulary is a bounded refusal too, and the exact
+  heading text is copied off the cell so a later reader can re-check the claim.
 - **The relation refuses it too.**  ``ck_capture_correction_results_applicable_correction``
   admits a corrected capture only beside the ``applicable`` verdict, so the
   containment survives a future caller that forgets the rule.
@@ -150,6 +154,9 @@ carried back into.
 
 from __future__ import annotations
 
+from hashlib import sha256
+import json
+
 import sqlalchemy as sa
 
 from corridor.migrations.source_append_commands.project_partition import (
@@ -160,9 +167,18 @@ from corridor.migrations.source_append_commands.roles import (
     RUNTIME_LOGINS,
     SOURCE_APPEND_ROLE,
 )
+from corridor.sheets import HEADING_FIELD_VOCABULARY
 
 RESULT_TABLE = "capture_correction_results"
 RETIREMENT_TABLE = "delta_capture_corrections"
+
+#: The canonical field a matrix row is identified by -- its conflict number --
+#: which the command resolves a passage's subject through (#945 B). The same
+#: string ``correction_applicability.BUSINESS_IDENTITY_FIELD`` and
+#: ``later_revision.BUSINESS_IDENTITY_FIELD`` name, kept apart from a runtime
+#: import here and proved equal by the drift test so the writing transaction and
+#: the reader cannot state two definitions of identity.
+UTILITY_ID_FIELD = "utility_id"
 
 #: What one investigation concluded. ``no_change`` and ``still_differs`` are
 #: successful corrections and each retires the prior proposal; ``inconclusive``
@@ -185,6 +201,90 @@ OTHER_FIELD = "other_field"
 UNCLEAR = "unclear"
 APPLICABILITY_VERDICTS = (APPLICABLE, OTHER_SUBJECT, OTHER_FIELD, UNCLEAR)
 _VERDICTS_SQL = ", ".join(f"'{value}'" for value in APPLICABILITY_VERDICTS)
+
+
+# --- The released heading vocabulary, as the command's own trusted copy (#945).
+#
+# The field a structured column carries is what the released heading vocabulary
+# names its retained header, and the command derives that for itself rather than
+# trusting a caller's word for it: a heading cell is a mapping record the caller
+# may identify, but what the column *means* is the command's answer, exactly as
+# the passage's subject already is.  The vocabulary lives in ``sheets`` for every
+# other reader (``column_mapping`` and the capture path it files by), so this is
+# a versioned copy *derived* from that one -- generated here, never re-spelled,
+# so the two cannot state two different vocabularies.  A released migration's
+# bytes are frozen, so ``tests/test_capture_correction_retirement.py`` proves the
+# copy the running schema carries still matches ``sheets`` and the version below
+# still digests it; a change to the vocabulary that forgot this block would fail
+# there rather than let the writing transaction and the reader drift apart.
+#
+# The keys of ``HEADING_FIELD_VOCABULARY`` are already collapsed and casefolded
+# the way ``column_mapping`` keys them, so the lookup normalises an arbitrary
+# retained heading to the same shape (``lower(btrim(collapse whitespace))``,
+# which is ``" ".join(str(x).split()).casefold()`` for the ASCII headings a
+# published form prints) before it compares.
+
+
+def _sql_text_literal(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+_HEADING_FIELD_ROWS = ",\n            ".join(
+    f"({_sql_text_literal(heading)}, {_sql_text_literal(field)})"
+    for heading, field in sorted(HEADING_FIELD_VOCABULARY.items())
+)
+
+#: A stable digest of the frozen mapping, so "which vocabulary said so" is a
+#: checkable version rather than an implicit one.  Recomputed by the drift test
+#: from ``sheets`` and compared against what the schema returns.
+STRUCTURED_HEADING_VOCABULARY_VERSION = sha256(
+    json.dumps(
+        sorted(HEADING_FIELD_VOCABULARY.items()), separators=(",", ":")
+    ).encode("utf-8")
+).hexdigest()
+
+
+STRUCTURED_HEADING_FIELD_VOCABULARY = f"""
+create function public.structured_heading_field_vocabulary()
+    returns table (normalized_heading text, canonical_field text)
+    language sql
+    immutable
+    set search_path to 'public'
+    as $$
+        select * from (values
+            {_HEADING_FIELD_ROWS}
+        ) as v (normalized_heading, canonical_field);
+    $$;
+"""
+
+STRUCTURED_HEADING_VOCABULARY_VERSION_FN = f"""
+create function public.structured_heading_vocabulary_version()
+    returns text
+    language sql
+    immutable
+    set search_path to 'public'
+    as $$
+        select '{STRUCTURED_HEADING_VOCABULARY_VERSION}'::text;
+    $$;
+"""
+
+STRUCTURED_HEADING_FIELD = r"""
+create function public.structured_heading_field(p_heading text)
+    returns text
+    language sql
+    stable
+    set search_path to 'public'
+    as $$
+        select v.canonical_field
+          from public.structured_heading_field_vocabulary() v
+         where v.normalized_heading
+             = lower(btrim(regexp_replace(coalesce(p_heading, ''), '\s+', ' ', 'g')));
+    $$;
+"""
+
+STRUCTURED_HEADING_FIELD_VOCABULARY_SIGNATURE = "()"
+STRUCTURED_HEADING_VOCABULARY_VERSION_SIGNATURE = "()"
+STRUCTURED_HEADING_FIELD_SIGNATURE = "(text)"
 
 
 CAPTURE_CORRECTION_RETIREMENT_SCHEMA = f"""
@@ -456,6 +556,8 @@ create function public.record_capture_correction_result(
     p_accepted_revision_id bigint,
     p_comparison_rule_version character varying,
     p_passage_subject_identity character varying,
+    p_passage_row_identity_segment_id bigint,
+    p_passage_row_identity_heading_segment_id bigint,
     p_passage_field character varying,
     p_passage_field_heading_segment_id bigint,
     p_outcome character varying,
@@ -478,7 +580,8 @@ create function public.record_capture_correction_result(
             delta proposed_deltas%ROWTYPE;
             selected source_segments%ROWTYPE;
             heading source_segments%ROWTYPE;
-            registered project_baseline_source_rows%ROWTYPE;
+            id_heading source_segments%ROWTYPE;
+            id_cell source_segments%ROWTYPE;
             live_revision bigint;
             result_id bigint;
             retirement_id bigint;
@@ -486,7 +589,8 @@ create function public.record_capture_correction_result(
             v_challenged_field character varying;
             v_row integer;
             v_column character varying;
-            v_row_identity character varying;
+            v_business_identity character varying;
+            v_reg_count integer;
             v_passage_subject character varying;
             v_passage_field character varying;
             v_heading_id bigint;
@@ -600,34 +704,84 @@ create function public.record_capture_correction_result(
                and selected.cell_range ~ '^[A-Z]+[1-9][0-9]*$' then
                 v_column := substring(selected.cell_range from '^[A-Z]+');
                 v_row := (substring(selected.cell_range from '[0-9]+$'))::int;
-                -- One row resolves under two retained rules and the product
-                -- uses both: the `sheet_name!worksheet_row_number` identity
-                -- every structured capture is filed under, and the adopted
-                -- row's own record_subject_key, which is the customer's
-                -- resolution of that row and is its business identity where
-                -- the form prints one. A row resolves to either, so what is
-                -- asked is whether the challenged subject is one of them --
-                -- which refuses a neighbouring row whichever space the delta
-                -- is stated in. A row the adoption excluded resolves to
-                -- nothing: it is not in the record.
-                v_row_identity := selected.sheet_name || '!' || v_row::text;
-                select * into registered from project_baseline_source_rows
-                 where project_id = p_project_id
-                   and sheet_name = selected.sheet_name
-                   and row_number = v_row
-                 order by baseline_source_id desc, id desc
-                 limit 1;
-                if not found then
-                    v_passage_subject := v_row_identity;
-                elsif registered.excluded
-                      or registered.record_subject_key is null then
-                    v_passage_subject := null;
-                elsif challenged.subject_key in (
-                    v_row_identity, registered.record_subject_key
-                ) then
-                    v_passage_subject := challenged.subject_key;
-                else
-                    v_passage_subject := registered.record_subject_key;
+                -- Row identity follows the conflict's business identity, not its
+                -- position on the sheet (#945). The passage's row is resolved
+                -- through *this document's own* utility_id cell -- the conflict
+                -- number the row states about itself -- matched against the
+                -- customer's adopted registration of that number to a subject,
+                -- so a correction citing row 10 of a later revision is not
+                -- resolved by row 10 of the baseline. The caller identifies the
+                -- row's utility_id cell and that column's header; the command
+                -- reads the identity from the cell and derives the subject, so a
+                -- positional `sheet!row` locator is never an interchangeable
+                -- alias for a business identity.
+                if p_passage_row_identity_segment_id is not null
+                   and p_passage_row_identity_heading_segment_id is not null then
+                    select * into id_heading from source_segments
+                     where id = p_passage_row_identity_heading_segment_id
+                       and project_id = p_project_id;
+                    select * into id_cell from source_segments
+                     where id = p_passage_row_identity_segment_id
+                       and project_id = p_project_id;
+                    -- The heading names the utility_id column through the same
+                    -- released vocabulary, and the identity cell is this passage
+                    -- row's own cell in that column, above which the header sits.
+                    if id_heading.id is null or id_cell.id is null
+                       or id_heading.document_id is distinct from selected.document_id
+                       or id_cell.document_id is distinct from selected.document_id
+                       or id_heading.kind <> 'spreadsheet_cell'
+                       or id_cell.kind <> 'spreadsheet_cell'
+                       or id_heading.sheet_name is distinct from selected.sheet_name
+                       or id_cell.sheet_name is distinct from selected.sheet_name
+                       or id_heading.cell_range !~ '^[A-Z]+[1-9][0-9]*$'
+                       or id_cell.cell_range !~ '^[A-Z]+[1-9][0-9]*$'
+                       or public.structured_heading_field(id_heading.exact_text)
+                          is distinct from '{UTILITY_ID_FIELD}'
+                       or substring(id_cell.cell_range from '^[A-Z]+')
+                          <> substring(id_heading.cell_range from '^[A-Z]+')
+                       or (substring(id_cell.cell_range from '[0-9]+$'))::int <> v_row
+                       or (substring(id_heading.cell_range from '[0-9]+$'))::int >= v_row then
+                        raise exception 'capture_correction:row_identity_not_this_row the conflict number this subject rests on is not this passage row''s own cell in a retained utility_id column of this document'
+                            using errcode='23514';
+                    end if;
+                    v_business_identity := btrim(id_cell.exact_text);
+                    if v_business_identity = '' then
+                        v_passage_subject := null;
+                    elsif exists (
+                        -- Document-side ambiguity: the same conflict number on
+                        -- another row of this document's utility_id column. No
+                        -- one can say which of two identically numbered rows a
+                        -- passage in one of them describes, so it stays unsettled.
+                        select 1 from source_segments other
+                         where other.project_id = p_project_id
+                           and other.document_id = selected.document_id
+                           and other.kind = 'spreadsheet_cell'
+                           and other.sheet_name = selected.sheet_name
+                           and other.cell_range ~ '^[A-Z]+[1-9][0-9]*$'
+                           and substring(other.cell_range from '^[A-Z]+')
+                               = substring(id_cell.cell_range from '^[A-Z]+')
+                           and other.cell_range <> id_cell.cell_range
+                           and btrim(other.exact_text) = v_business_identity
+                    ) then
+                        v_passage_subject := null;
+                    else
+                        -- Record-side: exactly one accepted subject states this
+                        -- conflict number, or it is ambiguous or unregistered and
+                        -- the row stays unsettled. Read from the accepted record
+                        -- itself -- each accepted subject's own utility_id value
+                        -- -- which is the matching side `later_revision` resolves
+                        -- a row through, so this check and the capture that
+                        -- assigned the subject share one definition of identity.
+                        select count(distinct subject_key), min(subject_key)
+                          into v_reg_count, v_passage_subject
+                          from current_project_record
+                         where project_id = p_project_id
+                           and fact_type = '{UTILITY_ID_FIELD}'
+                           and text_value = v_business_identity;
+                        if v_reg_count <> 1 then
+                            v_passage_subject := null;
+                        end if;
+                    end if;
                 end if;
             end if;
             -- The subject half is the command's own answer, so a caller that
@@ -636,17 +790,22 @@ create function public.record_capture_correction_result(
                 raise exception 'capture_correction:passage_subject_disagrees the stated subject for this passage is not the one its retained source row resolves to'
                     using errcode='23514';
             end if;
-            -- The field half rests on a retained heading cell of the passage's
-            -- own column, named by the caller and checked here. The released
-            -- heading vocabulary stays in one place -- `sheets.column_mapping`,
-            -- which every structured capture is already filed by -- rather than
-            -- being restated in SQL where it would drift; what this proves is
-            -- that the claim is anchored to real retained bytes above the
-            -- passage in its own column, and the exact heading text is copied
-            -- off that cell here so a later reader can check the vocabulary
-            -- claim without trusting anybody's summary of it.
-            if p_passage_field is not null
-               and p_passage_field_heading_segment_id is not null
+            -- The field the passage's column carries is what the released
+            -- heading vocabulary names its retained header, and it is derived
+            -- here from that header's own words -- never taken as the caller's
+            -- word for it (#945). The caller may identify the heading cell (a
+            -- mapping record); it may not supply what the column means. The
+            -- cell has to be a retained heading of the passage's own column,
+            -- above it, and the field is then read from its exact text through
+            -- the same vocabulary `sheets.column_mapping` files every
+            -- structured capture by -- copied into the schema as a versioned,
+            -- command-trusted table so the writing transaction and the reader
+            -- cannot state two vocabularies. A heading the vocabulary does not
+            -- name establishes nothing, so the field stays unclear and the cell
+            -- is not recorded as evidence for a claim it does not support. The
+            -- exact heading text is copied off the cell here so a later reader
+            -- can re-check the vocabulary claim against those retained bytes.
+            if p_passage_field_heading_segment_id is not null
                and v_row is not null then
                 select * into heading from source_segments
                  where id = p_passage_field_heading_segment_id
@@ -661,9 +820,19 @@ create function public.record_capture_correction_result(
                     raise exception 'capture_correction:field_heading_not_this_column the heading this field claim rests on is not a retained cell above this passage in its own column'
                         using errcode='23514';
                 end if;
-                v_passage_field := p_passage_field;
-                v_heading_id := heading.id;
-                v_heading_text := heading.exact_text;
+                v_passage_field := public.structured_heading_field(heading.exact_text);
+                if v_passage_field is not null then
+                    v_heading_id := heading.id;
+                    v_heading_text := heading.exact_text;
+                end if;
+            end if;
+            -- The stated field is contradicted rather than believed, exactly as
+            -- the stated subject is: what the retained header names through the
+            -- released vocabulary is the answer, and a stated field the header
+            -- does not draw from it is a bounded refusal.
+            if p_passage_field is distinct from v_passage_field then
+                raise exception 'capture_correction:passage_field_disagrees the stated field for this passage is not the one its retained header names through the released heading vocabulary'
+                    using errcode='23514';
             end if;
 
             if v_passage_subject is null or v_passage_field is null then
@@ -834,7 +1003,8 @@ create function public.record_capture_correction_result(
 
 RECORD_CAPTURE_CORRECTION_RESULT_SIGNATURE = (
     "(bigint, bigint, bigint, bigint, character varying, bigint, bigint, "
-    "bigint, character varying, character varying, character varying, bigint, "
+    "bigint, character varying, character varying, bigint, bigint, "
+    "character varying, bigint, "
     "character varying, bigint, text, "
     "character varying, character varying, timestamp with time zone, "
     "character varying)"
@@ -881,6 +1051,9 @@ end $$;
 
 CAPTURE_CORRECTION_RETIREMENT_SCHEMA_DOWN = f"""
 drop function if exists public.record_capture_correction_result{RECORD_CAPTURE_CORRECTION_RESULT_SIGNATURE};
+drop function if exists public.structured_heading_field{STRUCTURED_HEADING_FIELD_SIGNATURE};
+drop function if exists public.structured_heading_vocabulary_version{STRUCTURED_HEADING_VOCABULARY_VERSION_SIGNATURE};
+drop function if exists public.structured_heading_field_vocabulary{STRUCTURED_HEADING_FIELD_VOCABULARY_SIGNATURE};
 drop function if exists public.proposed_delta_effective_disposition{PROPOSED_DELTA_EFFECTIVE_DISPOSITION_SIGNATURE};
 drop function if exists public.proposed_delta_capture_correction{PROPOSED_DELTA_CAPTURE_CORRECTION_SIGNATURE};
 drop function if exists public.lock_proposed_delta_terminal{LOCK_PROPOSED_DELTA_TERMINAL_SIGNATURE};
@@ -914,6 +1087,14 @@ def upgrade(op) -> None:
     op.execute(
         f"grant select on public.capture_correction_requests, "
         f"public.support_assessment_sources to {RECORD_DECISION_ROLE}"
+    )
+    # It also resolves a passage's subject through the accepted record's own
+    # conflict numbers (#945 B), read from `current_project_record` the same way
+    # `later_revision` reads them. The view is owned by the schema owner and runs
+    # as it, so the command needs only `select` on the view; the projection
+    # already scopes superseded and do-not-add decisions out.
+    op.execute(
+        f"grant select on public.current_project_record to {RECORD_DECISION_ROLE}"
     )
     # `proposed_delta_capture_correction` is `security invoker`, so it reads
     # the retirement relation as whoever called it -- and the two bulk
@@ -957,6 +1138,30 @@ def upgrade(op) -> None:
         f"{PROPOSED_DELTA_CAPTURE_CORRECTION_SIGNATURE}",
         f"proposed_delta_effective_disposition"
         f"{PROPOSED_DELTA_EFFECTIVE_DISPOSITION_SIGNATURE}",
+    ):
+        op.execute(f"revoke all on function public.{signature} from public")
+        op.execute(
+            f"grant execute on function public.{signature} to {RUNTIME_LOGINS}, "
+            f"{RECORD_DECISION_ROLE}, {SOURCE_APPEND_ROLE}"
+        )
+
+    # The released heading vocabulary, as the command's own trusted copy (#945).
+    # `structured_heading_field` is `language sql`, so its body is parsed at
+    # creation and the vocabulary table function it reads has to exist first.
+    # The command that calls it is plpgsql and binds late, so it may follow.
+    op.execute(STRUCTURED_HEADING_FIELD_VOCABULARY)
+    op.execute(STRUCTURED_HEADING_VOCABULARY_VERSION_FN)
+    op.execute(STRUCTURED_HEADING_FIELD)
+    # The command derives the field through these inside its own `security
+    # definer` body, so its owner needs execute; the runtime logins and the
+    # source-append role get it too, on the same terms as the other read-only
+    # helpers, so a later reader or check can resolve a heading the same way.
+    for signature in (
+        f"structured_heading_field_vocabulary"
+        f"{STRUCTURED_HEADING_FIELD_VOCABULARY_SIGNATURE}",
+        f"structured_heading_vocabulary_version"
+        f"{STRUCTURED_HEADING_VOCABULARY_VERSION_SIGNATURE}",
+        f"structured_heading_field{STRUCTURED_HEADING_FIELD_SIGNATURE}",
     ):
         op.execute(f"revoke all on function public.{signature} from public")
         op.execute(

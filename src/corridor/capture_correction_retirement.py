@@ -383,12 +383,14 @@ def record_correction_result(
     concurrency ones would be a guess at state Python cannot hold still.
 
     ``applicability`` is #945's seventh, and it is passed rather than trusted.
-    The command re-derives the whole verdict from the same retained rows --
-    the selected passage's locator, the adopted source-row registration and the
-    document's own header row -- and what travels here is the evidence it is
-    checked against: the subject and field the passage was found to carry, and
-    the exact header cell the field claim rests on. A caller that states a
-    convenient verdict, or assembles its own Support Assessment over an
+    The command re-derives the whole verdict from the same retained rows -- the
+    selected passage's locator, the conflict number its own row states in the
+    document matched against the accepted record, and the document's own header
+    row read through the released heading vocabulary -- and what travels here is
+    the evidence it is checked against: the subject and field the passage was
+    found to carry, the passage row's own conflict-number cell and that column's
+    header, and the exact header cell the field claim rests on. A caller that
+    states a convenient verdict, or assembles its own Support Assessment over an
     unrelated cell, is refused by the command and by the relation's own CHECK.
     """
 
@@ -420,6 +422,8 @@ def record_correction_result(
                     accepted_revision_id,
                     comparison_rule_version,
                     applicability.subject_identity,
+                    applicability.subject_row_identity_segment_id,
+                    applicability.subject_row_identity_heading_segment_id,
                     applicability.field,
                     applicability.field_heading_segment_id,
                     outcome,

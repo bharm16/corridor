@@ -38,6 +38,7 @@ import html
 import re
 from datetime import datetime, timezone
 from urllib.parse import quote
+from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
@@ -62,7 +63,13 @@ from corridor.capture_correction import (
     reported_corrections,
     resolve_challenged_capture,
 )
-from corridor.correction_applicability import UNCLEAR
+from corridor.correction_applicability import (
+    APPLICABLE,
+    BUSINESS_IDENTITY_FIELD,
+    OTHER_SUBJECT,
+    UNCLEAR,
+    assess_passage,
+)
 from corridor.delta_resolution import live_delta_status
 from corridor.models import (
     CaptureCorrectionRequest,
@@ -129,6 +136,10 @@ def project(member_project) -> Project:
 CONFLICT_ROW = 2
 OWNER_COLUMN = "C"
 STATION_COLUMN = "D"
+#: The column each row states its conflict number in, which is what a passage's
+#: subject is resolved through -- its business identity, not its sheet position
+#: (#945 B).
+IDENTITY_COLUMN = "A"
 
 
 class Misread:
@@ -169,14 +180,22 @@ class Misread:
         accepted, _ = self.adopted.capture(
             fact_type="station_from", value="1001+00", subject_key=self.subject_key
         )
-        revision = accept_baseline_fact(session, project, accepted)
-        baseline = register_baseline(
+        # The accepted record states this conflict's number, so a passage's row
+        # resolves to its subject by the number it carries (#945 B).
+        identity, _ = self.adopted.capture(
+            fact_type=BUSINESS_IDENTITY_FIELD,
+            value="U-001",
+            subject_key=self.subject_key,
+            cell=f"{IDENTITY_COLUMN}{CONFLICT_ROW}",
+        )
+        revision = accept_baseline_fact(session, project, accepted, identity)
+        self.baseline = register_baseline(
             session, project, self.adopted.document, revision
         )
         register_source_row(
             session,
             project,
-            baseline,
+            self.baseline,
             row_number=CONFLICT_ROW,
             business_identity="U-001",
         )
@@ -186,8 +205,15 @@ class Misread:
         self.incoming = Rendition(session, project, "ucm-2026-09.xlsx")
         self.headings = append_header_row(
             self.incoming,
-            {OWNER_COLUMN: "external_org", STATION_COLUMN: "station_from"},
+            {
+                IDENTITY_COLUMN: BUSINESS_IDENTITY_FIELD,
+                OWNER_COLUMN: "external_org",
+                STATION_COLUMN: "station_from",
+            },
         )
+        # This conflict's own row states its conflict number, which is what its
+        # subject is resolved through (#945 B).
+        self.incoming.segment("U-001", cell=f"{IDENTITY_COLUMN}{CONFLICT_ROW}")
         self.fact, self.segment = self.incoming.capture(
             fact_type="external_org",
             value="AT&T Texas (SWBT)",
@@ -581,7 +607,15 @@ def _a_neighbouring_conflicts_own_cell(
     accepted, _ = adopted.capture(
         fact_type="size", value="12 in", subject_key=subject(2), cell="C2"
     )
-    revision = accept_baseline_fact(session, project, accepted)
+    # Each conflict's number is in the accepted record, so a passage's row
+    # resolves to its subject by the number it states (#945 B).
+    one, _ = adopted.capture(
+        fact_type=BUSINESS_IDENTITY_FIELD, value="U-001", subject_key=subject(2), cell="A2"
+    )
+    two, _ = adopted.capture(
+        fact_type=BUSINESS_IDENTITY_FIELD, value="U-002", subject_key=subject(3), cell="A3"
+    )
+    revision = accept_baseline_fact(session, project, accepted, one, two)
     baseline = register_baseline(session, project, adopted.document, revision)
     for row_number, identity in ((2, "U-001"), (3, "U-002")):
         register_source_row(
@@ -595,9 +629,14 @@ def _a_neighbouring_conflicts_own_cell(
         session, project, identity="district-ucm-template", version="v3"
     )
     incoming = Rendition(session, project, "ucm-2026-09.xlsx")
-    # Two headings, because one is a title band as far as the released
-    # header rule is concerned.
-    append_header_row(incoming, {"C": "size", "D": "material"})
+    append_header_row(
+        incoming,
+        {IDENTITY_COLUMN: BUSINESS_IDENTITY_FIELD, "C": "size", "D": "material"},
+    )
+    # Each conflict states its own number, so the neighbour's cell resolves to
+    # the neighbour's subject rather than this conflict's (#945 B).
+    incoming.segment("U-001", cell=f"{IDENTITY_COLUMN}2")
+    incoming.segment("U-002", cell=f"{IDENTITY_COLUMN}3")
     misread, misread_cell = incoming.capture(
         fact_type="size", value="16 in", subject_key=subject(2), cell="C2"
     )
@@ -659,7 +698,21 @@ class MisreadDate:
             value="2026-11-01",
             subject_key=self.subject_key,
         )
-        revision = accept_baseline_fact(session, project, accepted)
+        # Each conflict's number is in the accepted record, so a passage's row
+        # resolves to its subject by the number it states (#945 B).
+        one, _ = self.adopted.capture(
+            fact_type=BUSINESS_IDENTITY_FIELD,
+            value="U-001",
+            subject_key=subject(CONFLICT_ROW),
+            cell=f"{IDENTITY_COLUMN}{CONFLICT_ROW}",
+        )
+        two, _ = self.adopted.capture(
+            fact_type=BUSINESS_IDENTITY_FIELD,
+            value="U-002",
+            subject_key=subject(CONFLICT_ROW + 1),
+            cell=f"{IDENTITY_COLUMN}{CONFLICT_ROW + 1}",
+        )
+        revision = accept_baseline_fact(session, project, accepted, one, two)
         baseline = register_baseline(
             session, project, self.adopted.document, revision
         )
@@ -682,10 +735,17 @@ class MisreadDate:
             append_header_row(
                 self.incoming,
                 {
+                    IDENTITY_COLUMN: BUSINESS_IDENTITY_FIELD,
                     self.PROMISED_COLUMN: "committed_date",
                     self.REQUIRED_COLUMN: "need_date",
                 },
             )
+        # Each conflict states its own number, which is what its subject is
+        # resolved through (#945 B).
+        self.incoming.segment("U-001", cell=f"{IDENTITY_COLUMN}{CONFLICT_ROW}")
+        self.incoming.segment(
+            "U-002", cell=f"{IDENTITY_COLUMN}{CONFLICT_ROW + 1}"
+        )
         # The misreading: this conflict's Required By cell, captured as its
         # Promised For.
         self.fact, self.required_by_cell = self.incoming.capture(
@@ -840,11 +900,204 @@ def test_the_same_conflicts_cell_under_another_field_is_refused(
 
     assert refused.value.reason == "passage_is_another_field"
     assert refused.value.control == CONTROL_PASSAGE
+    # A known contradiction gets its own sentence, naming the field to choose
+    # instead rather than sharing the uncertainty wording (#945 C).
     assert str(refused.value) == (
-        "Corridor could not establish that this passage supports the value "
-        "for this Utility Conflict."
+        "This passage describes a different field for this Utility Conflict. "
+        "Choose evidence for the field being corrected. No correction was "
+        "applied."
     )
     assert not session.scalars(select(CaptureCorrectionRequest.id)).all()
+
+
+# --- #945 B: a passage resolves to its subject by the conflict number its own
+# row states, not by where the row sits on the sheet -------------------------
+
+
+def _accept_conflict_numbers(session, project, numbers):
+    """Accept each subject's conflict number into the record.
+
+    ``numbers`` maps a Project Record subject to the conflict number it states,
+    so a later revision's row is resolved to it by that number the way
+    ``later_revision`` resolves one -- read from the accepted record, never from
+    a baseline row's sheet position.
+    """
+
+    adopted = Rendition(session, project, f"ucm-base-{uuid4().hex[:6]}.xlsx")
+    facts = [
+        adopted.capture(
+            fact_type=BUSINESS_IDENTITY_FIELD,
+            value=number,
+            subject_key=subject_key,
+            cell=f"{IDENTITY_COLUMN}{row}",
+        )[0]
+        for row, (subject_key, number) in enumerate(numbers.items(), start=2)
+    ]
+    accept_baseline_fact(session, project, *facts)
+
+
+def _later_revision(session, project, rows, *, field="size"):
+    """One later revision stating a conflict number per row, with a value cell.
+
+    Returns each row's value cell, so a test can point ``assess_passage`` at it
+    and watch the row resolve by the number it states rather than its position.
+    """
+
+    revision = Rendition(session, project, f"ucm-rev-{uuid4().hex[:6]}.xlsx")
+    append_header_row(revision, {IDENTITY_COLUMN: BUSINESS_IDENTITY_FIELD, "B": field})
+    cells = {}
+    for row, number in rows.items():
+        revision.segment(number, cell=f"{IDENTITY_COLUMN}{row}")
+        cells[row] = revision.segment(f"value at row {row}", cell=f"B{row}")
+    return cells
+
+
+def _resolved_verdict(session, project, cell, *, challenged, field="size"):
+    return assess_passage(
+        session,
+        project_id=int(project.id),
+        subject_identity=challenged,
+        field=field,
+        selected=cell,
+    ).verdict
+
+
+def test_a_row_that_moved_between_revisions_resolves_to_its_own_conflict(
+    session: Session, project: Project
+):
+    """#945 B: row identity follows the conflict number, not the sheet position.
+
+    The baseline held UC-1 above UC-2; the later revision reverses them. A
+    correction citing the later revision's UC-1 row -- wherever it now sits --
+    resolves to UC-1's subject, and the row that used to be UC-1's resolves to
+    UC-2 instead. A resolver bound to the baseline's physical row would answer
+    both the other way round.
+    """
+
+    _accept_conflict_numbers(
+        session, project, {"conflict-a": "UC-1", "conflict-b": "UC-2"}
+    )
+    cells = _later_revision(session, project, {10: "UC-2", 11: "UC-1"})
+
+    assert (
+        _resolved_verdict(session, project, cells[11], challenged="conflict-a")
+        == APPLICABLE
+    )
+    assert (
+        _resolved_verdict(session, project, cells[10], challenged="conflict-a")
+        == OTHER_SUBJECT
+    )
+
+
+def test_an_inserted_row_does_not_shift_a_conflicts_identity(
+    session: Session, project: Project
+):
+    """#945 B: a row inserted above a conflict does not make its cell another's."""
+
+    _accept_conflict_numbers(session, project, {"conflict-a": "UC-1"})
+    # UC-1 sits a row lower than the baseline placed it because a new, unadopted
+    # conflict was inserted above it.
+    cells = _later_revision(session, project, {3: "UC-NEW", 4: "UC-1"})
+
+    assert (
+        _resolved_verdict(session, project, cells[4], challenged="conflict-a")
+        == APPLICABLE
+    )
+
+
+def test_a_repeated_conflict_number_stays_ambiguous(
+    session: Session, project: Project
+):
+    """#945 B: two rows of one revision sharing a number resolve to neither."""
+
+    _accept_conflict_numbers(session, project, {"conflict-a": "UC-1"})
+    cells = _later_revision(session, project, {5: "UC-1", 6: "UC-1"})
+
+    assert (
+        _resolved_verdict(session, project, cells[5], challenged="conflict-a")
+        == UNCLEAR
+    )
+
+
+def test_a_conflict_number_two_accepted_subjects_state_stays_ambiguous(
+    session: Session, project: Project
+):
+    """#945 B: an ambiguous number in the record resolves to neither subject."""
+
+    _accept_conflict_numbers(
+        session, project, {"conflict-a": "UC-1", "conflict-a-again": "UC-1"}
+    )
+    cells = _later_revision(session, project, {5: "UC-1"})
+
+    assert (
+        _resolved_verdict(session, project, cells[5], challenged="conflict-a")
+        == UNCLEAR
+    )
+
+
+def test_another_workbook_with_the_same_sheet_name_reads_its_own_rows(
+    session: Session, project: Project
+):
+    """#945 B: resolution is bound to the selected document, not (sheet, row).
+
+    Two later revisions share the sheet name and place different conflicts on
+    the same worksheet row. A passage in the second workbook's row 4 resolves by
+    *that* workbook's own conflict number, so it describes UC-2 rather than the
+    UC-1 the first workbook's row 4 does. A resolver keyed by (project, sheet,
+    row) would answer both with one subject.
+    """
+
+    _accept_conflict_numbers(
+        session, project, {"conflict-a": "UC-1", "conflict-b": "UC-2"}
+    )
+    first = _later_revision(session, project, {4: "UC-1"})
+    second = _later_revision(session, project, {4: "UC-2"})
+
+    assert (
+        _resolved_verdict(session, project, first[4], challenged="conflict-a")
+        == APPLICABLE
+    )
+    assert (
+        _resolved_verdict(session, project, second[4], challenged="conflict-a")
+        == OTHER_SUBJECT
+    )
+
+
+def test_a_conflict_number_that_looks_like_a_sheet_row_is_not_a_position(
+    session: Session, project: Project
+):
+    """#945 B: a positional string is never an alias for a business identity.
+
+    One conflict's number is literally ``Utility Conflicts!4`` -- the shape a
+    ``sheet!row`` locator takes -- and the row stating it does not sit at row 4.
+    It resolves to the subject whose *conflict number* is that string, not to
+    whatever sits at sheet row 4, so the two identifier formats never collide
+    into one.
+    """
+
+    _accept_conflict_numbers(
+        session,
+        project,
+        {"positional-lookalike": "Utility Conflicts!4", "ordinary": "UC-9"},
+    )
+    cells = _later_revision(
+        session, project, {2: "Utility Conflicts!4", 4: "UC-9"}
+    )
+
+    assert (
+        _resolved_verdict(
+            session, project, cells[2], challenged="positional-lookalike"
+        )
+        == APPLICABLE
+    )
+    # Sheet row 4 is the ordinary conflict, not the look-alike, so the positional
+    # string bought nothing.
+    assert (
+        _resolved_verdict(
+            session, project, cells[4], challenged="positional-lookalike"
+        )
+        == OTHER_SUBJECT
+    )
 
 
 def test_this_conflicts_own_column_is_accepted_although_nothing_was_extracted_from_it(
@@ -964,8 +1217,13 @@ def test_the_picker_says_which_offered_passages_could_support_the_value(
 
     assert offered[built.promised_for_cell.id].applicable is True
     assert offered[built.promised_for_cell.id].why_not == ""
+    # The right conflict under the wrong field gets its own sentence, naming the
+    # field to choose instead rather than the uncertainty wording (#945 C).
     assert offered[built.required_by_cell.id].applicable is False
-    assert "could not establish" in offered[built.required_by_cell.id].why_not
+    assert (
+        "different field for this Utility Conflict"
+        in offered[built.required_by_cell.id].why_not
+    )
     assert offered[built.neighbours_cell.id].applicable is False
     assert (
         "different Utility Conflict" in offered[built.neighbours_cell.id].why_not
@@ -1185,15 +1443,20 @@ def test_the_passages_offered_are_this_sources_own_with_the_cited_one_marked(
     offered = passage_choices(session, challenged_capture(session, item, child))
 
     # This source's own retained cells, in the order the sheet presents them:
-    # its two column headings, the cell the capture cited, and the one this
-    # test added. The other document's passage is not among them.
+    # its three column headings, the conflict number the challenged row states,
+    # the cell the capture cited, and the one this test added. The other
+    # document's passage is not among them.
     assert [choice.exact_text for choice in offered.choices] == [
+        "Utility Conflict ID",
         "Utility Owner",
         "Start Station",
+        "U-001",
         "AT&T Texas (SWBT)",
         "AT&T Texas",
     ]
     assert [choice.cited for choice in offered.choices] == [
+        False,
+        False,
         False,
         False,
         True,
@@ -1429,6 +1692,17 @@ def test_the_screen_finds_a_distant_passage_and_refuses_another_conflicts_row(
     for number in range(2, 32):
         built.incoming.segment(f"row {number} of this sheet", cell=f"E{number}")
     distant = built.incoming.segment("AT&T Texas, per the owner column", cell="C40")
+    # Row 40 is a different Utility Conflict because it states a different
+    # conflict number that resolves to a subject of its own -- not merely
+    # because it sits at a different sheet position (#945 B).
+    built.incoming.segment("U-040", cell=f"{IDENTITY_COLUMN}40")
+    forty_identity, _ = built.adopted.capture(
+        fact_type=BUSINESS_IDENTITY_FIELD,
+        value="U-040",
+        subject_key=subject(40),
+        cell=f"{IDENTITY_COLUMN}40",
+    )
+    accept_baseline_fact(session, project, forty_identity)
     _, item = built.item()
     (child,) = item.children
     opened = quote(item.item_key, safe="")

@@ -90,10 +90,15 @@ class Rendition(_CellRendition):
     column: str = "C"
 
 
-def accept_baseline_fact(session: Session, project: Project, fact: Fact) -> int:
-    """One accepted decision for a subject and field, at its own revision."""
+def accept_baseline_fact(session: Session, project: Project, *facts: Fact) -> int:
+    """Accept these facts as one baseline revision, at its own revision.
 
-    return adopt_baseline_facts(session, project, fact)
+    Variadic so a scenario can accept a conflict's field value and the conflict
+    number that resolves its subject in one revision, the way an adoption leaves
+    both behind (#945 B).
+    """
+
+    return adopt_baseline_facts(session, project, *facts)
 
 
 def register_source_row(
