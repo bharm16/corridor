@@ -22,19 +22,28 @@ from corridor.config import settings
 from corridor.models import Document, SourceDelivery, SourceDeliveryConfirmation
 from corridor.principals import HumanPrincipal
 import corridor.source_intake as source_intake
+from corridor.source_delivery import (
+    DeliveryBinding,
+    DeliveryObservation,
+    delivery_identity_for,
+)
 from corridor.source_intake import (
     PRODUCT_UPLOAD_CHANNEL,
     IntakeConflict,
+    UploadConflict,
     UploadNotTaken,
     UploadRefused,
     confirm_intake,
     preview_intake,
     receive_upload,
 )
+from corridor.source_register import read_source_register
+from corridor.web.onboarding_view import _supplied
 
 from pdf_fixture_support import PdfFixture
 
 UPLOADER = HumanPrincipal("local:dana-fields")
+OTHER_UPLOADER = HumanPrincipal("local:sam-rivers")
 
 
 def _matrix_pdf(marker: str = "segment 3C2") -> bytes:
@@ -52,15 +61,25 @@ def store(tmp_path, monkeypatch):
     return tmp_path / "files"
 
 
-def _receive(session, project, body, *, filename="matrix.pdf", source_revision=""):
+def _receive(
+    session,
+    project,
+    body,
+    *,
+    filename="matrix.pdf",
+    source_revision="",
+    principal=UPLOADER,
+    submission_id="",
+):
     return receive_upload(
         session,
         project=project,
         body=body,
         filename=filename,
-        principal=UPLOADER,
+        principal=principal,
         customer=settings.customer_id,
         source_revision=source_revision,
+        submission_id=submission_id,
     )
 
 
@@ -262,3 +281,154 @@ def test_the_same_undeclared_upload_converges_on_the_delivery_already_taken(
     assert again.replayed is True
     dispositions = [row.disposition for row in _deliveries(session, project)]
     assert dispositions == ["stored", "duplicate"]
+
+
+# --- Submission identity (#957) ---------------------------------------------
+# The defect: the delivery identity did not include the submitting principal, so
+# the same bytes handed over by two people converged on one row attributed to
+# whoever got there first. The identity now names the authenticated principal
+# and an opaque submission id, so each independently initiated human submission
+# is its own delivery while the stored bytes stay deduplicated.
+
+
+def test_two_people_uploading_identical_bytes_are_two_attributed_deliveries(
+    session, project, store
+):
+    """The #957 defect: the same bytes from two people were one delivery.
+
+    Each person's act is now its own row, correctly attributed, and the stored
+    byte object is still written once.
+    """
+
+    body = _matrix_pdf()
+    first = _receive(session, project, body, principal=UPLOADER)
+    second = _receive(session, project, body, principal=OTHER_UPLOADER)
+
+    stored = [r for r in _deliveries(session, project) if r.disposition == "stored"]
+    assert len(stored) == 2
+    assert first.delivery_id != second.delivery_id
+    assert first.delivery_identity != second.delivery_identity
+    assert {r.delivered_by_principal for r in stored} == {
+        UPLOADER.subject,
+        OTHER_UPLOADER.subject,
+    }
+    # Storage stays deduplicated: one set of bytes, one stored object.
+    assert len({r.content_sha256 for r in stored}) == 1
+    assert len({r.bytes_reference for r in stored}) == 1
+    assert not second.replayed
+
+
+def test_an_honest_retry_of_one_submission_converges_on_one_delivery(
+    session, project, store
+):
+    """Same actor, same submission id, same payload: one delivery, found again."""
+
+    body = _matrix_pdf()
+    first = _receive(session, project, body, submission_id="submission-alpha")
+    again = _receive(session, project, body, submission_id="submission-alpha")
+
+    assert again.delivery_id == first.delivery_id
+    assert again.replayed is True
+    stored = [r for r in _deliveries(session, project) if r.disposition == "stored"]
+    assert len(stored) == 1
+
+
+def test_a_new_submission_of_identical_bytes_is_a_second_delivery(
+    session, project, store
+):
+    """Same actor, a new submission id, identical bytes: a second delivery."""
+
+    body = _matrix_pdf()
+    first = _receive(session, project, body, submission_id="submission-alpha")
+    second = _receive(session, project, body, submission_id="submission-beta")
+
+    assert first.delivery_id != second.delivery_id
+    assert first.delivery_identity != second.delivery_identity
+    stored = [r for r in _deliveries(session, project) if r.disposition == "stored"]
+    assert len(stored) == 2
+    assert len({r.content_sha256 for r in stored}) == 1
+
+
+def test_reusing_a_submission_id_with_different_bytes_is_refused(
+    session, project, store
+):
+    """Same actor, same submission id, a different payload: conflicting reuse."""
+
+    first = _receive(
+        session, project, _matrix_pdf("first"), submission_id="submission-alpha"
+    )
+    with pytest.raises(UploadConflict):
+        _receive(
+            session,
+            project,
+            _matrix_pdf("second and different"),
+            submission_id="submission-alpha",
+        )
+    # The conflicting reuse stored nothing: the first delivery still stands alone.
+    stored = [r for r in _deliveries(session, project) if r.disposition == "stored"]
+    assert [r.id for r in stored] == [first.delivery_id]
+
+
+def test_a_connector_and_a_human_delivering_identical_bytes_are_separate():
+    """Already distinct by channel, and the principal keeps them apart too."""
+
+    digest = hashlib.sha256(b"a shared workbook").hexdigest()
+    observation = DeliveryObservation(
+        external_identity="budget.xlsx", external_version=digest, content_digest=digest
+    )
+    human = DeliveryBinding(
+        customer="acme",
+        project_id=1,
+        project_slug="acme-north",
+        transport="push",
+        channel=PRODUCT_UPLOAD_CHANNEL,
+        configuration_identity="product-upload",
+        delivered_by_principal=UPLOADER.subject,
+        submission_id="submission-alpha",
+    )
+    connector = DeliveryBinding(
+        customer="acme",
+        project_id=1,
+        project_slug="acme-north",
+        transport="pull",
+        channel="connector",
+        configuration_identity="location:sharepoint-1",
+    )
+    human_identity, _ = delivery_identity_for(human, observation)
+    connector_identity, _ = delivery_identity_for(connector, observation)
+    assert human_identity != connector_identity
+
+
+def test_both_peoples_deliveries_show_in_the_source_register(
+    session, project, store
+):
+    """The register shows what happened as content, not only a row count."""
+
+    body = _matrix_pdf()
+    first = _receive(session, project, body, principal=UPLOADER)
+    second = _receive(session, project, body, principal=OTHER_UPLOADER)
+
+    register = read_source_register(session, project_id=project.id)
+    delivery_ids = {row.delivery_id for row in register.rows}
+    assert {first.delivery_id, second.delivery_id} <= delivery_ids
+    upload_rows = [row for row in register.rows if row.delivery_id in delivery_ids]
+    assert all(row.filename == "matrix.pdf" for row in upload_rows)
+    assert len([row for row in register.rows if row.channel == PRODUCT_UPLOAD_CHANNEL]) == 2
+
+
+def test_both_people_are_named_in_the_onboarding_reading(session, project, store):
+    """Onboarding groups the identical bytes without merging the two acts."""
+
+    body = _matrix_pdf()
+    _receive(session, project, body, principal=UPLOADER)
+    _receive(session, project, body, principal=OTHER_UPLOADER)
+
+    groups = _supplied(session, project.id)
+    assert len(groups) == 1
+    group = groups[0]
+    assert group.identical_contents is True
+    assert len(group.deliveries) == 2
+    assert {source.submitted_by for source in group.deliveries} == {
+        f"Submitted by {UPLOADER.subject}",
+        f"Submitted by {OTHER_UPLOADER.subject}",
+    }

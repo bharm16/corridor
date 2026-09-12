@@ -372,6 +372,16 @@ class SourceDelivery(Base):
             "or length(btrim(delivered_by_principal)) > 0",
             name="ck_source_delivery_principal",
         ),
+        # An opaque submission id belongs to a delivery a person authenticated
+        # and is never blank when present (#957).  The bytes/filename/revision
+        # it is bound to are checked in the writer, not here: two submissions of
+        # two revisions of one workbook are two deliveries, not a duplicate.
+        CheckConstraint(
+            "submission_id is null "
+            "or (length(btrim(submission_id)) > 0 "
+            "and delivered_by_principal is not null)",
+            name="ck_source_delivery_submission",
+        ),
         CheckConstraint(
             "length(btrim(configuration_identity)) > 0",
             name="ck_source_delivery_configuration",
@@ -413,6 +423,12 @@ class SourceDelivery(Base):
     # instead; the two are the transport's two authentication modes and the
     # check constraint above admits exactly one of them.
     delivered_by_principal: Mapped[str | None] = mapped_column(Text)
+    # The opaque submission id the upload surface mints before the bytes are
+    # sent and keeps across a retry (#957).  It is part of the derived delivery
+    # identity, so a retry of one submission converges while a new submission of
+    # identical bytes is its own delivery; null for every delivery no person
+    # submitted through the product.
+    submission_id: Mapped[str | None] = mapped_column(Text)
     customer: Mapped[str] = mapped_column(Text)
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
     transport: Mapped[str] = mapped_column(String(8))

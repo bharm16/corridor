@@ -14,7 +14,9 @@ from __future__ import annotations
 import hashlib
 import io
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+from threading import Barrier
 from uuid import uuid4
 
 import pytest
@@ -41,6 +43,7 @@ from corridor.models import (
     ExternalOrg,
     ExtractionRun,
     Project,
+    SourceDelivery,
     SourceSegment,
 )
 from corridor.pipeline import EXTRACTED_PROPOSALS, ExtractionRoute
@@ -55,6 +58,7 @@ from corridor.source_intake import (
     IntakeRefused,
     confirm_intake,
     preview_intake,
+    receive_upload,
     validate_and_stage,
 )
 
@@ -689,6 +693,59 @@ def _document_state(factory, project_id) -> tuple[str, int, int, int]:
         ).one()
         pages, segments = _page_and_segment_counts(verify, document.id)
         return document.parse_status, document.pages, pages, segments
+
+
+@pytest.mark.slow
+def test_two_concurrent_retries_of_one_submission_leave_one_delivery(
+    runtime_database, tmp_path, monkeypatch
+):
+    """A retried submission is one delivery even when the retries race (#957).
+
+    Two requests carry the same submission id and the same bytes and commit in
+    separate transactions. Neither sees the other's uncommitted row, so this
+    cannot be proved rollback-scoped. The delivery identity is the database's,
+    so the two converge on the one stored row it already holds rather than
+    attributing the same submission twice.
+    """
+
+    _stage_store(tmp_path, monkeypatch)
+    factory = runtime_database.session_factory
+    project_id = _project_with_org(factory, "concurrent")
+    body = _matrix_pdf()
+    both_ready = Barrier(2, timeout=30)
+
+    def send() -> int:
+        with factory() as sending:
+            project = sending.get(Project, project_id)
+            sending.execute(select(func.txid_current()))
+            both_ready.wait()
+            received = receive_upload(
+                sending,
+                project=project,
+                body=body,
+                filename="matrix.pdf",
+                principal=PRINCIPAL,
+                customer=settings.customer_id,
+                submission_id="one-submission",
+            )
+            sending.commit()
+            return received.delivery_id
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        both = [pool.submit(send), pool.submit(send)]
+        delivery_ids = {one.result() for one in both}
+
+    assert len(delivery_ids) == 1
+    with factory() as verify:
+        stored = verify.scalars(
+            select(SourceDelivery).where(
+                SourceDelivery.project_id == project_id,
+                SourceDelivery.disposition == "stored",
+            )
+        ).all()
+        assert len(stored) == 1
+        assert stored[0].delivered_by_principal == PRINCIPAL.subject
+        assert stored[0].submission_id == "one-submission"
 
 
 def test_committed_upload_is_processed_by_the_standing_pass(

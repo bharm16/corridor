@@ -53,6 +53,10 @@
         action="/projects/{{ project.slug }}/sources/upload"
         enctype="multipart/form-data">
     {{ csrf_field() }}
+    {# The submission's opaque id, minted when this page was rendered and kept
+       across a retry, so a retry is one delivery and a new page a new one
+       (#957). The person who submitted it comes from the session, not here. #}
+    <input type="hidden" name="submission_id" value="{{ submission_id }}">
     <div class="row">
       <label for="doc_type">What kind of document is this?</label>
       <select id="doc_type" name="doc_type" required>

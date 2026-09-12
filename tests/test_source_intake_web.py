@@ -17,7 +17,7 @@ from sqlalchemy import func, select
 
 from corridor.analytics import EventFamily, capture_events
 from corridor.config import settings
-from corridor.models import Document, Project
+from corridor.models import Document, Project, SourceDelivery
 import corridor.source_intake as source_intake
 from corridor.web.app import app, get_human_principal, get_session
 
@@ -84,10 +84,73 @@ def _delivery_id(preview_text: str) -> str:
     return match.group(1)
 
 
+def _submission_id(form_text: str) -> str:
+    """The opaque submission id the rendered form minted for this page (#957)."""
+
+    match = re.search(r'name="submission_id" value="([0-9a-f]+)"', form_text)
+    assert match, form_text
+    return match.group(1)
+
+
 def test_upload_form_renders_without_a_path_or_command(client, project, store):
     r = client.get(f"/projects/{project.slug}/sources/upload")
     assert r.status_code == 200
     assert "Upload a source document" in r.text
+    # The form carries a fresh opaque submission id, minted before any bytes are
+    # sent, so a retry of this page is one delivery and a new page a new one.
+    assert _submission_id(r.text)
+
+
+def test_a_web_retry_of_one_submission_converges_on_one_delivery(
+    client, session, project, store
+):
+    """The real route: re-posting one rendered form is one delivery (#957)."""
+
+    form = client.get(f"/projects/{project.slug}/sources/upload")
+    submission_id = _submission_id(form.text)
+    body = _matrix_pdf()
+
+    def send():
+        return client.post(
+            f"/projects/{project.slug}/sources/upload",
+            data={"doc_type": "matrix", "submission_id": submission_id},
+            files={"upload": ("matrix.pdf", body, "application/pdf")},
+        )
+
+    first, again = send(), send()
+    assert first.status_code == 200 and again.status_code == 200
+    # Both requests name the same delivery: the retry converged on the one it
+    # already took rather than opening a second one (the re-delivery is recorded
+    # as a duplicate outcome of that same delivery, not a new stored one).
+    assert _delivery_id(first.text) == _delivery_id(again.text)
+    stored = session.scalars(
+        select(SourceDelivery).where(
+            SourceDelivery.project_id == project.id,
+            SourceDelivery.disposition == "stored",
+        )
+    ).all()
+    assert len(stored) == 1
+    assert stored[0].submission_id == submission_id
+
+
+def test_reusing_a_web_submission_id_with_different_bytes_is_refused(
+    client, project, store
+):
+    """The real route refuses conflicting reuse of one submission id (#957)."""
+
+    form = client.get(f"/projects/{project.slug}/sources/upload")
+    submission_id = _submission_id(form.text)
+    client.post(
+        f"/projects/{project.slug}/sources/upload",
+        data={"doc_type": "matrix", "submission_id": submission_id},
+        files={"upload": ("matrix.pdf", _matrix_pdf("first"), "application/pdf")},
+    )
+    conflict = client.post(
+        f"/projects/{project.slug}/sources/upload",
+        data={"doc_type": "matrix", "submission_id": submission_id},
+        files={"upload": ("matrix.pdf", _matrix_pdf("second"), "application/pdf")},
+    )
+    assert conflict.status_code == 409
 
 
 def test_upload_shows_a_read_only_preview_before_confirm(client, project, store):
