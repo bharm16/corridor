@@ -425,3 +425,128 @@ def test_a_project_with_no_recorded_set_delivers_nothing(tmp_path, monkeypatch, 
     with runtime_database.session_factory.begin() as session:
         with pytest.raises(RouteRefused, match="no_source_authorization"):
             require_source_delivery(session, delivery(config, project_id, CONNECTED))
+
+
+# --- #951 The recorded source class is compared, not merely recorded ---------
+#
+# `permitted_source_classes` was carried on every binding and never compared to
+# the material a delivery declared itself to be. The activated gate read the
+# standing, matched the channel/configuration/authentication, and admitted the
+# delivery whatever it claimed to carry -- so a binding authorized for
+# `ucm_revision` alone took a `matrix` all the same. The comparison below closes
+# that, using the one shared interpretation (`source_class_contract`) the
+# onboarding path also reads, and it refuses inside `require_source_delivery`,
+# which every channel calls before it stores or reads a byte.
+
+
+def classified(config, project_id, binding, source_class, **overrides):
+    """A delivery whose ingress declares a source class and its basis (#951)."""
+
+    return delivery(
+        config, project_id, binding,
+        source_class=source_class,
+        source_class_basis="coordinator declared it on the upload screen",
+        source_class_basis_kind="declared",
+        **overrides,
+    )
+
+
+def test_a_recognized_but_prohibited_source_class_is_refused(delivering):
+    """The connected binding permits `email`/`ucm_revision`; a `matrix` is not it.
+
+    The class is one the contract recognises, the channel/configuration/mode all
+    match, and the delivery is still refused -- because the recorded permission
+    names the classes this binding may carry and `matrix` is not among them.
+    """
+    from corridor.activation_runtime import require_source_delivery
+    config, database, project_id = delivering
+    with database.session_factory.begin() as session:
+        with pytest.raises(RouteRefused, match="source_class_not_permitted"):
+            require_source_delivery(
+                session, classified(config, project_id, CONNECTED, "matrix")
+            )
+
+
+def test_an_unrecognized_source_class_is_refused(delivering):
+    """An unknown classification is refused, never inferred into a permitted one."""
+    from corridor.activation_runtime import require_source_delivery
+    config, database, project_id = delivering
+    with database.session_factory.begin() as session:
+        with pytest.raises(RouteRefused, match="source_class_unrecognized"):
+            require_source_delivery(
+                session, classified(config, project_id, CONNECTED, "mystery_export")
+            )
+
+
+def test_a_permitted_declared_source_class_passes(delivering):
+    """A declared class the binding names is admitted, the mode still enforced."""
+    from corridor.activation_runtime import require_source_delivery
+    config, database, project_id = delivering
+    with database.session_factory.begin() as session:
+        require_source_delivery(
+            session, classified(config, project_id, CONNECTED, "ucm_revision")
+        )
+        require_source_delivery(
+            session, classified(config, project_id, UPLOAD, "ucm_revision")
+        )
+
+
+def test_a_prohibited_source_class_is_refused_before_the_bytes_are_stored(delivering):
+    """The refusal precedes storage: no ledger row is written for a bad class.
+
+    `require_source_delivery` runs first inside `record_delivery`, so a class the
+    binding does not permit stops the delivery before `take_delivery` inserts the
+    row -- the prohibited stage never starts.
+    """
+    from corridor.models import SourceDelivery
+    from corridor.source_delivery import DeliveryObservation, take_delivery
+    from sqlalchemy import select
+
+    config, database, project_id = delivering
+    observation = DeliveryObservation(
+        external_identity="matrix.xlsx", external_version="v1",
+        content_digest="c" * 64, bytes_reference="objects/c",
+    )
+    with database.session_factory.begin() as session:
+        with pytest.raises(RouteRefused, match="source_class_not_permitted"):
+            take_delivery(
+                session, classified(config, project_id, CONNECTED, "matrix"),
+                observation, service_identity="tests", run_identity="run-1",
+            )
+    with database.session_factory.begin() as session:
+        stored = session.scalars(
+            select(SourceDelivery).where(SourceDelivery.project_id == project_id)
+        ).all()
+    assert stored == [], "a prohibited class was stored before it was refused"
+
+
+def test_a_permitted_delivery_retains_its_classification_claim(delivering):
+    """A stored delivery keeps the class, the contract version, and its basis.
+
+    ADR-0099's stage two: after receipt and hashing the delivery carries the
+    classification claim it was admitted on, so a later stage re-proves the same
+    binding rather than re-sniffing the bytes.
+    """
+    from corridor.models import SourceDelivery
+    from corridor.source_class_contract import CONTRACT_VERSION
+    from corridor.source_delivery import DeliveryObservation, take_delivery
+    from sqlalchemy import select
+
+    config, database, project_id = delivering
+    observation = DeliveryObservation(
+        external_identity="ucm.xlsx", external_version="v1",
+        content_digest="d" * 64, bytes_reference="objects/d",
+    )
+    with database.session_factory.begin() as session:
+        # The upload binding authenticates by a person, so storing needs no
+        # machine credential row -- the class, not the credential, is the subject.
+        recorded = take_delivery(
+            session, classified(config, project_id, UPLOAD, "ucm_revision"),
+            observation, service_identity="tests", run_identity="run-1",
+        )
+    with database.session_factory.begin() as session:
+        row = session.get(SourceDelivery, recorded.delivery_id)
+        assert row.source_class == "ucm_revision"
+        assert row.source_class_contract_version == CONTRACT_VERSION
+        assert row.source_class_basis
+        assert row.source_class_basis_kind == "declared"

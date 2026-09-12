@@ -83,6 +83,7 @@ from corridor.models import (
 from corridor.principals import HumanPrincipal, require_human_principal
 from corridor.analytics import emit_event, source_arrival_event
 from corridor.measurement_collection import binding_for_source
+from corridor import source_class_contract
 
 # ADR-0089's five dispositions.  ``stored`` and ``duplicate`` are the two
 # outcomes in which Corridor holds the exact bytes; the other three are the
@@ -144,6 +145,17 @@ class DeliveryBinding:
     configuration_version: str = ""
     credential_id: int | None = None
     delivered_by_principal: str = ""
+    # The classification claim this ingress declares, and its basis (#951). A
+    # delivery may declare which semantic source class it is -- so the activated
+    # gate can compare that class against what the recorded set permits -- but
+    # never from a filename, extension or MIME type alone: a declared class
+    # carries who or what declared it (`source_class_basis`) and the kind of
+    # basis it is (`source_class_basis_kind`). A delivery that declares none is a
+    # bounded receipt, permitted before its class is established; the class it is
+    # later processed under is the one this claim, once present, states.
+    source_class: str = ""
+    source_class_basis: str = ""
+    source_class_basis_kind: str = ""
 
     def __post_init__(self) -> None:
         if self.transport not in ("pull", "push"):
@@ -164,6 +176,14 @@ class DeliveryBinding:
             raise SourceDeliveryRefused(
                 "a delivery names the connector or channel configuration it "
                 "arrived under"
+            )
+        if str(self.source_class or "").strip() and not (
+            str(self.source_class_basis or "").strip()
+            and str(self.source_class_basis_kind or "").strip()
+        ):
+            raise SourceDeliveryRefused(
+                "a declared source class names who or what declared it and the "
+                "kind of basis it is: a filename or MIME type is not a class"
             )
 
 
@@ -262,6 +282,15 @@ def record_delivery(
         "run_identity": run_identity,
         "disposition": disposition,
         "refusal_reason": refusal_reason,
+        # The classification claim, retained beside the bytes with the version
+        # of the contract it was interpreted under (#951), so a later stage
+        # re-proves the same class rather than re-deriving one.
+        "source_class": binding.source_class or None,
+        "source_class_contract_version": (
+            source_class_contract.CONTRACT_VERSION if binding.source_class else None
+        ),
+        "source_class_basis": binding.source_class_basis or None,
+        "source_class_basis_kind": binding.source_class_basis_kind or None,
     }
     inserted = session.execute(
         pg_insert(SourceDelivery)

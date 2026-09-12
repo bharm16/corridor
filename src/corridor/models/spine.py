@@ -1415,6 +1415,18 @@ class OnboardingGrant(Base):
     environment: Mapped[str] = mapped_column(String(128))
     permitted_operations: Mapped[list[str]] = mapped_column(ARRAY(Text))
     source_scope: Mapped[str] = mapped_column(String(256))
+    # The typed source scope (#951). ``scope_contract_version`` 0 is the
+    # narrative ``source_scope`` alone -- readable history that authorizes no
+    # source-dependent processing by inference -- and 1 and up name the
+    # ``permitted_source_classes`` a delivery's declared class is matched
+    # against. The two ``bound_source_*`` columns, when set, pin the grant to
+    # one delivery's exact identity and content digest.
+    scope_contract_version: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0"
+    )
+    permitted_source_classes: Mapped[list[str] | None] = mapped_column(ARRAY(Text))
+    bound_source_identity: Mapped[str | None] = mapped_column(Text)
+    bound_source_sha256: Mapped[str | None] = mapped_column(String(64))
     governing_authorization_identity: Mapped[str] = mapped_column(String(128))
     governing_authorization_version: Mapped[str] = mapped_column(String(64))
     evidence_identity: Mapped[str] = mapped_column(String(256))

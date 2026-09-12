@@ -240,7 +240,19 @@ EXPECTED_SCHEMA_SHA256 = (
     # A column, two constraints, a function and a rewritten command on
     # relations that already exist, so the digest moves and neither count does.
     # Recomputed against a fresh disposable database with template reuse off.
-    "3a65ccedab1df5e05533f6718d31f054b466d450135c7653249ce5961cbf8415"
+    # #951 makes the recorded source scope effective. `source_deliveries` gains
+    # a retained classification claim -- `source_class`,
+    # `source_class_contract_version`, `source_class_basis` and
+    # `source_class_basis_kind` -- with `ck_source_delivery_classification`
+    # holding a class to its basis. `project_onboarding_grants` gains the typed
+    # scope `scope_contract_version` and `permitted_source_classes` and the exact
+    # pin `bound_source_identity` and `bound_source_sha256`, with
+    # `ck_project_onboarding_grants_scope`; `record_onboarding_grant` and
+    # `onboarding_grant_standing` carry them. Columns, two constraints and two
+    # rewritten commands on relations that already exist, so the digest moves and
+    # neither count does. Recomputed against a fresh disposable database with
+    # template reuse off.
+    "d06e6ecc45ae20b520d4d3a151f8c0f56b147b8212013a297012414666be184e"
 )
 
 pytestmark = [pytest.mark.slow, pytest.mark.migration]

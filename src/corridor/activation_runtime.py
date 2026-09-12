@@ -172,6 +172,7 @@ def _require_authorized_source_binding(session, configuration, binding):
     the previous version admitted.
     """
     from corridor.source_authorization import authentication_mode_of, source_binding_standing
+    from corridor import source_class_contract
 
     standing = source_binding_standing(
         session,
@@ -194,6 +195,23 @@ def _require_authorized_source_binding(session, configuration, binding):
                else "source_authorization_differs_from_activation"))
     if not standing.permitted:
         raise RouteRefused(f"delivery source selection is not authorized: {standing.reason}")
+    # The recorded permission names the source classes this binding may carry,
+    # and #951 makes that effective: a delivery that declares its class is
+    # admitted only if the binding permits it, under the one shared
+    # interpretation. A delivery that declares none is a bounded receipt whose
+    # semantic class is not yet established, so it is not gated here. The
+    # comparison is the last conjunctive restriction inside a matched binding --
+    # a matching channel, configuration and mode do not excuse a prohibited
+    # class -- and it refuses before any byte is stored or read.
+    declared = getattr(binding, "source_class", "") or ""
+    if declared:
+        decision = source_class_contract.evaluate(
+            standing.permitted_source_classes, declared
+        )
+        if not decision.permitted:
+            raise RouteRefused(
+                f"delivery source selection is not authorized: {decision.reason}"
+            )
 
 
 @contextmanager
