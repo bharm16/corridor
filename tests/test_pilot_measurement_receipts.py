@@ -1,6 +1,6 @@
 """Measure preparation through its public durable workflow, without another write."""
 
-from datetime import timedelta
+from datetime import timedelta, timezone
 from dataclasses import replace
 
 import pytest
@@ -31,6 +31,17 @@ def session(runtime_database):
     with runtime_database.session_factory() as scoped:
         yield scoped
         scoped.rollback()
+
+
+def receipt_period(instant, **changes):
+    """Enclose a DB-stamped fixture receipt in its actual UTC week.
+
+    These integration fixtures use PostgreSQL's clock; the pure reader's fixed
+    September 7 window excluded every new receipt once that week had ended.
+    """
+    day = instant.astimezone(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    start = day - timedelta(days=day.weekday())
+    return period(start=start, end=start + timedelta(days=7), declared_at=start, **changes)
 
 
 def test_preparation_receipt_export_retains_failure_and_unchanged_declaration_retry(session, adopted):
@@ -162,7 +173,7 @@ def test_native_model_usage_reconciles_with_actual_billing_once(session, project
     session.add(run)
     session.flush()
     origin = observed_database_identity(session)
-    window = period(project_id=project.id, database_identity=origin)
+    window = receipt_period(run.completed_at, project_id=project.id, database_identity=origin)
     bill = AnalyticsEvent(
         family=EventFamily.PROVIDER_USAGE, binding=replace(BINDING, database_identity=origin),
         event_id="actual-provider-bill", occurred_at=run.completed_at,
@@ -420,7 +431,7 @@ def test_competing_worker_replay_cannot_claim_the_winning_delta_binding(session,
         events = captured.by_family(EventFamily.PROPOSED_DELTA_CREATION)
         assert [(e.payload["outcome"], e.binding.code_revision) for e in events] == [
             ("created", "winning-code"), ("replayed", "retrying-code")]
-        receipt = next(e for e in read_domain_receipts(session, [period(project_id=project_id, database_identity=identity)],
+        receipt = next(e for e in read_domain_receipts(session, [receipt_period(events[0].occurred_at, project_id=project_id, database_identity=identity)],
                                                        events=events)
                        if e.family == EventFamily.PROPOSED_DELTA_CREATION)
         assert receipt.payload["binding_event_ids"] == [events[0].event_id]

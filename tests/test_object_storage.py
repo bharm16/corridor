@@ -224,3 +224,64 @@ def test_the_render_worker_reads_staged_bytes_and_writes_a_staging_directory():
     for forbidden in ("corridor", "sqlalchemy", "psycopg", "boto3", "botocore"):
         assert f"import {forbidden}" not in source
         assert f"from {forbidden}" not in source
+
+
+def test_cached_stage_must_still_match_the_requested_digest(store, tmp_path):
+    store.put(KEY, BODY, sha256=DIGEST)
+    destination = tmp_path / "cached.pdf"
+    destination.write_bytes(b"unrelated bytes")
+    with pytest.raises(DigestMismatch):
+        store.stage(KEY, destination, sha256=DIGEST)
+    assert destination.read_bytes() == b"unrelated bytes"
+
+
+def test_staging_and_input_reuse_cannot_mutate_the_stored_object(store, tmp_path):
+    source = tmp_path / "worker.png"
+    source.write_bytes(BODY)
+    store.put_file(KEY, source, sha256=DIGEST)
+    source.write_bytes(b"next render")
+    assert store.get(KEY, sha256=DIGEST) == BODY
+    destination = store.stage(KEY, tmp_path / "reader.pdf", sha256=DIGEST)
+    destination.write_bytes(b"reader changed its copy")
+    assert store.get(KEY, sha256=DIGEST) == BODY
+
+
+def test_extensionless_objects_resolve_on_every_backend(store):
+    key = content_key(DIGEST)
+    store.put(key, BODY, sha256=DIGEST)
+    assert store.resolve(DIGEST) == key
+
+
+def test_local_staging_the_object_itself_verifies_its_bytes(tmp_path):
+    store = LocalFilesystemStore(tmp_path)
+    store.put(KEY, BODY, sha256=DIGEST)
+    (tmp_path / KEY).write_bytes(b"corrupted")
+    with pytest.raises(DigestMismatch):
+        store.stage(KEY, tmp_path / KEY, sha256=DIGEST)
+
+
+def test_a_competing_stage_destination_is_verified_before_return(store, tmp_path, monkeypatch):
+    import os
+    store.put(KEY, BODY, sha256=DIGEST)
+    destination = tmp_path / "competing.pdf"
+    link = os.link
+    def competing_link(source, target, **kwargs):
+        if Path(target) == destination:
+            destination.write_bytes(b"competing invalid bytes")
+        return link(source, target, **kwargs)
+    monkeypatch.setattr(os, "link", competing_link)
+    with pytest.raises(DigestMismatch):
+        store.stage(KEY, destination, sha256=DIGEST)
+    assert destination.read_bytes() == b"competing invalid bytes"
+
+
+@pytest.mark.parametrize("store", ["s3"], indirect=True)
+def test_s3_upload_owns_verified_bytes_before_the_sdk_consumes_them(store, tmp_path):
+    source = tmp_path / 'upload.pdf'
+    source.write_bytes(BODY)
+    def reuse_input(**kwargs):
+        source.write_bytes(b'caller reused its staging file')
+    store.client.meta.events.register('before-parameter-build.s3.PutObject', reuse_input)
+    stored = store.put_file(KEY, source, sha256=DIGEST)
+    assert stored.size == len(BODY)
+    assert store.get(KEY, sha256=DIGEST) == BODY

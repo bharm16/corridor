@@ -27,6 +27,14 @@
         "ecs:StopTask",
         "ecs:TagResource",
         "ecs:UpdateService",
+        "events:DescribeRule",
+        "events:DisableRule",
+        "events:EnableRule",
+        "events:ListTagsForResource",
+        "events:ListTargetsByRule",
+        "events:PutTargets",
+        "events:TagResource",
+        "events:UntagResource",
         "logs:CreateLogGroup",
         "logs:CreateLogStream",
         "logs:DescribeLogGroups",
@@ -55,7 +63,10 @@
       "Resource": "arn:aws:iam::810100779593:role/corridor/nonproduction/*",
       "Condition": {
         "StringEquals": {
-          "iam:PassedToService": "ecs-tasks.amazonaws.com"
+          "iam:PassedToService": [
+            "ecs-tasks.amazonaws.com",
+            "events.amazonaws.com"
+          ]
         }
       }
     },

@@ -222,7 +222,7 @@ test-serial:
 
 # Resolve corpus/manifest.yaml to files on disk.
 corpus:
-	uv run python -m corridor.corpus
+	uv run python -m corridor.corpus $(ARGS)
 
 # Raw files -> cited Coordination Report. Pass N to accept only the first N
 # Extracted Proposals:

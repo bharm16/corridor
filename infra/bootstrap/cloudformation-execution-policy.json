@@ -54,7 +54,8 @@
         "StringEquals": {
           "iam:PassedToService": [
             "ecs-tasks.amazonaws.com",
-            "vpc-flow-logs.amazonaws.com"
+            "vpc-flow-logs.amazonaws.com",
+            "events.amazonaws.com"
           ]
         }
       }

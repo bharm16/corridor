@@ -29,10 +29,9 @@ class Client(RecordedAdapter):
 
     adapter = "recording"
     adapter_contract_version = "recording-v1"
-    last_usage = {"input_tokens": 4, "output_tokens": 2}
 
     def __init__(self, result=None, error=None):
-        super().__init__(result, raises=error)
+        super().__init__(result, raises=error, tokens_per_call={"prompt_tokens": 4, "completion_tokens": 2})
 
 
 def _prompt(text):
@@ -97,7 +96,9 @@ def test_completed_request_retains_validated_output_lineage_and_usage():
     assert outcome.execution_lineage_json["adapter"] == "recording"
     assert len(outcome.execution_lineage_json["request_sha256"]) == 64
     assert len(outcome.execution_lineage_json["result_sha256"]) == 64
-    assert outcome.usage_json["reported"] == Client.last_usage
+    assert outcome.usage_json["reported"] == {
+        "input_tokens": 4, "output_tokens": 2, "cached_tokens": 0, "reasoning_tokens": 0,
+    }
 
 
 def test_changed_input_is_refused_after_the_external_request():
@@ -137,3 +138,19 @@ def test_external_failures_are_terminal_receipts(error, status):
     assert outcome.status == status
     assert outcome.output_json is None
     assert outcome.execution_lineage_json is None
+
+
+def test_adapter_construction_failure_returns_a_terminal_outcome():
+    from dataclasses import replace
+    def unavailable(_):
+        raise RuntimeError('adapter configuration unavailable')
+    outcome = execute_bounded_explanation(replace(_plan(Client()), client_factory=unavailable))
+    assert outcome.status == 'transport_failure'
+    assert outcome.output_json is None
+
+
+@pytest.mark.parametrize('failure', [None, RuntimeError('offline'), TimeoutError('late')])
+def test_operation_closes_its_owned_adapter_on_every_outcome(failure):
+    client = Client({}, error=failure)
+    execute_bounded_explanation(_plan(client))
+    assert client.closed

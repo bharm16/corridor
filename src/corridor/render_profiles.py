@@ -18,12 +18,14 @@ inside the spawned process until the domain narrowed to what is served.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
 import json
 import math
 import os
 from pathlib import Path
+import signal
 import subprocess
 from typing import Literal
 from uuid import uuid4
@@ -406,6 +408,38 @@ def select_profile_dpis(measurement: RenderProfileMeasurement) -> dict[str, int]
     }
 
 
+@dataclass(frozen=True)
+class RenderExecutionLimits:
+    """One worker's wall deadline and Linux address-space ceiling."""
+
+    wall_seconds: float = 120.0
+    memory_bytes: int = 4 * 1024**3
+
+    def __post_init__(self):
+        if not math.isfinite(self.wall_seconds) or self.wall_seconds <= 0 or self.memory_bytes <= 0:
+            raise ValueError("render execution limits must be positive and finite")
+
+
+def _run_worker(command, *, environment, limits: RenderExecutionLimits):
+    # The group includes uv and the Python worker. Killing only the launcher
+    # leaves a native renderer alive after the caller releases its claim.
+    with subprocess.Popen(command, cwd=ROOT, env=environment, stdout=subprocess.PIPE,
+                          stderr=subprocess.PIPE, text=True, start_new_session=True) as process:
+        try:
+            stdout, stderr = process.communicate(timeout=limits.wall_seconds)
+        except BaseException as exc:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.communicate()
+            if isinstance(exc, subprocess.TimeoutExpired):
+                raise TimeoutError(f"render worker exceeded {limits.wall_seconds} seconds and was stopped") from exc
+            raise
+        if process.returncode:
+            raise RuntimeError("render worker failed: " + (stderr or stdout))
+
+
 def render_page_derivative(
     *,
     pdf_path: Path | str,
@@ -415,6 +449,7 @@ def render_page_derivative(
     clip_page_box: PageBox | None = None,
     worker_project: Path | str = DEFAULT_WORKER_PROJECT,
     rasterizer: str | None = None,
+    limits: RenderExecutionLimits = RenderExecutionLimits(),
 ) -> RenderDerivative:
     return render_page_derivatives(
         pdf_path=pdf_path,
@@ -424,6 +459,7 @@ def render_page_derivative(
         clip_page_box=clip_page_box,
         worker_project=worker_project,
         rasterizer=rasterizer,
+        limits=limits,
     )[0]
 
 
@@ -436,6 +472,7 @@ def render_page_derivatives(
     clip_page_box: PageBox | None = None,
     worker_project: Path | str = DEFAULT_WORKER_PROJECT,
     rasterizer: str | None = None,
+    limits: RenderExecutionLimits = RenderExecutionLimits(),
 ) -> list[RenderDerivative]:
     """Render several profiles of one page in a single worker process.
 
@@ -454,6 +491,8 @@ def render_page_derivatives(
         raise ValueError(RETIRED_RASTERIZER_REFUSAL)
     if engine not in SERVED_RASTERIZERS:
         raise ValueError(f"unknown rasterizer {engine!r}")
+    source = Path(pdf_path).resolve()
+    source_sha256 = hashlib.sha256(source.read_bytes()).hexdigest()
     bundle = load_render_profile_bundle()
     profiles = []
     for profile_name in profile_names:
@@ -492,9 +531,9 @@ def render_page_derivatives(
         }
         for profile in profiles
     ]
-    request_path.write_text(json.dumps({"requests": requests}, sort_keys=True))
+    request_path.write_text(json.dumps({"requests": requests, "memory_limit_bytes": limits.memory_bytes}, sort_keys=True))
     try:
-        completed = subprocess.run(
+        _run_worker(
             [
                 "uv",
                 "run",
@@ -508,27 +547,42 @@ def render_page_derivatives(
                 "--manifest",
                 str(manifest_path),
             ],
-            cwd=ROOT,
-            env=worker_environment(),
-            capture_output=True,
-            text=True,
-            check=False,
+            environment=worker_environment(),
+            limits=limits,
         )
-        if completed.returncode != 0:
-            raise RuntimeError(
-                "render worker failed: " + (completed.stderr or completed.stdout)
-            )
-        manifests = json.loads(manifest_path.read_text())["manifests"]
+        payload = json.loads(manifest_path.read_text())
+        manifests = payload.get("manifests") if isinstance(payload, dict) else None
+        if not isinstance(manifests, list) or len(manifests) != len(profiles):
+            raise ValueError("render worker did not return the complete requested profile set")
+        if hashlib.sha256(source.read_bytes()).hexdigest() != source_sha256:
+            raise ValueError("render source bytes changed during the request")
         if worker_identity != {
             path.name: hashlib.sha256(path.read_bytes()).hexdigest()
             for path in sorted((*project.glob("*.py"), project / "uv.lock"))
         }:
             raise ValueError("render worker bytes changed while the request ran")
-        for manifest in manifests:
-            manifest["parameters"]["worker_runtime_sha256s"] = worker_identity
-        return [
-            RenderDerivative.model_validate(manifest) for manifest in manifests
-        ]
+        derivatives = []
+        for profile, manifest in zip(profiles, manifests, strict=True):
+            derivative = RenderDerivative.model_validate(manifest)
+            if (derivative.profile_name, derivative.profile_id, derivative.dpi,
+                derivative.preprocessing, derivative.rasterizer, derivative.clip_box,
+                derivative.regenerable_from.source_sha256, derivative.regenerable_from.page_number,
+                derivative.regenerable_from.profile_id) != (
+                    profile.name, profile.profile_id, profile.dpi, profile.preprocessing, engine, clip_page_box,
+                    source_sha256, page_number, profile.profile_id):
+                raise ValueError("render response does not match its requested source, page and profile")
+            if not derivative.artifact_path.resolve().is_relative_to(raster_output.resolve()):
+                raise ValueError("render artifact is outside this worker's output directory")
+            if derivative.artifact_path.stat().st_size != derivative.artifact_bytes:
+                raise ValueError("render artifact size does not match its manifest")
+            with Image.open(derivative.artifact_path) as rendered_image:
+                rendered_image.load()
+                if rendered_image.format != "PNG" or rendered_image.size != (derivative.raster_width, derivative.raster_height):
+                    raise ValueError("render artifact dimensions or format do not match its manifest")
+            derivatives.append(derivative.model_copy(update={"parameters": {
+                **derivative.parameters, "worker_runtime_sha256s": worker_identity,
+            }}))
+        return derivatives
     finally:
         request_path.unlink(missing_ok=True)
         manifest_path.unlink(missing_ok=True)

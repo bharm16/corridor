@@ -258,3 +258,20 @@ returned with an asynchronous restore request. Subsequent restore and verificati
 passes use that physical identity. Renaming the instance does not create another
 database under the original name, and disappearance or a conflicting physical
 identity requires operator reconciliation instead of silently recreating it.
+
+### Scheduled writer freeze
+
+The resource census includes the expiry EventBridge rule. After inventory and
+before draining/export, use `make environment-disposition ARGS='pause-schedules
+--configuration <inventory.json> --output <paused.json> --aws-profile <profile>
+--authorize-aws-535 --principal <operator>'`. This operation verifies the disabled
+customer binding and unchanged stack membership, pauses only the inventoried
+rules targeting that environment's task families, and retains their original
+state in EventBridge. It does not stop ECS services or authorize destruction.
+
+The export guard requires each rule to remain disabled past its bounded delivery
+quiet interval, and then observes RUNNING and STOPPED desired-state populations
+and each task's actual state. A STOPPING task, missing task description, missing
+service, or nonzero service count refuses export. Keep schedules paused throughout
+export and disposition. A normal application release is the operation that can
+verify a new target revision and restore their original state.

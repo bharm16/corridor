@@ -17,15 +17,15 @@ import argparse
 import json
 import re
 import sys
+from corridor.ecs_schedules import pause_schedule, resume_schedule, ScheduleRefused
 from collections.abc import Iterable
 from typing import Any
 
-TERMINAL_TASK_STATES = frozenset({"STOPPED", "DELETED"})
+from corridor.ecs_tasks import (
+    TERMINAL_TASK_STATES, TaskObservationError as ReleaseVerificationError,
+    task_arns as _task_arns, describe_tasks as _tasks, verify_task_definition,
+)
 WAIT_CONFIG = {"Delay": 5, "MaxAttempts": 120}
-
-
-class ReleaseVerificationError(RuntimeError):
-    """ECS has not proved that the release can safely continue."""
 
 
 def _service(client, *, cluster: str, name: str) -> dict[str, Any]:
@@ -38,37 +38,6 @@ def _service(client, *, cluster: str, name: str) -> dict[str, Any]:
         raise ReleaseVerificationError(f"service {name} is missing or inactive")
     return service
 
-
-def _task_arns(client, *, cluster: str, **filters: str) -> set[str]:
-    arns = set()
-    paginator = client.get_paginator("list_tasks")
-    # Desired STOPPED can still mean actual STOPPING or DEACTIVATING. PENDING
-    # is only an actual state; ECS never sets desiredStatus to PENDING.
-    for status in ("RUNNING", "STOPPED"):
-        for page in paginator.paginate(
-            cluster=cluster, desiredStatus=status, **filters
-        ):
-            arns.update(page["taskArns"])
-    return arns
-
-
-def _tasks(client, *, cluster: str, arns: set[str]) -> list[dict[str, Any]]:
-    tasks: list[dict[str, Any]] = []
-    ordered = sorted(arns)
-    for start in range(0, len(ordered), 100):
-        batch = ordered[start:start + 100]
-        response = client.describe_tasks(cluster=cluster, tasks=batch)
-        described = response.get("tasks") or []
-        if (
-            response.get("failures")
-            or len(described) != len(batch)
-            or {task.get("taskArn") for task in described} != set(batch)
-        ):
-            raise ReleaseVerificationError(
-                f"could not describe every listed task: {response}"
-            )
-        tasks.extend(described)
-    return tasks
 
 
 def verify_service(
@@ -90,30 +59,9 @@ def verify_service(
 
     if desired_count not in (0, 1):
         raise ReleaseVerificationError("desired count must be 0 or 1")
-    if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
-        raise ReleaseVerificationError("expected a complete sha256 image digest")
+    own_names = verify_task_definition(client, task_definition_arn=task_definition_arn,
+        repository_uri=repository_uri, digest=digest)
     image = f"{repository_uri}@{digest}"
-    definition = client.describe_task_definition(
-        taskDefinition=task_definition_arn
-    )["taskDefinition"]
-    if definition.get("taskDefinitionArn") != task_definition_arn:
-        raise ReleaseVerificationError("described a different task definition")
-    own_names = set()
-    for container in definition.get("containerDefinitions") or []:
-        reference = container.get("image", "")
-        if (
-            reference == repository_uri
-            or reference.startswith(f"{repository_uri}:")
-            or reference.startswith(f"{repository_uri}@")
-        ):
-            if reference != image or not container.get("name"):
-                raise ReleaseVerificationError(
-                    "task definition does not bind every Corridor container "
-                    f"to {image}"
-                )
-            own_names.add(container["name"])
-    if not own_names:
-        raise ReleaseVerificationError("task definition has no Corridor container")
 
     service = _service(client, cluster=cluster, name=service_name)
     if service.get("taskDefinition") != task_definition_arn:
@@ -284,10 +232,26 @@ def main(argv: Iterable[str] | None = None) -> int:
     drain.add_argument("--web-service", required=True)
     drain.add_argument("--worker-service", required=True)
     drain.add_argument("--worker-task-definition", required=True)
+    for operation in ("pause-schedule", "resume-schedule"):
+        schedule = commands.add_parser(operation)
+        schedule.add_argument("--rule", required=True)
+        schedule.add_argument("--cluster", required=True)
+        schedule.add_argument("--task-definition", required=True)
+        if operation == "resume-schedule":
+            schedule.add_argument("--repository-uri", required=True)
+            schedule.add_argument("--digest", required=True)
     args = parser.parse_args(list(argv) if argv is not None else None)
     client = boto3.client("ecs")
     try:
-        if args.command == "drain":
+        if args.command == "pause-schedule":
+            with boto3.client("events") as events:
+                result = pause_schedule(events, rule_name=args.rule, cluster=args.cluster,
+                                        task_definition_arn=args.task_definition)
+        elif args.command == "resume-schedule":
+            with boto3.client("events") as events:
+                result = resume_schedule(events, client, rule_name=args.rule, cluster=args.cluster,
+                    task_definition_arn=args.task_definition, repository_uri=args.repository_uri, digest=args.digest)
+        elif args.command == "drain":
             result = drain_services(
                 client, cluster=args.cluster, web_service=args.web_service,
                 worker_service=args.worker_service,
@@ -300,9 +264,11 @@ def main(argv: Iterable[str] | None = None) -> int:
                 repository_uri=args.repository_uri, digest=args.digest,
                 desired_count=args.desired_count,
             )
-    except ReleaseVerificationError as error:
+    except (ReleaseVerificationError, ScheduleRefused) as error:
         print(f"release: {error}", file=sys.stderr)
         return 1
+    finally:
+        client.close()
     json.dump(result, sys.stdout)
     print()
     return 0

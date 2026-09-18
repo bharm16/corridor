@@ -9,26 +9,14 @@ import zipfile
 from openpyxl import load_workbook
 from openpyxl.writer import excel as excel_writer
 
-from corridor.spreadsheet_conversion import _workbook_to_xlsx
+from pathlib import Path
+
+from corridor.spreadsheet_conversion import convert_xls_bytes
 
 
-class FakeSheet:
-    merged_cell_ranges = (((0, 0), (0, 1)),)
-
-    def to_python(self):
-        return [
-            ["Test Hole Index", None, None],
-            ["TEST HOLE #", "DEPTH", "DATE"],
-            ["169-A", 4.54, datetime(2024, 11, 13)],
-        ]
-
-
-class FakeBook:
-    sheet_names = ["THDS INDEX"]
-
-    def get_sheet_by_name(self, name):
-        assert name == "THDS INDEX"
-        return FakeSheet()
+SOURCE = Path(__file__).with_name("fixtures") / "conversion-origins.xls"
+# Synthetic BIFF8 workbook authored with xlwt 1.3.0 outside the tests. Each
+# sheet holds the same three rows, at A1, A2, or C3, with a merged heading.
 
 
 def _convert_with_clock_at(monkeypatch, instant):
@@ -43,7 +31,7 @@ def _convert_with_clock_at(monkeypatch, instant):
                 timezone=timezone,
             ),
         )
-        return _workbook_to_xlsx(FakeBook())
+        return convert_xls_bytes(SOURCE.read_bytes())
 
 
 def _archive_parts(archive: bytes) -> list[bytes]:
@@ -75,7 +63,7 @@ def test_binary_workbook_values_convert_to_stable_readable_xlsx(tmp_path, monkey
     second = _convert_with_clock_at(
         monkeypatch, datetime(1994, 8, 3, 23, 59, 59, tzinfo=timezone.utc)
     )
-    unmocked = _workbook_to_xlsx(FakeBook())
+    unmocked = convert_xls_bytes(SOURCE.read_bytes())
     assert first == second == unmocked
 
     stamps = _recorded_timestamps(first)
@@ -99,5 +87,24 @@ def test_binary_workbook_values_convert_to_stable_readable_xlsx(tmp_path, monkey
         assert sheet.auto_filter.ref == "A1:C3"
         assert sheet.column_dimensions["A"].width >= len("TEST HOLE #")
         assert sheet["B3"].number_format == "0.###"
+    finally:
+        workbook.close()
+
+
+def test_conversion_preserves_values_and_merges_in_the_source_coordinate_frame():
+    converted = convert_xls_bytes(SOURCE.read_bytes())
+    workbook = load_workbook(BytesIO(converted), data_only=True)
+    try:
+        for name, title, identifier, depth, day, merged in (
+            ("Leading row", "A2", "A4", "B4", "C4", "A2:B2"),
+            ("Leading rows and columns", "C3", "C5", "D5", "E5", "C3:D3"),
+        ):
+            sheet = workbook[name]
+            assert sheet[title].value == "Test Hole Index"
+            assert sheet[identifier].value == "169-A"
+            assert sheet[depth].value == 4.54
+            assert sheet[day].value == datetime(2024, 11, 13)
+            assert str(sheet.merged_cells) == merged
+            assert sheet["A1"].value is None
     finally:
         workbook.close()

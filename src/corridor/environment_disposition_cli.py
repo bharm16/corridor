@@ -32,7 +32,7 @@ from corridor.principals import HumanPrincipal
 from corridor.receipts import write_private_snapshot
 
 
-_COMMANDS = ("inventory", "export", "custody", "plan", "execute", "status",
+_COMMANDS = ("inventory", "pause-schedules", "export", "custody", "plan", "execute", "status",
              "rehearsal-restore", "rehearsal-verify", "rehearsal-cleanup", "gate")
 
 
@@ -55,7 +55,7 @@ def _provider_clients(resources, *, source_profile, custody_profile, authorized)
     session = boto3.Session(profile_name=source_profile, region_name=resources.region)
     config = Config(connect_timeout=5, read_timeout=30, retries={"mode": "standard", "total_max_attempts": 3})
     clients = {name: session.client(name, config=config) for name in (
-        "sts", "rds", "s3", "kms", "cloudformation", "ecs", "logs", "secretsmanager", "ecr", "ec2")}
+        "sts", "rds", "s3", "kms", "cloudformation", "ecs", "logs", "secretsmanager", "ecr", "ec2", "events")}
     regions = [row["RegionName"] for row in clients["ec2"].describe_regions(AllRegions=False)["Regions"]]
     clients["regional"] = {region: {name: session.client(name, region_name=region, config=config)
                                     for name in ("sts", "rds", "backup")} for region in regions}
@@ -110,6 +110,8 @@ def _run(arguments, configuration, control_plane, clients):
         inventory = observe_stack_inventory(clients, resources,
             application_stack_id=configuration["application_stack_id"], data_stack_id=configuration["data_stack_id"])
         result["resources"] = asdict(replace(resources, whole_environment=inventory))
+    elif command == "pause-schedules":
+        result["paused_schedules"] = destroyer.pause_schedules(registration)
     elif command == "export":
         if not arguments.archive_output or not arguments.pgpass_file or not arguments.database_username or not arguments.postgres_ca_file:
             raise DispositionRefused("export requires --archive-output, --pgpass-file, --database-username and --postgres-ca-file")

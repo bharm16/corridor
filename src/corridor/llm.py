@@ -197,6 +197,16 @@ class Usage:
     cached_tokens: int = 0
 
 
+    def as_dict(self) -> dict[str, int]:
+        """Reported provider usage for an operation that owns this client."""
+        return {"input_tokens": self.prompt_tokens, "output_tokens": self.completion_tokens,
+                "reasoning_tokens": self.reasoning_tokens, "cached_tokens": self.cached_tokens}
+
+
+class ModelRequestTimeout(TimeoutError, RuntimeError):
+    """The final transport attempt timed out; retain RuntimeError compatibility."""
+
+
 class OpenAIClient:
     def __init__(
         self,
@@ -317,6 +327,7 @@ class OpenAIClient:
         )
 
         last_error = ""
+        timed_out = False
         for attempt in range(self.max_attempts):
             try:
                 response = self._http.post(
@@ -325,11 +336,13 @@ class OpenAIClient:
                     json=payload,
                 )
             except httpx.HTTPError as exc:
+                timed_out = isinstance(exc, httpx.TimeoutException)
                 last_error = f"transport: {exc}"
                 if attempt + 1 < self.max_attempts:
                     self._backoff(attempt)
                 continue
 
+            timed_out = False
             if response.status_code in RETRY_STATUSES:
                 last_error = f"{response.status_code}: {response.text[:200]}"
                 if attempt + 1 < self.max_attempts:
@@ -343,7 +356,8 @@ class OpenAIClient:
 
             return self._read(response.json())
 
-        raise RuntimeError(
+        error = ModelRequestTimeout if timed_out else RuntimeError
+        raise error(
             f"{self.model} failed after {self.max_attempts} attempts: {last_error}"
         )
 

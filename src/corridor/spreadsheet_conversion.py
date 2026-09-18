@@ -12,6 +12,10 @@ serializes `docProps/core.xml`, so the archive changed every second and the
 corpus content-addressed each re-conversion as new bytes (#579). The canonical
 rewrite therefore pins every date-typed core property in the serialized part,
 where a later openpyxl release cannot quietly reintroduce a wall clock.
+
+Cell values and merged ranges use the source's absolute coordinates. Calamine's
+default trims leading empty rows and columns; applying absolute merges to that
+shifted grid silently discarded values. Version 4 preserves the empty area.
 """
 
 from __future__ import annotations
@@ -28,7 +32,7 @@ from openpyxl.utils import get_column_letter
 from python_calamine import CalamineWorkbook
 
 CONVERTER_NAME = "corridor.xls-to-xlsx"
-CONVERTER_VERSION = "3"
+CONVERTER_VERSION = "4"
 _FIXED_TIME = datetime(2000, 1, 1)
 _FIXED_TIMESTAMP = _FIXED_TIME.strftime("%Y-%m-%dT%H:%M:%SZ").encode()
 _ZIP_TIME = (1980, 1, 1, 0, 0, 0)
@@ -41,8 +45,8 @@ _W3CDTF_VALUE = re.compile(rb'(<[^<>]*xsi:type="dcterms:W3CDTF"[^<>]*>)[^<]*')
 def convert_xls_bytes(source: bytes) -> bytes:
     """Return deterministic XLSX bytes containing every legacy cell value."""
 
-    workbook = CalamineWorkbook.from_filelike(BytesIO(source))
-    return _workbook_to_xlsx(workbook)
+    with CalamineWorkbook.from_filelike(BytesIO(source)) as workbook:
+        return _workbook_to_xlsx(workbook)
 
 
 def _workbook_to_xlsx(source) -> bytes:
@@ -56,7 +60,7 @@ def _workbook_to_xlsx(source) -> bytes:
     for sheet_name in source.sheet_names:
         source_sheet = source.get_sheet_by_name(sheet_name)
         sheet = target.create_sheet(sheet_name)
-        rows = source_sheet.to_python()
+        rows = source_sheet.to_python(skip_empty_area=False)
         for row_index, row in enumerate(rows):
             for column_index, source_value in enumerate(row):
                 value = _cell_value(source_value)

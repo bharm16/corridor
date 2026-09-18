@@ -23,6 +23,7 @@ from uuid import uuid4
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from corridor.bounded_explanation import execute_assistance_request
 from corridor.briefing import (
     Briefing,
     PROMPT,
@@ -275,45 +276,13 @@ def request_summary(
         session.add(receipt)
         session.flush()
         return receipt
-    # Conservative token accounting.  The exact input survives in the receipt,
-    # and a request over the declared budget is refused before an adapter exists.
-    estimated_input_tokens = (len(PROMPT.text) + len(user_message) + 3) // 4
-    if estimated_input_tokens > configuration.max_input_tokens:
-        receipt = _receipt(
-            project_id=project_id,
-            configuration=configuration,
-            principal=principal,
-            payload=payload,
-            reading_sha256=reading_sha256,
-            status="budget_exhausted",
-            reason=(
-                f"input estimate {estimated_input_tokens} exceeds declared "
-                f"budget {configuration.max_input_tokens}; no model call was made"
-            ),
-            summary_markdown=None,
-        )
-        session.add(receipt)
-        session.flush()
-        return receipt
-
-    client = client_factory(configuration)
-    try:
-        result = client.complete(
-            system=PROMPT.text,
-            user=user_message,
-            schema=PROMPT.schema,
-        )
-    except TimeoutError as exc:
-        status, reason = (
-            "timeout",
-            f"model request exceeded declared time budget: {exc}",
-        )
-    except Exception as exc:  # adapter errors remain a receipt, never a hidden retry
-        status, reason = (
-            "transport_failure",
-            f"model transport failed: {type(exc).__name__}: {exc}",
-        )
-    else:
+    outcome = execute_assistance_request(
+        configuration=configuration, client_factory=client_factory,
+        prompt=PROMPT, user_message=user_message,
+    )
+    status, reason = outcome.status, outcome.reason
+    if status == "completed":
+        result = outcome.output_json
         if not isinstance(result, dict):
             status, reason = (
                 "validation_refused",

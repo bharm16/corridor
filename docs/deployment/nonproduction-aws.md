@@ -319,3 +319,42 @@ Fargate Spot, IAM Identity Center, CloudTrail data events, WAF, Redis,
 Multi-AZ, secret rotation, and interface VPC endpoints. Each is a later
 decision, and several are prerequisites of #535 rather than of this
 environment.
+
+### Scheduled writers during a release
+
+Deploy the updated bootstrap policies and application stack before releasing an
+image that uses `SignInExpiryRuleName`. The application stack grants the existing
+release role only the eight EventBridge operations used to observe, pause,
+retarget and restore that rule, plus PassRole for its exact invocation role to
+`events.amazonaws.com`. The invocation role can run revisions of the existing
+Batch family only, in the same cluster. The worker's application permissions do
+not change. No new resource is substituted for the existing rule or role.
+
+`app-release` pauses the expiry rule before draining services and ad hoc Batch
+tasks. Its original enabled/disabled state survives in rule tags, including when
+a workflow fails and a later run retries. Event delivery has zero retries and a
+60-second maximum age. The helper observes disabled state, waits a 65-second
+quiet interval, then the existing task drain checks actual terminal states.
+This accounts for asynchronous rule propagation; an acknowledgement alone is
+never treated as a drained cluster.
+
+After migration, both ECS verifications and the HTTP readiness check pass, the
+release changes only the schedule target's task-definition revision. It verifies
+the new image digest and the complete target readback, allows propagation, and
+restores the original schedule state. Failure recovery attempts both pause and
+drain even if either operation fails, and reports shutdown only if both succeed.
+Do not manually remove the `corridor:maintenance-*` tags to recover a failed
+release; rerun the intended release so its original intent remains available.
+
+The policy action baseline was generated with:
+
+```bash
+uvx iam-policy-autopilot@latest generate-policies \
+  src/corridor/ecs_schedules.py --region us-east-2 --account 810100779593 \
+  --service-hints events --pretty
+```
+
+The synthesized policy scopes that generated action set to the actual rule and
+invocation-role ARNs. Synthesis and provider doubles prove the software contract;
+the first live deployment must still retain its pause, drain and released-target
+observations.
