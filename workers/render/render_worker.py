@@ -450,11 +450,13 @@ def main(argv=None):
     payload = json.loads(arguments.request.read_text())
     # Linux enforces RLIMIT_AS. macOS does not; the parent still enforces the
     # wall deadline and kills the whole process group on every platform served.
+    # Historical request files have no limit field. They keep their pixel
+    # contract and receive the same bounded default as today's parent.
+    ceiling = payload.get("memory_limit_bytes", 4 * 1024**3)
+    if type(ceiling) is not int or ceiling <= 0:
+        raise ValueError("render memory limit must be a positive integer")
     if sys.platform.startswith("linux"):
         import resource
-        ceiling = payload["memory_limit_bytes"]
-        if type(ceiling) is not int or ceiling <= 0:
-            raise ValueError("render memory limit must be a positive integer")
         resource.setrlimit(resource.RLIMIT_AS, (ceiling, ceiling))
     manifests = [render(request) for request in payload["requests"]]
     arguments.manifest.parent.mkdir(parents=True, exist_ok=True)

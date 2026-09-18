@@ -119,7 +119,7 @@ from corridor.models import (
     Project,
     SourceDelivery,
 )
-from corridor.object_storage import content_key, store_bytes
+from corridor.object_storage import DigestMismatch, content_key, store_bytes
 from corridor.principals import HumanPrincipal, require_human_principal
 from corridor.storage import staged_file
 
@@ -972,7 +972,13 @@ def _format_label(suffix: str) -> str:
 
 
 def _resolve_staged(sha256: str) -> Path | None:
-    return staged_file(sha256)
+    try:
+        return staged_file(sha256)
+    except DigestMismatch as exc:
+        raise IntakeConflict(
+            "bytes_tampered",
+            "The staged bytes changed since preview. Re-upload the file.",
+        ) from exc
 
 
 def _images_dir() -> Path:

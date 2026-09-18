@@ -93,6 +93,7 @@ from corridor.models import (
     SourceSegment,
 )
 from corridor.object_storage import (
+    DigestMismatch,
     ObjectStore,
     StorageError,
     content_key,
@@ -1132,7 +1133,12 @@ def _current_preview(session: Session, preview: BaselinePreview) -> BaselinePrev
     """Recompute the preview from the bytes as they are now."""
 
     project = session.get_one(Project, preview.project_id)
-    staged_path = staged_file(preview.content_sha256)
+    try:
+        staged_path = staged_file(preview.content_sha256)
+    except DigestMismatch as exc:
+        raise StaleBaselinePreview(
+            "The staged bytes changed since the preview. Upload the source again."
+        ) from exc
     if staged_path is None:
         raise StaleBaselinePreview(
             "The previewed bytes are no longer staged. Upload the source again."

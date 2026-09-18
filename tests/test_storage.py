@@ -1,4 +1,5 @@
 from pathlib import Path
+from hashlib import sha256
 
 import pytest
 
@@ -19,10 +20,11 @@ def make_document(*, sha256: str) -> Document:
 def test_stored_file_resolves_a_document_from_the_content_addressed_store(
     tmp_path, monkeypatch
 ):
-    sha = "ab" * 32
+    body = b"xlsx bytes live elsewhere; the suffix is the point"
+    sha = sha256(body).hexdigest()
     stored = tmp_path / sha[:2] / f"{sha}.xlsx"
     stored.parent.mkdir(parents=True)
-    stored.write_text("xlsx bytes live elsewhere; the suffix is the point")
+    stored.write_bytes(body)
     monkeypatch.setattr(settings, "corpus_store", str(tmp_path))
 
     path = stored_file(make_document(sha256=sha))
@@ -40,10 +42,11 @@ def test_stored_file_is_none_without_a_hash(document, tmp_path, monkeypatch):
 def test_stored_pdf_refuses_a_non_pdf_even_when_the_document_exists(
     tmp_path, monkeypatch
 ):
-    sha = "cd" * 32
+    body = b"workbook"
+    sha = sha256(body).hexdigest()
     stored = tmp_path / sha[:2] / f"{sha}.xlsx"
     stored.parent.mkdir(parents=True)
-    stored.write_text("workbook")
+    stored.write_bytes(body)
     monkeypatch.setattr(settings, "corpus_store", str(tmp_path))
 
     assert stored_pdf(make_document(sha256=sha)) is None
@@ -52,7 +55,7 @@ def test_stored_pdf_refuses_a_non_pdf_even_when_the_document_exists(
 def test_stored_pdf_returns_the_pdf_when_the_stored_document_is_a_pdf(
     tmp_path, monkeypatch
 ):
-    sha = "ef" * 32
+    sha = sha256(b"%PDF-1.7").hexdigest()
     stored = tmp_path / sha[:2] / f"{sha}.pdf"
     stored.parent.mkdir(parents=True)
     stored.write_bytes(b"%PDF-1.7")
