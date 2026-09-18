@@ -410,3 +410,14 @@ def test_completed_draft_covers_the_floor_and_withholds_unsupported_citations(
         assert f"Bucket {ref} is open." in receipt.summary_markdown
     assert receipt.project_reading_json["required_alert_floor"] == floor
     assert len(client.calls) == 1
+
+
+def test_summary_retains_adapter_construction_failure(session, project, cited_dependency):
+    from corridor.coordination_summary import request_summary
+    _declare(session, project)
+    def unavailable(configuration):
+        raise RuntimeError('adapter configuration unavailable')
+    receipt = request_summary(session, project_id=project.id, principal=ACTOR,
+        client_factory=unavailable, today=TODAY)
+    assert receipt.status == 'transport_failure'
+    assert receipt.summary_markdown is None

@@ -40,6 +40,7 @@ import argparse
 import hashlib
 import json
 import math
+import sys
 from pathlib import Path
 
 import cv2
@@ -447,6 +448,14 @@ def main(argv=None):
     parser.add_argument("--manifest", type=Path, required=True)
     arguments = parser.parse_args(argv)
     payload = json.loads(arguments.request.read_text())
+    # Linux enforces RLIMIT_AS. macOS does not; the parent still enforces the
+    # wall deadline and kills the whole process group on every platform served.
+    if sys.platform.startswith("linux"):
+        import resource
+        ceiling = payload["memory_limit_bytes"]
+        if type(ceiling) is not int or ceiling <= 0:
+            raise ValueError("render memory limit must be a positive integer")
+        resource.setrlimit(resource.RLIMIT_AS, (ceiling, ceiling))
     manifests = [render(request) for request in payload["requests"]]
     arguments.manifest.parent.mkdir(parents=True, exist_ok=True)
     arguments.manifest.write_text(

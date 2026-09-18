@@ -872,3 +872,47 @@ def test_a_prefixed_s3_namespace_is_refused_once_with_one_sentence_at_every_seam
     package = Path(corridor.__file__).parent
     assert all('removeprefix("s3:")' not in (package / name).read_text() for name in family)
     assert (package / "control_plane.py").read_text().count('removeprefix("s3:")') == 1
+
+
+@pytest.mark.parametrize('actual_status', ['STOPPING', 'DEACTIVATING', 'RUNNING', None])
+def test_export_freeze_refuses_a_nonterminal_task_even_when_desired_stopped(actual_status):
+    inv = inventory()
+    inv['resources'] = [{'type': 'AWS::ECS::Cluster', 'physical_id': 'cluster'}]
+    r = resource(whole_environment=inv)
+    clients = stack_clients()
+    queue_identity(clients)
+    clients['ecs'].script.extend([
+        ('list_tasks', {'cluster': 'cluster', 'desiredStatus': 'RUNNING'}, {'taskArns': []}),
+        ('list_tasks', {'cluster': 'cluster', 'desiredStatus': 'STOPPED'}, {'taskArns': ['task']}),
+        ('describe_tasks', {'cluster': 'cluster', 'tasks': ['task']}, {'tasks': [
+            {'taskArn': 'task', 'lastStatus': actual_status, 'desiredStatus': 'STOPPED'}]}),
+    ])
+    destroyer = AwsStackEnvironmentDestroyer(live_activation='live-aws-535', clients=clients,
+        resources=r, approved_resource_sha256=r.sha256)
+    with pytest.raises(DispositionRefused, match='task'):
+        destroyer.require_frozen(DISABLED)
+    assert not clients['ecs'].script
+
+
+@pytest.mark.parametrize('state,tags', [('ENABLED', []), ('DISABLED', []), ('DISABLED', [
+    {'Key': 'corridor:maintenance-prior-state', 'Value': 'ENABLED'},
+    {'Key': 'corridor:maintenance-paused-at', 'Value': '99999999999'},
+])])
+def test_export_freeze_requires_a_settled_schedule_pause(state, tags):
+    inv = inventory()
+    inv['resources'] = [{'type': 'AWS::Events::Rule', 'physical_id': 'expiry'}]
+    r = resource(whole_environment=inv)
+    clients = stack_clients()
+    queue_identity(clients)
+    rule_arn = f'arn:aws:events:us-east-1:{ACCOUNT}:rule/expiry'
+    clients['events'] = ScriptedClient([
+        ('describe_rule', {'Name': 'expiry'}, {'Name': 'expiry', 'Arn': rule_arn, 'State': state}),
+        ('list_targets_by_rule', {'Rule': 'expiry'}, {'Targets': [{'Id': 'one',
+            'EcsParameters': {'TaskDefinitionArn': 'batch:1'},
+            'RetryPolicy': {'MaximumRetryAttempts': 0, 'MaximumEventAgeInSeconds': 60}}]}),
+        ('list_tags_for_resource', {'ResourceARN': rule_arn}, {'Tags': tags}),
+    ])
+    destroyer = AwsStackEnvironmentDestroyer(live_activation='live-aws-535', clients=clients,
+        resources=r, approved_resource_sha256=r.sha256)
+    with pytest.raises(DispositionRefused, match='schedule'):
+        destroyer.require_frozen(DISABLED)

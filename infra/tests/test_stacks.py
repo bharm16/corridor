@@ -33,7 +33,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).parents[2]))
 sys.path.insert(0, str(pathlib.Path(__file__).parents[2] / "src"))
 from corridor.release_contract import (  # noqa: E402
     MIGRATION_CONTAINER_NAME,
-    RELEASE_STACK_OUTPUTS,
+    RELEASE_STACK_OUTPUTS, DISPOSITION_RESOURCE_TYPES,
     STACK_OUTPUT_READERS,
 )
 
@@ -1329,11 +1329,21 @@ def test_the_expiry_schedule_role_is_scoped_and_grants_no_new_authority(stacks):
     run_task = [s for statements in policies for s in statements
                 if "ecs:RunTask" in json.dumps(s.get("Action"))]
     assert run_task, "the events role cannot run the task"
+    family = template[batch_td_ref]["Properties"]["Family"]
+    family_granted = False
     for statement in run_task:
-        assert statement["Resource"] == {"Ref": batch_td_ref}, (
-            "RunTask must be scoped to the batch task definition"
-        )
-        assert statement["Resource"] != "*"
+        resources = statement["Resource"]
+        resources = resources if isinstance(resources, list) else [resources]
+        for resource in resources:
+            if resource == {"Ref": batch_td_ref}:
+                continue
+            assert f":task-definition/{family}:*" in json.dumps(resource)
+            assert statement["Condition"]["ArnEquals"]["ecs:cluster"] == found["target"]["Arn"]
+            family_granted = True
+    assert family_granted, "the next released revision must also be runnable"
+    assert found["target"]["RetryPolicy"] == {
+        "MaximumRetryAttempts": 0, "MaximumEventAgeInSeconds": 60,
+    }
     pass_role = [s for statements in policies for s in statements
                  if "iam:PassRole" in json.dumps(s.get("Action"))]
     assert pass_role, "the events role cannot pass the task's roles"
@@ -1426,3 +1436,27 @@ def test_every_stack_output_is_declared_with_what_reads_it(stacks):
         f"src/corridor/release_contract.py declares {stale}, which the stacks "
         "no longer emit"
     )
+
+
+def test_every_customer_stack_resource_has_disposition_handling(stacks):
+    for name in ("application", "data"):
+        kinds = {item["Type"] for item in stacks[name].to_json()["Resources"].values()}
+        assert kinds <= DISPOSITION_RESOURCE_TYPES, kinds - DISPOSITION_RESOURCE_TYPES
+
+
+def test_release_schedule_permissions_name_only_its_rule_and_invocation_role(stacks):
+    found = _expiry_target(stacks)
+    template = found["template"]["Resources"]
+    policies = [resource["Properties"]["PolicyDocument"]["Statement"]
+        for resource in template.values() if resource["Type"] == "AWS::IAM::Policy"
+        and 'corridor-nonprod-app-release' in json.dumps(resource["Properties"].get("Roles"))]
+    assert policies
+    statements = [s for policy in policies for s in policy]
+    event_actions = {a for s in statements for a in (s['Action'] if isinstance(s['Action'], list) else [s['Action']]) if a.startswith('events:')}
+    assert event_actions == {'events:DescribeRule', 'events:DisableRule', 'events:EnableRule',
+        'events:ListTagsForResource', 'events:ListTargetsByRule', 'events:PutTargets', 'events:TagResource', 'events:UntagResource'}
+    for s in statements:
+        assert s['Resource'] != '*'
+        if 'iam:PassRole' in json.dumps(s['Action']):
+            assert s['Resource'] == found['target']['RoleArn']
+            assert s['Condition']['StringEquals']['iam:PassedToService'] == 'events.amazonaws.com'

@@ -792,7 +792,7 @@ sources:
         "source_registry_id": "sh99-test-hole-index-2025-01-15-xls",
         "source_sha256": hashlib.sha256(original).hexdigest(),
         "tool": "corridor.xls-to-xlsx",
-        "tool_version": "3",
+        "tool_version": "4",
     }
     assert "supersession" not in derived_record
     assert "equivalent_to" not in derived_record

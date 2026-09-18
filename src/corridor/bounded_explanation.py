@@ -16,12 +16,13 @@ prompt version promised and no digest was taken at all.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import time
 from typing import Any, Callable
 
 from corridor import digests
 from corridor.prompt_library import Prompt
+from corridor.llm import Usage
 
 
 @dataclass(frozen=True)
@@ -84,105 +85,75 @@ def budget_snapshot(configuration: object) -> dict:
     }
 
 
-def execute_bounded_explanation(
-    plan: BoundedExplanationPlan,
+def execute_assistance_request(
+    *, configuration: Any, client_factory: Callable[[Any], object],
+    prompt: Prompt, user_message: str,
 ) -> BoundedExplanationOutcome:
-    """Execute one declared request and return exactly one terminal outcome."""
-    estimated_input_tokens = (
-        len(plan.prompt.text) + len(plan.user_message) + 3
-    ) // 4
-    initial_usage = {"estimated_input_tokens": estimated_input_tokens}
-    if estimated_input_tokens > plan.configuration.max_input_tokens:
-        return BoundedExplanationOutcome(
-            adapter="none",
-            adapter_contract_version=None,
-            status="budget_exhausted",
-            reason=(
-                f"input estimate {estimated_input_tokens} exceeds declared "
-                f"budget {plan.configuration.max_input_tokens}; no model call was made"
-            ),
-            output_json=None,
-            execution_lineage_json=None,
-            usage_json=initial_usage,
-        )
+    """Own one adapter's lifetime, actual usage and terminal transport outcome.
 
-    client = plan.client_factory(plan.configuration)
-    adapter = sanitize_text(
-        getattr(client, "adapter", type(client).__name__), max_len=64
-    )
-    adapter_contract_version = getattr(client, "adapter_contract_version", None)
-    if adapter_contract_version is not None:
-        adapter_contract_version = sanitize_text(
-            adapter_contract_version, max_len=128
+    Summary and explanation requests share this operation. Their factual
+    validation remains with the consumer. Construction and cleanup used to sit
+    outside the receipt path, and a fake-only usage attribute hid real spend.
+    """
+    estimated = (len(prompt.text) + len(user_message) + 3) // 4
+    usage = {"estimated_input_tokens": estimated}
+    if estimated > configuration.max_input_tokens:
+        return BoundedExplanationOutcome(
+            "none", None, "budget_exhausted",
+            f"input estimate {estimated} exceeds declared budget {configuration.max_input_tokens}; no model call was made",
+            None, None, usage,
         )
+    client = None
+    adapter, version = "none", None
+    result = None
+    status, reason = "completed", None
     started = time.monotonic()
     try:
-        result = client.complete(
-            system=plan.prompt.text,
-            user=plan.user_message,
-            schema=plan.prompt.schema,
-        )
+        client = client_factory(configuration)
+        adapter = sanitize_text(getattr(client, "adapter", type(client).__name__), max_len=64)
+        version = getattr(client, "adapter_contract_version", None)
+        if version is not None:
+            version = sanitize_text(version, max_len=128)
+        result = client.complete(system=prompt.text, user=user_message, schema=prompt.schema)
     except TimeoutError as exc:
-        return BoundedExplanationOutcome(
-            adapter=adapter,
-            adapter_contract_version=adapter_contract_version,
-            status="timeout",
-            reason=f"model request exceeded declared time budget: {exc}",
-            output_json=None,
-            execution_lineage_json=None,
-            usage_json=initial_usage,
-        )
-    except Exception as exc:  # external adapter failures are terminal receipts
-        return BoundedExplanationOutcome(
-            adapter=adapter,
-            adapter_contract_version=adapter_contract_version,
-            status="transport_failure",
-            reason=f"model transport failed: {type(exc).__name__}: {exc}",
-            output_json=None,
-            execution_lineage_json=None,
-            usage_json=initial_usage,
-        )
-
-    lineage = {
-        "adapter": adapter,
-        "adapter_contract_version": adapter_contract_version,
-        "request_sha256": content_sha256([plan.prompt.text, plan.user_message]),
-        "result_sha256": content_sha256(result),
-        "elapsed_ms": int((time.monotonic() - started) * 1000),
-    }
-    reported_usage = getattr(client, "last_usage", None)
-    usage = {
-        "estimated_input_tokens": estimated_input_tokens,
-        "reported": reported_usage if isinstance(reported_usage, dict) else {},
-    }
-    if not plan.is_current():
-        return BoundedExplanationOutcome(
-            adapter=adapter,
-            adapter_contract_version=adapter_contract_version,
-            status="stale_input",
-            reason=plan.stale_reason,
-            output_json=None,
-            execution_lineage_json=lineage,
-            usage_json=usage,
-        )
-
-    validated, error = plan.validate(result)
-    if error is not None:
-        return BoundedExplanationOutcome(
-            adapter=adapter,
-            adapter_contract_version=adapter_contract_version,
-            status="validation_refused",
-            reason=error,
-            output_json=None,
-            execution_lineage_json=lineage,
-            usage_json=usage,
-        )
+        status, reason = "timeout", f"model request exceeded declared time budget: {exc}"
+    except Exception as exc:
+        status, reason = "transport_failure", f"model transport failed: {type(exc).__name__}: {exc}"
+    finally:
+        counters = getattr(client, "usage", None)
+        usage["reported"] = counters.as_dict() if isinstance(counters, Usage) else {}
+        close = getattr(client, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception as exc:
+                if status == "completed":
+                    status, reason = "transport_failure", f"model adapter cleanup failed: {type(exc).__name__}: {exc}"
+    lineage = None
+    if status == "completed":
+        lineage = {
+            "adapter": adapter, "adapter_contract_version": version,
+            "request_sha256": content_sha256([prompt.text, user_message]),
+            "result_sha256": content_sha256(result),
+            "elapsed_ms": int((time.monotonic() - started) * 1000),
+        }
     return BoundedExplanationOutcome(
-        adapter=adapter,
-        adapter_contract_version=adapter_contract_version,
-        status="completed",
-        reason=None,
-        output_json=validated,
-        execution_lineage_json=lineage,
-        usage_json=usage,
+        adapter, version, status, reason, result if status == "completed" else None,
+        lineage, usage,
     )
+
+
+def execute_bounded_explanation(plan: BoundedExplanationPlan) -> BoundedExplanationOutcome:
+    """Execute once, then check freshness and validate the retained answer."""
+    outcome = execute_assistance_request(
+        configuration=plan.configuration, client_factory=plan.client_factory,
+        prompt=plan.prompt, user_message=plan.user_message,
+    )
+    if outcome.status != "completed":
+        return outcome
+    if not plan.is_current():
+        return replace(outcome, status="stale_input", reason=plan.stale_reason, output_json=None)
+    validated, error = plan.validate(outcome.output_json)
+    if error is not None:
+        return replace(outcome, status="validation_refused", reason=error, output_json=None)
+    return replace(outcome, output_json=validated)

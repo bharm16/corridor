@@ -110,7 +110,8 @@ jobs:
       - name: Validate the release helpers against their own tests
         run: >-
           uv run pytest tests/test_register_ecs_release_task_definitions.py
-          tests/test_verify_ecs_release.py tests/test_release_contract.py -q
+          tests/test_verify_ecs_release.py tests/test_release_contract.py
+          tests/test_ecs_schedules.py -q
 
       # --- credentials from here on ---------------------------------------
       - uses: aws-actions/configure-aws-credentials@ff717079ee2060e4bcee96c4779b553acc87447c
@@ -181,6 +182,13 @@ jobs:
               print(f"{name}={released[role]}")
           PY
           cat released.json
+
+      - name: Pause scheduled writers before draining
+        id: pause_schedule
+        run: |
+          uv run python scripts/verify_ecs_release.py pause-schedule \
+            --rule "$EXPIRY_RULE" --cluster "$CLUSTER" \
+            --task-definition "$BASE_BATCH_TD" > paused-schedule.json
 
       # Zero desired counts alone do not prove that a container has stopped.
       # Include older ad hoc Batch tasks and wait for actual STOPPED status.
@@ -317,8 +325,15 @@ jobs:
           curl -fsS "$APPLICATION_URL/livez"
           curl -fsS "$APPLICATION_URL/readyz"
 
+      - name: Bind and restore scheduled writers after release verification
+        id: resume_schedule
+        run: |
+          uv run python scripts/verify_ecs_release.py resume-schedule \
+            --rule "$EXPIRY_RULE" --cluster "$CLUSTER" --task-definition "$BATCH_TD" \
+            --repository-uri "$REPOSITORY_URI" --digest "$IMAGE_DIGEST" > released-schedule.json
+
       - name: Keep both services stopped after a failed release
-        if: failure() && (steps.drain.outcome == 'success' || steps.drain.outcome == 'failure')
+        if: failure() && (steps.pause_schedule.outcome == 'success' || steps.pause_schedule.outcome == 'failure' || steps.drain.outcome == 'success' || steps.drain.outcome == 'failure')
         run: |
           {
             echo "### Release recovery required"
@@ -328,11 +343,16 @@ jobs:
             echo "Do not restart an old task revision against a schema that may have changed; follow docs/deployment/nonproduction-aws.md."
             echo "The following drain must succeed before shutdown is confirmed."
           } >> "$GITHUB_STEP_SUMMARY"
+          schedule_status=0
+          drain_status=0
+          uv run python scripts/verify_ecs_release.py pause-schedule \
+            --rule "$EXPIRY_RULE" --cluster "$CLUSTER" --task-definition "$BASE_BATCH_TD" || schedule_status=$?
           uv run python scripts/verify_ecs_release.py drain \
             --cluster "$CLUSTER" \
             --web-service "$WEB_SERVICE" \
             --worker-service "$WORKER_SERVICE" \
-            --worker-task-definition "$BASE_BATCH_TD"
+            --worker-task-definition "$BASE_BATCH_TD" || drain_status=$?
+          [ "$schedule_status" -eq 0 ] && [ "$drain_status" -eq 0 ] || exit 1
           echo "Confirmed: web, worker, and managed Batch tasks are stopped." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Record what was released

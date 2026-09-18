@@ -464,6 +464,8 @@ class CorridorApplicationStack(Stack):
                 task_definition=batch_task,
                 task_count=1,
                 role=expiry_schedule_role,
+                retry_attempts=0,
+                max_event_age=Duration.seconds(60),
                 security_groups=[batch_security_group],
                 subnet_selection=ec2.SubnetSelection(
                     subnet_type=ec2.SubnetType.PUBLIC
@@ -489,6 +491,36 @@ class CorridorApplicationStack(Stack):
                 ],
             )
         )
+        # Application-only releases register new revisions in this same family.
+        # The target's generated grant covers the initial revision; the family
+        # grant lets the identical invocation role run each verified release.
+        expiry_schedule_role.add_to_policy(iam.PolicyStatement(
+            actions=["ecs:RunTask"],
+            resources=[self.format_arn(service="ecs", resource="task-definition",
+                                       resource_name=f"{batch_task.family}:*")],
+            conditions={"ArnEquals": {"ecs:cluster": cluster.cluster_arn}},
+        ))
+        NagSuppressions.add_resource_suppressions(expiry_schedule_role, [{
+            "id": "AwsSolutions-IAM5", "reason": "Only revisions of the existing Batch family, restricted to its cluster.",
+            "appliesTo": [{"regex": "/^Resource::.*:task-definition\\/.*:\\*$/g"}],
+        }], apply_to_children=True)
+        # The application owns the schedule and grants the already-created
+        # release role access to this exact rule and invocation role. No
+        # cross-stack reference back into the account foundation is needed.
+        release_role = iam.Role.from_role_arn(self, "ScheduleReleaseIdentity",
+            f"arn:aws:iam::{Aws.ACCOUNT_ID}:role{CORRIDOR_ROLE_PATH}corridor-nonprod-app-release")
+        release_role.add_to_principal_policy(iam.PolicyStatement(
+            actions=["events:DescribeRule", "events:DisableRule", "events:EnableRule",
+                     "events:ListTagsForResource", "events:ListTargetsByRule", "events:PutTargets",
+                     "events:TagResource", "events:UntagResource"],
+            resources=[expiry_schedule.rule_arn],
+        ))
+        release_role.add_to_principal_policy(iam.PolicyStatement(
+            actions=["iam:PassRole"], resources=[expiry_schedule_role.role_arn],
+            conditions={"StringEquals": {"iam:PassedToService": "events.amazonaws.com"}},
+        ))
+        CfnOutput(self, "SignInExpiryRuleName", value=expiry_schedule.rule_name)
+
         # The only wildcard in EventBridge's generated policy is
         # ecs:TagResource on arn:...:task/<cluster>/*. ECS mints the task id
         # when the run starts, so it cannot be named at synthesis; the

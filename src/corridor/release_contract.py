@@ -60,6 +60,7 @@ UNSET_OUTPUT_VALUE = "not-configured"
 RELEASE_STACK_OUTPUTS: Mapping[str, str] = MappingProxyType({
     "RepositoryUri": "REPOSITORY_URI",
     "ClusterName": "CLUSTER",
+    "SignInExpiryRuleName": "EXPIRY_RULE",
     "WebServiceName": "WEB_SERVICE",
     "WorkerServiceName": "WORKER_SERVICE",
     "TaskSubnetIds": "TASK_SUBNETS",
@@ -143,6 +144,24 @@ def resolve(outputs: Iterable[Mapping[str, str]]) -> list[str]:
             "the release reads these outputs by name"
         )
     return [f"{name}={values[key]}" for key, name in RELEASE_STACK_OUTPUTS.items()]
+
+
+# Explicitly reviewed #489 resource kinds. Any new kind needs a disposition
+# implementation before it can be silently included in this profile.
+_DISPOSITION_DATA_TYPES = frozenset({"AWS::RDS::DBInstance", "AWS::RDS::DBSubnetGroup",
+    "AWS::S3::Bucket", "AWS::SecretsManager::Secret", "AWS::Logs::LogGroup",
+    "AWS::ECR::Repository", "AWS::KMS::Key"})
+_DISPOSITION_STATELESS_TYPES = frozenset({"AWS::S3::BucketPolicy", "AWS::IAM::Role", "AWS::IAM::Policy",
+    "AWS::ECS::Cluster", "AWS::ECS::Service", "AWS::ECS::TaskDefinition",
+    "AWS::EC2::SecurityGroup", "AWS::EC2::SecurityGroupIngress", "AWS::EC2::SecurityGroupEgress",
+    "AWS::ElasticLoadBalancingV2::LoadBalancer", "AWS::ElasticLoadBalancingV2::Listener",
+    "AWS::ElasticLoadBalancingV2::TargetGroup", "AWS::ElasticLoadBalancingV2::ListenerRule",
+    "AWS::SecretsManager::SecretTargetAttachment", "AWS::CloudWatch::Alarm",
+    "AWS::ApplicationAutoScaling::ScalableTarget", "AWS::ApplicationAutoScaling::ScalingPolicy",
+    "AWS::CDK::Metadata", "AWS::Events::Rule"})
+
+
+DISPOSITION_RESOURCE_TYPES = _DISPOSITION_DATA_TYPES | _DISPOSITION_STATELESS_TYPES
 
 
 def main(argv: Iterable[str] | None = None) -> int:

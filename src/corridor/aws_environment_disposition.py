@@ -21,21 +21,10 @@ from corridor.disposition_contracts import (
     json_digest as digest, provider_rows, require_no_rds_replicas, automated_backup_rows,
     retained_object_versions,
 )
-from corridor.release_contract import DISPOSITION_STACK_OUTPUTS
+from corridor.release_contract import DISPOSITION_STACK_OUTPUTS, DISPOSITION_RESOURCE_TYPES
+from corridor.ecs_tasks import live_tasks, TaskObservationError
+from corridor.ecs_schedules import pause_schedule, require_paused_schedule, ScheduleRefused
 
-# Explicitly reviewed #489 resource kinds. Any new kind needs a disposition
-# implementation before it can be silently included in this profile.
-_DATA_TYPES = frozenset({"AWS::RDS::DBInstance", "AWS::RDS::DBSubnetGroup",
-    "AWS::S3::Bucket", "AWS::SecretsManager::Secret", "AWS::Logs::LogGroup",
-    "AWS::ECR::Repository", "AWS::KMS::Key"})
-_STATELESS_TYPES = frozenset({"AWS::S3::BucketPolicy", "AWS::IAM::Role", "AWS::IAM::Policy",
-    "AWS::ECS::Cluster", "AWS::ECS::Service", "AWS::ECS::TaskDefinition",
-    "AWS::EC2::SecurityGroup", "AWS::EC2::SecurityGroupIngress", "AWS::EC2::SecurityGroupEgress",
-    "AWS::ElasticLoadBalancingV2::LoadBalancer", "AWS::ElasticLoadBalancingV2::Listener",
-    "AWS::ElasticLoadBalancingV2::TargetGroup", "AWS::ElasticLoadBalancingV2::ListenerRule",
-    "AWS::SecretsManager::SecretTargetAttachment", "AWS::CloudWatch::Alarm",
-    "AWS::ApplicationAutoScaling::ScalableTarget", "AWS::ApplicationAutoScaling::ScalingPolicy",
-    "AWS::CDK::Metadata"})
 
 
 def observe_stack_inventory(clients, resources, *, application_stack_id, data_stack_id):
@@ -70,7 +59,7 @@ def observe_stack_inventory(clients, resources, *, application_stack_id, data_st
             raise DispositionRefused("stack outputs do not bind this registered environment")
         rows = provider_rows(cf, "list_stack_resources", "StackResourceSummaries", StackName=stack_id)
         for row in rows:
-            if row["ResourceType"] not in _DATA_TYPES | _STATELESS_TYPES:
+            if row["ResourceType"] not in DISPOSITION_RESOURCE_TYPES:
                 raise DispositionRefused(f"uncovered stack resource type: {row['ResourceType']}")
             if row["ResourceStatus"] == "DELETE_COMPLETE":
                 continue
@@ -185,6 +174,36 @@ class AwsStackEnvironmentDestroyer(AwsEnvironmentDestroyer):
             raise DispositionRefused("source versions changed after export custody was established")
         return {"source_versions_sha256": digest(versions), "version_count": len(versions)}
 
+    def pause_schedules(self, registration):
+        """Pause only the bound environment's inventoried scheduled writers.
+
+        The ordinary CLI authorization and disabled/hold checks precede every
+        rule. This leaves restoration intent in EventBridge for release recovery;
+        it neither stops services nor grants permission to dispose of data.
+        """
+        self._binding(registration)
+        self._verify_stack_membership()
+        clusters = self._ids("AWS::ECS::Cluster")
+        if len(clusters) != 1:
+            raise DispositionRefused("schedule pause requires one bound cluster")
+        results = []
+        for name in self._ids("AWS::Events::Rule"):
+            self._binding(registration)
+            events = self._clients.get("events")
+            if events is None or events.meta.region_name != self.resources.region:
+                raise DispositionRefused("schedule pause requires the approved EventBridge client")
+            targets = provider_rows(events, "list_targets_by_rule", "Targets", Rule=name)
+            if len(targets) != 1:
+                raise DispositionRefused("schedule requires one bound task target")
+            definition = targets[0].get("EcsParameters", {}).get("TaskDefinitionArn")
+            if definition not in self._ids("AWS::ECS::TaskDefinition") and not any(
+                definition and definition.rsplit(":", 1)[0] == known.rsplit(":", 1)[0]
+                for known in self._ids("AWS::ECS::TaskDefinition")
+            ):
+                raise DispositionRefused("schedule task family is outside the environment inventory")
+            results.append(pause_schedule(events, rule_name=name, cluster=clusters[0], task_definition_arn=definition))
+        return results
+
     def require_frozen(self, registration):
         """The operator's freeze guard before export, custody and rehearsal
         mutations: bound, application drained, stack membership unchanged."""
@@ -227,18 +246,27 @@ class AwsStackEnvironmentDestroyer(AwsEnvironmentDestroyer):
         return super()._mutate(method, **parameters)
 
     def _require_quiescent(self):
+        for name in self._ids("AWS::Events::Rule"):
+            events = self._clients.get("events")
+            if events is None or events.meta.region_name != self.resources.region:
+                raise DispositionRefused("schedule observation requires the approved region's EventBridge client")
+            try:
+                require_paused_schedule(events, rule_name=name)
+            except ScheduleRefused as exc:
+                raise DispositionRefused(str(exc)) from exc
         ecs = self._clients["ecs"]
         for cluster in self._ids("AWS::ECS::Cluster"):
-            # Both running and pending are required: a deployment at desired=0
-            # may still be draining a writer, and an already submitted task may
-            # become runnable after an export is frozen.
-            for desired in ("RUNNING", "PENDING"):
-                if provider_rows(ecs, "list_tasks", "taskArns", cluster=cluster, desiredStatus=desired):
-                    raise DispositionRefused("application tasks must be drained before export or deletion")
+            try:
+                if live_tasks(ecs, cluster=cluster):
+                    raise DispositionRefused("application tasks must be stopped before export or deletion")
+            except TaskObservationError as exc:
+                raise DispositionRefused(str(exc)) from exc
             services = self._ids("AWS::ECS::Service")
             for start in range(0, len(services), 10):
                 result = ecs.describe_services(cluster=cluster, services=services[start:start+10])
-                if result.get("failures") or any(s.get("desiredCount") or s.get("runningCount") or s.get("pendingCount") for s in result.get("services", [])):
+                if (result.get("failures") or len(result.get("services", [])) != len(services[start:start+10])
+                        or any(any(s.get(field) != 0 for field in ("desiredCount", "runningCount", "pendingCount"))
+                               for s in result.get("services", []))):
                     raise DispositionRefused("application services are not quiescent")
 
     def _verify_stack_membership(self):

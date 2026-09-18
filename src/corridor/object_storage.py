@@ -24,6 +24,10 @@ references it, so a crash between the two leaves an unreferenced object, never
 a row without its bytes (``storage_operations.reconcile`` reports and repairs
 both directions).
 
+Staging verifies cache hits as well as downloads. Files handed to the store or
+staged elsewhere are copied onto separately owned inodes: hard-linking a
+worker's output let its next write mutate an already retained object.
+
 A ``DeletionPermit`` is constructed only by ``corridor.retention`` after the
 hold check, which is how a held object cannot be deleted on either backend.
 """
@@ -212,21 +216,18 @@ class LocalFilesystemStore:
         if target.exists():
             return self._existing(key, target, sha256, size)
         target.parent.mkdir(parents=True, exist_ok=True)
+        staging = target.parent / f".{target.name}.{uuid4().hex}.part"
         try:
-            # A hard link keeps one copy of a render on disk: the staging
-            # file the worker wrote and the store object share their bytes.
-            os.link(source, target)
-        except FileExistsError:
-            return self._existing(key, target, sha256, size)
-        except OSError:
-            staging = target.parent / f".{target.name}.{uuid4().hex}.part"
             shutil.copyfile(source, staging)
+            # Verify the copied bytes, not just the earlier source reading.
+            _verified_file(staging, sha256)
+            size = staging.stat().st_size
             try:
                 os.link(staging, target)
             except FileExistsError:
                 return self._existing(key, target, sha256, size)
-            finally:
-                staging.unlink(missing_ok=True)
+        finally:
+            staging.unlink(missing_ok=True)
         return StoredObject(key, sha256, size, True)
 
     def _existing(self, key: str, target: Path, sha256: str, size: int) -> StoredObject:
@@ -254,7 +255,8 @@ class LocalFilesystemStore:
     def resolve(self, sha256: str) -> str | None:
         shard = self.root / sha256[:2]
         found = sorted(
-            path.name for path in shard.glob(f"{sha256}.*") if path.is_file()
+            path.name for path in shard.glob(f"{sha256}*")
+            if path.is_file() and parse_key(f"{sha256[:2]}/{path.name}")
         )
         return f"{sha256[:2]}/{found[0]}" if found else None
 
@@ -273,18 +275,11 @@ class LocalFilesystemStore:
         destination = Path(destination)
         target = self._path(key)
         if destination.exists():
+            _verified_file(destination, sha256)
             return destination
         if not target.is_file():
             raise ObjectMissing(f"{key} holds no object")
-        # A staged copy is a read: verify the object before sharing its bytes.
-        _verified_file(target, sha256)
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            os.link(target, destination)
-        except FileExistsError:
-            pass
-        except OSError:
-            _download(self.open(key, sha256=sha256), destination)
+        _download(self.open(key, sha256=sha256), destination, sha256=sha256)
         return destination
 
     def delete_under_policy(self, key: str, *, permit: DeletionPermit) -> None:
@@ -428,9 +423,11 @@ class S3ObjectStore:
 
     def stage(self, key: str, destination: Path, *, sha256: str) -> Path:
         destination = Path(destination)
+        self._name(key)
         if destination.exists():
+            _verified_file(destination, sha256)
             return destination
-        _download(self.open(key, sha256=sha256), destination)
+        _download(self.open(key, sha256=sha256), destination, sha256=sha256)
         return destination
 
     def delete_under_policy(self, key: str, *, permit: DeletionPermit) -> None:
@@ -473,8 +470,8 @@ def _check_permit(key: str, permit: DeletionPermit) -> None:
         raise StorageError(f"the permit names {permit.key}, not {key}")
 
 
-def _download(chunks: Iterator[bytes], destination: Path) -> None:
-    """Fill ``destination`` only after the whole stream verified."""
+def _download(chunks: Iterator[bytes], destination: Path, *, sha256: str) -> None:
+    """Publish verified bytes once, or verify a concurrent winner's bytes."""
 
     destination.parent.mkdir(parents=True, exist_ok=True)
     staging = destination.parent / f".{destination.name}.{uuid4().hex}.part"
@@ -482,7 +479,10 @@ def _download(chunks: Iterator[bytes], destination: Path) -> None:
         with staging.open("wb") as handle:
             for chunk in chunks:
                 handle.write(chunk)
-        os.replace(staging, destination)
+        try:
+            os.link(staging, destination)
+        except FileExistsError:
+            _verified_file(destination, sha256)
     finally:
         staging.unlink(missing_ok=True)
 

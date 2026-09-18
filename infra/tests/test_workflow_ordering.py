@@ -369,7 +369,7 @@ def test_release_refuses_web_without_a_worker_before_authenticating(web, worker,
 def test_release_drain_migration_and_both_rollout_proofs_are_ordered_and_fail_closed():
     """Migration cannot race an old worker; web starts only after worker proof."""
     steps = _jobs("app-release.yml")["release"]["steps"]
-    required = ("drain", "migration", "start_worker", "verify_worker", "start_web", "verify_web")
+    required = ("pause_schedule", "drain", "migration", "start_worker", "verify_worker", "start_web", "verify_web", "resume_schedule")
     ordered = [(index, step) for index, step in enumerate(steps) if step.get("id") in required]
     assert tuple(step["id"] for _, step in ordered) == required
     by_id = {step["id"]: step for _, step in ordered}
@@ -377,6 +377,11 @@ def test_release_drain_migration_and_both_rollout_proofs_are_ordered_and_fail_cl
         assert "if" not in step, "release safety steps must run only after preceding success"
         assert not step.get("continue-on-error"), step["id"]
 
+    assert 'pause-schedule' in by_id['pause_schedule']['run']
+    assert '--rule "$EXPIRY_RULE"' in by_id['pause_schedule']['run']
+    assert 'resume-schedule' in by_id['resume_schedule']['run']
+    assert '--task-definition "$BATCH_TD"' in by_id['resume_schedule']['run']
+    assert '--digest "$IMAGE_DIGEST"' in by_id['resume_schedule']['run']
     drain = by_id["drain"]["run"]
     assert "scripts/verify_ecs_release.py drain" in drain
     for argument in (
