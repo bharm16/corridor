@@ -1160,3 +1160,36 @@ def test_missing_store_file_is_reextracted_despite_matching_member_crc(tmp_path)
     assert second.failed == []
     assert len(second.skipped) == 1
     assert stored.read_bytes() == UCM_BYTES
+
+
+@pytest.mark.parametrize('same_bytes', [False, True])
+def test_converter_upgrade_requires_an_explicit_act_and_preserves_derivation(tmp_path, monkeypatch, same_bytes):
+    from corridor.corpus import Manifest, Source, XlsConversion
+    from corridor import spreadsheet_conversion
+    original = b'original binary XLS'
+    old = b'PK\x03\x04old conversion'
+    new = old if same_bytes else b'PK\x03\x04coordinate-preserving conversion'
+    archive = make_zip({'source.xls': original})
+    source = Source('https://example.gov/data.zip', 'plan', 'evidence', 'Original',
+        member='source.xls', registry_id='original', conversion=XlsConversion('converted', 'Converted'))
+    manifest = Manifest('conversion-test', None, (source,))
+    path = tmp_path / 'lock.json'
+    calls = []
+    def fetch(body, **kwargs):
+        with httpx.Client(transport=ranged_transport({source.url: archive})) as client:
+            return fetch_all(manifest, store=tmp_path / 'files', lock_path=path, delay=0, client=client,
+                xls_converter=lambda data: calls.append(data) or body, **kwargs)
+    with monkeypatch.context() as old_version:
+        old_version.setattr(spreadsheet_conversion, 'CONVERTER_VERSION', '3')
+        fetch(old)
+    prior = next(r for r in json.loads(path.read_text())['sources'].values() if r.get('derivation'))
+    fetch(new)
+    retained = next(r for r in json.loads(path.read_text())['sources'].values() if r.get('derivation'))
+    assert calls == [original]
+    assert retained == prior
+    fetch(new, reconvert_xls=('original',))
+    current = next(r for r in json.loads(path.read_text())['sources'].values() if r.get('derivation'))
+    assert current['derivation']['tool_version'] == '4'
+    assert current['history'][-1]['derivation'] == prior['derivation']
+    assert Path(prior['local_path']).read_bytes() == old
+    assert Path(current['local_path']).read_bytes() == new

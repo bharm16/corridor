@@ -273,3 +273,15 @@ def test_a_competing_stage_destination_is_verified_before_return(store, tmp_path
     with pytest.raises(DigestMismatch):
         store.stage(KEY, destination, sha256=DIGEST)
     assert destination.read_bytes() == b"competing invalid bytes"
+
+
+@pytest.mark.parametrize("store", ["s3"], indirect=True)
+def test_s3_upload_owns_verified_bytes_before_the_sdk_consumes_them(store, tmp_path):
+    source = tmp_path / 'upload.pdf'
+    source.write_bytes(BODY)
+    def reuse_input(**kwargs):
+        source.write_bytes(b'caller reused its staging file')
+    store.client.meta.events.register('before-parameter-build.s3.PutObject', reuse_input)
+    stored = store.put_file(KEY, source, sha256=DIGEST)
+    assert stored.size == len(BODY)
+    assert store.get(KEY, sha256=DIGEST) == BODY

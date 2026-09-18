@@ -109,6 +109,7 @@ class Summary:
     skipped: list[str] = field(default_factory=list)
     drifted: list[str] = field(default_factory=list)
     failed: list[str] = field(default_factory=list)
+    retained_conversions: list[str] = field(default_factory=list)
 
 
 def _load_bool_field(raw: dict, *, path: Path, field: str, default: bool) -> bool:
@@ -329,7 +330,11 @@ def fetch_all(
     client: httpx.Client | None = None,
     delay: float = 1.0,
     xls_converter=None,
+    reconvert_xls: tuple[str, ...] = (),
 ) -> Summary:
+    eligible = {source.registry_id for source in manifest.sources if source.conversion is not None}
+    if len(set(reconvert_xls)) != len(reconvert_xls) or not set(reconvert_xls) <= eligible:
+        raise ValueError("reconversion must name distinct XLS source registrations in this manifest")
     store, lock_path = Path(store), Path(lock_path)
     lock = _read_lock(lock_path, manifest)
     summary = Summary()
@@ -358,6 +363,7 @@ def fetch_all(
                     lock=lock,
                     summary=summary,
                     converter=xls_converter,
+                    upgrade=source.registry_id in reconvert_xls,
                 )
     finally:
         if owns_client:
@@ -381,7 +387,7 @@ def _fetch_one(
         _fetch_document(source, store, lock, summary, client)
 
 
-def _derive_xlsx(source, *, store, lock, summary, converter) -> None:
+def _derive_xlsx(source, *, store, lock, summary, converter, upgrade=False) -> None:
     """Derive one deterministic XLSX without relabeling it as fetched."""
 
     assert source.conversion is not None
@@ -399,6 +405,15 @@ def _derive_xlsx(source, *, store, lock, summary, converter) -> None:
         return
     source_sha256 = original["sha256"]
     from corridor.spreadsheet_conversion import CONVERTER_NAME, CONVERTER_VERSION
+
+    if (prior and prior.get("sha256") and not upgrade
+            and (prior.get("derivation", {}).get("tool"), prior.get("derivation", {}).get("tool_version"))
+                != (CONVERTER_NAME, CONVERTER_VERSION)):
+        # A deployment must not silently re-author a retained rendition under
+        # a new converter. Its old bytes and exact derivation remain evidence.
+        summary.skipped.append(key)
+        summary.retained_conversions.append(source.registry_id)
+        return
 
     if (
         prior
@@ -680,7 +695,9 @@ def _store_and_record(
 ) -> None:
     sha = hashlib.sha256(body).hexdigest()
 
-    if prior and prior.get("sha256") == sha:
+    derivation_changed = bool(prior and extra and "derivation" in extra
+                              and prior.get("derivation") != extra["derivation"])
+    if prior and prior.get("sha256") == sha and not derivation_changed:
         # Unchanged bytes never rewrite the lock — but the store object and
         # the local file the record points at must exist. If either was
         # wiped, put the bytes we just fetched back where the record says
@@ -693,15 +710,13 @@ def _store_and_record(
     path = _store_bytes(store, sha, name, body)
 
     history = list(prior.get("history", [])) if prior else []
-    drifted = bool(prior and prior.get("sha256") and prior["sha256"] != sha)
+    drifted = bool(prior and prior.get("sha256") and (prior["sha256"] != sha or derivation_changed))
     if drifted:
-        history.append(
-            {
-                "sha256": prior["sha256"],
-                "retrieved_at": prior["retrieved_at"],
-                "local_path": prior["local_path"],
-            }
-        )
+        previous = {"sha256": prior["sha256"], "retrieved_at": prior["retrieved_at"],
+                    "local_path": prior["local_path"]}
+        if prior.get("derivation"):
+            previous = {name: value for name, value in prior.items() if name != "history"}
+        history.append(previous)
 
     record = {
         "sha256": sha,
@@ -932,6 +947,9 @@ def _now() -> str:
 _CONTRACT = """\
 Resolve corpus/manifest.yaml to files on disk. Re-running is a no-op for
 unchanged sources; a source whose bytes changed keeps both revisions.
+Retained XLS renditions keep their original converter identity. To explicitly
+upgrade one conversion: make corpus ARGS='corpus/manifest.yaml --reconvert-xls source-registry-id'.
+The prior bytes and full derivation receipt remain in history.
 """
 
 
@@ -946,7 +964,12 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         nargs="?",
         help="fetch only this manifest; omit to fetch every manifest in corpus/",
     )
-    return parser.parse_args(argv if argv is not None else sys.argv[1:])
+    parser.add_argument("--reconvert-xls", action="append", default=[], metavar="SOURCE_REGISTRY_ID",
+                        help="explicitly upgrade this source's retained XLS conversion; repeat for selected sources")
+    args = parser.parse_args(argv if argv is not None else sys.argv[1:])
+    if args.reconvert_xls and not args.manifest:
+        parser.error("--reconvert-xls requires one explicit manifest")
+    return args
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -982,6 +1005,7 @@ def main(argv: list[str] | None = None) -> int:
             manifest,
             store=Path("corpus/files"),
             lock_path=manifest_path.with_suffix(".lock.json"),
+            **({"reconvert_xls": tuple(args.reconvert_xls)} if args.reconvert_xls else {}),
         )
         print(
             f"{manifest.project}: fetched {len(summary.fetched)}  "
@@ -989,6 +1013,8 @@ def main(argv: list[str] | None = None) -> int:
             f"failed {len(summary.failed)}",
             flush=True,
         )
+        for registry_id in summary.retained_conversions:
+            print(f"  retained conversion: {registry_id}; use --reconvert-xls {registry_id} to upgrade explicitly")
         for url in summary.drifted:
             print(f"  drift: {url} (previous revision retained)")
         for url in summary.failed:

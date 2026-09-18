@@ -41,6 +41,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import tempfile
 from typing import Iterator, Protocol
 from uuid import uuid4
 
@@ -345,9 +346,14 @@ class S3ObjectStore:
 
     def put_file(self, key: str, path: Path, *, sha256: str) -> StoredObject:
         source = Path(path)
-        _verified_file(source, sha256)
-        with source.open("rb") as handle:
-            return self._put_body(key, handle, sha256, source.stat().st_size)
+        # The SDK may consume/retry the body after the caller has reused its
+        # path. Upload only a private snapshot verified before any request.
+        with source.open("rb") as handle, tempfile.TemporaryFile() as snapshot:
+            for chunk in _verified_stream(iter(lambda: handle.read(CHUNK_BYTES), b""), sha256):
+                snapshot.write(chunk)
+            size = snapshot.tell()
+            snapshot.seek(0)
+            return self._put_body(key, snapshot, sha256, size)
 
     def _put_body(self, key: str, body, sha256: str, size: int) -> StoredObject:
         from botocore.exceptions import ClientError
